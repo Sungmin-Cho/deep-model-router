@@ -344,8 +344,15 @@ and routing away from a model that was never allowed to start degrades the
 next route for no reason. Reasons naming missing or unchanged artifacts
 (`artifact_missing:*`, `artifact_unchanged:*`) or an artifact the evidence
 layer refuses to certify (`artifact_multiply_linked:*`, an inode with a
-second name) are the same class of finding for a producing seat — a
-workspace or recipe defect, not a model that failed the work. Who reports failure history is always the
+second name; `artifact_identity_replaced:*`, a path that stopped naming the
+inode pinned before the attempt started) are the same class of finding for a
+producing seat — a workspace or recipe defect, not a model that failed the
+work. `artifact_identity_replaced:*` has one common innocent cause worth
+knowing before you go looking for an attack: a seat whose writer does the
+write-a-temp-file-and-rename dance. That idiom installs a new inode and is
+refused by design (`adapters.md`, "A required artifact must still be the
+inode that was pinned"); fix the seat to write in place and re-dispatch the
+same model once. Who reports failure history is always the
 caller; the router changes nothing here.
 
 ## Reading verdicts

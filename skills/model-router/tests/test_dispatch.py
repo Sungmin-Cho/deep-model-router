@@ -7,6 +7,8 @@ test writes into tmp_path. See docs/design/2026-08-15-dispatch-layer-design.md
 Run:  python3 -m pytest skills/model-router/tests/test_dispatch.py -q
 """
 
+import argparse
+import errno
 import json
 import os
 import signal
@@ -1513,14 +1515,25 @@ def test_session_id_must_be_a_uuid_pre_spawn(tmp_path):
 def artifact_fake(writes=(), *, exit_code=0, stdout="done"):
     """A fake child that writes `(relative_path, content)` pairs under its
     own tmp root, then exits. `content=None` means "make a FIFO here",
-    `content` starting with `->` means "make a symlink to the rest"."""
+    `content` starting with `->` means "make a symlink to the rest".
+
+    A FIFO and a symlink can only be CREATED, never written in place, so
+    those two displace whatever stands at the path first. Since R2-C1 the
+    supervisor reserves an absent required path before spawn, and a child
+    that plants a non-regular file there has to remove that reservation —
+    which is exactly what a child doing this on purpose would do. The
+    ordinary regular-file write stays an in-place write, because that is the
+    case the identity contract must not cost anything.
+    """
     body = ["import os, sys", "from pathlib import Path"]
     for path, content in writes:
         body.append(f"p = Path({str(path)!r})")
         body.append("p.parent.mkdir(parents=True, exist_ok=True)")
         if content is None:
+            body.append("p.unlink(missing_ok=True)")
             body.append("os.mkfifo(p)")
         elif isinstance(content, str) and content.startswith("->"):
+            body.append("p.unlink(missing_ok=True)")
             body.append(f"p.symlink_to({content[2:]!r})")
         else:
             body.append(f"p.write_text({content!r})")
@@ -1863,6 +1876,11 @@ def test_hard_linked_artifact_written_this_attempt_is_invalid_output(tmp_path):
     fake = write_fake(tmp_path, "art_linkgrade.py", "\n".join([
         "import os",
         "from pathlib import Path",
+        # The supervisor reserves an absent required path before spawn
+        # (R2-C1), so the second name has to displace that reservation — the
+        # in-root name and the outside file are still one inode afterwards,
+        # which is the whole of what this regression is about.
+        f"Path({str(target)!r}).unlink(missing_ok=True)",
         f"os.link({str(outside)!r}, {str(target)!r})",
         f"Path({str(target)!r}).write_text('OVERWRITTEN THROUGH THE FENCE')",
         "print('done')",
@@ -2697,3 +2715,409 @@ def test_top_level_observed_pair_stays_null_unavailable_with_served_models_recor
     # normalize a served identifier against the declared one.
     assert receipt["observed_model_id"] is None
     assert receipt["observed_model_source"] == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# DD-2 R2-C1 — artifact IDENTITY. `st_nlink` is sampled at exactly two
+# instants (pre-spawn baseline, grading), and a child controls everything in
+# between. The gap is not theoretical: link an outside inode at the required
+# path, write through it, unlink that name, drop a clean single-link decoy,
+# and both samples read 1 while an external file was overwritten under a
+# SUCCEEDED receipt. The supervisor cannot stop an unrestricted child from
+# writing outside its root — it can refuse to CERTIFY an attempt whose
+# required path stopped naming the inode the supervisor pinned before spawn.
+# ---------------------------------------------------------------------------
+
+
+def launder_fake(target, victim, *, decoy="CLEAN DECOY", exit_code=0,
+                 stdout="done"):
+    """A child that hard-link-launders an outside inode through the required
+    path and then hides the evidence before exiting."""
+    return "\n".join([
+        "import os, sys",
+        "from pathlib import Path",
+        f"target = Path({str(target)!r})",
+        f"victim = Path({str(victim)!r})",
+        "target.parent.mkdir(parents=True, exist_ok=True)",
+        # Whatever stands at the required path now — nothing, or a
+        # supervisor-held reservation — is removed so the outside inode can
+        # take its name.
+        "target.unlink(missing_ok=True)",
+        "os.link(victim, target)",          # in-root NAME, outside INODE
+        "target.write_text('LAUNDERED')",   # the write lands on the victim
+        "target.unlink()",                  # the second name disappears
+        f"target.write_text({decoy!r})",    # fresh, single-linked, 'clean'
+        f"sys.stdout.write({stdout!r})",
+        f"sys.exit({exit_code})",
+    ]) + "\n"
+
+
+def test_transient_hard_link_removed_before_grading_is_invalid_output(tmp_path):
+    """The laundering sequence in full, against an artifact path that is
+    ABSENT pre-spawn — the case with no baseline inode to compare against,
+    and therefore the one the two `st_nlink` samples never covered.
+
+    The victim IS overwritten; that is asserted, not hidden. A supervisor
+    cannot fence a child it does not confine. What it must never do is hand
+    that child a SUCCEEDED receipt whose `contained: true` / `changed: true`
+    record reads as proof the write stayed inside the root.
+    """
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"          # absent pre-spawn: no baseline inode
+    victim = tmp_path / "victim.md"    # OUTSIDE --artifact-root
+    victim.write_text("VICTIM CONTENT")
+    fake = write_fake(tmp_path, "art_launder.py", launder_fake(target, victim))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    # The damage is real and outside this supervisor's reach.
+    assert victim.read_text() == "LAUNDERED"
+    # The proof is not.
+    assert receipt["result"]["state"] != "SUCCEEDED"
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"artifact_identity_replaced:{target}" in \
+        receipt["result"]["invalid_reasons"]
+    (record,) = receipt["result"]["artifacts"]
+    assert record["identity_pinned"] is False
+    # No digest is recorded for an inode the supervisor never pinned: a hash
+    # there would be the same false proof in a smaller font.
+    assert record["sha256"] is None
+
+
+def test_transient_hard_link_over_a_preexisting_artifact_is_invalid_output(
+        tmp_path):
+    """The same laundering against a path that DID exist pre-spawn. The
+    baseline inode was pinned, so replacement is caught even though the
+    decoy's bytes differ from the baseline (`changed` would have said true)."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("BEFORE")
+    victim = tmp_path / "victim.md"
+    victim.write_text("VICTIM CONTENT")
+    fake = write_fake(tmp_path, "art_launder2.py",
+                      launder_fake(target, victim, decoy="AFTER"))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"artifact_identity_replaced:{target}" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_in_place_write_keeps_the_pinned_identity_and_succeeds(tmp_path):
+    """The ability this gate must not cost: producing a previously ABSENT
+    artifact. An in-place writer (`open(..., 'w')`, the ordinary case) keeps
+    the inode the supervisor reserved, so the receipt still records a
+    SUCCEEDED with a digest — and now also records the identity it kept."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_inplace.py",
+                      artifact_fake([(target, "PLAN BODY")]))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["identity_pinned"] is True
+    assert record["changed"] is True
+    assert record["sha256"] == sha256_of("PLAN BODY")
+
+
+def replace_fake(target, *, content="RENAMED IN"):
+    """A child that writes a temp file and `os.replace`s it over the required
+    path — the atomic-write idiom, which necessarily installs a NEW inode."""
+    return "\n".join([
+        "import os, sys",
+        "from pathlib import Path",
+        f"target = Path({str(target)!r})",
+        "target.parent.mkdir(parents=True, exist_ok=True)",
+        "tmp = target.with_suffix('.tmp')",
+        f"tmp.write_text({content!r})",
+        "os.replace(tmp, target)",
+        "sys.stdout.write('done')",
+    ]) + "\n"
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_atomic_rename_over_a_required_artifact_is_invalid_output(
+        tmp_path, preexisting):
+    """The documented cost of the identity contract, pinned by a test rather
+    than left for a caller to discover.
+
+    `os.replace(tmp, target)` is indistinguishable at grading time from the
+    laundering sequence above: both end with a fresh, single-linked inode at
+    the required path and no way to tell which one wrote the file it
+    replaced. The supervisor refuses both. A seat that must produce a
+    required artifact writes it IN PLACE.
+    """
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    if preexisting:
+        target.write_text("BEFORE")
+    fake = write_fake(tmp_path, "art_replace.py", replace_fake(target))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"artifact_identity_replaced:{target}" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def _lowest_free_fd():
+    """The lowest currently-free descriptor number.
+
+    POSIX allocates the lowest free fd, so opening and immediately closing a
+    probe reports where the free space starts. Comparing the value before and
+    after a whole `run` is a portable leak assertion — a pin the supervisor
+    forgot to close occupies a slot and pushes this number up. `/proc/self/fd`
+    would be the direct read, and it does not exist on this project's macOS
+    development platform.
+    """
+    fd = os.open(os.devnull, os.O_RDONLY)
+    os.close(fd)
+    return fd
+
+
+def _raise_runtime_error(*_args, **_kwargs):
+    raise RuntimeError("injected")
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "invalid", "failed", "crash"])
+def test_artifact_pins_are_released_on_every_exit_path(
+        tmp_path, monkeypatch, outcome):
+    """The pin is a descriptor the supervisor holds for the whole attempt, so
+    every way out of `run` has to give it back — including the one that leaves
+    through the crash handler and re-raises."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    if outcome == "succeeded":
+        body = artifact_fake([(target, "PLAN BODY")])
+    elif outcome == "invalid":
+        body = artifact_fake()                       # never writes the artifact
+    elif outcome == "failed":
+        body = artifact_fake([(target, "X")], exit_code=3)
+    else:
+        body = artifact_fake([(target, "X")])
+        monkeypatch.setattr(dispatch_agent, "_grade_artifacts",
+                            _raise_runtime_error)
+    fake = write_fake(tmp_path, f"art_fd_{outcome}.py", body)
+    receipt_dir = tmp_path / "receipts"
+    argv = ["run", "--attempt-id", f"fd-{outcome}",
+            "--receipt-dir", str(receipt_dir),
+            "--deadline-seconds", "30", "--grace-seconds", "1",
+            "--seat", "worker", "--output-schema", "none",
+            *artifact_args(root, target), "--", sys.executable, str(fake)]
+    before = _lowest_free_fd()
+    rc = dispatch_agent.main(argv)
+    assert _lowest_free_fd() == before
+    receipt = json.loads((receipt_dir / f"fd-{outcome}.json").read_text())
+    assert receipt["result"]["state"] in dispatch_agent.STATES
+    if outcome == "succeeded":
+        assert rc == 0 and receipt["result"]["state"] == "SUCCEEDED"
+    if outcome == "crash":
+        assert rc == 9
+
+
+def _pin_args(root, paths, attempt_id="pin1"):
+    return argparse.Namespace(
+        artifact_root=str(root),
+        require_artifact=[str(p) for p in paths],
+        require_artifact_sha256=[],
+        require_artifact_baseline_max_bytes=1024 * 1024,
+        attempt_id=attempt_id)
+
+
+def test_artifact_pins_are_not_inherited_and_close_on_release(tmp_path):
+    """A descriptor the supervisor holds open on the artifact for the whole
+    attempt must not become a handle the child inherits.
+
+    Non-inheritable is Python's default for `os.open`/`os.dup`, which is
+    exactly why it is asserted rather than assumed: the default is one keyword
+    away from being lost, and losing it hands the child the very inode this
+    pin exists to protect. Holding the descriptor is also what makes the
+    identity comparison sound — an unlinked inode whose number is free can be
+    handed straight back to the next file created, and a pin that was already
+    closed would let that recycled number read as "the same artifact".
+    """
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    absent = root / "new.md"
+    existing = root / "old.md"
+    existing.write_text("BEFORE")
+    captured = dispatch_agent._capture_artifact_baselines(
+        _pin_args(root, [absent, existing]))
+    assert not isinstance(captured, str), captured
+    _root, entries = captured
+    assert len(entries) == 2
+    assert absent.exists(), "an absent required path is reserved before spawn"
+    for entry in entries:
+        fd = entry["pin_fd"]
+        assert fd is not None and fd >= 0
+        assert os.get_inheritable(fd) is False
+        assert os.fstat(fd).st_ino == entry["pin_ino"]
+    dispatch_agent._release_artifact_pins(entries)
+    for entry in entries:
+        assert entry["pin_fd"] is None
+    # An untouched reservation is withdrawn, so a supervisor that reserved a
+    # path and then crashed does not leave a file standing where the caller
+    # declared there was none. A pre-existing artifact is never removed.
+    assert not absent.exists()
+    assert existing.read_text() == "BEFORE"
+
+
+def test_a_written_reservation_is_never_withdrawn_on_release(tmp_path):
+    """The other half of the withdrawal rule: once the child has written the
+    reserved path, that file is the attempt's product and the supervisor must
+    not delete it — not on the terminal path, and not on the crash path that
+    reaches the same release."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    absent = root / "new.md"
+    captured = dispatch_agent._capture_artifact_baselines(
+        _pin_args(root, [absent], attempt_id="pin2"))
+    _root, entries = captured
+    with open(absent, "w") as f:          # in place: same inode, new bytes
+        f.write("THE CHILD WROTE THIS")
+    dispatch_agent._release_artifact_pins(entries)
+    assert absent.read_text() == "THE CHILD WROTE THIS"
+
+
+def test_an_unwritten_reservation_grades_as_missing_not_empty(tmp_path):
+    """The reservation must not change what the caller is told. A required
+    artifact the child never produced is `artifact_missing`, exactly as it was
+    when the supervisor left the path absent — and the reservation it wrote to
+    hold the path is gone from the receipt's view of the world."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_unwritten.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"artifact_missing:{target}" in receipt["result"]["invalid_reasons"]
+    (record,) = receipt["result"]["artifacts"]
+    assert record["exists"] is False
+    assert record["sha256"] is None
+    assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# DD-3 R2-W1 — the terminal evidence tail is BEST-EFFORT, and best-effort has
+# to mean it. Once a terminal state is selected, the unconditional backfill
+# below it records evidence and records nothing else. An exception escaping
+# that backfill reaches `cmd_run`'s post-spawn crash handler, which re-runs
+# the termination ladder and rewrites `result.state` to CANCELLED /
+# TERMINATION_UNCONFIRMED with exit 9 — a FAILED attempt reported as a
+# supervisor crash, and a real exit status erased by an unreadable log file.
+# ---------------------------------------------------------------------------
+
+
+def _evidence_read_error(*_args, **_kwargs):
+    """`_tail_bytes` opens inside a try and then seeks/reads outside it. EIO
+    on a rotating or truncated `events.jsonl` is the deterministic stand-in
+    for every post-open read failure that surface can produce."""
+    raise OSError(errno.EIO, "Input/output error")
+
+
+@pytest.mark.parametrize("state,rc,child", [
+    ("FAILED", 1, "import sys\nprint('verdict: PASS')\nsys.exit(4)\n"),
+    ("TIMED_OUT", 3, "import time\ntime.sleep(60)\n"),
+])
+def test_a_selected_terminal_state_survives_an_evidence_read_error(
+        tmp_path, monkeypatch, state, rc, child):
+    """Both already-selected states named in the finding, through the same
+    injected failure. The state, the exit mapping and the termination proof
+    all have to come out the other side unchanged."""
+    dispatch_agent = _in_process(tmp_path)
+    monkeypatch.setattr(dispatch_agent, "_tail_bytes", _evidence_read_error)
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, f"sess_eio_{state}.py",
+                      session_writer(session_dir) + child)
+    receipt_dir = tmp_path / "receipts"
+    attempt = f"eio-{state.lower()}"
+    assert dispatch_agent.main([
+        "run", "--attempt-id", attempt, "--receipt-dir", str(receipt_dir),
+        "--deadline-seconds", "2", "--grace-seconds", "1",
+        "--seat", "reviewer-1", "--output-schema", "review",
+        *session_args(session_dir),
+        "--", sys.executable, str(fake)]) == rc
+    receipt = json.loads((receipt_dir / f"{attempt}.json").read_text())
+    assert receipt["result"]["state"] == state
+    assert receipt["result"]["termination_confirmed"] is True
+    assert receipt["result"]["invalid_reasons"] is None
+    # The evidence that could be read is kept; the part that could not is the
+    # documented null, not a missing key and not a crash.
+    evidence = receipt["session_evidence"]
+    assert evidence["format"] == "grok-session-v1"
+    assert evidence["session_id"] == SESSION_UUID
+    assert evidence["terminal_event"] is None
+    assert evidence["unreadable"] is True
+
+
+def _unparseable_summary(session_dir, session_id=SESSION_UUID):
+    """A `summary.json` that is valid JSON text but whose parse raises
+    something that is neither `JSONDecodeError` nor `UnicodeDecodeError`.
+
+    CPython refuses to convert an integer literal over 4300 digits and raises
+    a bare `ValueError` doing it — a real parse edge with no monkeypatch
+    anywhere, reached through the same `json.loads` the evidence reader uses.
+    """
+    payload = ('{"info": {"id": "%s"}, "created_at": "2026-08-25T08:00:00.0Z",'
+               ' "n": %s}' % (session_id, "1" * 5000))
+    return "\n".join([
+        "from pathlib import Path",
+        f"d = Path({str(session_dir)!r})",
+        "d.mkdir(parents=True, exist_ok=True)",
+        f"(d / 'summary.json').write_text({payload!r})",
+    ]) + "\n"
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11),
+                    reason="the integer-literal digit limit lands in 3.11")
+def test_an_unparseable_summary_does_not_relabel_a_failed_receipt(tmp_path):
+    """The parse half of the finding, with nothing injected. A FAILED attempt
+    stays FAILED and exits 1 even though reading its evidence raised."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_bigint_fail.py",
+        _unparseable_summary(session_dir)
+        + "import sys\nprint('verdict: PASS')\nsys.exit(4)\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 1, proc.stderr
+    assert receipt["result"]["state"] == "FAILED"
+    assert receipt["session_evidence"]["summary"] is None
+    assert receipt["session_evidence"]["unreadable"] is True
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11),
+                    reason="the integer-literal digit limit lands in 3.11")
+def test_an_unparseable_summary_on_the_grading_path_is_a_typed_refusal(
+        tmp_path):
+    """The same document where success IS still on the table. Evidence that
+    cannot be read proves no binding, so the attempt is INVALID_OUTPUT with
+    the vocabulary's own reason — never a supervisor crash."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_bigint_ok.py",
+                      _unparseable_summary(session_dir)
+                      + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unreadable" in receipt["result"]["invalid_reasons"]
+    assert receipt["session_evidence"]["unreadable"] is True

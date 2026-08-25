@@ -347,7 +347,11 @@ effective sandbox profile and the turn's cancellation category explain what
 happened, so the receipt carries them there too. Collection is bounded and
 best-effort: a session directory that was never written leaves the same
 always-present shape full of nulls rather than costing the attempt its
-receipt.
+receipt. So does one that could not be READ — a post-open read error, or a
+`json` parse that raises something other than a decode error, is an absence
+of evidence and never an attempt outcome. `session_evidence.unreadable` is
+how the receipt tells those two absences apart; it records, and like the
+rest of this collection it gates nothing.
 
 The **effective permission mode is not observable at all.** grok 1.0.5
 records it nowhere — not in stdout, not in `summary.json`, not in
@@ -478,6 +482,42 @@ content. Each artifact record carries `nlink` so the receipt shows what was
 checked. This is the supervisor-side counterpart to the grok 1.0.5 finding
 in the 1.5.0 changelog: hard links defeat that CLI's own path-scoped write
 rules, so the evidence layer refuses to certify one.
+
+**A required artifact must still be the inode that was pinned.** `st_nlink`
+is sampled twice — the pre-spawn baseline and grading — and the child owns
+everything in between. A child can hard-link an outside inode at the required
+path, write through it, unlink that name, and drop a fresh single-linked file
+before it exits: both samples read `1`, the outside file is overwritten, and
+the receipt records `contained: true`, `changed: true`, `SUCCEEDED`. So the
+supervisor pins an *identity* rather than sampling a property. Before spawn
+every required path is bound to one `(st_dev, st_ino)` — an existing artifact
+to its own inode, an **absent** one to a reservation the supervisor creates
+with `O_CREAT|O_EXCL` — and a descriptor on that inode is held (non-inheritable,
+released on every exit path) for the whole attempt, which is what keeps the
+inode number from being recycled under the comparison. At grading the required
+path must still name that inode, or the attempt is
+`artifact_identity_replaced:<path>` with no digest recorded. Each artifact
+record carries `identity_pinned`.
+
+Two caller-visible consequences, both deliberate:
+
+- **A required artifact must be written IN PLACE.** `os.replace`/`rename` over
+  a required path installs a new inode and is refused — at grading time it is
+  indistinguishable from the laundering sequence above, since both end with a
+  fresh single-linked file and no way to say what the inode it replaced was
+  also called. Seats that atomically publish elsewhere should keep doing so and
+  declare the *final* path as the required artifact only if they write it
+  directly.
+- **An absent required path is created before the child runs**, holding a short
+  line of text that says so, and is **withdrawn** if the child never writes it
+  — so a required artifact that was never produced is still `artifact_missing`
+  with `exists: false`, exactly as before, and a supervisor that crashed does
+  not leave a stray file where the caller declared there was none. Missing
+  parent directories under `--artifact-root` are created with it.
+
+What this does **not** claim: a supervisor cannot stop an unconfined child
+from writing outside its root. The contract is about proof — no attempt whose
+required path stopped naming the pinned inode receives a successful receipt.
 
 **A baseline is absent only when absence is confirmed.** The pre-spawn
 baseline open accepts exactly one failure as "the file is not there yet":
