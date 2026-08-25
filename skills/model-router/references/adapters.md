@@ -339,6 +339,16 @@ supervisor records it and gates on it only when the caller declares
 layout, so its terminal `turn_ended` is recorded opportunistically and never
 gates.
 
+Session evidence is **recorded on every terminal receipt, graded on one.**
+`FAILED`, `TIMED_OUT` and `TERMINATION_UNCONFIRMED` are decided by exit
+status or termination alone, and nothing read from the session directory
+relabels them — but that is precisely where the effective agent, the
+effective sandbox profile and the turn's cancellation category explain what
+happened, so the receipt carries them there too. Collection is bounded and
+best-effort: a session directory that was never written leaves the same
+always-present shape full of nulls rather than costing the attempt its
+receipt.
+
 The **effective permission mode is not observable at all.** grok 1.0.5
 records it nowhere — not in stdout, not in `summary.json`, not in
 `events.jsonl`. The effective agent name, the effective sandbox profile and
@@ -454,6 +464,28 @@ pre-spawn baseline; it cannot prove *this attempt* is what changed it, so a
 shared path lets one attempt's work be recorded as another's proof. A
 mechanical per-attempt lease is deliberately deferred (design §7); until it
 exists, this paragraph is the whole of the guarantee.
+
+**A required artifact must be the only name for its inode.** Containment
+fences a *path*, but a write lands on an *inode*, so a second hard link
+inside `--artifact-root` pointing at a file outside it passes every path
+check there is — and a write through the in-root name overwrites the outside
+file. The supervisor therefore requires `st_nlink == 1`, taken from the same
+descriptor the digest is taken from: pre-spawn a multi-linked declaration is
+refused outright (exit 2, no receipt), and a link the child creates during
+the attempt lands as `artifact_multiply_linked:<path>` with no digest
+recorded — a hash there would read as proof a *contained* file holds that
+content. Each artifact record carries `nlink` so the receipt shows what was
+checked. This is the supervisor-side counterpart to the grok 1.0.5 finding
+in the 1.5.0 changelog: hard links defeat that CLI's own path-scoped write
+rules, so the evidence layer refuses to certify one.
+
+**A baseline is absent only when absence is confirmed.** The pre-spawn
+baseline open accepts exactly one failure as "the file is not there yet":
+`ENOENT`. Every other errno — `EACCES`, `EIO`, `ESTALE`, `ENOTDIR` — is
+refused before spawn (exit 2, no receipt). An unreadable baseline and a
+missing one both leave `baseline_sha256` null, and grading reads null as
+"changed", so accepting the first would hand an attempt a freshness proof it
+never earned.
 
 **Compatibility with 1.4.x receipts.** A `to_xai` receipt written before this
 contract existed carries no envelope and no session evidence. It was valid

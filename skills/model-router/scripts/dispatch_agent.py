@@ -225,6 +225,7 @@ INVALID_REASON_PREFIXES = (
     "artifact_not_regular_file",    # :<path> — symlink, FIFO, device
     "artifact_escaped_root",        # :<path>
     "artifact_unchanged",           # :<path> — a prior attempt's leftover
+    "artifact_multiply_linked",     # :<path> — a second name for the inode
     "artifact_sha256_mismatch",     # :<path>
     "effective_agent_mismatch",     # :<observed agent_name>
     "effective_sandbox_mismatch",   # :<observed sandbox_profile>
@@ -523,6 +524,22 @@ def _capture_artifact_baselines(args) -> tuple[Path, list[dict]] | str:
             if isinstance(exc, NotARegularFile) or exc.errno == errno.ELOOP:
                 return (f"--require-artifact {entry['declared']!r} exists but "
                         f"is not a regular file")
+            if exc.errno != errno.ENOENT:
+                # Only a CONFIRMED nonexistence is absence. Every other
+                # errno — EACCES, EIO, ESTALE, ENOTDIR, EMFILE — leaves
+                # baseline_sha256 at None, which is the SAME value absence
+                # produces, and grading reads that None as "changed: true".
+                # An artifact that merely could not be read right now would
+                # then be proof of freshness it never earned. ENOTDIR is
+                # refused with the rest rather than folded into absence:
+                # a regular file standing where a path component wants a
+                # directory is an environment defect the caller must see,
+                # and guessing on the caller's behalf is what this whole
+                # gate exists to stop.
+                return (f"--require-artifact {entry['declared']!r} could not "
+                        f"be read pre-spawn: {os.strerror(exc.errno)} "
+                        f"({errno.errorcode.get(exc.errno, exc.errno)}); "
+                        f"only a confirmed ENOENT counts as absence")
             continue  # absent pre-spawn: baseline stays None, which is the
                       # strongest freshness evidence there is
         try:
@@ -530,6 +547,13 @@ def _capture_artifact_baselines(args) -> tuple[Path, list[dict]] | str:
                 return (f"--require-artifact {entry['declared']!r} baseline "
                         f"too large: {st.st_size} bytes over the limit of "
                         f"{args.require_artifact_baseline_max_bytes}")
+            if st.st_nlink != 1:
+                return (f"--require-artifact {entry['declared']!r} has "
+                        f"{st.st_nlink} links, so its inode has more than "
+                        f"one name; containment fences a PATH but a write "
+                        f"lands on an INODE, so a second name outside "
+                        f"--artifact-root would be overwritten through a "
+                        f"contained path")
             budget += st.st_size
             if budget > ARTIFACT_BASELINE_BUDGET_BYTES:
                 return (f"--require-artifact baselines exceed the aggregate "
@@ -558,7 +582,7 @@ def _grade_artifacts(entries: list[dict], root: Path,
     for entry in entries:
         path = entry["path"]
         record = {"path": str(path), "exists": False, "size": None,
-                  "sha256": None, "contained": None,
+                  "nlink": None, "sha256": None, "contained": None,
                   "baseline_sha256": entry["baseline_sha256"],
                   "changed": None, "expected_sha256_match": None}
         records.append(record)
@@ -586,6 +610,19 @@ def _grade_artifacts(entries: list[dict], root: Path,
             continue
         record["exists"] = True
         record["size"] = st.st_size
+        # From the SAME fd the digest would be taken from, so the link count
+        # and the bytes describe one inode with no stat/read race between
+        # them. `contained` above is a fact about the PATH; this is the fact
+        # about the INODE that path names, and only both together are
+        # containment. A second name for the inode means the child's write
+        # also landed wherever that other name lives — possibly outside the
+        # root — so no digest is recorded: a hash here would read as proof
+        # that a contained file holds this content.
+        record["nlink"] = st.st_nlink
+        if st.st_nlink != 1:
+            os.close(fd)
+            reasons.append(_reason("artifact_multiply_linked", path))
+            continue
         if st.st_size == 0:
             os.close(fd)
             reasons.append(_reason("artifact_empty", path))
@@ -672,6 +709,22 @@ def _read_session_evidence(evidence_dir: Path) -> dict:
     return evidence
 
 
+def _session_evidence_view(declaration: str) -> tuple[dict, dict]:
+    """Read the declared session directory once, for BOTH of its jobs.
+
+    Returns `(evidence, receipt_view)`: the first is what the success gate
+    grades, the second is what the receipt records. Splitting them here is
+    what lets a terminal state that is never graded still be RECORDED —
+    `summary_oversized` is the gate's own bookkeeping and stays out of the
+    receipt, exactly as it always has.
+    """
+    evidence_format, _, evidence_dir = declaration.partition(":")
+    evidence = _read_session_evidence(Path(evidence_dir))
+    evidence["format"] = evidence_format
+    return evidence, {k: v for k, v in evidence.items()
+                      if k != "summary_oversized"}
+
+
 def _tail_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
     """Read at most the last `limit` bytes of a circumstantial surface."""
     try:
@@ -715,9 +768,13 @@ def _grade_session_evidence(evidence: dict, *, session_id: str,
         reasons.append("session_evidence_unbound")
     # (b) stdout and the session directory name the SAME session. Without
     # this cross-proof a correct directory could be paired with a stdout
-    # document from some other run.
-    elif envelope is not None and envelope["session_id"] is not None \
-            and envelope["session_id"] != session_id:
+    # document from some other run. Exact equality is UNCONDITIONAL once an
+    # envelope is declared: `_read_envelope` keeps `session_id` only when
+    # the document supplies a string, so an absent or non-string `sessionId`
+    # arrives here as None — and None is not the declared session. Skipping
+    # the check for it would let the one document that proves nothing about
+    # binding be the one document exempt from proving it.
+    elif envelope is not None and envelope["session_id"] != session_id:
         reasons.append("session_evidence_unbound")
     # (c) freshness. The child creates the session at launch, so
     # `created_at` must fall inside this attempt's window. Both bounds are
@@ -1343,13 +1400,8 @@ def cmd_run(args) -> int:
                             # Ladder step 5, alongside the output schema:
                             # recorded whatever the terminal state, gating
                             # only where success is still on the table.
-                            evidence_format, _, evidence_dir = \
-                                args.session_evidence.partition(":")
-                            evidence = _read_session_evidence(Path(evidence_dir))
-                            evidence["format"] = evidence_format
-                            receipt["session_evidence"] = {
-                                k: v for k, v in evidence.items()
-                                if k != "summary_oversized"}
+                            evidence, receipt["session_evidence"] = \
+                                _session_evidence_view(args.session_evidence)
                             reasons = reasons + _grade_session_evidence(
                                 evidence, session_id=args.session_id,
                                 envelope=envelope, launch_anchor=launch_anchor,
@@ -1385,6 +1437,23 @@ def cmd_run(args) -> int:
                         else:
                             receipt["result"]["state"] = (
                                 "SUCCEEDED" if ok else "INVALID_OUTPUT")
+
+                if args.session_evidence is not None \
+                        and receipt["session_evidence"] is None:
+                    # Recording is unconditional where gating is not, for the
+                    # same reason the envelope backfill below is: a FAILED,
+                    # TIMED_OUT or TERMINATION_UNCONFIRMED attempt is where
+                    # the effective agent, the effective sandbox profile and
+                    # the turn's cancellation category are MOST worth having,
+                    # and grading is the one thing that never runs there. The
+                    # state is already decided; nothing collected here is
+                    # graded, so nothing collected here can relabel it. Both
+                    # reads are bounded (SUMMARY_MAX_BYTES, EVENTS_TAIL_BYTES)
+                    # and best-effort — a session directory that was never
+                    # written leaves the same always-present shape full of
+                    # nulls rather than costing the attempt its receipt.
+                    _, receipt["session_evidence"] = \
+                        _session_evidence_view(args.session_evidence)
 
                 if args.output_envelope is not None \
                         and receipt["result"]["envelope"] is None:
@@ -1820,7 +1889,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--require-artifact", action="append", default=[],
                      metavar="PATH",
                      help="a file this attempt must have written (or "
-                          "changed) before it can be SUCCEEDED; repeatable")
+                          "changed) before it can be SUCCEEDED; repeatable. "
+                          "Must be the only name for its inode, and a "
+                          "pre-spawn baseline that cannot be read is "
+                          "absence only on a confirmed ENOENT")
     run.add_argument("--artifact-root", default=None, metavar="DIR",
                      help="containment fence for every --require-artifact; "
                           "resolved and pinned before spawn")

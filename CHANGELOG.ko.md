@@ -12,8 +12,8 @@
 ### 추가됨
 
 - 디스패치가 grok stdout 봉투를 선언할 수 있다(`--output-envelope grok-headless-json-v1`): 턴의 `stopReason`을 채점해 `end_turn`만 성공이 될 수 있다 — 취소된 턴은 exit 0으로 끝나므로 이전에는 SUCCEEDED로 기록될 수 있었다.
-- 디스패치가 좌석이 생산해야 할 파일을 요구할 수 있다(`--require-artifact`, `--artifact-root`, `--require-artifact-sha256`, `--require-artifact-allow-unchanged`): SUCCEEDED 이전에 존재·격리·해시를 증명하고, 실행 전에 캡처한 기준선과 대조해 그 파일이 잔존물이 아니라 이번 시도의 산물임을 증명한다.
-- 디스패치가 grok 세션 디렉토리를 읽을 수 있다(`--session-evidence`, `--session-id`): 영수증이 요청값과 나란히 유효 에이전트·샌드박스 프로파일·서빙 모델을 기록하며, 세션 id와 실행 시각으로 그 시도에 결박된다.
+- 디스패치가 좌석이 생산해야 할 파일을 요구할 수 있다(`--require-artifact`, `--artifact-root`, `--require-artifact-sha256`, `--require-artifact-allow-unchanged`): SUCCEEDED 이전에 존재·격리·해시를 증명하고, 실행 전에 캡처한 기준선과 대조해 그 파일이 잔존물이 아니라 이번 시도의 산물임을 증명한다. 요구 산출물은 자기 아이노드의 유일한 이름이어야 하며, 기준선을 읽지 못한 경우는 `ENOENT`가 확인될 때에만 부재로 간주한다 — 그 외의 판독 오류는 시도가 시작되기 전에 거부된다.
+- 디스패치가 grok 세션 디렉토리를 읽을 수 있다(`--session-evidence`, `--session-id`): 영수증이 요청값과 나란히 유효 에이전트·샌드박스 프로파일·서빙 모델을 기록하며, 세션 id와 실행 시각으로 그 시도에 결박된다. FAILED·TIMED_OUT·TERMINATION_UNCONFIRMED 영수증도 같은 증거를 싣는다 — 기록하되 채점하지 않으므로, 감사 흔적이 가장 필요한 결말에서 그 흔적이 사라지지 않는다.
 - `--expect-effective-agent`와 `--expect-sandbox-profile`은 유효 에이전트나 샌드박스가 좌석이 요청한 값과 다르면 성공을 거부한다 — 쓰기 좌석이 read-only 기본값을 조용히 상속할 수 없다.
 - 영수증에 `result.invalid_reasons`가 실려 시도가 거부된 이유를 이름으로 남긴다 — 취소된 턴과 판독 불가한 증거를, 작업에 실패한 모델과 구별할 수 있다.
 - `transports.*.to_xai`가 터미널·MCP 메타도구·웹 검색을 도구 표면에서 제외한, 검증된 read-only grok 리뷰어 좌석 레시피를 싣는다.
@@ -27,6 +27,7 @@
 ### 보안
 
 - 증거 파일은 심볼릭 링크를 따라가지 않고 FIFO에서 블록되지 않게 열리며, 산출물 격리 루트는 실행 전에 고정된다 — 감독 대상 자식이 감독기의 판독이나 자신의 작업 증명을 그 루트 밖으로 돌릴 수 없다.
+- 하드 링크가 둘 이상인 요구 산출물은 거부된다 — 실행 전에는 사용 오류로, 채점 시에는 해시를 기록하지 않는 `artifact_multiply_linked`로. 격리는 경로를 막지만 쓰기는 아이노드에 닿는다: 루트 밖 파일을 가리키는 루트 안의 두 번째 이름은, 그러지 않으면 영수증이 격리되었다고 부른 경로를 통해 덮어써진다.
 
 ### 제거됨
 

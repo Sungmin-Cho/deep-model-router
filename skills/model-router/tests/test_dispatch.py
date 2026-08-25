@@ -1798,6 +1798,131 @@ def test_oversized_baseline_is_refused_pre_spawn(tmp_path):
     assert receipt is None
 
 
+def test_unreadable_existing_artifact_baseline_is_refused_pre_spawn(tmp_path):
+    """R2-C1: only a CONFIRMED `ENOENT` is absence.
+
+    A baseline open that fails for any other reason leaves `baseline_sha256`
+    at None — the exact value "the file was not there" produces — and that
+    value makes grading report `changed: true` for a file this attempt may
+    never have touched, which is a false freshness proof behind a SUCCEEDED.
+    `ENOTDIR` is the deterministic non-`ENOENT` case (a regular file standing
+    where a path component wants a directory) and it is refused with
+    everything else: pre-spawn, exit 2, no receipt, no attempt-id burned.
+    """
+    root = tmp_path / "work"
+    root.mkdir()
+    blocker = root / "plan.md"
+    blocker.write_text("A REGULAR FILE WHERE A PATH COMPONENT WANTS A DIR")
+    target = blocker / "inner.md"
+    fake = write_fake(tmp_path, "art_enotdir.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+    assert not (tmp_path / "receipts" / "t1.claim").exists()
+    assert "could not be read pre-spawn" in proc.stderr
+
+
+def test_hard_linked_artifact_baseline_is_refused_pre_spawn(tmp_path):
+    """R2-C2: containment is checked against a PATH, but a write lands on an
+    INODE. A second name for an outside inode planted inside the root passes
+    every path check there is, so a write through the in-root name overwrites
+    a file outside the fence while the receipt records `contained: true`.
+
+    A required artifact therefore has to be the only name for its inode.
+    Pre-spawn that is a declaration/environment error: exit 2, no receipt.
+    """
+    root = tmp_path / "work"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("EXTERNAL INODE")
+    target = root / "plan.md"
+    os.link(outside, target)
+    fake = write_fake(tmp_path, "art_linkbase.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+    assert not (tmp_path / "receipts" / "t1.claim").exists()
+    assert "more than one name" in proc.stderr
+    assert outside.read_text() == "EXTERNAL INODE"
+
+
+def test_hard_linked_artifact_written_this_attempt_is_invalid_output(tmp_path):
+    """The grading half of R2-C2: the link is created by the CHILD, so no
+    pre-spawn check can see it. The in-root name and the outside file are one
+    inode, the child's write lands on both, and the supervisor must refuse to
+    issue a contained SUCCEEDED proof over it."""
+    root = tmp_path / "work"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("EXTERNAL INODE")
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_linkgrade.py", "\n".join([
+        "import os",
+        "from pathlib import Path",
+        f"os.link({str(outside)!r}, {str(target)!r})",
+        f"Path({str(target)!r}).write_text('OVERWRITTEN THROUGH THE FENCE')",
+        "print('done')",
+    ]) + "\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"artifact_multiply_linked:{target}" in \
+        receipt["result"]["invalid_reasons"]
+    (record,) = receipt["result"]["artifacts"]
+    assert record["exists"] is True
+    assert record["nlink"] == 2
+    # No digest: a hash recorded here would read as proof that a contained
+    # file holds this content, and the inode is not contained.
+    assert record["sha256"] is None
+    assert record["changed"] is None
+
+
+def test_single_linked_artifact_still_grades_normally(tmp_path):
+    """The nlink gate must not cost the ordinary case its proof."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_nlink1.py",
+                      artifact_fake([(target, "PLAN BODY")]))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["nlink"] == 1
+    assert record["sha256"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses the mode bits")
+def test_permission_denied_artifact_baseline_is_refused_pre_spawn(tmp_path):
+    """The reviewers' named example: an artifact that EXISTS but is not
+    readable right now (`EACCES`) must not be recorded as absent, because a
+    file that becomes readable later would then grade as fresh."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("PRESENT BUT UNREADABLE")
+    target.chmod(0o000)
+    fake = write_fake(tmp_path, "art_eacces.py", artifact_fake())
+    try:
+        proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                     schema="none",
+                                     extra=artifact_args(root, target))
+    finally:
+        target.chmod(0o600)
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+    assert not (tmp_path / "receipts" / "t1.claim").exists()
+    assert "could not be read pre-spawn" in proc.stderr
+
+
 def test_termination_unconfirmed_never_relabeled_by_new_gates(tmp_path):
     """The one state that holds a write-capable retry outranks every gate
     this tranche adds."""
@@ -2058,6 +2183,115 @@ def test_unreadable_summary_blocks_success_but_not_failures(tmp_path):
     assert receipt["result"]["invalid_reasons"] is None
 
 
+def test_failed_attempt_still_records_available_session_evidence(tmp_path):
+    """R2-W1: gating and RECORDING are different jobs. A non-zero exit is
+    decided before any evidence gate runs, but the effective agent, the
+    effective sandbox profile and the turn's cancellation category are
+    exactly what an operator needs to explain the failure — and they were
+    being dropped because collection lived inside the success branch. The
+    already-decided terminal state is not relabeled by what is collected."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_failev.py",
+        session_writer(session_dir, agent_name="grok-build-plan",
+                       outcome="cancelled",
+                       cancellation_category="max_output_tokens")
+        + "import sys\nprint('verdict: PASS')\nsys.exit(4)\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 1, proc.stderr
+    assert receipt["result"]["state"] == "FAILED"
+    assert receipt["result"]["invalid_reasons"] is None
+    evidence = receipt["session_evidence"]
+    assert evidence["format"] == "grok-session-v1"
+    assert evidence["summary"]["agent_name"] == "grok-build-plan"
+    assert evidence["summary"]["sandbox_profile"] == "workspace"
+    assert evidence["session_id"] == SESSION_UUID
+    assert evidence["terminal_event"] == {
+        "outcome": "cancelled",
+        "cancellation_category": "max_output_tokens"}
+
+
+def test_timed_out_attempt_still_records_available_session_evidence(tmp_path):
+    """The same tail, reached through the OTHER branch — the one that also
+    produces TERMINATION_UNCONFIRMED. Past the deadline nothing the attempt
+    writes can change the state, and this collection does not: it is bounded
+    (`SUMMARY_MAX_BYTES` / `EVENTS_TAIL_BYTES`) and it only records."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_timeev.py",
+                      session_writer(session_dir) + "import time\ntime.sleep(60)\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 deadline=2.0, grace=1.0,
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 3, proc.stderr
+    assert receipt["result"]["state"] == "TIMED_OUT"
+    assert receipt["result"]["invalid_reasons"] is None
+    evidence = receipt["session_evidence"]
+    assert evidence["summary"]["agent_name"] == "general-purpose"
+    assert evidence["session_id"] == SESSION_UUID
+
+
+def test_session_evidence_absent_at_a_terminal_state_is_still_terminal(tmp_path):
+    """Collection is BEST-EFFORT. A child that never wrote a session
+    directory must still get its FAILED receipt, with the same always-present
+    shape and nulls where there was nothing to read."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_noev.py",
+                      "import sys\nprint('nothing here')\nsys.exit(5)\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 1, proc.stderr
+    assert receipt["result"]["state"] == "FAILED"
+    assert receipt["result"]["invalid_reasons"] is None
+    assert receipt["session_evidence"]["summary"] is None
+    assert receipt["session_evidence"]["session_id"] is None
+    assert receipt["session_evidence"]["format"] == "grok-session-v1"
+
+
+def test_termination_unconfirmed_is_not_relabeled_by_evidence_collection(tmp_path):
+    """TERMINATION_UNCONFIRMED holds the write-capable retry, so it outranks
+    everything the tail collects.
+
+    Only the NON-relabeling half is asserted here, and deliberately so: a
+    genuine in-process TERMINATION_UNCONFIRMED needs a process group that
+    survives SIGKILL, which no test can arrange without becoming a race, and
+    the pre-planted route used below is preserved verbatim by
+    `_commit_terminal` (so it can never show what the supervisor collected).
+    Persistence is covered by the TIMED_OUT test above, which reaches the
+    same unconditional tail through the same branch.
+    """
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_tu.py",
+                      session_writer(session_dir) + "import time\ntime.sleep(60)\n")
+    attempt_id = "sesstu"
+    receipt_dir = tmp_path / "receipts"
+    supervisor = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "run",
+         "--attempt-id", attempt_id, "--receipt-dir", str(receipt_dir),
+         "--deadline-seconds", "2", "--grace-seconds", "1",
+         "--seat", "worker", "--output-schema", "review",
+         *session_args(session_dir),
+         "--", sys.executable, str(fake)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    receipt_path = receipt_dir / f"{attempt_id}.json"
+    for _ in range(100):
+        if receipt_path.exists():
+            if json.loads(receipt_path.read_text())["result"]["state"] == "RUNNING":
+                break
+        time.sleep(0.05)
+    else:
+        supervisor.kill()
+        pytest.fail("supervisor never reached RUNNING")
+    on_disk = json.loads(receipt_path.read_text())
+    on_disk["result"]["state"] = "TERMINATION_UNCONFIRMED"
+    on_disk["result"]["termination_confirmed"] = False
+    receipt_path.write_text(json.dumps(on_disk))
+    supervisor.wait(timeout=30)
+    final = json.loads(receipt_path.read_text())
+    assert final["result"]["state"] == "TERMINATION_UNCONFIRMED"
+    assert final["result"]["invalid_reasons"] is None
+
+
 def test_stale_or_unrelated_session_dir_is_unbound(tmp_path):
     """A leftover directory that happens to carry the expected agent_name is
     not this attempt's evidence — `info.id` binds it or nothing does."""
@@ -2091,6 +2325,49 @@ def test_envelope_session_id_mismatch_is_unbound(tmp_path):
     assert proc.returncode == 6, proc.stderr
     assert receipt["result"]["state"] == "INVALID_OUTPUT"
     assert "session_evidence_unbound" in receipt["result"]["invalid_reasons"]
+
+
+def test_envelope_without_a_session_id_is_unbound(tmp_path):
+    """R2-C3: the cross-proof was conditional on the envelope HAVING a
+    `sessionId`, so an envelope that simply omits it skipped the check
+    entirely and a perfectly fresh, perfectly bound session directory then
+    carried the attempt all the way to SUCCEEDED. Once an envelope is
+    declared, exact equality is unconditional — an absent value cannot
+    equal the declared session, so it is `session_evidence_unbound`."""
+    session_dir = tmp_path / "session"
+    doc = grok_doc()
+    doc.pop("sessionId")
+    fake = write_fake(
+        tmp_path, "sess_noid.py",
+        session_writer(session_dir)
+        + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=(*ENVELOPE_ARGS, *session_args(session_dir)))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unbound" in receipt["result"]["invalid_reasons"]
+    assert receipt["result"]["envelope"]["session_id"] is None
+
+
+def test_envelope_with_a_non_string_session_id_is_unbound(tmp_path):
+    """Same gate, the other half: `_read_envelope` keeps only string values,
+    so a numeric or object `sessionId` reaches grading as None exactly like
+    an absent one, and must be refused exactly like one."""
+    session_dir = tmp_path / "session"
+    doc = grok_doc()
+    doc["sessionId"] = 12345
+    fake = write_fake(
+        tmp_path, "sess_intid.py",
+        session_writer(session_dir)
+        + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=(*ENVELOPE_ARGS, *session_args(session_dir)))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unbound" in receipt["result"]["invalid_reasons"]
+    assert receipt["result"]["envelope"]["session_id"] is None
 
 
 def test_created_at_outside_launch_window_is_unbound(tmp_path):

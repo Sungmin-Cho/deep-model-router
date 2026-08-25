@@ -342,8 +342,10 @@ re-dispatch above, not an extra round. Do **not** carry these forward in
 `--prior-failures`: that argument reports models that failed at the work,
 and routing away from a model that was never allowed to start degrades the
 next route for no reason. Reasons naming missing or unchanged artifacts
-(`artifact_missing:*`, `artifact_unchanged:*`) are the same class of
-finding for a producing seat. Who reports failure history is always the
+(`artifact_missing:*`, `artifact_unchanged:*`) or an artifact the evidence
+layer refuses to certify (`artifact_multiply_linked:*`, an inode with a
+second name) are the same class of finding for a producing seat — a
+workspace or recipe defect, not a model that failed the work. Who reports failure history is always the
 caller; the router changes nothing here.
 
 ## Reading verdicts
