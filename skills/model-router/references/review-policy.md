@@ -352,8 +352,13 @@ knowing before you go looking for an attack: a seat whose writer does the
 write-a-temp-file-and-rename dance. That idiom installs a new inode and is
 refused by design (`adapters.md`, "A required artifact must still be the
 inode that was pinned"); fix the seat to write in place and re-dispatch the
-same model once. Who reports failure history is always the
-caller; the router changes nothing here.
+same model once. `artifact_reservation_cleanup_failed:*` is not about the
+model at all: the supervisor could not remove the placeholder it created for
+an absent required path, so that file is still there and the receipt says so.
+Read it with the `artifact_missing:*` it accompanies — the seat produced
+nothing — and clear the leftover before re-dispatching, or the next attempt's
+baseline starts from the supervisor's own bytes. Who reports failure history
+is always the caller; the router changes nothing here.
 
 ## Reading verdicts
 

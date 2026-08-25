@@ -227,6 +227,9 @@ INVALID_REASON_PREFIXES = (
     "artifact_unchanged",           # :<path> — a prior attempt's leftover
     "artifact_multiply_linked",     # :<path> — a second name for the inode
     "artifact_identity_replaced",   # :<path> — not the inode pinned pre-spawn
+    "artifact_reservation_cleanup_failed",  # :<path> — the supervisor's own
+                                    # pre-spawn reservation is still on disk
+                                    # because withdrawing it failed
     "artifact_sha256_mismatch",     # :<path>
     "effective_agent_mismatch",     # :<observed agent_name>
     "effective_sandbox_mismatch",   # :<observed sandbox_profile>
@@ -527,17 +530,39 @@ def _reserve_artifact(entry: dict, attempt_id: str) -> str | None:
                 f"could not be reserved pre-spawn: {os.strerror(exc.errno)} "
                 f"({errno.errorcode.get(exc.errno, exc.errno)}); an absent "
                 f"required path must be pinned before the child runs")
+    # A successful `write` is allowed to consume FEWER bytes than it was
+    # handed, so one call is not a file. The digest and size recorded below
+    # describe the WHOLE body; if the disk holds less than that, grading
+    # hashes a truncated marker, fails to recognise it as the reservation,
+    # and reports the supervisor's own leftover bytes as a `changed: true`
+    # artifact — successful proof handed to a child that did nothing. So
+    # the write is a loop, and anything short of the whole body is a
+    # PREFLIGHT failure: the descriptor closes, the path this function
+    # created goes away again, and the caller returns exit 2 before any
+    # claim or receipt exists. Zero progress ends the loop rather than
+    # spinning on it — a `write` that keeps succeeding without moving is a
+    # failure that never raises.
+    written = 0
     try:
-        os.write(fd, body)
+        while written < len(body):
+            sent = os.write(fd, body[written:])
+            if sent <= 0:
+                break
+            written += sent
         st = os.fstat(fd)
     except OSError as exc:
+        written, st = -1, None
+        detail = os.strerror(exc.errno)
+    if st is None or written != len(body):
+        if st is not None:
+            detail = f"wrote {written} of {len(body)} bytes"
         os.close(fd)
         try:
             os.unlink(path)
         except OSError:
             pass
         return (f"--require-artifact {entry['declared']!r} reservation could "
-                f"not be written: {os.strerror(exc.errno)}")
+                f"not be written: {detail}")
     os.set_inheritable(fd, False)
     entry["pin_fd"] = fd
     entry["pin_dev"] = st.st_dev
@@ -571,11 +596,15 @@ def _withdraw_reservation(entry: dict) -> bool:
         return False
     if _hash_artifact(fd, None) != entry["reservation_sha256"]:
         return False  # _hash_artifact consumed the fd
-    entry["reservation_sha256"] = None
     try:
         os.unlink(path)
     except OSError:
         return False
+    # Cleared only now: while the file is still there, the digest is the one
+    # fact that tells a reservation apart from a child's output, and dropping
+    # it over a file that survived the unlink would leave the entry claiming
+    # it holds no reservation while holding one.
+    entry["reservation_sha256"] = None
     return True
 
 
@@ -586,16 +615,34 @@ def _release_artifact_pins(entries: list[dict]) -> None:
     anchored by the open descriptor. `cmd_run` calls this from a `finally`
     that wraps everything after the pins are taken, which is what makes
     "every exit path" true of the crash path as well as the terminal one.
+
+    Cleanup RECORDS; it never decides. Withdrawal reads the reserved file to
+    prove its identity, and a read can fail — EIO on a failing disk, ESTALE
+    on a yanked network mount. That exception used to escape this loop, which
+    left every remaining pin open AND reached `main`'s crash guard, so a
+    command returned exit 9 after a FAILED or TIMED_OUT receipt with a
+    different exit mapping was already on disk. So each entry is withdrawn
+    inside its own guard and closed in its own `finally`: one entry's failure
+    costs that entry's withdrawal and nothing else — not the descriptor, not
+    the entries after it, and not the attempt's already-persisted outcome.
+    `Exception`, not a hand-picked errno list, for the same reason the
+    terminal evidence tail uses it (R2-W1): the point is that NOTHING here
+    can become the result.
     """
     for entry in entries:
-        _withdraw_reservation(entry)
-        fd = entry.get("pin_fd")
-        if fd is not None:
+        try:
             try:
-                os.close(fd)
-            except OSError:
+                _withdraw_reservation(entry)
+            except Exception:
                 pass
-            entry["pin_fd"] = None
+        finally:
+            fd = entry.get("pin_fd")
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                entry["pin_fd"] = None
 
 
 def _capture_artifact_baselines(args, entries: list[dict] | None = None
@@ -829,17 +876,32 @@ def _grade_artifacts(entries: list[dict], root: Path,
                 and digest == entry["reservation_sha256"]:
             # The pinned inode still holds exactly the bytes the supervisor
             # put there to hold the path: the child never produced this
-            # artifact. Withdraw the reservation and report what is true —
-            # `artifact_missing`, the same answer, with the same record
-            # shape, that an unreserved absent path has always produced.
+            # artifact. `artifact_missing` is that answer either way — it is
+            # a fact about the CHILD, and no cleanup outcome changes it — so
+            # it is appended before the withdrawal is even attempted. The
+            # record shape is the one an unreserved absent path has always
+            # produced only if the withdrawal SUCCEEDS; see below.
+            reasons.append(_reason("artifact_missing", path))
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                # The withdrawal FAILED, so the reservation is still there.
+                # Rewriting the record to `exists: false` here would put a
+                # receipt on disk that contradicts the disk — and the next
+                # attempt, told the path was absent, would find a file. The
+                # record therefore keeps what grading actually observed (an
+                # existing, singly-linked, pinned inode, with no digest,
+                # because these are the supervisor's bytes and not the
+                # child's) and the leftover gets its own reason. The
+                # diagnosis for the CHILD is unchanged: `artifact_missing`.
+                # `reservation_sha256` is deliberately NOT cleared, so the
+                # release loop gets one more chance to withdraw it.
+                reasons.append(
+                    _reason("artifact_reservation_cleanup_failed", path))
+                continue
             entry["reservation_sha256"] = None
             record.update({"exists": False, "size": None, "nlink": None,
                            "identity_pinned": None})
-            reasons.append(_reason("artifact_missing", path))
             continue
         record["sha256"] = digest
         baseline = entry["baseline_sha256"]

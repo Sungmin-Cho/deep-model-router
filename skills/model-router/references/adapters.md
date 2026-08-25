@@ -515,6 +515,27 @@ Two caller-visible consequences, both deliberate:
   not leave a stray file where the caller declared there was none. Missing
   parent directories under `--artifact-root` are created with it.
 
+**The supervisor's own I/O is checked like anyone else's.** Two consequences
+a caller can see:
+
+- **A reservation that cannot be written WHOLE is a pre-spawn refusal** —
+  exit 2, no receipt, no claim, and the path the supervisor created for it
+  removed again. A short write is completed rather than accepted, because the
+  digest recorded for a reservation describes the whole body: fewer bytes on
+  disk than that would make the leftover marker unrecognisable at grading and
+  hand a child that produced nothing a `changed: true` artifact.
+- **A withdrawal that fails is reported, not assumed.** If the reservation
+  cannot be removed, the artifact record keeps what grading actually saw
+  (`exists: true`, its size, `sha256: null` — those are supervisor bytes, not
+  the child's) and the receipt carries
+  `artifact_reservation_cleanup_failed:<path>` next to the unchanged
+  `artifact_missing:<path>`. A receipt never says a path is absent while it
+  is still on disk.
+
+Cleanup is also never an outcome: releasing the pins runs after the terminal
+receipt is written, per entry, and an error in it cannot change the state, the
+exit status, or whether the remaining descriptors are given back.
+
 What this does **not** claim: a supervisor cannot stop an unconfined child
 from writing outside its root. The contract is about proof — no attempt whose
 required path stopped naming the pinned inode receives a successful receipt.

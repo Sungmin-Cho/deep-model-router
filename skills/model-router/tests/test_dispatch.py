@@ -3121,3 +3121,255 @@ def test_an_unparseable_summary_on_the_grading_path_is_a_typed_refusal(
     assert receipt["result"]["state"] == "INVALID_OUTPUT"
     assert "session_evidence_unreadable" in receipt["result"]["invalid_reasons"]
     assert receipt["session_evidence"]["unreadable"] is True
+
+
+# ---------------------------------------------------------------------------
+# DD-2 R3 — a reservation is only proof of what was actually WRITTEN, cleanup
+# is not allowed to become the attempt's outcome, and a withdrawal that failed
+# is not allowed to be reported as absence.
+#
+# Three defects, one theme: the supervisor's own I/O was assumed to succeed.
+# A short `os.write` recorded the whole body's digest over a truncated file
+# (so a no-op child inherited a marker that graded as its own product), a
+# cleanup error escaped the release loop (leaking the remaining pins and
+# replacing an already-persisted terminal exit with 9), and a failed unlink
+# was swallowed while the receipt was rewritten to say `exists: false` about
+# a path that is still there.
+# ---------------------------------------------------------------------------
+
+
+RESERVATION_PREFIX = b"deep-model-router reserved"
+
+
+def _short_write(real_write, chunk=1):
+    """One deterministic short write on the reservation body, then ordinary
+    writes. POSIX allows a successful `write` to consume fewer bytes than it
+    was handed; this is that, without a full filesystem or a signal race."""
+    def fake(fd, data):
+        if data.startswith(RESERVATION_PREFIX):
+            return real_write(fd, data[:chunk])
+        return real_write(fd, data)
+    return fake
+
+
+def _zero_write(real_write):
+    """A successful write that makes no progress at all — the loop's own
+    termination condition, and the case a `while written < len(body)` retry
+    would otherwise spin on forever."""
+    def fake(fd, data):
+        if data.startswith(RESERVATION_PREFIX):
+            return 0
+        return real_write(fd, data)
+    return fake
+
+
+def test_a_short_reservation_write_is_completed_before_it_is_recorded(
+        tmp_path, monkeypatch):
+    """The recorded digest and size describe the reservation the supervisor
+    MEANT to write. If a short write leaves fewer bytes on disk than that,
+    grading compares a truncated file against the whole body's digest, does
+    not recognise it, and hands a no-op child a `changed: true` artifact it
+    never produced. The write has to complete, or it has to fail."""
+    dispatch_agent = _in_process(tmp_path)
+    monkeypatch.setattr(dispatch_agent.os, "write",
+                        _short_write(dispatch_agent.os.write))
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    captured = dispatch_agent._capture_artifact_baselines(
+        _pin_args(root, [target], attempt_id="short1"))
+    assert not isinstance(captured, str), captured
+    _root, entries = captured
+    body = dispatch_agent._reservation_body("short1")
+    assert target.read_bytes() == body, "a short write was recorded as whole"
+    (entry,) = entries
+    assert entry["reservation_size"] == len(body)
+    assert entry["reservation_sha256"] == sha256_of(body.decode())
+    # The child does nothing. The reservation must still grade as the absence
+    # it is — never as the child's own output.
+    records, reasons, aborted = dispatch_agent._grade_artifacts(
+        entries, _root, time.monotonic() + 30, False)
+    assert aborted is False
+    assert f"artifact_missing:{target}" in reasons
+    (record,) = records
+    assert record["exists"] is False and record["sha256"] is None
+    dispatch_agent._release_artifact_pins(entries)
+
+
+def test_a_reservation_that_makes_no_progress_fails_preflight(
+        tmp_path, monkeypatch):
+    """Zero progress is not a reservation. It fails BEFORE the claim, so the
+    attempt-id is not burned, no receipt exists to unwind, and the path the
+    supervisor created for a pin it could not take is removed again."""
+    dispatch_agent = _in_process(tmp_path)
+    monkeypatch.setattr(dispatch_agent.os, "write",
+                        _zero_write(dispatch_agent.os.write))
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    pins = []
+    before = _lowest_free_fd()
+    captured = dispatch_agent._capture_artifact_baselines(
+        _pin_args(root, [target], attempt_id="zero1"), pins)
+    assert isinstance(captured, str), "a zero-progress write was accepted"
+    assert "reservation" in captured
+    assert not target.exists(), "the failed reservation was left behind"
+    assert [entry["pin_fd"] for entry in pins] == [None]
+    assert _lowest_free_fd() == before
+
+    receipt_dir = tmp_path / "receipts"
+    fake = write_fake(tmp_path, "art_zero.py", artifact_fake())
+    assert dispatch_agent.main([
+        "run", "--attempt-id", "zero2", "--receipt-dir", str(receipt_dir),
+        "--deadline-seconds", "30", "--grace-seconds", "1",
+        "--seat", "worker", "--output-schema", "none",
+        *artifact_args(root, target), "--", sys.executable, str(fake)]) == 2
+    assert not (receipt_dir / "zero2.json").exists()
+    assert not (receipt_dir / "zero2.claim").exists()
+
+
+def _withdrawal_read_error(real_hash, failures=1):
+    """EIO on the cleanup read of a reservation. `_hash_artifact` is handed
+    the descriptor and owns it, so the fake closes it before raising —
+    exactly as the real `os.fdopen` context manager does on a read error.
+    Only the withdrawal path passes `deadline_monotonic=None` for a reserved
+    (absent pre-spawn) artifact, so grading is untouched."""
+    state = {"left": failures}
+    def fake(fd, deadline_monotonic):
+        if deadline_monotonic is None and state["left"] > 0:
+            state["left"] -= 1
+            os.close(fd)
+            raise OSError(errno.EIO, "Input/output error")
+        return real_hash(fd, deadline_monotonic)
+    return fake
+
+
+def test_a_cleanup_error_on_one_pin_still_releases_the_others(
+        tmp_path, monkeypatch):
+    """Release is a loop over descriptors this process owes back. An error
+    withdrawing the first entry's reservation must not abort the loop: the
+    first pin still closes, and every later entry is still cleaned up."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    first, second = root / "a.md", root / "b.md"
+    before = _lowest_free_fd()
+    captured = dispatch_agent._capture_artifact_baselines(
+        _pin_args(root, [first, second], attempt_id="rel1"))
+    assert not isinstance(captured, str), captured
+    _root, entries = captured
+    monkeypatch.setattr(dispatch_agent, "_hash_artifact",
+                        _withdrawal_read_error(dispatch_agent._hash_artifact))
+    dispatch_agent._release_artifact_pins(entries)   # must not raise
+    assert [entry["pin_fd"] for entry in entries] == [None, None]
+    assert _lowest_free_fd() == before
+    # Truthful, both ways: the reservation whose identity could not be
+    # re-read is NOT deleted, and the one that could be is.
+    assert first.exists()
+    assert not second.exists()
+
+
+@pytest.mark.parametrize("state,rc,child", [
+    ("FAILED", 1, "import sys\nsys.exit(3)\n"),
+    ("TIMED_OUT", 3, "import time\ntime.sleep(60)\n"),
+])
+def test_a_cleanup_error_never_replaces_the_persisted_outcome(
+        tmp_path, monkeypatch, state, rc, child):
+    """The receipt is written first and the pins are released after, from
+    `cmd_run`'s `finally`. An exception there reaches `main`'s crash guard
+    and returns 9 — a command whose exit status contradicts the terminal
+    receipt already on disk. Cleanup records; it never decides."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, f"rel_{state}.py", child)
+    monkeypatch.setattr(dispatch_agent, "_hash_artifact",
+                        _withdrawal_read_error(dispatch_agent._hash_artifact))
+    receipt_dir = tmp_path / "receipts"
+    attempt = f"rel-{state.lower()}"
+    before = _lowest_free_fd()
+    assert dispatch_agent.main([
+        "run", "--attempt-id", attempt, "--receipt-dir", str(receipt_dir),
+        "--deadline-seconds", "2", "--grace-seconds", "1",
+        "--seat", "worker", "--output-schema", "none",
+        *artifact_args(root, target),
+        "--", sys.executable, str(fake)]) == rc
+    receipt = json.loads((receipt_dir / f"{attempt}.json").read_text())
+    assert receipt["result"]["state"] == state
+    assert _lowest_free_fd() == before
+
+
+def _unlink_refused(real_unlink, refused):
+    """EPERM on one exact path. Every other unlink — the claim sentinel, the
+    receipt tmp file — goes through, so the injection tests the withdrawal
+    and nothing else."""
+    def fake(path, *args, **kwargs):
+        if os.fspath(path) == os.fspath(refused):
+            raise OSError(errno.EPERM, "Operation not permitted")
+        return real_unlink(path, *args, **kwargs)
+    return fake
+
+
+def test_a_reservation_whose_unlink_fails_is_not_reported_as_absent(
+        tmp_path, monkeypatch):
+    """`exists: false` about a path that is still on disk is a receipt that
+    contradicts the filesystem — and the next attempt reading that path finds
+    a file the receipt promised was not there. The record follows the unlink,
+    not the intention to unlink, and the failure gets its own reason."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    monkeypatch.setattr(dispatch_agent.os, "unlink",
+                        _unlink_refused(dispatch_agent.os.unlink, target))
+    fake = write_fake(tmp_path, "art_nounlink.py", artifact_fake())
+    receipt_dir = tmp_path / "receipts"
+    assert dispatch_agent.main([
+        "run", "--attempt-id", "nounlink", "--receipt-dir", str(receipt_dir),
+        "--deadline-seconds", "30", "--grace-seconds", "1",
+        "--seat", "worker", "--output-schema", "none",
+        *artifact_args(root, target), "--", sys.executable, str(fake)]) == 6
+    receipt = json.loads((receipt_dir / "nounlink.json").read_text())
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    reasons = receipt["result"]["invalid_reasons"]
+    # The child still produced nothing — that diagnosis does not change.
+    assert f"artifact_missing:{target}" in reasons
+    # And the supervisor says, in the vocabulary, that its own cleanup left
+    # something behind.
+    assert f"artifact_reservation_cleanup_failed:{target}" in reasons
+    for reason in reasons:
+        assert dispatch_agent._is_documented_reason(reason), reason
+    (record,) = receipt["result"]["artifacts"]
+    assert target.exists(), "the reservation is still there"
+    assert record["exists"] is True, "the receipt disagrees with the disk"
+    assert record["size"] == len(dispatch_agent._reservation_body("nounlink"))
+    assert record["sha256"] is None, "supervisor bytes are never a child digest"
+    assert record["identity_pinned"] is True
+
+
+def test_a_withdrawal_whose_unlink_fails_keeps_the_reservation_identity(
+        tmp_path, monkeypatch):
+    """The release path has the same rule as the grading path: the metadata
+    that says "this file is the supervisor's placeholder" is what lets anyone
+    tell it apart from a child's output, so it is cleared only once the file
+    is actually gone. Clearing it over a file that is still there leaves an
+    entry claiming a reservation it still holds is not one."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    captured = dispatch_agent._capture_artifact_baselines(
+        _pin_args(root, [target], attempt_id="withdraw1"))
+    assert not isinstance(captured, str), captured
+    _root, entries = captured
+    (entry,) = entries
+    digest = entry["reservation_sha256"]
+    monkeypatch.setattr(dispatch_agent.os, "unlink",
+                        _unlink_refused(dispatch_agent.os.unlink, target))
+    assert dispatch_agent._withdraw_reservation(entry) is False
+    assert target.exists()
+    assert entry["reservation_sha256"] == digest
+    monkeypatch.undo()
+    dispatch_agent._release_artifact_pins(entries)
+    assert not target.exists()
