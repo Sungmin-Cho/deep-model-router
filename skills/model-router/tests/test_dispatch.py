@@ -952,6 +952,9 @@ RECEIPT_RESULT_KEYS = {
     # the undeclared path, which is what keeps this an equality contract
     # over a single key set rather than one set per declaration combination.
     "envelope", "invalid_reasons",
+    # DD-2 — the per-artifact proof set, null when nothing was required and
+    # on every non-grading termination.
+    "artifacts",
 }
 
 
@@ -1488,4 +1491,456 @@ def test_session_id_must_be_a_uuid_pre_spawn(tmp_path):
     proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                                  extra=("--session-id", "not-a-uuid"))
     assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+
+
+# ---------------------------------------------------------------------------
+# DD-2 — the required-artifact contract: freshness, containment, hashes, and
+# a deadline-aware grading hash. `output_schema: none` is not proof a seat
+# finished; a file it actually wrote this attempt is.
+# ---------------------------------------------------------------------------
+
+
+def artifact_fake(writes=(), *, exit_code=0, stdout="done"):
+    """A fake child that writes `(relative_path, content)` pairs under its
+    own tmp root, then exits. `content=None` means "make a FIFO here",
+    `content` starting with `->` means "make a symlink to the rest"."""
+    body = ["import os, sys", "from pathlib import Path"]
+    for path, content in writes:
+        body.append(f"p = Path({str(path)!r})")
+        body.append("p.parent.mkdir(parents=True, exist_ok=True)")
+        if content is None:
+            body.append("os.mkfifo(p)")
+        elif isinstance(content, str) and content.startswith("->"):
+            body.append(f"p.symlink_to({content[2:]!r})")
+        else:
+            body.append(f"p.write_text({content!r})")
+    body.append(f"sys.stdout.write({stdout!r})")
+    body.append(f"sys.exit({exit_code})")
+    return "\n".join(body) + "\n"
+
+
+def artifact_args(root, *paths, extra=()):
+    args = ["--artifact-root", str(root)]
+    for path in paths:
+        args += ["--require-artifact", str(path)]
+    return (*args, *extra)
+
+
+def sha256_of(text):
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_artifact_created_this_attempt_is_succeeded_with_proof(tmp_path):
+    """G4: the receipt carries the PROOF — existence, containment, and the
+    digest — not merely a state word."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_ok.py",
+                      artifact_fake([(target, "PLAN BODY")]))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["path"] == str(target)
+    assert record["exists"] is True
+    assert record["size"] == len("PLAN BODY")
+    assert record["sha256"] == sha256_of("PLAN BODY")
+    assert record["contained"] is True
+    assert record["baseline_sha256"] is None      # did not exist pre-spawn
+    assert record["changed"] is True
+    assert record["expected_sha256_match"] is None
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def test_preexisting_unchanged_artifact_is_invalid_output(tmp_path):
+    """A leftover file from a previous attempt is not this attempt's
+    evidence. Without freshness, a seat that did nothing at all inherits
+    someone else's success."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("STALE FROM A PRIOR ATTEMPT")
+    fake = write_fake(tmp_path, "art_noop.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["changed"] is False
+    assert record["baseline_sha256"] == sha256_of("STALE FROM A PRIOR ATTEMPT")
+    assert f"artifact_unchanged:{target}" in receipt["result"]["invalid_reasons"]
+
+
+def test_preexisting_unchanged_artifact_allow_unchanged_opts_in(tmp_path):
+    """A deterministic-regeneration contract is legitimate — but it is an
+    explicit opt-in that shows up in the receipt, never a default."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("DETERMINISTIC")
+    fake = write_fake(tmp_path, "art_same.py",
+                      artifact_fake([(target, "DETERMINISTIC")]))
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake], schema="none",
+        extra=artifact_args(root, target,
+                            extra=("--require-artifact-allow-unchanged",)))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["changed"] is False
+    assert record["artifact_unchanged_accepted"] is True
+
+
+def test_preexisting_changed_artifact_is_succeeded_with_baseline_recorded(
+        tmp_path):
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("BEFORE")
+    fake = write_fake(tmp_path, "art_changed.py",
+                      artifact_fake([(target, "AFTER")]))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["baseline_sha256"] == sha256_of("BEFORE")
+    assert record["sha256"] == sha256_of("AFTER")
+    assert record["changed"] is True
+
+
+@pytest.mark.parametrize("kind,reason_prefix", [
+    ("missing", "artifact_missing"),        # never written
+    ("empty", "artifact_empty"),            # written but empty
+    # A symlink OUT of the root is caught by containment first — the
+    # stronger of the two refusals, and the one that matters for escape.
+    ("symlink_out", "artifact_escaped_root"),
+    # A symlink that stays INSIDE the root still is not the artifact: the
+    # contract is a regular file at that path, so a link there is refused
+    # on its own account rather than being followed to whatever it names.
+    ("symlink_in", "artifact_not_regular_file"),
+])
+def test_missing_empty_symlink_or_escaping_artifact_is_invalid_output(
+        tmp_path, kind, reason_prefix):
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    if kind == "missing":
+        writes = []
+    elif kind == "empty":
+        writes = [(target, "")]
+    elif kind == "symlink_out":
+        outside = tmp_path / "outside.md"
+        outside.write_text("OUTSIDE")
+        writes = [(target, f"->{outside}")]
+    else:
+        writes = [(root / "real.md", "REAL"), (target, f"->{root / 'real.md'}")]
+    fake = write_fake(tmp_path, "art_bad.py", artifact_fake(writes))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"{reason_prefix}:{target}" in receipt["result"]["invalid_reasons"]
+
+
+def test_artifact_outside_root_declaration_is_refused_pre_spawn(tmp_path):
+    """A declaration error is the caller's, not the attempt's: exit 2 with
+    no receipt and no attempt-id burned."""
+    root = tmp_path / "work"
+    root.mkdir()
+    outside = tmp_path / "elsewhere.md"
+    fake = write_fake(tmp_path, "art_out.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, outside))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+    assert not (tmp_path / "receipts" / "t1.claim").exists()
+
+
+def test_require_artifact_without_root_is_refused_pre_spawn(tmp_path):
+    fake = write_fake(tmp_path, "art_noroot.py", artifact_fake())
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake], schema="none",
+        extra=("--require-artifact", str(tmp_path / "x.md")))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+
+
+def test_artifact_sha256_mismatch_is_invalid_output(tmp_path):
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_hash.py",
+                      artifact_fake([(target, "ACTUAL")]))
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake], schema="none",
+        extra=artifact_args(root, target, extra=(
+            "--require-artifact-sha256", f"{target}={sha256_of('EXPECTED')}")))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["expected_sha256_match"] is False
+    assert f"artifact_sha256_mismatch:{target}" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_failed_exit_wins_over_present_artifacts(tmp_path):
+    """Ladder order: a non-zero exit is decided before any new gate, and a
+    non-grading termination carries no baseline (P2-W5)."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_failed.py",
+                      artifact_fake([(target, "WRITTEN ANYWAY")], exit_code=3))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 1, proc.stderr
+    assert receipt["result"]["state"] == "FAILED"
+    assert receipt["result"]["artifacts"] is None
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def _in_process(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dispatch_agent", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_late_grading_past_deadline_is_timed_out(tmp_path, monkeypatch):
+    """Grading itself consumes time — multi-file hashes, JSON parsing — so
+    the deadline is re-checked immediately before SUCCEEDED is written.
+    The clock helper is swapped rather than raced against a real large
+    file: a timing race is an intermittent test, not a deterministic one."""
+    dispatch_agent = _in_process(tmp_path)
+    monkeypatch.setattr(dispatch_agent, "_deadline_expired", lambda _: True)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_late.py",
+                      artifact_fake([(target, "ON TIME")]))
+    receipt_dir = tmp_path / "receipts"
+    rc = dispatch_agent.main([
+        "run", "--attempt-id", "late1", "--receipt-dir", str(receipt_dir),
+        "--deadline-seconds", "30", "--grace-seconds", "1",
+        "--seat", "worker", "--output-schema", "none",
+        *artifact_args(root, target),
+        "--", sys.executable, str(fake)])
+    assert rc == 3
+    receipt = json.loads((receipt_dir / "late1.json").read_text())
+    assert receipt["result"]["state"] == "TIMED_OUT"
+
+
+def test_oversized_artifact_hash_is_aborted_within_deadline(
+        tmp_path, monkeypatch):
+    """A sparse or enormous regular file must not delay the terminal receipt
+    indefinitely: the grading hash checks the remaining budget per chunk and
+    abandons the attempt as TIMED_OUT, recording `hash_aborted` and NO
+    partial digest. The hash helper is swapped for determinism."""
+    dispatch_agent = _in_process(tmp_path)
+    monkeypatch.setattr(dispatch_agent, "_hash_artifact",
+                        lambda fd, deadline: None)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_huge.py",
+                      artifact_fake([(target, "BIG")]))
+    receipt_dir = tmp_path / "receipts"
+    rc = dispatch_agent.main([
+        "run", "--attempt-id", "huge1", "--receipt-dir", str(receipt_dir),
+        "--deadline-seconds", "30", "--grace-seconds", "1",
+        "--seat", "worker", "--output-schema", "none",
+        *artifact_args(root, target),
+        "--", sys.executable, str(fake)])
+    assert rc == 3
+    receipt = json.loads((receipt_dir / "huge1.json").read_text())
+    assert receipt["result"]["state"] == "TIMED_OUT"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["hash_aborted"] is True
+    assert record["sha256"] is None
+
+
+def test_oversized_baseline_is_refused_pre_spawn(tmp_path):
+    """Pre-spawn there is no deadline anchor to bound a hash against, so the
+    baseline half is bounded by SIZE instead — and over budget is exit 2
+    with no receipt, keeping the preflight's no-receipt contract intact."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("x" * 4096)
+    fake = write_fake(tmp_path, "art_bigbase.py", artifact_fake())
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake], schema="none",
+        extra=artifact_args(root, target, extra=(
+            "--require-artifact-baseline-max-bytes", "1024")))
+    assert proc.returncode == 2, proc.stdout
+    assert "baseline too large" in proc.stderr
+    assert receipt is None
+
+
+def test_termination_unconfirmed_never_relabeled_by_new_gates(tmp_path):
+    """The one state that holds a write-capable retry outranks every gate
+    this tranche adds."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("PRESENT AND UNCHANGED")
+    fake = write_fake(tmp_path, "art_tu.py", SLEEPER)
+    attempt_id = "arttu"
+    receipt_dir = tmp_path / "receipts"
+    supervisor = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "run",
+         "--attempt-id", attempt_id, "--receipt-dir", str(receipt_dir),
+         "--deadline-seconds", "1", "--grace-seconds", "1",
+         "--seat", "worker", "--output-schema", "none",
+         *artifact_args(root, target),
+         "--", sys.executable, str(fake)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    receipt_path = receipt_dir / f"{attempt_id}.json"
+    for _ in range(100):
+        if receipt_path.exists():
+            if json.loads(receipt_path.read_text())["result"]["state"] == "RUNNING":
+                break
+        time.sleep(0.05)
+    else:
+        supervisor.kill()
+        pytest.fail("supervisor never reached RUNNING")
+    on_disk = json.loads(receipt_path.read_text())
+    on_disk["result"]["state"] = "TERMINATION_UNCONFIRMED"
+    on_disk["result"]["termination_confirmed"] = False
+    receipt_path.write_text(json.dumps(on_disk))
+    supervisor.wait(timeout=30)
+    final = json.loads(receipt_path.read_text())
+    assert final["result"]["state"] == "TERMINATION_UNCONFIRMED"
+
+
+def test_fifo_or_special_evidence_file_is_refused_not_blocking(tmp_path):
+    """A FIFO at an artifact path is the blocking-read hazard: an ordinary
+    open() would wait for a writer that never comes and hold the terminal
+    receipt past the deadline. O_NOFOLLOW|O_NONBLOCK plus an fstat regular-
+    file check refuses it immediately instead."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    fake = write_fake(tmp_path, "art_fifo.py", artifact_fake([(target, None)]))
+    started = time.monotonic()
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", deadline=30.0,
+                                 extra=artifact_args(root, target))
+    assert time.monotonic() - started < 20, "the FIFO read blocked"
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert f"artifact_not_regular_file:{target}" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_artifact_root_pivot_after_spawn_fails_containment(tmp_path):
+    """The root is resolved and PINNED before spawn, so a child that
+    replaces the root's pathname with a symlink to somewhere else does not
+    move the fence — containment is checked against the pinned value."""
+    root = tmp_path / "work"
+    root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = root / "plan.md"
+    body = (
+        "import os, shutil\n"
+        "from pathlib import Path\n"
+        f"shutil.rmtree({str(root)!r})\n"
+        f"Path({str(elsewhere)!r} + '/plan.md').write_text('PIVOTED')\n"
+        f"os.symlink({str(elsewhere)!r}, {str(root)!r})\n"
+    )
+    fake = write_fake(tmp_path, "art_pivot.py", body)
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    (record,) = receipt["result"]["artifacts"]
+    assert record["contained"] is False
+    assert f"artifact_escaped_root:{target}" in \
+        receipt["result"]["invalid_reasons"]
+    assert (elsewhere / "plan.md").read_text() == "PIVOTED"
+
+
+def test_artifact_count_budget_exceeded_is_refused_pre_spawn(tmp_path):
+    root = tmp_path / "work"
+    root.mkdir()
+    targets = [root / f"a{i}.md" for i in range(17)]
+    fake = write_fake(tmp_path, "art_many.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, *targets))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+
+
+def test_artifact_aggregate_baseline_budget_exceeded_is_refused_pre_spawn(
+        tmp_path, monkeypatch):
+    """Each baseline can be under the per-file cap and the set still be an
+    unbounded pre-spawn hash. The aggregate budget is shrunk here rather
+    than materializing 256 MiB of fixtures."""
+    dispatch_agent = _in_process(tmp_path)
+    monkeypatch.setattr(dispatch_agent, "ARTIFACT_BASELINE_BUDGET_BYTES", 100)
+    root = tmp_path / "work"
+    root.mkdir()
+    targets = []
+    for i in range(3):
+        target = root / f"a{i}.md"
+        target.write_text("y" * 60)
+        targets.append(target)
+    fake = write_fake(tmp_path, "art_budget.py", artifact_fake())
+    rc = dispatch_agent.main([
+        "run", "--attempt-id", "budget1", "--receipt-dir",
+        str(tmp_path / "receipts"),
+        "--deadline-seconds", "30", "--grace-seconds", "1",
+        "--seat", "worker", "--output-schema", "none",
+        *artifact_args(root, *targets),
+        "--", sys.executable, str(fake)])
+    assert rc == 2
+    assert not (tmp_path / "receipts" / "budget1.json").exists()
+
+
+@pytest.mark.parametrize("mapping,label", [
+    ("unknown", "a PATH that was never declared"),
+    ("dup", "the same PATH twice"),
+    ("conflict", "two different digests for one PATH"),
+    ("malformed", "a value that is not 64 lowercase hex"),
+])
+def test_sha256_mapping_unknown_dup_conflict_is_refused_pre_spawn(
+        tmp_path, mapping, label):
+    """The digest map must be 1:1 with the declarations it constrains: a
+    mapping that names nothing, or names one thing twice, is a caller
+    mistake that would otherwise be silently ignored."""
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    other = root / "other.md"
+    digest = sha256_of("A")
+    specs = {
+        "unknown": (f"{other}={digest}",),
+        "dup": (f"{target}={digest}", f"{target}={digest}"),
+        "conflict": (f"{target}={digest}", f"{target}={sha256_of('B')}"),
+        "malformed": (f"{target}=NOTAHEXDIGEST",),
+    }[mapping]
+    extra = []
+    for spec in specs:
+        extra += ["--require-artifact-sha256", spec]
+    fake = write_fake(tmp_path, "art_map.py", artifact_fake())
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none",
+                                 extra=artifact_args(root, target,
+                                                     extra=tuple(extra)))
+    assert proc.returncode == 2, f"{label}: {proc.stdout}"
     assert receipt is None

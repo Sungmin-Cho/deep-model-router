@@ -68,12 +68,14 @@ POSIX only: process-group control uses start_new_session and os.killpg.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -153,6 +155,23 @@ UUID_RE = re.compile(
 # host dispatching INTO grok). The child's identity travels in the
 # `to_<target>` half of `--transport-id`.
 XAI_TRANSPORT_SUFFIX = ".to_xai"
+
+# --- Required artifacts (DD-2) ----------------------------------------
+#
+# `output_schema: none` is not proof a seat finished — it is proof nothing
+# was checked. A seat that produces files proves completion by naming them
+# and letting this supervisor verify, before SUCCEEDED, that they exist,
+# are contained, and are THIS attempt's work rather than a prior one's
+# leftovers.
+ARTIFACT_MAX_COUNT = 16
+# Pre-spawn there is no deadline anchor to bound a hash against (the
+# attempt has not started, so there is nothing to time out), so the
+# baseline half is bounded by size instead — per file and in aggregate.
+# The grading half, which does have an anchor, is bounded by the deadline
+# itself (`_hash_artifact`).
+ARTIFACT_BASELINE_MAX_BYTES = 64 * 1024 * 1024
+ARTIFACT_BASELINE_BUDGET_BYTES = 256 * 1024 * 1024
+ARTIFACT_HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 def _utcnow() -> str:
@@ -285,16 +304,249 @@ def _validate_output(stdout_path: Path, output_schema: str) -> tuple[bool, str |
     return True, digest
 
 
+class NotARegularFile(OSError):
+    """An evidence path resolved to something that is not a regular file.
+
+    Distinct from a plain OSError so callers can tell "this is a FIFO,
+    device or symlink" (a containment/blocking hazard) from "this is
+    missing" (an ordinary absent artifact) — the two get different
+    `invalid_reasons`.
+    """
+
+
+def _open_regular(path: Path) -> tuple[int, os.stat_result]:
+    """Open an evidence file for reading, refusing anything that is not a
+    regular file — and refusing it WITHOUT blocking.
+
+    Three flags carry the whole rule. O_NOFOLLOW refuses a symlink hop, so
+    a link planted at an artifact path cannot make this process read (or
+    attest to) a file outside the root. O_NONBLOCK means a FIFO planted
+    there opens immediately instead of waiting for a writer that never
+    comes — an ordinary open() would hold the terminal receipt past the
+    deadline, which is exactly the hazard the deadline exists to prevent.
+    The fstat is on the SAME fd that was opened, not a second stat of the
+    pathname: a path checked and then reopened is a TOCTOU window, an fd
+    checked and then read is not.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        raise
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise NotARegularFile(f"{path} is not a regular file")
+    return fd, st
+
+
+def _contained(path: Path, root: Path) -> bool:
+    """Containment against an already-resolved, PINNED root."""
+    return path == root or root in path.parents
+
+
+def _hash_artifact(fd: int, deadline_monotonic: float | None) -> str | None:
+    """SHA-256 of an open regular file, in chunks, re-checking the remaining
+    deadline budget between them. Returns None when the budget ran out.
+
+    A digest is either complete or absent: a partial hash recorded as if it
+    were the file's identity would be worse than no hash at all. Bounding
+    this is what keeps an enormous or sparse artifact from delaying a
+    terminal receipt indefinitely — DD-2's replacement for the draft's
+    "the hash is contractually unbounded".
+    """
+    digest = hashlib.sha256()
+    with os.fdopen(fd, "rb") as f:
+        while True:
+            if deadline_monotonic is not None and \
+                    time.monotonic() > deadline_monotonic:
+                return None
+            chunk = f.read(ARTIFACT_HASH_CHUNK_BYTES)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+
+
+def _deadline_expired(deadline_monotonic: float) -> bool:
+    """The final deadline re-check, immediately before SUCCEEDED is written.
+
+    Grading itself consumes time — several file hashes, JSON and JSONL
+    parsing — so an attempt whose leader exited comfortably early can still
+    cross its own deadline while being graded. DD-9's invariant is about
+    when grading FINISHES, not only when the leader exited. A named helper
+    rather than an inline comparison so a test can make the crossing
+    deterministic instead of racing a real clock.
+    """
+    return time.monotonic() > deadline_monotonic
+
+
+def _capture_artifact_baselines(args) -> tuple[Path, list[dict]] | str:
+    """Validate the artifact declarations and capture their baselines.
+
+    Runs entirely PRE-SPAWN, so every failure here is a usage error: exit 2
+    with no receipt and no attempt-id consumed. Returns `(pinned_root,
+    entries)` on success, or an error string to print.
+
+    The root is resolved exactly once, here, and every later containment
+    check compares against that pinned value — a child that replaces the
+    root's pathname with a symlink to somewhere else afterwards does not
+    get to move the fence.
+    """
+    if args.artifact_root is None:
+        return ("--require-artifact requires --artifact-root: containment "
+                "has no meaning without a fence")
+    if len(args.require_artifact) > ARTIFACT_MAX_COUNT:
+        return (f"--require-artifact declared {len(args.require_artifact)} "
+                f"paths, over the limit of {ARTIFACT_MAX_COUNT}")
+    root = Path(args.artifact_root).resolve()
+    if not root.is_dir():
+        return f"--artifact-root {args.artifact_root!r} is not a directory"
+
+    entries: list[dict] = []
+    by_path: dict[Path, dict] = {}
+    for declared in args.require_artifact:
+        resolved = Path(declared).resolve()
+        if not _contained(resolved, root):
+            return (f"--require-artifact {declared!r} resolves to {resolved} "
+                    f"which is outside --artifact-root {root}")
+        if resolved in by_path:
+            return f"--require-artifact {declared!r} is declared twice"
+        entry = {"declared": declared, "path": resolved,
+                 "expected_sha256": None, "baseline_sha256": None}
+        entries.append(entry)
+        by_path[resolved] = entry
+
+    for spec in args.require_artifact_sha256 or ():
+        # rpartition, not split: an artifact path may legitimately contain
+        # '=', and only the LAST one separates the digest.
+        raw_path, sep, digest = spec.rpartition("=")
+        if not sep or not HEX64_RE.match(digest):
+            return (f"--require-artifact-sha256 {spec!r} must be "
+                    f"PATH=<64 lowercase hex>")
+        resolved = Path(raw_path).resolve()
+        entry = by_path.get(resolved)
+        if entry is None:
+            return (f"--require-artifact-sha256 {spec!r} names a path that "
+                    f"was never declared with --require-artifact")
+        if entry["expected_sha256"] is not None:
+            # Duplicate AND conflict are both refused: a repeated mapping
+            # is a caller mistake whether or not the two digests agree, and
+            # silently taking the last one hides which was intended.
+            return (f"--require-artifact-sha256 maps {resolved} more than "
+                    f"once")
+        entry["expected_sha256"] = digest
+
+    budget = 0
+    for entry in entries:
+        try:
+            fd, st = _open_regular(entry["path"])
+        except (NotARegularFile, OSError) as exc:
+            if isinstance(exc, NotARegularFile) or exc.errno == errno.ELOOP:
+                return (f"--require-artifact {entry['declared']!r} exists but "
+                        f"is not a regular file")
+            continue  # absent pre-spawn: baseline stays None, which is the
+                      # strongest freshness evidence there is
+        try:
+            if st.st_size > args.require_artifact_baseline_max_bytes:
+                return (f"--require-artifact {entry['declared']!r} baseline "
+                        f"too large: {st.st_size} bytes over the limit of "
+                        f"{args.require_artifact_baseline_max_bytes}")
+            budget += st.st_size
+            if budget > ARTIFACT_BASELINE_BUDGET_BYTES:
+                return (f"--require-artifact baselines exceed the aggregate "
+                        f"budget of {ARTIFACT_BASELINE_BUDGET_BYTES} bytes")
+            entry["baseline_sha256"] = _hash_artifact(fd, None)
+            fd = -1
+        finally:
+            if fd != -1:
+                os.close(fd)
+    return root, entries
+
+
+def _grade_artifacts(entries: list[dict], root: Path,
+                     deadline_monotonic: float,
+                     allow_unchanged: bool) -> tuple[list[dict], list[str], bool]:
+    """Prove each required artifact, or say precisely why it is not proof.
+
+    Returns `(records, reasons, hash_aborted)`. The records go into the
+    receipt on success too: existence, containment and the digest ARE the
+    evidence G4 asks for, and a receipt that only carried them on failure
+    would prove nothing on the path that matters.
+    """
+    records: list[dict] = []
+    reasons: list[str] = []
+    aborted = False
+    for entry in entries:
+        path = entry["path"]
+        record = {"path": str(path), "exists": False, "size": None,
+                  "sha256": None, "contained": None,
+                  "baseline_sha256": entry["baseline_sha256"],
+                  "changed": None, "expected_sha256_match": None}
+        records.append(record)
+        try:
+            current = path.resolve()
+        except OSError:
+            current = path
+        record["contained"] = _contained(current, root)
+        if not record["contained"]:
+            reasons.append(f"artifact_escaped_root:{path}")
+            continue
+        try:
+            fd, st = _open_regular(path)
+        except NotARegularFile:
+            reasons.append(f"artifact_not_regular_file:{path}")
+            continue
+        except OSError as exc:
+            # ELOOP is O_NOFOLLOW refusing a symlink planted at the
+            # artifact path — reporting that as "missing" would send an
+            # operator looking for a file that is right there. The two
+            # get different reasons because they have different remedies.
+            reasons.append(
+                f"artifact_not_regular_file:{path}"
+                if exc.errno == errno.ELOOP else f"artifact_missing:{path}")
+            continue
+        record["exists"] = True
+        record["size"] = st.st_size
+        if st.st_size == 0:
+            os.close(fd)
+            reasons.append(f"artifact_empty:{path}")
+            continue
+        digest = _hash_artifact(fd, deadline_monotonic)
+        if digest is None:
+            # Out of budget mid-hash. No partial digest is recorded, and
+            # the attempt is a TIMED_OUT rather than a verdict on contents
+            # nobody finished reading.
+            record["hash_aborted"] = True
+            aborted = True
+            continue
+        record["sha256"] = digest
+        baseline = entry["baseline_sha256"]
+        record["changed"] = baseline is None or digest != baseline
+        if not record["changed"]:
+            if allow_unchanged:
+                record["artifact_unchanged_accepted"] = True
+            else:
+                reasons.append(f"artifact_unchanged:{path}")
+        if entry["expected_sha256"] is not None:
+            record["expected_sha256_match"] = digest == entry["expected_sha256"]
+            if not record["expected_sha256_match"]:
+                reasons.append(f"artifact_sha256_mismatch:{path}")
+    return records, reasons, aborted
+
+
 def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
     """Read at most `limit` bytes from a gate surface.
 
     Returns `(data, oversized)`; `data` is None when the file could not be
     read at all or when it is over budget. Reading `limit + 1` is what
     makes "exactly at the limit" distinguishable from "over it" without a
-    stat/read race.
+    stat/read race. The open goes through `_open_regular`, so a symlink,
+    FIFO or device planted at a gate surface is refused rather than
+    followed or waited on.
     """
     try:
-        with open(path, "rb") as f:
+        fd, _ = _open_regular(path)
+        with os.fdopen(fd, "rb") as f:
             data = f.read(limit + 1)
     except OSError:
         return None, False
@@ -423,6 +675,11 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
             # unconditional, gating is not.
             "envelope": None,
             "invalid_reasons": None,
+            # DD-2: the per-artifact proof set. Null when nothing was
+            # required, and null on every termination that never reached
+            # grading — a baseline is evidence about a comparison that was
+            # actually made, not a field to fill in for its own sake.
+            "artifacts": None,
         },
     }
 
@@ -537,6 +794,23 @@ def cmd_run(args) -> int:
                   f"declaration; see references/adapters.md \"Dispatch "
                   f"contract\".", file=sys.stderr)
             return 2
+
+    artifact_root = None
+    artifact_entries: list[dict] = []
+    if args.require_artifact:
+        if not _finite_positive(args.require_artifact_baseline_max_bytes):
+            print("--require-artifact-baseline-max-bytes must be a finite "
+                  "number > 0", file=sys.stderr)
+            return 2
+        captured = _capture_artifact_baselines(args)
+        if isinstance(captured, str):
+            print(f"error: {captured}", file=sys.stderr)
+            return 2
+        artifact_root, artifact_entries = captured
+    elif args.require_artifact_sha256:
+        print("--require-artifact-sha256 without --require-artifact "
+              "constrains nothing", file=sys.stderr)
+        return 2
 
     prompt_sha256 = None
     stdin_f = subprocess.DEVNULL
@@ -774,42 +1048,76 @@ def cmd_run(args) -> int:
                         receipt["result"]["state"] = "TIMED_OUT"
                     elif exit_status != 0:
                         receipt["result"]["state"] = "FAILED"
-                    elif args.output_envelope is not None:
-                        # DD-1 ladder step 4: the envelope is graded BEFORE
-                        # the output schema, so a cancelled turn that
+                    elif args.output_envelope is not None or artifact_entries:
+                        # The ladder inside grading, in order: envelope
+                        # (DD-1) -> output schema -> artifacts (DD-2) ->
+                        # a final deadline re-check. The envelope comes
+                        # before the schema so a cancelled turn that
                         # happens to have emitted a well-formed verdict is
                         # still a cancelled turn.
-                        envelope = _read_envelope(stdout_path)
-                        receipt["result"]["envelope"] = _receipt_envelope(envelope)
-                        receipt["result"]["output_sha256"] = _stdout_digest(
-                            stdout_path)
-                        reasons = _grade_envelope(envelope)
-                        if not reasons:
-                            # With an envelope declared the verdict grammar
-                            # applies to the envelope's `text`, not to the
-                            # raw JSON document carrying it — the document's
-                            # own bytes never match VERDICT_RE at line
-                            # start. An empty `text` is fine under schema
-                            # `none`: DD-2's artifact contract, not stdout
-                            # length, is what proves that seat finished.
-                            schema_ok = (
-                                args.output_schema != "review"
-                                or bool(VERDICT_RE.search(envelope["text"] or "")))
+                        reasons: list[str] = []
+                        timed_out = False
+                        if args.output_envelope is not None:
+                            envelope = _read_envelope(stdout_path)
+                            receipt["result"]["envelope"] = _receipt_envelope(
+                                envelope)
+                            receipt["result"]["output_sha256"] = _stdout_digest(
+                                stdout_path)
+                            reasons = _grade_envelope(envelope)
+                            if not reasons:
+                                # With an envelope declared the verdict
+                                # grammar applies to the envelope's `text`,
+                                # not to the raw JSON document carrying it —
+                                # the document's own bytes never match
+                                # VERDICT_RE at line start. An empty `text`
+                                # is fine under schema `none`: DD-2's
+                                # artifact contract, not stdout length, is
+                                # what proves that seat finished.
+                                schema_ok = (
+                                    args.output_schema != "review"
+                                    or bool(VERDICT_RE.search(
+                                        envelope["text"] or "")))
+                                if not schema_ok:
+                                    reasons = ["schema_invalid"]
+                            else:
+                                schema_ok = False
                             receipt["result"]["schema_valid"] = schema_ok
-                            if not schema_ok:
-                                reasons = ["schema_invalid"]
                         else:
-                            receipt["result"]["schema_valid"] = False
+                            ok, digest = _validate_output(
+                                stdout_path, args.output_schema)
+                            receipt["result"]["output_sha256"] = digest
+                            receipt["result"]["schema_valid"] = ok
+                            if not ok:
+                                reasons = ["schema_invalid"]
+                        if artifact_entries:
+                            records, artifact_reasons, aborted = _grade_artifacts(
+                                artifact_entries, artifact_root,
+                                deadline_monotonic,
+                                args.require_artifact_allow_unchanged)
+                            receipt["result"]["artifacts"] = records
+                            reasons = reasons + artifact_reasons
+                            timed_out = aborted
+                        if timed_out:
+                            # A hash abandoned mid-file is a deadline
+                            # outcome, not a content verdict.
+                            receipt["result"]["state"] = "TIMED_OUT"
+                        elif reasons:
+                            receipt["result"]["state"] = "INVALID_OUTPUT"
+                        elif _deadline_expired(deadline_monotonic):
+                            receipt["result"]["state"] = "TIMED_OUT"
+                        else:
+                            receipt["result"]["state"] = "SUCCEEDED"
                         if reasons:
                             receipt["result"]["invalid_reasons"] = reasons
-                        receipt["result"]["state"] = (
-                            "INVALID_OUTPUT" if reasons else "SUCCEEDED")
                     else:
                         ok, digest = _validate_output(stdout_path, args.output_schema)
                         receipt["result"]["output_sha256"] = digest
                         receipt["result"]["schema_valid"] = ok
-                        receipt["result"]["state"] = (
-                            "SUCCEEDED" if ok else "INVALID_OUTPUT")
+                        if ok and _deadline_expired(deadline_monotonic):
+                            receipt["result"]["state"] = "TIMED_OUT"
+                        else:
+                            receipt["result"]["state"] = (
+                                "SUCCEEDED" if ok else "INVALID_OUTPUT")
 
                 if args.output_envelope is not None \
                         and receipt["result"]["envelope"] is None:
@@ -1206,6 +1514,25 @@ def build_parser() -> argparse.ArgumentParser:
                      help="the session UUID this attempt declared to the "
                           "child (grok's -s); the axis attempt-binding "
                           "cross-proves stdout against the session dir")
+    run.add_argument("--require-artifact", action="append", default=[],
+                     metavar="PATH",
+                     help="a file this attempt must have written (or "
+                          "changed) before it can be SUCCEEDED; repeatable")
+    run.add_argument("--artifact-root", default=None, metavar="DIR",
+                     help="containment fence for every --require-artifact; "
+                          "resolved and pinned before spawn")
+    run.add_argument("--require-artifact-sha256", action="append", default=[],
+                     metavar="PATH=HEX64",
+                     help="fixed-content contract for one declared artifact; "
+                          "must be 1:1 with --require-artifact")
+    run.add_argument("--require-artifact-allow-unchanged", action="store_true",
+                     help="accept an artifact whose content equals its "
+                          "pre-spawn baseline (deterministic regeneration); "
+                          "recorded in the receipt as an explicit opt-in")
+    run.add_argument("--require-artifact-baseline-max-bytes", type=float,
+                     default=ARTIFACT_BASELINE_MAX_BYTES,
+                     help="per-file cap on the pre-spawn baseline hash, "
+                          "which has no deadline to be bounded by")
     run.add_argument("--expect-effective-agent", default=None,
                      help="require the session summary's agent_name to "
                           "equal this exactly; requires --session-evidence")
