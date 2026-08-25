@@ -7,6 +7,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.5.0] — 2026-08-25 (grok 좌석 무결성)
+
+### 추가됨
+
+- 디스패치가 grok stdout 봉투를 선언할 수 있다(`--output-envelope grok-headless-json-v1`): 턴의 `stopReason`을 채점해 `end_turn`만 성공이 될 수 있다 — 취소된 턴은 exit 0으로 끝나므로 이전에는 SUCCEEDED로 기록될 수 있었다.
+- 디스패치가 좌석이 생산해야 할 파일을 요구할 수 있다(`--require-artifact`, `--artifact-root`, `--require-artifact-sha256`, `--require-artifact-allow-unchanged`): SUCCEEDED 이전에 존재·격리·해시를 증명하고, 실행 전에 캡처한 기준선과 대조해 그 파일이 잔존물이 아니라 이번 시도의 산물임을 증명한다.
+- 디스패치가 grok 세션 디렉토리를 읽을 수 있다(`--session-evidence`, `--session-id`): 영수증이 요청값과 나란히 유효 에이전트·샌드박스 프로파일·서빙 모델을 기록하며, 세션 id와 실행 시각으로 그 시도에 결박된다.
+- `--expect-effective-agent`와 `--expect-sandbox-profile`은 유효 에이전트나 샌드박스가 좌석이 요청한 값과 다르면 성공을 거부한다 — 쓰기 좌석이 read-only 기본값을 조용히 상속할 수 없다.
+- 영수증에 `result.invalid_reasons`가 실려 시도가 거부된 이유를 이름으로 남긴다 — 취소된 턴과 판독 불가한 증거를, 작업에 실패한 모델과 구별할 수 있다.
+- `transports.*.to_xai`가 터미널·MCP 메타도구·웹 검색을 도구 표면에서 제외한, 검증된 read-only grok 리뷰어 좌석 레시피를 싣는다.
+
+### 변경됨
+
+- `verify-evidence`가 봉투나 세션 증거가 없는 `to_xai` 영수증과, 봉투가 `end_turn`으로 끝나지 않은 영수증을 거부한다. 1.4.x가 쓴 영수증도 해당된다: 구 증거 세트는 그것을 생산한 버전으로 검증하라.
+- `--transport-id`가 `.to_xai`로 끝나는 디스패치는 봉투와 세션 증거를 선언해야 하며, 절반만 선언하면 시도가 시작되기 전에 거부된다.
+- 채점이 성공을 기록하기 직전에 마감을 재검사하며, 산출물 해시는 마감을 넘기지 않고 중단된다.
+
+### 보안
+
+- 증거 파일은 심볼릭 링크를 따라가지 않고 FIFO에서 블록되지 않게 열리며, 산출물 격리 루트는 실행 전에 고정된다 — 감독 대상 자식이 감독기의 판독이나 자신의 작업 증명을 그 루트 밖으로 돌릴 수 없다.
+
+### 제거됨
+
+- 단일 `transports.*.to_xai.mechanism` 문자열이 좌석별 레시피로 대체됐다. 이번 릴리스에는 쓰기 가능 grok 좌석 레시피를 싣지 않는다: grok 1.0.5 실측에서 작업 디렉토리 안의 하드 링크가 경로 범위 쓰기 규칙과 `--sandbox workspace`를 모두 무력화해, 그 링크를 통한 쓰기가 디렉토리 밖 파일에 도달한다. 이 문제가 닫힐 때까지 쓰기 가능 작업은 xai 워커를 우회해 라우팅하라.
+
 ## [1.4.0] — 2026-08-20 (RouteObservationV1)
 
 ### 추가됨
