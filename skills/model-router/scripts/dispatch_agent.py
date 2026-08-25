@@ -30,6 +30,17 @@ Design rules this file enforces:
 - Prompts travel by file into the child's stdin; with no prompt file, stdin
   is /dev/null, so waiting on stdin is structurally impossible. argv is
   executed without a shell.
+- The supervisor never parses argv, and applying a DECLARED output contract
+  is not parsing argv. "Never parses argv" means it never infers what the
+  caller did not declare — not that it refuses knowledge the caller handed
+  it explicitly. `--output-schema review` already knows verdict grammar on
+  exactly that basis; `--output-envelope grok-headless-json-v1` knows a
+  version-named stdout document the same way. What stays outside the
+  boundary is the child's identity: a dispatch that declares nothing is a
+  dispatch this supervisor cannot tell is grok, because that would require
+  reading its argv. That residue belongs to the Layer B recipe and the
+  evidence chain, and `references/adapters.md` documents it as a boundary
+  rather than leaving it silent.
 - `--attempt-id` must match a safe identifier grammar before any path is
   built from it, and every path derived from it must resolve inside
   `--receipt-dir` — no `../` escape; every subcommand (`run`, `status`,
@@ -99,6 +110,49 @@ ATTEMPT_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 # value a programmatic caller produces by reading a file without stripping,
 # and one this gate then wrote verbatim into a permanent receipt.
 HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+# --- Grok seat integrity (2026-08-25 design, DD-1) ---------------------
+#
+# A headless grok turn that a permission prompt cancelled still exits 0
+# (official semantics, [UG-14]), so the exit status alone cannot tell a
+# finished turn from a killed one. The stdout document can: it carries a
+# `stopReason` from a documented, version-named vocabulary. Declaring
+# `--output-envelope` opts a dispatch into grading that document.
+#
+# This does not breach the supervisor's "never parse argv" rule. That rule
+# says the supervisor never INFERS what the caller did not declare;
+# applying a version-named output contract the caller explicitly declared
+# is the same kind of knowledge `--output-schema review` already encodes
+# about verdict grammar.
+ENVELOPE_FORMATS = ("grok-headless-json-v1",)
+# The envelope is a GATE surface, so its read is bounded: an unbounded
+# JSON parse of a child-controlled file is a denial-of-service surface on
+# the supervisor itself. Over budget is a typed refusal
+# (`evidence_oversized`), never a best-effort partial parse.
+ENVELOPE_MAX_BYTES = 4 * 1024 * 1024
+# The only stop reason that leaves an attempt a success candidate. Every
+# other member of the official vocabulary (`max_tokens`,
+# `max_turn_requests`, `refusal`, `cancelled`), every unknown value, and
+# an absent field all fail closed. The vocabulary is pinned to the
+# envelope VERSION name: a grok upgrade that changes it gets a new
+# envelope version, never a new meaning for this one.
+ENVELOPE_OK_STOP_REASON = "end_turn"
+
+SESSION_EVIDENCE_FORMATS = ("grok-session-v1",)
+
+UUID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
+
+# The sole trigger for the declaration-consistency preflight below.
+# `--runtime` is the HOST throughout this repository (`runtimes:` in the
+# config, SKILL.md, the observation record's RUNTIMES enum), so it says
+# nothing about the child's identity: keying off `--runtime grok` would
+# refuse grok-HOSTED dispatches out to claude/codex, which produce no
+# envelope, while doing nothing for issue #14's actual path (a claude_code
+# host dispatching INTO grok). The child's identity travels in the
+# `to_<target>` half of `--transport-id`.
+XAI_TRANSPORT_SUFFIX = ".to_xai"
 
 
 def _utcnow() -> str:
@@ -231,6 +285,96 @@ def _validate_output(stdout_path: Path, output_schema: str) -> tuple[bool, str |
     return True, digest
 
 
+def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
+    """Read at most `limit` bytes from a gate surface.
+
+    Returns `(data, oversized)`; `data` is None when the file could not be
+    read at all or when it is over budget. Reading `limit + 1` is what
+    makes "exactly at the limit" distinguishable from "over it" without a
+    stat/read race.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = f.read(limit + 1)
+    except OSError:
+        return None, False
+    if len(data) > limit:
+        return None, True
+    return data, False
+
+
+def _read_envelope(stdout_path: Path) -> dict:
+    """Read one grok headless JSON document off a finished attempt's stdout.
+
+    Always returns the same six keys, whatever went wrong. `text` is an
+    INTERNAL field — it feeds the verdict check and nothing else, and is
+    dropped by `_receipt_envelope` before the receipt is written: the raw
+    output already lives in the stdout file this read came from, and a
+    receipt carries abbreviated evidence, not a second copy of the payload.
+
+    `error_type` carries the document's own `type` discriminator for grok's
+    `{"type": "error", ...}` failure object, and doubles as the read-failure
+    channel (`evidence_oversized` / `envelope_unreadable`) so a caller can
+    tell an over-budget stdout from a merely malformed one.
+    """
+    envelope = {"parse_ok": False, "stop_reason": None, "session_id": None,
+                "served_models": None, "text": None, "error_type": None}
+    data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    if oversized:
+        envelope["error_type"] = "evidence_oversized"
+        return envelope
+    if data is None:
+        envelope["error_type"] = "envelope_unreadable"
+        return envelope
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return envelope
+    if not isinstance(doc, dict):
+        # A bare array or scalar parses as JSON but is not an envelope.
+        return envelope
+    envelope["parse_ok"] = True
+    for key, field in (("stopReason", "stop_reason"), ("sessionId", "session_id"),
+                       ("text", "text"), ("type", "error_type")):
+        value = doc.get(key)
+        if isinstance(value, str):
+            envelope[field] = value
+    usage = doc.get("modelUsage")
+    if isinstance(usage, dict):
+        # DD-7: the SERVED model identifiers, recorded as observed and
+        # never normalized against the declared `--model-id` — the
+        # supervisor does not cross-check a caller's declaration.
+        envelope["served_models"] = sorted(usage)
+    return envelope
+
+
+def _receipt_envelope(envelope: dict) -> dict:
+    """The five keys an envelope contributes to a receipt. `session_id` is
+    here as the audit evidence for what the attempt-binding cross-proof
+    (DD-3) actually compared; `text` is deliberately absent."""
+    return {k: envelope[k] for k in
+            ("parse_ok", "stop_reason", "session_id", "served_models",
+             "error_type")}
+
+
+def _grade_envelope(envelope: dict) -> list[str]:
+    """Fail-closed gate on a declared envelope. Returns the reasons it
+    failed, empty when it is a success candidate."""
+    if envelope["error_type"] == "evidence_oversized":
+        return ["evidence_oversized"]
+    if not envelope["parse_ok"]:
+        return ["envelope_unparseable"]
+    stop_reason = envelope["stop_reason"]
+    if stop_reason != ENVELOPE_OK_STOP_REASON:
+        return [f"envelope_stop_reason:{stop_reason or '<absent>'}"]
+    return []
+
+
+def _stdout_digest(stdout_path: Path) -> str | None:
+    data, _ = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
 def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
     return {
         "attempt_id": args.attempt_id,
@@ -259,6 +403,12 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         "argv": args.argv,
         "prompt_sha256": None,
         "output_schema": args.output_schema,
+        # DD-1: the DECLARED envelope contract, null when none was
+        # declared. Every key this tranche adds is present on every
+        # receipt and null on the undeclared path — that is what keeps
+        # the exact-field contract one key set instead of one per
+        # declaration combination.
+        "output_envelope": args.output_envelope,
         "process": {"pid": None, "process_group_id": None,
                     "supervisor_pid": os.getpid()},
         "timing": {"started_at": None, "deadline_at": None, "finished_at": None},
@@ -267,6 +417,12 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
             "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
             "output_sha256": None, "schema_valid": None,
             "termination_confirmed": None,
+            # DD-1 evidence and DD-5's shared cause vocabulary. `envelope`
+            # is recorded on every terminal state once declared (error
+            # objects and non-zero exits included) — recording is
+            # unconditional, gating is not.
+            "envelope": None,
+            "invalid_reasons": None,
         },
     }
 
@@ -337,6 +493,49 @@ def cmd_run(args) -> int:
         if value is not None and not HEX64_RE.match(value):
             print(f"{name} must be 64 lowercase hex chars, got {value!r}",
                   file=sys.stderr)
+            return 2
+
+    # --- Grok seat integrity preflight (DD-1) -------------------------
+    # Everything below refuses BEFORE spawn and before any receipt or
+    # claim exists: a usage error must never burn an attempt-id or leave
+    # a permanent STARTING receipt that only `cancel` knows how to unwind.
+    if args.session_evidence is not None:
+        evidence_format, sep, evidence_dir = args.session_evidence.partition(":")
+        if not sep or evidence_format not in SESSION_EVIDENCE_FORMATS \
+                or not evidence_dir:
+            print(f"--session-evidence must be FORMAT:DIR with FORMAT in "
+                  f"{list(SESSION_EVIDENCE_FORMATS)}, got "
+                  f"{args.session_evidence!r}", file=sys.stderr)
+            return 2
+    if args.session_id is not None and not UUID_RE.match(args.session_id):
+        print(f"--session-id must be a UUID, got {args.session_id!r}",
+              file=sys.stderr)
+        return 2
+    if args.expect_effective_agent is not None:
+        if not args.expect_effective_agent.strip():
+            print("--expect-effective-agent must not be empty",
+                  file=sys.stderr)
+            return 2
+        if args.session_evidence is None:
+            # An expectation with nothing to compare against would be
+            # silently ignored, and a gate that can be silently disarmed
+            # by omitting an unrelated argument is not a gate. The name it
+            # checks (`summary.agent_name`) only exists in the session
+            # evidence.
+            print("--expect-effective-agent requires --session-evidence: "
+                  "the effective agent name is only observable in the "
+                  "session summary", file=sys.stderr)
+            return 2
+    if args.transport_id and args.transport_id.endswith(XAI_TRANSPORT_SUFFIX):
+        missing = [name for name, value in (
+            ("--output-envelope", args.output_envelope),
+            ("--session-evidence", args.session_evidence)) if value is None]
+        if missing:
+            print(f"--transport-id {args.transport_id!r} dispatches into "
+                  f"grok, whose cancelled turns exit 0 — it requires "
+                  f"{' and '.join(missing)}. Half a declaration is not a "
+                  f"declaration; see references/adapters.md \"Dispatch "
+                  f"contract\".", file=sys.stderr)
             return 2
 
     prompt_sha256 = None
@@ -575,12 +774,52 @@ def cmd_run(args) -> int:
                         receipt["result"]["state"] = "TIMED_OUT"
                     elif exit_status != 0:
                         receipt["result"]["state"] = "FAILED"
+                    elif args.output_envelope is not None:
+                        # DD-1 ladder step 4: the envelope is graded BEFORE
+                        # the output schema, so a cancelled turn that
+                        # happens to have emitted a well-formed verdict is
+                        # still a cancelled turn.
+                        envelope = _read_envelope(stdout_path)
+                        receipt["result"]["envelope"] = _receipt_envelope(envelope)
+                        receipt["result"]["output_sha256"] = _stdout_digest(
+                            stdout_path)
+                        reasons = _grade_envelope(envelope)
+                        if not reasons:
+                            # With an envelope declared the verdict grammar
+                            # applies to the envelope's `text`, not to the
+                            # raw JSON document carrying it — the document's
+                            # own bytes never match VERDICT_RE at line
+                            # start. An empty `text` is fine under schema
+                            # `none`: DD-2's artifact contract, not stdout
+                            # length, is what proves that seat finished.
+                            schema_ok = (
+                                args.output_schema != "review"
+                                or bool(VERDICT_RE.search(envelope["text"] or "")))
+                            receipt["result"]["schema_valid"] = schema_ok
+                            if not schema_ok:
+                                reasons = ["schema_invalid"]
+                        else:
+                            receipt["result"]["schema_valid"] = False
+                        if reasons:
+                            receipt["result"]["invalid_reasons"] = reasons
+                        receipt["result"]["state"] = (
+                            "INVALID_OUTPUT" if reasons else "SUCCEEDED")
                     else:
                         ok, digest = _validate_output(stdout_path, args.output_schema)
                         receipt["result"]["output_sha256"] = digest
                         receipt["result"]["schema_valid"] = ok
                         receipt["result"]["state"] = (
                             "SUCCEEDED" if ok else "INVALID_OUTPUT")
+
+                if args.output_envelope is not None \
+                        and receipt["result"]["envelope"] is None:
+                    # Recording is unconditional even where gating is not:
+                    # a TIMED_OUT, FAILED or TERMINATION_UNCONFIRMED
+                    # attempt still leaves its envelope in the receipt as
+                    # evidence, and none of those states is relabeled by
+                    # what it says.
+                    receipt["result"]["envelope"] = _receipt_envelope(
+                        _read_envelope(stdout_path))
 
                 receipt["timing"]["finished_at"] = _utcnow()
                 # DEFER-2: terminal persistence is best-effort. OSError here
@@ -951,6 +1190,25 @@ def build_parser() -> argparse.ArgumentParser:
                      help="fed to the child's stdin; omit for DEVNULL")
     run.add_argument("--output-schema", choices=["none", "review"],
                      default="none")
+    # --- Grok seat integrity (2026-08-25 design) ----------------------
+    # All four are declared here together so the parser has one shape; the
+    # grading semantics of the last three belong to DD-3.
+    run.add_argument("--output-envelope", choices=list(ENVELOPE_FORMATS),
+                     default=None,
+                     help="version-named stdout contract to grade against; "
+                          "a cancelled grok turn exits 0, so its stopReason "
+                          "is the only machine-readable finish evidence")
+    run.add_argument("--session-evidence", default=None,
+                     help="FORMAT:DIR, e.g. grok-session-v1:<session dir>. "
+                          "The caller computes DIR; the supervisor derives "
+                          "no path (see references/adapters.md)")
+    run.add_argument("--session-id", default=None,
+                     help="the session UUID this attempt declared to the "
+                          "child (grok's -s); the axis attempt-binding "
+                          "cross-proves stdout against the session dir")
+    run.add_argument("--expect-effective-agent", default=None,
+                     help="require the session summary's agent_name to "
+                          "equal this exactly; requires --session-evidence")
     run.add_argument("argv", nargs="+",
                      help="command to execute, after `--`")
 

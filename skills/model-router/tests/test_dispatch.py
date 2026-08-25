@@ -939,12 +939,19 @@ RECEIPT_KEYS = {
     # design §4 B2 — decision linkage and the requested-vs-served slots.
     "decision_fingerprint", "policy_sha256", "transport_id",
     "host_cli_version", "observed_model_id", "observed_model_source",
+    # 2026-08-25 grok seat integrity — DD-1 declares the envelope contract.
+    "output_envelope",
 }
 RECEIPT_PROCESS_KEYS = {"pid", "process_group_id", "supervisor_pid"}
 RECEIPT_TIMING_KEYS = {"started_at", "deadline_at", "finished_at"}
 RECEIPT_RESULT_KEYS = {
     "state", "exit_status", "stdout_path", "stderr_path", "output_sha256",
     "schema_valid", "termination_confirmed",
+    # 2026-08-25 grok seat integrity — DD-1 (envelope evidence) and DD-5
+    # (the shared cause vocabulary). Both are always present and null on
+    # the undeclared path, which is what keeps this an equality contract
+    # over a single key set rather than one set per declaration combination.
+    "envelope", "invalid_reasons",
 }
 
 
@@ -1165,3 +1172,320 @@ def test_an_attempt_id_with_a_trailing_newline_is_refused(tmp_path):
     assert receipt is None
     assert not list((tmp_path / "receipts").glob("*")) or not any(
         "\n" in q.name for q in (tmp_path / "receipts").glob("*"))
+
+
+# ---------------------------------------------------------------------------
+# DD-1 — grok stdout envelope contract (`--output-envelope`) and the
+# declaration-consistency preflight. Design:
+# docs/design/2026-08-25-grok-seat-integrity-design.md §4 DD-1.
+# ---------------------------------------------------------------------------
+
+SESSION_UUID = "11111111-2222-3333-4444-555555555555"
+OTHER_UUID = "99999999-8888-7777-6666-555555555555"
+
+
+def envelope_fake(doc=None, *, raw=None, exit_code=0):
+    """A fake child whose stdout is one grok headless JSON document.
+
+    `raw` writes bytes verbatim (non-JSON / oversized / truncated cases);
+    `doc` is serialized. Nothing here invokes a real model.
+    """
+    payload = raw if raw is not None else json.dumps(doc)
+    return (
+        "import sys\n"
+        f"sys.stdout.write({payload!r})\n"
+        "sys.stdout.flush()\n"
+        f"sys.exit({exit_code})\n"
+    )
+
+
+def grok_doc(stop_reason="end_turn", text="verdict: PASS\nconfidence: 0.9",
+             session_id=SESSION_UUID, model_usage=("grok-4.6-build",)):
+    doc = {"stopReason": stop_reason, "text": text, "sessionId": session_id,
+           "num_turns": 1, "requestId": "req-1"}
+    if model_usage is not None:
+        doc["modelUsage"] = {name: {"modelCalls": 1} for name in model_usage}
+    return doc
+
+
+ENVELOPE_ARGS = ("--output-envelope", "grok-headless-json-v1")
+
+
+def test_envelope_end_turn_with_verdict_in_text_is_succeeded(tmp_path):
+    """The verdict grammar moves off raw stdout onto the envelope's `text`
+    field: raw stdout here is a JSON document whose own bytes never match
+    VERDICT_RE at line start, so a SUCCEEDED can only come from reading the
+    envelope."""
+    fake = write_fake(tmp_path, "env_ok.py", envelope_fake(grok_doc()))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert receipt["output_envelope"] == "grok-headless-json-v1"
+    assert receipt["result"]["envelope"]["parse_ok"] is True
+    assert receipt["result"]["envelope"]["stop_reason"] == "end_turn"
+    assert receipt["result"]["envelope"]["session_id"] == SESSION_UUID
+    assert receipt["result"]["envelope"]["served_models"] == ["grok-4.6-build"]
+    assert receipt["result"]["envelope"]["error_type"] is None
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def test_envelope_cancelled_with_schema_none_is_invalid_output(tmp_path):
+    """Issue #14's exact regression: a permission-cancelled grok turn exits
+    0 with prose in `text` and no required output schema. Before DD-1 this
+    was recorded SUCCEEDED."""
+    doc = grok_doc(stop_reason="cancelled",
+                   text="I'll create the plan file now.")
+    fake = write_fake(tmp_path, "env_cancel.py", envelope_fake(doc))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert receipt["result"]["envelope"]["stop_reason"] == "cancelled"
+    assert "envelope_stop_reason:cancelled" in receipt["result"]["invalid_reasons"]
+
+
+def test_envelope_cancelled_with_verdict_text_is_still_invalid_output(tmp_path):
+    """The envelope is graded before the output schema — a cancelled turn
+    that happens to have emitted a well-formed verdict is still a cancelled
+    turn."""
+    doc = grok_doc(stop_reason="cancelled")
+    fake = write_fake(tmp_path, "env_cancel2.py", envelope_fake(doc))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="review", extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "envelope_stop_reason:cancelled" in receipt["result"]["invalid_reasons"]
+
+
+@pytest.mark.parametrize("name,doc,raw,reason", [
+    ("unknown_stop_reason", grok_doc(stop_reason="max_tokens"), None,
+     "envelope_stop_reason:max_tokens"),
+    ("novel_stop_reason", grok_doc(stop_reason="wandered_off"), None,
+     "envelope_stop_reason:wandered_off"),
+    ("absent_stop_reason", {"text": "verdict: PASS"}, None,
+     "envelope_stop_reason:<absent>"),
+    ("non_json", None, "verdict: PASS\nnot json at all\n",
+     "envelope_unparseable"),
+    ("json_but_not_an_object", None, '["verdict: PASS"]',
+     "envelope_unparseable"),
+    ("empty", None, "", "envelope_unparseable"),
+])
+def test_envelope_unknown_stop_reason_or_non_json_fails_closed(
+        tmp_path, name, doc, raw, reason):
+    """Fail-closed: the official [UG-14] vocabulary minus `end_turn`, any
+    unknown value, an absent field, and anything that is not a single JSON
+    object all land on INVALID_OUTPUT."""
+    fake = write_fake(tmp_path, f"env_{name}.py",
+                      envelope_fake(doc, raw=raw))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="review", extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert reason in receipt["result"]["invalid_reasons"]
+
+
+def test_no_envelope_declared_keeps_legacy_grading_semantics(tmp_path):
+    """Additive, not behavioural: with no `--output-envelope`, the verdict
+    grammar still runs against raw stdout and every pre-existing field keeps
+    its meaning. The new keys are present and null — that is what keeps the
+    exact-field contract a single set rather than two."""
+    fake = write_fake(tmp_path, "happy_legacy.py", HAPPY)
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake])
+    assert proc.returncode == 0
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert receipt["result"]["schema_valid"] is True
+    assert receipt["result"]["output_sha256"]
+    assert receipt["output_envelope"] is None
+    assert receipt["result"]["envelope"] is None
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def test_to_xai_transport_without_envelope_is_refused_pre_spawn(tmp_path):
+    """Declaration consistency (DD-1): a `.to_xai` transport-id is the sole
+    trigger. Refusal is pre-spawn — exit 2 with no receipt at all, the same
+    shape as every other usage error."""
+    fake = write_fake(tmp_path, "happy_xai.py", HAPPY)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--transport-id", "claude_code.to_xai"))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+    assert not (tmp_path / "receipts" / "t1.claim").exists()
+
+
+def test_to_xai_with_envelope_but_no_session_evidence_is_refused_pre_spawn(
+        tmp_path):
+    """Half a declaration is not a declaration: the preflight requires the
+    envelope AND the session evidence for a `.to_xai` dispatch."""
+    fake = write_fake(tmp_path, "happy_xai2.py", HAPPY)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--transport-id", "claude_code.to_xai", *ENVELOPE_ARGS))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+
+
+def test_fully_declared_to_xai_dispatch_passes_preflight_and_spawns(tmp_path):
+    """The positive half of the preflight — a complete declaration set runs
+    normally."""
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    fake = write_fake(tmp_path, "env_xai.py", envelope_fake(grok_doc()))
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--transport-id", "claude_code.to_xai", *ENVELOPE_ARGS,
+               "--session-evidence", f"grok-session-v1:{session_dir}",
+               "--session-id", SESSION_UUID))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+
+
+def test_grok_host_outbound_transports_pass_preflight(tmp_path):
+    """`--runtime` names the HOST, never the child, so a grok-hosted
+    dispatch OUT to claude/codex declares no envelope and must not be
+    refused. The suffix is the whole trigger."""
+    fake = write_fake(tmp_path, "happy_grok_host.py", HAPPY)
+    for transport in ("grok.to_claude", "grok.to_openai"):
+        proc, receipt = run_dispatch(
+            tmp_path, [sys.executable, fake],
+            attempt_id=f"gh-{transport.split('.')[1]}",
+            extra=("--runtime", "grok", "--transport-id", transport))
+        assert proc.returncode == 0, proc.stderr
+        assert receipt["result"]["state"] == "SUCCEEDED"
+
+
+def test_envelope_oversized_stdout_is_invalid_output(tmp_path):
+    """The envelope is a GATE surface, so its read is bounded and an
+    over-budget stdout is a typed refusal, not an unbounded parse."""
+    body = ("import sys\n"
+            "sys.stdout.write('{\"stopReason\": \"end_turn\", \"text\": \"')\n"
+            "sys.stdout.write('x' * (4 * 1024 * 1024 + 16))\n"
+            "sys.stdout.write('\"}')\n")
+    fake = write_fake(tmp_path, "env_big.py", body)
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "evidence_oversized" in receipt["result"]["invalid_reasons"]
+    assert receipt["result"]["envelope"]["parse_ok"] is False
+
+
+def test_envelope_text_is_not_serialized_into_receipt(tmp_path):
+    """`text` is an internal field of the read: the raw output already lives
+    in the stdout file, and a receipt carries abbreviated evidence only. The
+    receipt's envelope is exactly five keys."""
+    doc = grok_doc(text="verdict: PASS\nSECRET-PROMPT-ECHO-DO-NOT-COPY")
+    fake = write_fake(tmp_path, "env_text.py", envelope_fake(doc))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=ENVELOPE_ARGS)
+    assert set(receipt["result"]["envelope"]) == {
+        "parse_ok", "stop_reason", "session_id", "served_models", "error_type"}
+    assert "SECRET-PROMPT-ECHO-DO-NOT-COPY" not in json.dumps(receipt)
+
+
+def test_envelope_recorded_on_failed_exit_without_relabel(tmp_path):
+    """Recording is unconditional, gating is not: a non-zero exit stays
+    FAILED and the error object is still preserved as evidence."""
+    doc = {"type": "error", "message": "auth failed"}
+    fake = write_fake(tmp_path, "env_err.py", envelope_fake(doc, exit_code=1))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=ENVELOPE_ARGS)
+    assert proc.returncode == 1, proc.stderr
+    assert receipt["result"]["state"] == "FAILED"
+    assert receipt["result"]["envelope"]["parse_ok"] is True
+    assert receipt["result"]["envelope"]["error_type"] == "error"
+    assert receipt["result"]["envelope"]["stop_reason"] is None
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def test_envelope_collection_never_relabels_timeout(tmp_path):
+    """A clean end_turn envelope written during the grace period is still a
+    late fragment — TIMED_OUT wins, and the envelope is recorded beneath it."""
+    body = (
+        "import json, signal, sys, time\n"
+        "def bail(*_):\n"
+        f"    sys.stdout.write({json.dumps(grok_doc())!r})\n"
+        "    sys.stdout.flush()\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, bail)\n"
+        "time.sleep(60)\n"
+    )
+    fake = write_fake(tmp_path, "env_late.py", body)
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 deadline=1.0, grace=2.0, schema="none",
+                                 extra=ENVELOPE_ARGS, harness_timeout=30)
+    assert proc.returncode == 3, proc.stderr
+    assert receipt["result"]["state"] == "TIMED_OUT"
+    assert receipt["result"]["envelope"]["stop_reason"] == "end_turn"
+    assert receipt["result"]["schema_valid"] is None
+
+
+def test_envelope_collection_never_relabels_termination_unconfirmed(tmp_path):
+    """TERMINATION_UNCONFIRMED is the one state that holds a write-capable
+    retry, so no new gate — envelope included — may relabel it. Direct-state
+    simulation stands in for a concurrent `cancel`, as elsewhere in this
+    file."""
+    fake = write_fake(tmp_path, "env_sleep.py", SLEEPER)
+    attempt_id = "envtu"
+    receipt_dir = tmp_path / "receipts"
+    supervisor = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "run",
+         "--attempt-id", attempt_id, "--receipt-dir", str(receipt_dir),
+         "--deadline-seconds", "1", "--grace-seconds", "1",
+         "--seat", "worker", "--output-schema", "none", *ENVELOPE_ARGS,
+         "--", sys.executable, str(fake)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    receipt_path = receipt_dir / f"{attempt_id}.json"
+    for _ in range(100):
+        if receipt_path.exists():
+            if json.loads(receipt_path.read_text())["result"]["state"] == "RUNNING":
+                break
+        time.sleep(0.05)
+    else:
+        supervisor.kill()
+        pytest.fail("supervisor never reached RUNNING")
+    on_disk = json.loads(receipt_path.read_text())
+    on_disk["result"]["state"] = "TERMINATION_UNCONFIRMED"
+    on_disk["result"]["termination_confirmed"] = False
+    receipt_path.write_text(json.dumps(on_disk))
+    supervisor.wait(timeout=30)
+    assert json.loads(receipt_path.read_text())["result"]["state"] == \
+        "TERMINATION_UNCONFIRMED"
+
+
+def test_expect_effective_agent_without_session_evidence_is_refused_pre_spawn(
+        tmp_path):
+    """An expectation with nothing to compare against would be silently
+    ignored — `--expect-effective-agent` reads `summary.agent_name`, which
+    only `--session-evidence` supplies."""
+    fake = write_fake(tmp_path, "happy_agent.py", HAPPY)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--expect-effective-agent", "general-purpose"))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+
+
+@pytest.mark.parametrize("bad", [
+    ("--session-evidence", "no-colon-here"),
+    ("--session-evidence", "unknown-format-v9:/tmp"),
+    ("--session-evidence", "grok-session-v1:"),
+])
+def test_session_evidence_syntax_is_validated_pre_spawn(tmp_path, bad):
+    """Task 1 owns the grammar of the three session args; Task 3 owns what
+    they mean at grading time."""
+    fake = write_fake(tmp_path, "happy_se.py", HAPPY)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=(*bad, "--session-id", SESSION_UUID))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+
+
+def test_session_id_must_be_a_uuid_pre_spawn(tmp_path):
+    fake = write_fake(tmp_path, "happy_sid.py", HAPPY)
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=("--session-id", "not-a-uuid"))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
