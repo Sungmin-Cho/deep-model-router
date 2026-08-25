@@ -661,7 +661,49 @@ transports:
       isolation: separate_process
       verified: true
     to_xai:
-      mechanism: "grok --no-auto-update -p \"<prompt>\" -m <id> --effort <native-effort> --output-format plain -s <fresh-uuid>"
+      # Seat profiles, not one mechanism: a read-only reviewer and a
+      # write-capable maker need opposite tool surfaces, and a headless
+      # grok turn that meets a permission prompt it cannot show CANCELS
+      # and still exits 0. See references/adapters.md "Grok seat
+      # profiles" and the 2026-08-25 design (DD-4).
+      #
+      # Common to every seat: --output-format json (the supervisor's
+      # --output-envelope grades stopReason), -s <fresh-uuid> (the same
+      # value goes to --session-id, which binds the session evidence to
+      # the attempt), and --prompt-file /dev/stdin. The prompt leaves
+      # argv entirely: --prompt-file alone triggers headless mode
+      # (probe F, [UG-14]), and the supervisor wires the prompt file to
+      # the child's stdin, so there is no quoting hazard left to get
+      # wrong.
+      #
+      # Reviewer: the tool surface IS the control, not the mode. A
+      # --tools whitelist removes the terminal tool outright (g4/P-3),
+      # so there is nothing to cancel the turn over; --deny closes the
+      # MCP meta-tool --tools leaves behind, and a denied call returns
+      # a refusal instead of killing the turn (g5). --sandbox read-only
+      # completed cleanly (P-10) and is shipped as a further reduction
+      # of the prompt-injection read surface.
+      #
+      # mechanism_maker is DELIBERATELY ABSENT — it did not pass its
+      # shipping gate and there is no grok maker argv of record in this
+      # release. The write axis passed (P-6: path-scoped
+      # --allow "Write(./**)"/"Edit(./**)" completes; P-7: the same
+      # with --sandbox workspace completes and the session summary
+      # confirms sandbox_profile: workspace). The ESCAPE-DENIAL axis
+      # failed: probed 2026-08-25 on grok 1.0.5 / darwin, --sandbox
+      # workspace blocks a write through a SYMLINK out of the cwd
+      # (EPERM, target inode and digest unchanged) but does NOT block a
+      # write through a HARD LINK inside the cwd — for both Write and
+      # Edit the tool call succeeded and the external inode's contents
+      # were overwritten. A hard link is an ordinary regular file, so it
+      # satisfies both the lexical path rule and the sandbox path check.
+      # Full ledger: docs/design/reviews/2026-08-25-grok-seat-integrity/
+      # probes/LEDGER-implementation.md (gitignored local archive).
+      # This blocks grok maker dispatch at Layer B (no recipe to
+      # follow), NOT at the router — see the adapters.md xai fallback
+      # row for --unavailable-models, and design §7 for the deferred
+      # router/transport coupling.
+      mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
       isolation: separate_process
       verified: true
   codex:
@@ -671,7 +713,51 @@ transports:
       isolation: separate_process
       verified: true
     to_xai:
-      mechanism: "grok --no-auto-update -p \"<prompt>\" -m <id> --effort <native-effort> --output-format plain -s <fresh-uuid>"
+      # Same argv — argv is host-independent — but `verified` stays
+      # per direction: the probes ran from a Claude Code host only.
+      # Seat profiles, not one mechanism: a read-only reviewer and a
+      # write-capable maker need opposite tool surfaces, and a headless
+      # grok turn that meets a permission prompt it cannot show CANCELS
+      # and still exits 0. See references/adapters.md "Grok seat
+      # profiles" and the 2026-08-25 design (DD-4).
+      #
+      # Common to every seat: --output-format json (the supervisor's
+      # --output-envelope grades stopReason), -s <fresh-uuid> (the same
+      # value goes to --session-id, which binds the session evidence to
+      # the attempt), and --prompt-file /dev/stdin. The prompt leaves
+      # argv entirely: --prompt-file alone triggers headless mode
+      # (probe F, [UG-14]), and the supervisor wires the prompt file to
+      # the child's stdin, so there is no quoting hazard left to get
+      # wrong.
+      #
+      # Reviewer: the tool surface IS the control, not the mode. A
+      # --tools whitelist removes the terminal tool outright (g4/P-3),
+      # so there is nothing to cancel the turn over; --deny closes the
+      # MCP meta-tool --tools leaves behind, and a denied call returns
+      # a refusal instead of killing the turn (g5). --sandbox read-only
+      # completed cleanly (P-10) and is shipped as a further reduction
+      # of the prompt-injection read surface.
+      #
+      # mechanism_maker is DELIBERATELY ABSENT — it did not pass its
+      # shipping gate and there is no grok maker argv of record in this
+      # release. The write axis passed (P-6: path-scoped
+      # --allow "Write(./**)"/"Edit(./**)" completes; P-7: the same
+      # with --sandbox workspace completes and the session summary
+      # confirms sandbox_profile: workspace). The ESCAPE-DENIAL axis
+      # failed: probed 2026-08-25 on grok 1.0.5 / darwin, --sandbox
+      # workspace blocks a write through a SYMLINK out of the cwd
+      # (EPERM, target inode and digest unchanged) but does NOT block a
+      # write through a HARD LINK inside the cwd — for both Write and
+      # Edit the tool call succeeded and the external inode's contents
+      # were overwritten. A hard link is an ordinary regular file, so it
+      # satisfies both the lexical path rule and the sandbox path check.
+      # Full ledger: docs/design/reviews/2026-08-25-grok-seat-integrity/
+      # probes/LEDGER-implementation.md (gitignored local archive).
+      # This blocks grok maker dispatch at Layer B (no recipe to
+      # follow), NOT at the router — see the adapters.md xai fallback
+      # row for --unavailable-models, and design §7 for the deferred
+      # router/transport coupling.
+      mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
       isolation: separate_process
       verified: false
   grok:
@@ -824,6 +910,61 @@ verification_ledger:
       status: verified
       probed_on: 2026-08-14
       evidence: "trivial round-trip succeeded; runs as a separate process"
+
+    - item: "Grok reviewer seat recipe (transports.*.to_xai.mechanism_reviewer)"
+      status: verified
+      probed_on: 2026-08-25
+      evidence: >
+        grok 1.0.5 (5115b46bc909) on darwin, Claude Code host. P-3: the
+        --tools read_file,list_dir,grep whitelist is sufficient for a review
+        prompt (list + read + verdict, no missing-tool complaint). P-4: the
+        official spelling --disallowed-tools run_terminal_cmd DOES remove the
+        terminal tool (the 2026-08-25 design's probe D failure was a
+        misspelling, not an ineffective denylist) — the whitelist stays the
+        primary recipe and the denylist an alternative. P-5: the full recipe
+        including --deny MCPTool and --disable-web-search completes with a
+        verdict. P-10: adding --sandbox read-only still completes, and the
+        session summary reports sandbox_profile: read-only, so it ships.
+        All four turns ended stopReason: end_turn.
+
+    - item: "Grok maker seat recipe (transports.*.to_xai.mechanism_maker)"
+      status: not_shipped
+      probed_on: 2026-08-25
+      evidence: >
+        grok 1.0.5 (5115b46bc909) on darwin. Write axis PASSED — P-6: the
+        path-scoped rules --allow "Write(./**)" --allow "Edit(./**)" complete
+        a file creation (end_turn); P-2: --allow "Edit(./**)" maps to the
+        edit tool and modifies an existing file; P-7: the same recipe plus
+        --sandbox workspace completes and the summary reports
+        sandbox_profile: workspace. Escape-denial axis FAILED — P-9, run with
+        the final shipping-candidate argv (sandbox included), planted an
+        alias inside the cwd pointing at an external file and induced both a
+        Write and an Edit through it. Through a SYMLINK both were blocked
+        (tool_started + permission allow, then tool_completed outcome=error
+        "Operation not permitted"; external inode and SHA-256 unchanged).
+        Through a HARD LINK both SUCCEEDED and overwrote the external inode's
+        contents (inode identical, digest changed) — a hard link is an
+        ordinary regular file, so it passes both the lexical path rule and
+        the sandbox path check. Positive tool-call evidence exists in all
+        four cases, so the "no attempt was made" re-probe clause does not
+        apply. Per the plan's two-axis gate the maker seat is NOT SHIPPED in
+        this release; the reviewer seat, the envelope contract and the
+        artifact contract ship independently. Results are machine- and
+        platform-specific (darwin) — re-probe on any other platform.
+
+    - item: "Grok headless prompt delivery through the supervisor"
+      status: verified
+      probed_on: 2026-08-25
+      evidence: >
+        P-8, two passes, grok 1.0.5. dispatch_agent.py run --prompt-file
+        <regular file> -- grok ... --prompt-file /dev/stdin delivered the
+        prompt and returned stopReason: end_turn. This closes the gap left by
+        probe F, which used a PIPE stdin while the production path is a
+        regular-file fd ([UG-14] states a piped stdin is not read as a
+        prompt). The second pass, with --output-envelope and
+        --session-evidence declared, was graded SUCCEEDED with
+        served_models: ["grok-4.6-build"] and the session id cross-proved
+        between stdout and summary.json.
 
     - item: "claude -p --effort flag"
       status: verified

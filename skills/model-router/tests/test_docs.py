@@ -46,23 +46,104 @@ def test_docs_never_invoke_the_router_cwd_relative():
 # hazards (DD-4)
 # ---------------------------------------------------------------------------
 
-def test_every_bridge_mechanism_carries_a_quoted_prompt_and_no_pipe():
-    """`codex exec` with no prompt argument waits on stdin — a background
-    shell with stdin open never reaches the model, and to the caller that is
-    indistinguishable from an unresponsive model. An unquoted <prompt>
-    word-splits, and a literal alternation inside a template is a shell pipe
-    when pasted. Every `codex exec` mechanism must also carry a sandbox
+def _mechanisms(spec):
+    """Every machine string in one transport entry, seat-aware.
+
+    A transport carries either a single `mechanism` or one `mechanism_<seat>`
+    per seat profile (2026-08-25 design DD-4: a read-only reviewer and a
+    write-capable maker need opposite tool surfaces, so one string cannot
+    serve both). Collecting whatever keys are PRESENT is deliberate: a seat
+    that did not pass its shipping gate is expressed by omitting its key, and
+    the invariants below must hold conditionally over what actually ships
+    rather than demanding a string that intentionally does not exist.
+    """
+    return {k: v for k, v in spec.items() if k == "mechanism"
+            or k.startswith("mechanism_")}
+
+
+def test_every_bridge_mechanism_delivers_a_prompt_safely_and_has_no_pipe():
+    """A mechanism with no prompt argument at all waits on stdin — a
+    background shell with stdin open never reaches the model, and to the
+    caller that is indistinguishable from an unresponsive model.
+
+    There are now two safe shapes, not one. A quoted `"<prompt>"` keeps the
+    prompt in argv without word-splitting (claude/codex). `--prompt-file
+    /dev/stdin` takes it out of argv entirely (the grok seats): safety there
+    comes not from the string but from the supervisor, which opens the
+    `--prompt-file` and wires it to the child's stdin — and passes
+    /dev/null when no prompt file is declared, so waiting on stdin is
+    structurally impossible either way. That is why the original rationale
+    ("a string with no prompt argument waits on stdin") no longer decides
+    this on its own: the grok strings wait on stdin ON PURPOSE.
+
+    A literal alternation inside a template is a shell pipe when pasted, in
+    any shape. And every `codex exec` mechanism must still carry a sandbox
     slot — DD-4's permission-pinning rule applies to all three hosts that
-    bridge into openai, not just the ones written first."""
+    bridge into openai, not just the ones written first.
+    """
     for host, entries in CFG["transports"].items():
         for name, spec in entries.items():
             if name == "native":
                 continue
-            mech = spec["mechanism"]
-            assert '"<prompt>"' in mech, (host, name, mech)
-            assert "|" not in mech, (host, name, mech)
-            if "codex exec" in mech:
-                assert "-s <sandbox>" in mech, (host, name, mech)
+            mechanisms = _mechanisms(spec)
+            assert mechanisms, (host, name, "no mechanism string at all")
+            for key, mech in mechanisms.items():
+                where = (host, name, key, mech)
+                assert '"<prompt>"' in mech \
+                    or "--prompt-file /dev/stdin" in mech, where
+                assert "|" not in mech, where
+                if "codex exec" in mech:
+                    assert "-s <sandbox>" in mech, where
+
+
+def test_grok_seat_profiles_pin_the_probed_tokens():
+    """The recipes are what the probe ledger actually verified, so the tokens
+    that carry the safety are pinned rather than left to drift.
+
+    Reviewer: `--tools` removes the terminal tool at the source (a tool the
+    model cannot see cannot cancel the turn), `--deny MCPTool` closes the
+    meta-tool `--tools` leaves behind, and `--output-format json` is what
+    makes the supervisor's envelope gate possible at all.
+
+    Maker: asserted only IF PRESENT. It is absent in this release — the
+    escape-denial axis of its shipping gate failed (a hard link inside the
+    cwd defeats both the path rule and `--sandbox workspace`), so there is
+    no maker argv of record. `mechanism_reviewer`, by contrast, is required
+    unconditionally: issue #14's misjudgement is removed by the reviewer
+    seat plus the envelope and artifact contracts, with or without a maker.
+    """
+    for host in ("claude_code", "codex"):
+        spec = CFG["transports"][host]["to_xai"]
+        reviewer = spec["mechanism_reviewer"]
+        for token in ("--output-format json", "-s <fresh-uuid>",
+                      "--tools read_file,list_dir,grep", "--deny MCPTool",
+                      "--disable-web-search", "--prompt-file /dev/stdin"):
+            assert token in reviewer, (host, token, reviewer)
+        assert "-p " not in reviewer, host
+        maker = spec.get("mechanism_maker")
+        if maker is not None:
+            for token in ("--agent", '--allow "Write(./**)"',
+                          '--allow "Edit(./**)"', "--output-format json",
+                          "--prompt-file /dev/stdin"):
+                # Quoted: the parentheses in a rule argument are shell
+                # metacharacters, so an unquoted form is a syntax error the
+                # moment anyone pastes it.
+                assert token in maker, (host, token, maker)
+
+
+def test_adapters_fences_mirror_the_grok_seat_strings():
+    """"Fences mirror the YAML" is an existing contract; this pins it for the
+    two strings this tranche replaces. Token-wise, not byte-wise: the fence
+    wraps for width, so a whitespace-insensitive comparison is the honest
+    one. Scope is deliberately these two — generalizing to every fence in
+    the file is a separate change."""
+    text = (SKILL / "references" / "adapters.md").read_text()
+    fence_tokens = set(text.split())
+    for host in ("claude_code", "codex"):
+        spec = CFG["transports"][host]["to_xai"]
+        for key, mech in _mechanisms(spec).items():
+            missing = [tok for tok in mech.split() if tok not in fence_tokens]
+            assert not missing, (host, key, missing)
 
 
 # ---------------------------------------------------------------------------

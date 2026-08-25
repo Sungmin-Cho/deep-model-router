@@ -143,7 +143,7 @@ Verification is per direction, not a blanket "the bridges work":
 
 - Claude Code → openai (`codex exec`) — verified
 - Codex → claude (`claude -p`) — verified
-- Claude Code → xai (`grok -p`) — verified
+- Claude Code → xai (the grok reviewer seat profile) — verified
 - Codex → xai, grok → claude, grok → openai — assumed (same mechanisms, the
   hosted direction was not probed)
 
@@ -160,7 +160,9 @@ background bridge has no TTY, so an approval prompt is a hang that looks
 exactly like a slow model. Decide the mode up front, pass it explicitly
 (`--permission-mode` / `-s <sandbox>` / the grok approval flags), and record
 it in the dispatch receipt. The far side of a bridge keeps its own
-sandbox/approval config — verify the effective mode at preflight.
+sandbox/approval config — verify the effective mode at preflight. For grok
+the mode is the weakest of these levers, and "Grok seat profiles" below
+explains what carries the control instead.
 
 **Fences mirror the YAML.** Every command fence in this section is Layer B's
 prose rendering of the matching `transports` mechanism in
@@ -189,16 +191,25 @@ codex exec -m <id> \
 Runs as a separate process with a fresh session — isolation holds by
 construction.
 
-**To xai models:**
+**To xai models:** one string per SEAT, not one per transport — see "Grok
+seat profiles" below for why. The reviewer seat is what this release ships:
 
 ```bash
-grok --no-auto-update -p "<prompt>" -m <id> \
-    --effort <native-effort> \
-    --output-format plain -s <fresh-uuid>
+grok --no-auto-update -m <id> --effort <native-effort> \
+    --output-format json -s <fresh-uuid> \
+    --permission-mode plan \
+    --tools read_file,list_dir,grep --deny MCPTool \
+    --disable-web-search --sandbox read-only \
+    --prompt-file /dev/stdin
 ```
 
 `<native-effort>` is one of `low`, `medium`, `high`, `xhigh` — the family's
 native token from the effort map above, never the conceptual level.
+`<fresh-uuid>` is the same value the supervisor gets as `--session-id`.
+
+There is **no maker seat string in this release.** It did not pass its
+shipping gate (see "Grok seat profiles"), so no grok write-capable dispatch
+has a recipe of record.
 
 Also a separate process with a fresh session.
 
@@ -221,8 +232,119 @@ claude -p --model <id> \
 Also a separate process with a fresh session. `--effort` is required: without
 it the band's level does not cross the bridge.
 
-**To xai models:** same `grok -p` command as above. The mechanism is verified
-from Claude Code; the Codex-hosted direction is assumed.
+**To xai models:** the same seat strings as above — argv does not depend on
+the host. Verification does: the seat probes ran from a Claude Code host, so
+the Codex-hosted direction stays assumed and the YAML keeps `verified: false`
+for it.
+
+### Grok seat profiles
+
+Grok is the one bridge where the transport needs **two** machine strings, and
+where the permission mode is not the control. What follows is the probe
+ledger's summary; it was measured on grok 1.0.5 (5115b46bc909), darwin,
+2026-08-25. These findings are machine- and platform-specific — re-probe on
+any other platform before relying on them.
+
+**A cancelled turn exits 0.** A headless grok run has no TTY, so a tool call
+that needs approval it cannot prompt for is *cancelled*, ending the turn with
+`stopReason: "cancelled"` — and the process still exits 0. Nothing about the
+exit status distinguishes that from a finished turn, which is why every grok
+dispatch declares `--output-envelope grok-headless-json-v1` and the
+supervisor grades the stdout document instead. `end_turn` alone is a success
+candidate; everything else fails closed.
+
+**Cancellation is not a function of the mode alone.** It is a function of
+(mode x tool surface x the built-in read-only command list x allow/deny rules
+x which tool the model happens to reach for). In the same `plan` mode `ls`
+was approved from the built-in list while `echo` cancelled the turn. No
+recipe can promise "this never cancels", which is exactly why detection lives
+in the supervisor and not in the recipe.
+
+**Deny survives; ask cancels.** A call blocked by a `--deny` rule returns a
+refusal to the model and the turn continues. A call with no matching rule has
+to ask, cannot, and kills the turn. So the reviewer strategy is not to deny
+the dangerous tools but to remove them from the model's view entirely with a
+`--tools` whitelist — and `--deny MCPTool` closes the MCP meta-tool that
+`--tools` leaves behind.
+
+**`--permission-mode` is accepted for Claude compatibility.** Treat it as a
+label, not a boundary. The documented `acceptEdits` ("file edits without a
+prompt") did not authorize a headless write in 1.0.5 — an explicit
+`--allow` rule did — and the documented "deny and continue" of `dontAsk`
+cancelled the turn instead. Where the docs and the CLI disagreed, this
+ledger follows the CLI.
+
+**The prompt leaves argv.** `--prompt-file /dev/stdin` alone triggers
+headless mode (no `-p` needed), and the supervisor wires its own
+`--prompt-file` to the child's stdin. Note this was confirmed for a
+regular-file fd, not only a pipe — the official docs state a piped stdin is
+*not* read as a prompt, and the production path is a regular file.
+
+**The reviewer seat ships.** `--tools read_file,list_dir,grep` is sufficient
+for a review prompt, and the full recipe including `--deny MCPTool`,
+`--disable-web-search` and `--sandbox read-only` completes with a verdict.
+
+**The maker seat does not ship in this release.** Its gate has two axes and
+only one passed. Writing works: path-scoped `--allow "Write(./**)"` and
+`--allow "Edit(./**)"` complete a create and an edit, with or without
+`--sandbox workspace`. Escape denial does not: with a symlink inside the cwd
+pointing outside it, the sandbox blocked the write (EPERM, external file
+untouched) — but with a **hard link** inside the cwd, both a Write and an
+Edit succeeded and overwrote the external file's contents. A hard link is an
+ordinary regular file, so it satisfies the lexical path rule and the
+sandbox's path check alike, and the official docs already note that the
+direct file tools do not resolve links. Until that is closed, there is no
+grok maker recipe of record; this blocks maker *dispatch* at Layer B, not
+model selection at the router (see the xai fallback row).
+
+**Rule arguments must be quoted.** `Write(./**)` unquoted is a shell syntax
+error — the parentheses are metacharacters. The YAML and these fences carry
+the quotes for that reason.
+
+**`bypassPermissions` / `--always-approve` are not recipe defaults.** Both
+bypass approval wholesale, and both can be disabled machine-wide by an
+administrator lock (`disable_bypass_permissions_mode`), so a YOLO fallback is
+not even available everywhere. Use them only in a disposable isolated
+worktree where the caller explicitly accepts the risk.
+
+#### Deriving the session evidence directory
+
+The supervisor never derives this path — the caller declares it as
+`--session-evidence grok-session-v1:<dir>`. The derivation is Layer B
+knowledge, and the layout is officially documented:
+
+```
+$GROK_HOME/sessions/<URL-encoded-cwd>/<session-uuid>/
+```
+
+`$GROK_HOME` defaults to `~/.grok`. The **cwd is the grok child's cwd**, and
+the supervisor passes no `cwd=` to `Popen`, so it is the supervisor's own cwd.
+`<session-uuid>` is the value given to grok's `-s` — pass the same value to
+`--session-id`, which is what binds the evidence to the attempt.
+
+**Keep the dispatch cwd short.** If the URL-encoded cwd exceeds 255 bytes the
+layout falls back to a slug+hash directory with an inner `.cwd` file, and
+simple derivation stops working. Orchestrator scratch and worktree paths can
+get long, so treat "encoded cwd ≤ 255 bytes" as a Layer B preflight rule.
+Past that, discover the directory by matching `.cwd` inside the group
+directory after the turn, or leave the seat fail-closed — a failed derivation
+surfaces as `session_evidence_unreadable`, never as a silent success.
+
+#### What the evidence can and cannot show
+
+`summary.json` carries `agent_name` (an officially documented field) and
+`info.id`; `sandbox_profile` is unofficial but present in practice, and the
+supervisor records it and gates on it only when the caller declares
+`--expect-sandbox-profile`. `events.jsonl` is **not** in the documented
+layout, so its terminal `turn_ended` is recorded opportunistically and never
+gates.
+
+The **effective permission mode is not observable at all.** grok 1.0.5
+records it nowhere — not in stdout, not in `summary.json`, not in
+`events.jsonl`. The effective agent name, the effective sandbox profile and
+the cancellation event are the most a receipt can prove about applied policy,
+and that is the boundary of the "requested vs effective" evidence this
+adapter can offer.
 
 ### grok
 
@@ -305,6 +427,40 @@ the route JSON's same-named fields, `--transport-id` is the path key in the
 config `transports` table (e.g. `claude_code.to_openai`), and
 `--host-cli-version` is passed only when the caller already knows it.
 
+**Declaration consistency, and its documented edge.** A `--transport-id`
+ending `.to_xai` must also declare `--output-envelope` and
+`--session-evidence`; the supervisor refuses a partial set **before spawn**
+(exit 2, no receipt, no attempt-id consumed), and `verify-evidence` refuses a
+complete absence at the moment such a receipt would become review evidence.
+The suffix is the whole trigger: `--runtime` names the HOST everywhere in
+this skill, so keying off `--runtime grok` would refuse grok-*hosted*
+dispatches out to claude/codex — which produce no envelope — while doing
+nothing for the case that matters (a Claude Code host dispatching *into*
+grok).
+
+What remains outside is a dispatch that declares **nothing**. The supervisor
+could only tell that child is grok by parsing its argv, and it never parses
+argv — argv is recorded in the receipt for an auditor to check instead. That
+residue is owned by the Layer B recipe and the evidence chain, and it is
+stated here so it is a documented boundary rather than a silent one.
+Applying a contract the caller *did* declare is a different thing entirely,
+and the same thing `--output-schema review` has always done.
+
+**Artifact paths are attempt-exclusive — a caller contract.** Every
+`--require-artifact` path and the `--artifact-root` that fences them belong
+to exactly one attempt. Never point two concurrent attempts at the same path
+or the same root. The supervisor proves the file *changed* since its
+pre-spawn baseline; it cannot prove *this attempt* is what changed it, so a
+shared path lets one attempt's work be recorded as another's proof. A
+mechanical per-attempt lease is deliberately deferred (design §7); until it
+exists, this paragraph is the whole of the guarantee.
+
+**Compatibility with 1.4.x receipts.** A `to_xai` receipt written before this
+contract existed carries no envelope and no session evidence. It was valid
+under its own contract and it will fail today's `verify-evidence` — an
+intended, narrow, fail-closed window. Verify an older evidence set with the
+`verify-evidence` of the version that produced it.
+
 ### Launch is not completion
 
 A background spawn returns a handle. The result exists only when the
@@ -362,6 +518,34 @@ python3 "$SKILL_DIR"/scripts/dispatch_agent.py run \
        -s read-only --skip-git-repo-check -
 ```
 
+For a grok seat, the same invocation additionally declares the envelope, the
+session evidence and (for any seat shipping a `--sandbox` flag) the expected
+effective profile:
+
+```bash
+python3 "$SKILL_DIR"/scripts/dispatch_agent.py run \
+    --attempt-id r1-b2c9 --receipt-dir receipts/ \
+    --deadline-seconds 600 --seat reviewer-1 --runtime claude_code \
+    --model-id <resolved-id> --effort-native <native-effort> \
+    --transport-id claude_code.to_xai \
+    --output-envelope grok-headless-json-v1 \
+    --session-evidence grok-session-v1:$HOME/.grok/sessions/<enc-cwd>/<uuid> \
+    --session-id <uuid> \
+    --expect-sandbox-profile read-only \
+    --prompt-file r1-prompt.txt --output-schema review \
+    -- grok --no-auto-update -m <resolved-id> --effort <native-effort> \
+       --output-format json -s <uuid> --permission-mode plan \
+       --tools read_file,list_dir,grep --deny MCPTool \
+       --disable-web-search --sandbox read-only \
+       --prompt-file /dev/stdin
+```
+
+`<uuid>` is one value used three times — grok's `-s`, the supervisor's
+`--session-id`, and the last path segment of the evidence directory. A seat
+that produces files adds `--require-artifact` / `--artifact-root`, and a
+write-capable seat adds `--expect-effective-agent` so a silently inherited
+read-only default agent cannot be recorded as success.
+
 `--prompt-file` feeds the child's stdin (here `codex exec`'s `-` prompt);
 with no prompt file, stdin is /dev/null, so a stdin wait is structurally
 impossible. `status --attempt-id <id> --receipt-dir <dir>` polls;
@@ -383,6 +567,23 @@ truncated `PASS` after a timeout kill is `TIMED_OUT`, never `INVALID_OUTPUT`
 produce a parseable verdict. Either way the review "did not run" —
 re-dispatch it per `review-policy.md` ("A seat that returns no verdict");
 never grade its fragments.
+
+**The envelope is a contract too, and it is graded first.** With
+`--output-envelope grok-headless-json-v1` declared, stdout must be one JSON
+object whose `stopReason` is `end_turn`; `cancelled`, `refusal`,
+`max_tokens`, `max_turn_requests`, any unknown value, an absent field and
+anything that is not a single JSON object are all `INVALID_OUTPUT`. Because
+it is graded *before* the output schema, a cancelled turn that happens to
+have emitted a well-formed verdict is still a cancelled turn — and under
+`review` the verdict grammar applies to the envelope's `text` field, not to
+the raw JSON carrying it. Under schema `none` an empty `text` is fine:
+`--require-artifact` is what proves such a seat finished, since exit 0 with
+some prose on stdout never did.
+
+The cause lands in `result.invalid_reasons`. Reasons naming a cancellation or
+unusable evidence mean the recipe killed the turn, not that the model failed
+— fix the recipe, re-dispatch the same model once, and keep it out of
+`--prior-failures` (`review-policy.md`, "A silence caused by the recipe").
 
 ## Fallback matrices
 
@@ -421,6 +622,17 @@ never fails it.
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `claude_senior` |
 | `principal_architect` (claude) | `claude_architect`, then `claude_senior` |
 | Cross-family reviewer | Strongest available same-family reviewer; set `cross_family_review: false` |
+
+**No verified write-capable xai seat.** The router does not consume transport
+profiles, so the absent maker recipe does not stop it from *selecting* an xai
+model for write-capable work — that block is at Layer B, where there is no
+recipe to dispatch. When you need a write-capable seat and the xai maker is
+unshipped, route around it explicitly: `route_task.py --unavailable-models <the xai
+worker id from the config registry>` (or `--flags bridge_down` if the whole
+xai bridge is out). Read-only
+xai reviewer seats are unaffected. Coupling this mechanically — the router
+avoiding a seat whose transport has no shipped recipe — is deferred to a
+separate tranche (design §7).
 
 ### Degraded bindings
 
