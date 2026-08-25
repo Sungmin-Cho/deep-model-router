@@ -1645,7 +1645,12 @@ def cmd_verify_evidence(args) -> int:
     proves a completed reviewer attempt per seat — not that the transport
     opened distinct real model sessions, which no receipt field can show.
     This is the producer-side check behind route_task.py's exact-count
-    rule — run it BEFORE typing --isolation-evidence."""
+    rule — run it BEFORE typing --isolation-evidence.
+
+    Compatibility: a 1.4.x `to_xai` receipt that survived the upgrade was
+    valid under its own contract but fails the envelope checks below. That
+    is an intended, narrow, fail-closed window — verify an older evidence
+    set with the older `verify-evidence`."""
     receipt_dir = Path(args.receipt_dir)
     ids = [x.strip() for x in args.ids.split(",") if x.strip()]
     # Same chokepoint `run`/`status`/`cancel` use — every id is validated
@@ -1718,6 +1723,37 @@ def cmd_verify_evidence(args) -> int:
             problems.append(f"{attempt_id}: decision_fingerprint is "
                             f"{receipt.get('decision_fingerprint')!r}, not the "
                             f"expected value")
+        # DD-6. Two checks, both about grok's exit-0 cancellation.
+        #
+        # The first is near-tautological beside SUCCEEDED, and that is what
+        # it is for: it catches a hand-assembled evidence set, where the
+        # state word was chosen rather than earned.
+        envelope = receipt.get("result", {}).get("envelope")
+        if envelope is not None and \
+                envelope.get("stop_reason") != ENVELOPE_OK_STOP_REASON:
+            problems.append(
+                f"{attempt_id}: envelope stop_reason is "
+                f"{envelope.get('stop_reason')!r}, not "
+                f"{ENVELOPE_OK_STOP_REASON!r}")
+        # The second is the second net behind the pre-spawn preflight. That
+        # preflight refuses a PARTIAL declaration before the attempt starts;
+        # this refuses a COMPLETE absence at the moment such a receipt is
+        # promoted to review evidence. `transport_id` is a caller
+        # declaration like every other linkage field, so a dispatch that
+        # declares nothing at all is silent to both — that residue belongs
+        # to the Layer B recipe, and adapters.md says so rather than
+        # leaving it implied.
+        transport_id = receipt.get("transport_id") or ""
+        if transport_id.endswith(XAI_TRANSPORT_SUFFIX):
+            for label, value in (("result.envelope", envelope),
+                                 ("session_evidence",
+                                  receipt.get("session_evidence"))):
+                if value is None:
+                    problems.append(
+                        f"{attempt_id}: transport_id {transport_id!r} "
+                        f"dispatches into grok but the receipt carries no "
+                        f"{label} — a cancelled grok turn exits 0, so this "
+                        f"receipt cannot show the turn finished")
         declared_models.append(receipt.get("model_id"))
         seats.append(receipt.get("seat"))
     if len(seats) != len(set(seats)):

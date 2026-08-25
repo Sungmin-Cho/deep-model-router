@@ -2313,3 +2313,110 @@ def test_reasons_from_a_multi_gate_failure_are_all_documented(tmp_path):
         assert dispatch_agent._is_documented_reason(reason), reason
     # No new terminal state was invented for any of it.
     assert receipt["result"]["state"] in dispatch_agent.STATES
+
+
+# ---------------------------------------------------------------------------
+# DD-6 / DD-7 — the evidence chain catches a grok dispatch that forgot to
+# declare its envelope, and the served model is preserved as envelope detail
+# without disturbing the top-level observation pair.
+# ---------------------------------------------------------------------------
+
+
+def _xai_receipt(tmp_path, attempt_id, seat, *, transport_id="claude_code.to_xai",
+                 envelope="end_turn", session_evidence=True):
+    """A SUCCEEDED reviewer receipt shaped like a real to_xai dispatch."""
+    receipts = tmp_path / "receipts"
+    receipts.mkdir(exist_ok=True)
+    payload = {
+        "attempt_id": attempt_id, "seat": seat,
+        "result": {"state": "SUCCEEDED", "schema_valid": True,
+                   "envelope": None, "invalid_reasons": None},
+        "output_schema": "review", "model_id": None,
+        "decision_fingerprint": None, "transport_id": transport_id,
+        "output_envelope": None, "session_evidence": None,
+    }
+    if envelope is not None:
+        payload["output_envelope"] = "grok-headless-json-v1"
+        payload["result"]["envelope"] = {
+            "parse_ok": True, "stop_reason": envelope,
+            "session_id": SESSION_UUID,
+            "served_models": ["grok-4.6-build"], "error_type": None}
+    if session_evidence:
+        payload["session_evidence"] = {
+            "format": "grok-session-v1", "dir": "/tmp/s",
+            "summary": {"agent_name": "grok-build-plan",
+                        "current_model_id": "grok-4.6",
+                        "reasoning_effort": "low", "sandbox_profile": "read-only"},
+            "session_id": SESSION_UUID, "created_at": "2026-08-25T08:50:40.219543Z",
+            "terminal_event": {"outcome": "completed",
+                               "cancellation_category": None}}
+    (receipts / f"{attempt_id}.json").write_text(json.dumps(payload))
+
+
+def test_verify_evidence_accepts_a_complete_to_xai_evidence_set(tmp_path):
+    _xai_receipt(tmp_path, "x1", "reviewer-1")
+    _xai_receipt(tmp_path, "x2", "reviewer-2")
+    proc = _agent(["verify-evidence", "--ids", "x1,x2", "--expect-count", "2"],
+                  tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("missing", ["envelope", "session_evidence"])
+def test_verify_evidence_requires_envelope_for_to_xai_receipts(tmp_path, missing):
+    """A grok dispatch that forgot to declare its envelope produces a receipt
+    that looks like an ordinary success. The pre-spawn preflight refuses a
+    PARTIAL declaration; this is the second net, at the moment such a receipt
+    is promoted to review evidence."""
+    _xai_receipt(tmp_path, "x1", "reviewer-1",
+                 envelope=None if missing == "envelope" else "end_turn",
+                 session_evidence=missing != "session_evidence")
+    _xai_receipt(tmp_path, "x2", "reviewer-2")
+    proc = _agent(["verify-evidence", "--ids", "x1,x2", "--expect-count", "2"],
+                  tmp_path)
+    assert proc.returncode == 1
+    assert "x1" in proc.stderr
+
+
+def test_verify_evidence_rejects_non_end_turn_envelope(tmp_path):
+    """Near-tautological next to SUCCEEDED — and that is the point: it catches
+    a hand-assembled evidence set that a state word alone would not."""
+    _xai_receipt(tmp_path, "x1", "reviewer-1", envelope="cancelled")
+    _xai_receipt(tmp_path, "x2", "reviewer-2")
+    proc = _agent(["verify-evidence", "--ids", "x1,x2", "--expect-count", "2"],
+                  tmp_path)
+    assert proc.returncode == 1
+    assert "cancelled" in proc.stderr
+
+
+def test_verify_evidence_leaves_non_xai_receipts_alone(tmp_path):
+    """The suffix is the trigger here too: claude/codex transports declare no
+    envelope and must not be refused for the absence."""
+    _fake_receipt(tmp_path, "c1", "reviewer-1", "SUCCEEDED")
+    _fake_receipt(tmp_path, "c2", "reviewer-2", "SUCCEEDED")
+    assert _verify(tmp_path, "c1,c2", 2) == 0
+
+
+def test_top_level_observed_pair_stays_null_unavailable_with_served_models_recorded(
+        tmp_path):
+    """DD-7. The served identifier (`grok-4.6-build`) is now observable, but
+    promoting it to the top-level pair would make an honest copy of this
+    receipt fail RouteObservationV1's I-OBS-MODEL rule — or force the
+    observation to lie by recording `unavailable`. The evidence is preserved
+    as envelope detail and the schema bump is a separate tranche."""
+    session_dir = tmp_path / "session"
+    doc = grok_doc()
+    fake = write_fake(
+        tmp_path, "served.py",
+        session_writer(session_dir)
+        + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--model-id", "grok-4.6", *ENVELOPE_ARGS,
+               *session_args(session_dir)))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["envelope"]["served_models"] == ["grok-4.6-build"]
+    assert receipt["model_id"] == "grok-4.6"
+    # Observed as served, recorded verbatim: the supervisor does not
+    # normalize a served identifier against the declared one.
+    assert receipt["observed_model_id"] is None
+    assert receipt["observed_model_source"] == "unavailable"
