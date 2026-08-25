@@ -30,6 +30,17 @@ Design rules this file enforces:
 - Prompts travel by file into the child's stdin; with no prompt file, stdin
   is /dev/null, so waiting on stdin is structurally impossible. argv is
   executed without a shell.
+- The supervisor never parses argv, and applying a DECLARED output contract
+  is not parsing argv. "Never parses argv" means it never infers what the
+  caller did not declare — not that it refuses knowledge the caller handed
+  it explicitly. `--output-schema review` already knows verdict grammar on
+  exactly that basis; `--output-envelope grok-headless-json-v1` knows a
+  version-named stdout document the same way. What stays outside the
+  boundary is the child's identity: a dispatch that declares nothing is a
+  dispatch this supervisor cannot tell is grok, because that would require
+  reading its argv. That residue belongs to the Layer B recipe and the
+  evidence chain, and `references/adapters.md` documents it as a boundary
+  rather than leaving it silent.
 - `--attempt-id` must match a safe identifier grammar before any path is
   built from it, and every path derived from it must resolve inside
   `--receipt-dir` — no `../` escape; every subcommand (`run`, `status`,
@@ -57,12 +68,14 @@ POSIX only: process-group control uses start_new_session and os.killpg.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -99,6 +112,150 @@ ATTEMPT_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 # value a programmatic caller produces by reading a file without stripping,
 # and one this gate then wrote verbatim into a permanent receipt.
 HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+# --- Grok seat integrity (2026-08-25 design, DD-1) ---------------------
+#
+# A headless grok turn that a permission prompt cancelled still exits 0
+# (official semantics, [UG-14]), so the exit status alone cannot tell a
+# finished turn from a killed one. The stdout document can: it carries a
+# `stopReason` from a documented, version-named vocabulary. Declaring
+# `--output-envelope` opts a dispatch into grading that document.
+#
+# This does not breach the supervisor's "never parse argv" rule. That rule
+# says the supervisor never INFERS what the caller did not declare;
+# applying a version-named output contract the caller explicitly declared
+# is the same kind of knowledge `--output-schema review` already encodes
+# about verdict grammar.
+ENVELOPE_FORMATS = ("grok-headless-json-v1",)
+# The envelope is a GATE surface, so its read is bounded: an unbounded
+# JSON parse of a child-controlled file is a denial-of-service surface on
+# the supervisor itself. Over budget is a typed refusal
+# (`evidence_oversized`), never a best-effort partial parse.
+ENVELOPE_MAX_BYTES = 4 * 1024 * 1024
+# The only stop reason that leaves an attempt a success candidate. Every
+# other member of the official vocabulary (`max_tokens`,
+# `max_turn_requests`, `refusal`, `cancelled`), every unknown value, and
+# an absent field all fail closed. The vocabulary is pinned to the
+# envelope VERSION name: a grok upgrade that changes it gets a new
+# envelope version, never a new meaning for this one.
+ENVELOPE_OK_STOP_REASON = "end_turn"
+
+SESSION_EVIDENCE_FORMATS = ("grok-session-v1",)
+
+UUID_RE = re.compile(
+    r"\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
+
+# The sole trigger for the declaration-consistency preflight below.
+# `--runtime` is the HOST throughout this repository (`runtimes:` in the
+# config, SKILL.md, the observation record's RUNTIMES enum), so it says
+# nothing about the child's identity: keying off `--runtime grok` would
+# refuse grok-HOSTED dispatches out to claude/codex, which produce no
+# envelope, while doing nothing for issue #14's actual path (a claude_code
+# host dispatching INTO grok). The child's identity travels in the
+# `to_<target>` half of `--transport-id`.
+XAI_TRANSPORT_SUFFIX = ".to_xai"
+
+# --- Required artifacts (DD-2) ----------------------------------------
+#
+# `output_schema: none` is not proof a seat finished — it is proof nothing
+# was checked. A seat that produces files proves completion by naming them
+# and letting this supervisor verify, before SUCCEEDED, that they exist,
+# are contained, and are THIS attempt's work rather than a prior one's
+# leftovers.
+ARTIFACT_MAX_COUNT = 16
+# Pre-spawn there is no deadline anchor to bound a hash against (the
+# attempt has not started, so there is nothing to time out), so the
+# baseline half is bounded by size instead — per file and in aggregate.
+# The grading half, which does have an anchor, is bounded by the deadline
+# itself (`_hash_artifact`).
+ARTIFACT_BASELINE_MAX_BYTES = 64 * 1024 * 1024
+ARTIFACT_BASELINE_BUDGET_BYTES = 256 * 1024 * 1024
+ARTIFACT_HASH_CHUNK_BYTES = 8 * 1024 * 1024
+
+# --- Session evidence (DD-3) ------------------------------------------
+#
+# The effective agent identity and the effective sandbox profile appear
+# nowhere on stdout — only in the session directory grok writes as it runs.
+# That is what lets a receipt carry REQUESTED and EFFECTIVE side by side,
+# which is the whole of G2: issue #14's "requested acceptEdits, effective
+# grok-build-plan" becomes visible on one page instead of being inferred
+# from an absence.
+#
+# The two surfaces are graded differently on purpose. `summary.json` and
+# its `agent_name`/`info` fields are officially documented [UG-17], so they
+# GATE. `events.jsonl` is not in the documented layout at all, so it is
+# recorded when available and never gates — including on the size axis.
+SUMMARY_MAX_BYTES = 1024 * 1024
+EVENTS_TAIL_BYTES = 256 * 1024
+
+# --- The `result.invalid_reasons` vocabulary (DD-5) --------------------
+#
+# No new terminal state: a cancelled turn, a violated envelope, missing
+# artifacts and unbindable session evidence all converge on the existing
+# INVALID_OUTPUT (exit 6) — "an attempt that finished inside its deadline
+# with exit 0 but did not produce the contracted output", which is what
+# INVALID_OUTPUT already meant. `STATES`, `EXIT_BY_STATE` and the
+# documented state machine stay invariant; the CAUSE is what gains
+# resolution, and it lives here.
+#
+# That distinction is operationally load-bearing. An INVALID_OUTPUT whose
+# reasons name a cancellation or unreadable evidence is a seat RECIPE or
+# transport defect, not a model capability failure — re-dispatch the same
+# model once after fixing the recipe, and do not report it through
+# `--prior-failures` as if the model had failed. `references/
+# review-policy.md` carries that guidance for orchestrators.
+#
+# A reason is either an exact member of the first tuple, or
+# `"<prefix>:<detail>"` for a prefix in the second. `_reason` is the only
+# constructor for the parameterized form and REFUSES an unregistered
+# prefix, so the vocabulary cannot drift by someone f-stringing a new one
+# in at a call site.
+INVALID_REASON_FLAGS = (
+    "envelope_unparseable",         # stdout was not one JSON object
+    "evidence_oversized",           # a gate surface exceeded its budget
+    "schema_invalid",               # --output-schema was not satisfied
+    "session_evidence_unreadable",  # declared, but summary.json is not there
+    "session_evidence_unbound",     # evidence belongs to some other attempt
+)
+INVALID_REASON_PREFIXES = (
+    "envelope_stop_reason",         # :<the non-end_turn value>
+    "artifact_missing",             # :<path>
+    "artifact_empty",               # :<path>
+    "artifact_not_regular_file",    # :<path> — symlink, FIFO, device
+    "artifact_escaped_root",        # :<path>
+    "artifact_unchanged",           # :<path> — a prior attempt's leftover
+    "artifact_multiply_linked",     # :<path> — a second name for the inode
+    "artifact_identity_replaced",   # :<path> — not the inode pinned pre-spawn
+    "artifact_reservation_cleanup_failed",  # :<path> — the supervisor's own
+                                    # pre-spawn reservation is still on disk
+                                    # because withdrawing it failed
+    "artifact_sha256_mismatch",     # :<path>
+    "effective_agent_mismatch",     # :<observed agent_name>
+    "effective_sandbox_mismatch",   # :<observed sandbox_profile>
+    "session_terminal_event",       # :<non-completed turn_ended outcome>
+)
+
+
+def _reason(prefix: str, detail: object) -> str:
+    """Build one parameterized `invalid_reasons` member.
+
+    Raises on an unregistered prefix rather than accepting it: a vocabulary
+    that anyone can extend at a call site is not a vocabulary, and the
+    consumers of these strings (retry policy, review policy) key off the
+    prefix.
+    """
+    if prefix not in INVALID_REASON_PREFIXES:
+        raise ValueError(f"undocumented invalid_reason prefix {prefix!r}")
+    text = "" if detail is None else str(detail)
+    return f"{prefix}:{text or '<absent>'}"
+
+
+def _is_documented_reason(reason: str) -> bool:
+    if reason in INVALID_REASON_FLAGS:
+        return True
+    prefix, sep, _ = reason.partition(":")
+    return bool(sep) and prefix in INVALID_REASON_PREFIXES
 
 
 def _utcnow() -> str:
@@ -231,6 +388,829 @@ def _validate_output(stdout_path: Path, output_schema: str) -> tuple[bool, str |
     return True, digest
 
 
+class NotARegularFile(OSError):
+    """An evidence path resolved to something that is not a regular file.
+
+    Distinct from a plain OSError so callers can tell "this is a FIFO,
+    device or symlink" (a containment/blocking hazard) from "this is
+    missing" (an ordinary absent artifact) — the two get different
+    `invalid_reasons`.
+    """
+
+
+def _open_regular(path: Path) -> tuple[int, os.stat_result]:
+    """Open an evidence file for reading, refusing anything that is not a
+    regular file — and refusing it WITHOUT blocking.
+
+    Three flags carry the whole rule. O_NOFOLLOW refuses a symlink hop, so
+    a link planted at an artifact path cannot make this process read (or
+    attest to) a file outside the root. O_NONBLOCK means a FIFO planted
+    there opens immediately instead of waiting for a writer that never
+    comes — an ordinary open() would hold the terminal receipt past the
+    deadline, which is exactly the hazard the deadline exists to prevent.
+    The fstat is on the SAME fd that was opened, not a second stat of the
+    pathname: a path checked and then reopened is a TOCTOU window, an fd
+    checked and then read is not.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        raise
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise NotARegularFile(f"{path} is not a regular file")
+    return fd, st
+
+
+def _contained(path: Path, root: Path) -> bool:
+    """Containment against an already-resolved, PINNED root."""
+    return path == root or root in path.parents
+
+
+def _hash_artifact(fd: int, deadline_monotonic: float | None) -> str | None:
+    """SHA-256 of an open regular file, in chunks, re-checking the remaining
+    deadline budget between them. Returns None when the budget ran out.
+
+    A digest is either complete or absent: a partial hash recorded as if it
+    were the file's identity would be worse than no hash at all. Bounding
+    this is what keeps an enormous or sparse artifact from delaying a
+    terminal receipt indefinitely — DD-2's replacement for the draft's
+    "the hash is contractually unbounded".
+    """
+    digest = hashlib.sha256()
+    with os.fdopen(fd, "rb") as f:
+        while True:
+            if deadline_monotonic is not None and \
+                    time.monotonic() > deadline_monotonic:
+                return None
+            chunk = f.read(ARTIFACT_HASH_CHUNK_BYTES)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+
+
+def _deadline_expired(deadline_monotonic: float) -> bool:
+    """The final deadline re-check, immediately before SUCCEEDED is written.
+
+    Grading itself consumes time — several file hashes, JSON and JSONL
+    parsing — so an attempt whose leader exited comfortably early can still
+    cross its own deadline while being graded. DD-9's invariant is about
+    when grading FINISHES, not only when the leader exited. A named helper
+    rather than an inline comparison so a test can make the crossing
+    deterministic instead of racing a real clock.
+    """
+    return time.monotonic() > deadline_monotonic
+
+
+# --- Artifact IDENTITY: the pin (DD-2, R2-C1) ---------------------------
+#
+# `st_nlink` is sampled at exactly two instants — the pre-spawn baseline and
+# grading — and the child owns everything in between. That gap is a whole
+# attack, not an edge case: hard-link an outside inode at the required path,
+# write through it, unlink that name, drop a fresh single-linked decoy, and
+# both samples read 1 while an external file was overwritten under a
+# `contained: true` / `changed: true` SUCCEEDED receipt.
+#
+# The fix is an IDENTITY the supervisor holds across the gap rather than two
+# samples of a property. Before spawn every required path is pinned to one
+# `(st_dev, st_ino)`: an existing artifact to its own inode, an ABSENT one to
+# a reservation this supervisor creates with O_CREAT|O_EXCL. Grading requires
+# the required path to still name that inode.
+#
+# The parent holds an open descriptor on the pinned inode for the whole
+# attempt, and that is not bookkeeping: an unlinked inode's NUMBER is free
+# for the next file created, so a pin that had already been closed would let
+# a recycled number read as "the same artifact". Holding the descriptor keeps
+# the inode allocated, which is what makes the comparison mean anything. The
+# descriptor is non-inheritable (Python's `os.open`/`os.dup` default, asserted
+# by a test rather than assumed) so the child never receives a handle to the
+# very inode the pin exists to protect, and `cmd_run` releases every pin on
+# every exit path, including the one that leaves through the crash handler.
+#
+# What this does NOT claim: a supervisor cannot stop an unconfined child from
+# writing anywhere it likes. The contract is about PROOF — an attempt whose
+# required path stopped naming the pinned inode never receives a successful
+# receipt.
+
+
+def _reservation_body(attempt_id: str) -> bytes:
+    """The bytes a reservation holds until the child overwrites them.
+
+    Non-empty on purpose. An empty reservation would make "the child never
+    produced the artifact" and "the child truncated it to nothing"
+    indistinguishable, and those are `artifact_missing` and `artifact_empty`
+    — two different diagnoses with two different remedies. The text says what
+    the file is and what the contract requires, because an agent that opens
+    it deserves to read that rather than guess.
+    """
+    return (f"deep-model-router reserved this path for attempt "
+            f"{attempt_id} before spawn. Write it IN PLACE; renaming a "
+            f"different file over this one replaces the inode and voids "
+            f"the proof.\n").encode()
+
+
+def _reserve_artifact(entry: dict, attempt_id: str) -> str | None:
+    """Pin an ABSENT required path by creating it. Returns an error string.
+
+    O_CREAT|O_EXCL, so this either creates the inode or refuses — it never
+    adopts something that appeared between the ENOENT and here. Missing
+    parent directories are created first, and they are necessarily inside
+    `--artifact-root`: the path was resolved and contained before this ran.
+    """
+    path = entry["path"]
+    body = _reservation_body(attempt_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR
+                     | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        return (f"--require-artifact {entry['declared']!r} is absent and "
+                f"could not be reserved pre-spawn: {os.strerror(exc.errno)} "
+                f"({errno.errorcode.get(exc.errno, exc.errno)}); an absent "
+                f"required path must be pinned before the child runs")
+    # A successful `write` is allowed to consume FEWER bytes than it was
+    # handed, so one call is not a file. The digest and size recorded below
+    # describe the WHOLE body; if the disk holds less than that, grading
+    # hashes a truncated marker, fails to recognise it as the reservation,
+    # and reports the supervisor's own leftover bytes as a `changed: true`
+    # artifact — successful proof handed to a child that did nothing. So
+    # the write is a loop, and anything short of the whole body is a
+    # PREFLIGHT failure: the descriptor closes, the path this function
+    # created goes away again, and the caller returns exit 2 before any
+    # claim or receipt exists. Zero progress ends the loop rather than
+    # spinning on it — a `write` that keeps succeeding without moving is a
+    # failure that never raises.
+    written = 0
+    try:
+        while written < len(body):
+            sent = os.write(fd, body[written:])
+            if sent <= 0:
+                break
+            written += sent
+        st = os.fstat(fd)
+    except OSError as exc:
+        written, st = -1, None
+        detail = os.strerror(exc.errno)
+    if st is None or written != len(body):
+        if st is not None:
+            detail = f"wrote {written} of {len(body)} bytes"
+        os.close(fd)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return (f"--require-artifact {entry['declared']!r} reservation could "
+                f"not be written: {detail}")
+    os.set_inheritable(fd, False)
+    entry["pin_fd"] = fd
+    entry["pin_dev"] = st.st_dev
+    entry["pin_ino"] = st.st_ino
+    entry["reservation_sha256"] = hashlib.sha256(body).hexdigest()
+    entry["reservation_size"] = len(body)
+    return None
+
+
+def _withdraw_reservation(entry: dict) -> bool:
+    """Remove a reservation the child never wrote, restoring absence.
+
+    A supervisor that reserved a path and then crashed must not leave a file
+    standing where the caller declared there was none. Withdrawal is refused
+    unless the path STILL names the pinned inode, still has exactly one name,
+    and still holds exactly the reservation bytes — so a file the child
+    actually produced is never deleted by the supervisor that asked for it.
+    Called while the pin is still open, so the inode number under test cannot
+    have been recycled underneath the check.
+    """
+    if entry.get("reservation_sha256") is None:
+        return False
+    path = entry["path"]
+    try:
+        fd, st = _open_regular(path)
+    except (NotARegularFile, OSError):
+        return False
+    if (st.st_dev, st.st_ino) != (entry["pin_dev"], entry["pin_ino"]) \
+            or st.st_nlink != 1 or st.st_size != entry["reservation_size"]:
+        os.close(fd)
+        return False
+    if _hash_artifact(fd, None) != entry["reservation_sha256"]:
+        return False  # _hash_artifact consumed the fd
+    try:
+        os.unlink(path)
+    except OSError:
+        return False
+    # Cleared only now: while the file is still there, the digest is the one
+    # fact that tells a reservation apart from a child's output, and dropping
+    # it over a file that survived the unlink would leave the entry claiming
+    # it holds no reservation while holding one.
+    entry["reservation_sha256"] = None
+    return True
+
+
+def _release_artifact_pins(entries: list[dict]) -> None:
+    """Give back every descriptor this attempt pinned. Idempotent.
+
+    Withdrawal runs BEFORE the close, so the identity it checks is still
+    anchored by the open descriptor. `cmd_run` calls this from a `finally`
+    that wraps everything after the pins are taken, which is what makes
+    "every exit path" true of the crash path as well as the terminal one.
+
+    Cleanup RECORDS; it never decides. Withdrawal reads the reserved file to
+    prove its identity, and a read can fail — EIO on a failing disk, ESTALE
+    on a yanked network mount. That exception used to escape this loop, which
+    left every remaining pin open AND reached `main`'s crash guard, so a
+    command returned exit 9 after a FAILED or TIMED_OUT receipt with a
+    different exit mapping was already on disk. So each entry is withdrawn
+    inside its own guard and closed in its own `finally`: one entry's failure
+    costs that entry's withdrawal and nothing else — not the descriptor, not
+    the entries after it, and not the attempt's already-persisted outcome.
+    `Exception`, not a hand-picked errno list, for the same reason the
+    terminal evidence tail uses it (R2-W1): the point is that NOTHING here
+    can become the result.
+    """
+    for entry in entries:
+        try:
+            try:
+                _withdraw_reservation(entry)
+            except Exception:
+                pass
+        finally:
+            fd = entry.get("pin_fd")
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                entry["pin_fd"] = None
+
+
+def _capture_artifact_baselines(args, entries: list[dict] | None = None
+                                ) -> tuple[Path, list[dict]] | str:
+    """Validate the artifact declarations, pin their identities, capture
+    their baselines.
+
+    Runs entirely PRE-SPAWN, so every failure here is a usage error: exit 2
+    with no receipt and no attempt-id consumed. Returns `(pinned_root,
+    entries)` on success, or an error string to print.
+
+    `entries` is the CALLER's list, appended to as each declaration is
+    accepted, so a failure partway through still leaves every pin already
+    taken visible to the caller's `finally`. A function that built the list
+    privately and then returned a string would leak exactly the descriptors
+    the error path most needs to release.
+
+    The root is resolved exactly once, here, and every later containment
+    check compares against that pinned value — a child that replaces the
+    root's pathname with a symlink to somewhere else afterwards does not
+    get to move the fence.
+    """
+    if args.artifact_root is None:
+        return ("--require-artifact requires --artifact-root: containment "
+                "has no meaning without a fence")
+    if len(args.require_artifact) > ARTIFACT_MAX_COUNT:
+        return (f"--require-artifact declared {len(args.require_artifact)} "
+                f"paths, over the limit of {ARTIFACT_MAX_COUNT}")
+    root = Path(args.artifact_root).resolve()
+    if not root.is_dir():
+        return f"--artifact-root {args.artifact_root!r} is not a directory"
+
+    entries = [] if entries is None else entries
+    by_path: dict[Path, dict] = {}
+    for declared in args.require_artifact:
+        resolved = Path(declared).resolve()
+        if not _contained(resolved, root):
+            return (f"--require-artifact {declared!r} resolves to {resolved} "
+                    f"which is outside --artifact-root {root}")
+        if resolved in by_path:
+            return f"--require-artifact {declared!r} is declared twice"
+        entry = {"declared": declared, "path": resolved,
+                 "expected_sha256": None, "baseline_sha256": None,
+                 # The pin (R2-C1): one `(st_dev, st_ino)` held open from
+                 # here to grading. `reservation_*` is set only for a path
+                 # this supervisor had to create because it was absent.
+                 "pin_fd": None, "pin_dev": None, "pin_ino": None,
+                 "reservation_sha256": None, "reservation_size": None}
+        entries.append(entry)
+        by_path[resolved] = entry
+
+    for spec in args.require_artifact_sha256 or ():
+        # rpartition, not split: an artifact path may legitimately contain
+        # '=', and only the LAST one separates the digest.
+        raw_path, sep, digest = spec.rpartition("=")
+        if not sep or not HEX64_RE.match(digest):
+            return (f"--require-artifact-sha256 {spec!r} must be "
+                    f"PATH=<64 lowercase hex>")
+        resolved = Path(raw_path).resolve()
+        entry = by_path.get(resolved)
+        if entry is None:
+            return (f"--require-artifact-sha256 {spec!r} names a path that "
+                    f"was never declared with --require-artifact")
+        if entry["expected_sha256"] is not None:
+            # Duplicate AND conflict are both refused: a repeated mapping
+            # is a caller mistake whether or not the two digests agree, and
+            # silently taking the last one hides which was intended.
+            return (f"--require-artifact-sha256 maps {resolved} more than "
+                    f"once")
+        entry["expected_sha256"] = digest
+
+    budget = 0
+    for entry in entries:
+        try:
+            fd, st = _open_regular(entry["path"])
+        except (NotARegularFile, OSError) as exc:
+            if isinstance(exc, NotARegularFile) or exc.errno == errno.ELOOP:
+                return (f"--require-artifact {entry['declared']!r} exists but "
+                        f"is not a regular file")
+            if exc.errno != errno.ENOENT:
+                # Only a CONFIRMED nonexistence is absence. Every other
+                # errno — EACCES, EIO, ESTALE, ENOTDIR, EMFILE — leaves
+                # baseline_sha256 at None, which is the SAME value absence
+                # produces, and grading reads that None as "changed: true".
+                # An artifact that merely could not be read right now would
+                # then be proof of freshness it never earned. ENOTDIR is
+                # refused with the rest rather than folded into absence:
+                # a regular file standing where a path component wants a
+                # directory is an environment defect the caller must see,
+                # and guessing on the caller's behalf is what this whole
+                # gate exists to stop.
+                return (f"--require-artifact {entry['declared']!r} could not "
+                        f"be read pre-spawn: {os.strerror(exc.errno)} "
+                        f"({errno.errorcode.get(exc.errno, exc.errno)}); "
+                        f"only a confirmed ENOENT counts as absence")
+            # Absent pre-spawn: `baseline_sha256` stays None, which is the
+            # strongest freshness evidence there is — and the path is
+            # RESERVED so the attempt has an identity to be graded against.
+            # Without a reservation this is the one case with no pinned
+            # inode at all, which is precisely the case the transient
+            # hard-link laundering sequence lived in.
+            failure = _reserve_artifact(entry, args.attempt_id)
+            if failure is not None:
+                return failure
+            continue
+        try:
+            if st.st_size > args.require_artifact_baseline_max_bytes:
+                return (f"--require-artifact {entry['declared']!r} baseline "
+                        f"too large: {st.st_size} bytes over the limit of "
+                        f"{args.require_artifact_baseline_max_bytes}")
+            if st.st_nlink != 1:
+                return (f"--require-artifact {entry['declared']!r} has "
+                        f"{st.st_nlink} links, so its inode has more than "
+                        f"one name; containment fences a PATH but a write "
+                        f"lands on an INODE, so a second name outside "
+                        f"--artifact-root would be overwritten through a "
+                        f"contained path")
+            budget += st.st_size
+            if budget > ARTIFACT_BASELINE_BUDGET_BYTES:
+                return (f"--require-artifact baselines exceed the aggregate "
+                        f"budget of {ARTIFACT_BASELINE_BUDGET_BYTES} bytes")
+            # Pin from the SAME descriptor the baseline is taken from, and
+            # dup rather than reopen: a second open of the pathname would be
+            # a fresh TOCTOU window, and `_hash_artifact` consumes the fd it
+            # is handed. The dup outlives the hash and is what keeps this
+            # inode number from being recycled if the child unlinks the path.
+            entry["pin_dev"] = st.st_dev
+            entry["pin_ino"] = st.st_ino
+            entry["pin_fd"] = os.dup(fd)
+            os.set_inheritable(entry["pin_fd"], False)
+            entry["baseline_sha256"] = _hash_artifact(fd, None)
+            fd = -1
+        finally:
+            if fd != -1:
+                os.close(fd)
+    return root, entries
+
+
+def _grade_artifacts(entries: list[dict], root: Path,
+                     deadline_monotonic: float,
+                     allow_unchanged: bool) -> tuple[list[dict], list[str], bool]:
+    """Prove each required artifact, or say precisely why it is not proof.
+
+    Returns `(records, reasons, hash_aborted)`. The records go into the
+    receipt on success too: existence, containment and the digest ARE the
+    evidence G4 asks for, and a receipt that only carried them on failure
+    would prove nothing on the path that matters.
+    """
+    records: list[dict] = []
+    reasons: list[str] = []
+    aborted = False
+    for entry in entries:
+        path = entry["path"]
+        record = {"path": str(path), "exists": False, "size": None,
+                  "nlink": None, "sha256": None, "contained": None,
+                  # R2-C1: True when the graded inode is the one pinned
+                  # pre-spawn, False when the path was made to name a
+                  # different one, null where grading never got that far.
+                  "identity_pinned": None,
+                  "baseline_sha256": entry["baseline_sha256"],
+                  "changed": None, "expected_sha256_match": None}
+        records.append(record)
+        try:
+            current = path.resolve()
+        except OSError:
+            current = path
+        record["contained"] = _contained(current, root)
+        if not record["contained"]:
+            reasons.append(_reason("artifact_escaped_root", path))
+            continue
+        try:
+            fd, st = _open_regular(path)
+        except NotARegularFile:
+            reasons.append(_reason("artifact_not_regular_file", path))
+            continue
+        except OSError as exc:
+            # ELOOP is O_NOFOLLOW refusing a symlink planted at the
+            # artifact path — reporting that as "missing" would send an
+            # operator looking for a file that is right there. The two
+            # get different reasons because they have different remedies.
+            reasons.append(_reason(
+                "artifact_not_regular_file" if exc.errno == errno.ELOOP
+                else "artifact_missing", path))
+            continue
+        record["exists"] = True
+        record["size"] = st.st_size
+        # From the SAME fd the digest would be taken from, so the link count
+        # and the bytes describe one inode with no stat/read race between
+        # them. `contained` above is a fact about the PATH; this is the fact
+        # about the INODE that path names, and only both together are
+        # containment. A second name for the inode means the child's write
+        # also landed wherever that other name lives — possibly outside the
+        # root — so no digest is recorded: a hash here would read as proof
+        # that a contained file holds this content.
+        record["nlink"] = st.st_nlink
+        # Recorded before either refusal below, so the receipt shows BOTH
+        # facts about the inode found here even when only one of them is
+        # the reason the attempt is refused.
+        record["identity_pinned"] = (
+            (st.st_dev, st.st_ino) == (entry["pin_dev"], entry["pin_ino"]))
+        if st.st_nlink != 1:
+            os.close(fd)
+            reasons.append(_reason("artifact_multiply_linked", path))
+            continue
+        if not record["identity_pinned"]:
+            # The path no longer names the inode this supervisor pinned
+            # before spawn. Whatever put a different inode here — a rename,
+            # a fresh create after an unlink, or the tail of a hard-link
+            # laundering sequence whose transient second name is already
+            # gone — the supervisor cannot say what the vanished inode's
+            # other names were, so it cannot certify that this attempt's
+            # writes stayed inside the root. No digest is recorded, for the
+            # same reason `artifact_multiply_linked` records none: a hash
+            # here would read as proof about a file nobody can vouch for.
+            os.close(fd)
+            reasons.append(_reason("artifact_identity_replaced", path))
+            continue
+        if st.st_size == 0:
+            os.close(fd)
+            reasons.append(_reason("artifact_empty", path))
+            continue
+        digest = _hash_artifact(fd, deadline_monotonic)
+        if digest is None:
+            # Out of budget mid-hash. No partial digest is recorded, and
+            # the attempt is a TIMED_OUT rather than a verdict on contents
+            # nobody finished reading.
+            record["hash_aborted"] = True
+            aborted = True
+            continue
+        if entry["reservation_sha256"] is not None \
+                and digest == entry["reservation_sha256"]:
+            # The pinned inode still holds exactly the bytes the supervisor
+            # put there to hold the path: the child never produced this
+            # artifact. `artifact_missing` is that answer either way — it is
+            # a fact about the CHILD, and no cleanup outcome changes it — so
+            # it is appended before the withdrawal is even attempted. The
+            # record shape is the one an unreserved absent path has always
+            # produced only if the withdrawal SUCCEEDS; see below.
+            reasons.append(_reason("artifact_missing", path))
+            try:
+                os.unlink(path)
+            except OSError:
+                # The withdrawal FAILED, so the reservation is still there.
+                # Rewriting the record to `exists: false` here would put a
+                # receipt on disk that contradicts the disk — and the next
+                # attempt, told the path was absent, would find a file. The
+                # record therefore keeps what grading actually observed (an
+                # existing, singly-linked, pinned inode, with no digest,
+                # because these are the supervisor's bytes and not the
+                # child's) and the leftover gets its own reason. The
+                # diagnosis for the CHILD is unchanged: `artifact_missing`.
+                # `reservation_sha256` is deliberately NOT cleared, so the
+                # release loop gets one more chance to withdraw it.
+                reasons.append(
+                    _reason("artifact_reservation_cleanup_failed", path))
+                continue
+            entry["reservation_sha256"] = None
+            record.update({"exists": False, "size": None, "nlink": None,
+                           "identity_pinned": None})
+            continue
+        record["sha256"] = digest
+        baseline = entry["baseline_sha256"]
+        record["changed"] = baseline is None or digest != baseline
+        if not record["changed"]:
+            if allow_unchanged:
+                record["artifact_unchanged_accepted"] = True
+            else:
+                reasons.append(_reason("artifact_unchanged", path))
+        if entry["expected_sha256"] is not None:
+            record["expected_sha256_match"] = digest == entry["expected_sha256"]
+            if not record["expected_sha256_match"]:
+                reasons.append(_reason("artifact_sha256_mismatch", path))
+    return records, reasons, aborted
+
+
+def _read_session_evidence(evidence_dir: Path) -> dict:
+    """Read what the session directory can prove about this attempt.
+
+    Always returns the same shape. `summary` is None when the file is
+    missing or unreadable and `summary_oversized` says which of the two it
+    was; `terminal_event` is None whenever the tail scan cannot produce a
+    complete one, for ANY reason — absent file, unparseable line, or a
+    terminal event that sits outside the tail window. That last case is
+    why the window is a read budget rather than a contract: an
+    `events.jsonl` larger than the tail must not turn a clean attempt into
+    a failure, because this surface is undocumented and gating on it would
+    make an internal file load-bearing.
+    """
+    evidence = {"format": None, "dir": str(evidence_dir), "summary": None,
+                "summary_oversized": False, "unreadable": False,
+                "session_id": None, "created_at": None,
+                "terminal_event": None}
+    # R2-W1: each surface is read inside its OWN guard, and the guard is
+    # `Exception`, not a hand-picked errno/parse list.
+    #
+    # Two concrete escapes proved why. `_tail_bytes` opens inside a try and
+    # then seeks and reads OUTSIDE it, so an EIO on a rotating or truncated
+    # `events.jsonl` propagates. And `json.loads` raises things that are
+    # neither `JSONDecodeError` nor `UnicodeDecodeError` — a bare
+    # `ValueError` on an over-long integer literal, `RecursionError` on a
+    # deeply nested document. Either one escaping this function reaches
+    # `cmd_run`'s post-spawn crash handler, which rewrites an ALREADY
+    # SELECTED terminal state to CANCELLED and exits 9: a FAILED attempt
+    # reported as a supervisor crash because a log file could not be read.
+    #
+    # Failing here is therefore not an error condition, it is an absence of
+    # evidence, and it produces the same always-present shape with nulls in
+    # it. `unreadable` records that the absence was a failure rather than a
+    # file that was never written — the two are worth telling apart in an
+    # audit trail, and neither is worth an attempt's receipt.
+    try:
+        data, oversized = _capped_bytes(evidence_dir / "summary.json",
+                                        SUMMARY_MAX_BYTES)
+        if oversized:
+            evidence["summary_oversized"] = True
+        elif data is not None:
+            try:
+                summary = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                summary = None
+            if isinstance(summary, dict):
+                evidence["summary"] = {
+                    key: summary.get(key) for key in
+                    ("agent_name", "current_model_id", "reasoning_effort",
+                     "sandbox_profile")}
+                info = summary.get("info")
+                if isinstance(info, dict) and isinstance(info.get("id"), str):
+                    evidence["session_id"] = info["id"]
+                if isinstance(summary.get("created_at"), str):
+                    evidence["created_at"] = summary["created_at"]
+    except Exception:  # noqa: BLE001 — see the block comment above
+        evidence["unreadable"] = True
+        evidence["summary"] = None
+        evidence["session_id"] = None
+        evidence["created_at"] = None
+
+    try:
+        events, _ = _tail_bytes(evidence_dir / "events.jsonl",
+                                EVENTS_TAIL_BYTES)
+        if events:
+            # Reverse scan: the last complete `turn_ended` in the window
+            # wins. The first line of a tail read is usually a fragment, so
+            # every line that does not parse is simply skipped rather than
+            # treated as evidence of anything.
+            for line in reversed(events.split(b"\n")):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(event, dict) and \
+                        event.get("type") == "turn_ended":
+                    evidence["terminal_event"] = {
+                        "outcome": event.get("outcome"),
+                        "cancellation_category": event.get(
+                            "cancellation_category")}
+                    break
+    except Exception:  # noqa: BLE001 — see the block comment above
+        evidence["unreadable"] = True
+        evidence["terminal_event"] = None
+    return evidence
+
+
+def _session_evidence_view(declaration: str) -> tuple[dict, dict]:
+    """Read the declared session directory once, for BOTH of its jobs.
+
+    Returns `(evidence, receipt_view)`: the first is what the success gate
+    grades, the second is what the receipt records. Splitting them here is
+    what lets a terminal state that is never graded still be RECORDED —
+    `summary_oversized` is the gate's own bookkeeping and stays out of the
+    receipt, exactly as it always has.
+    """
+    evidence_format, _, evidence_dir = declaration.partition(":")
+    try:
+        evidence = _read_session_evidence(Path(evidence_dir))
+    except Exception:  # noqa: BLE001 — belt and braces over R2-W1
+        # `_read_session_evidence` guards both of its reads, so reaching
+        # here means something outside them failed (an unrepresentable path,
+        # for one). The rule is the same either way and is stated once: no
+        # terminal state a supervisor has already chosen is ever relabeled
+        # by the best-effort recording of evidence ABOUT it.
+        evidence = {"format": None, "dir": evidence_dir, "summary": None,
+                    "summary_oversized": False, "unreadable": True,
+                    "session_id": None, "created_at": None,
+                    "terminal_event": None}
+    evidence["format"] = evidence_format
+    return evidence, {k: v for k, v in evidence.items()
+                      if k != "summary_oversized"}
+
+
+def _tail_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
+    """Read at most the last `limit` bytes of a circumstantial surface."""
+    try:
+        fd, st = _open_regular(path)
+    except OSError:
+        return None, False
+    with os.fdopen(fd, "rb") as f:
+        if st.st_size > limit:
+            f.seek(st.st_size - limit)
+            return f.read(limit), True
+        return f.read(), False
+
+
+def _parse_grok_timestamp(value: str) -> float | None:
+    """grok stamps `created_at` with microseconds and a `Z` suffix."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def _grade_session_evidence(evidence: dict, *, session_id: str,
+                            envelope: dict | None, launch_anchor: float,
+                            graded_at: float, expect_agent: str | None,
+                            expect_sandbox: str | None) -> list[str]:
+    """The success gate over session evidence. Returns the reasons it fails.
+
+    Failure tightens the SUCCESS direction only — the caller never applies
+    these to a FAILED, TIMED_OUT or TERMINATION_UNCONFIRMED attempt, whose
+    state is already decided by something that outranks evidence.
+    """
+    if evidence["summary_oversized"]:
+        return ["evidence_oversized"]
+    summary = evidence["summary"]
+    if summary is None:
+        return ["session_evidence_unreadable"]
+
+    reasons: list[str] = []
+    # (a) the session directory names the session this attempt declared.
+    if evidence["session_id"] != session_id:
+        reasons.append("session_evidence_unbound")
+    # (b) stdout and the session directory name the SAME session. Without
+    # this cross-proof a correct directory could be paired with a stdout
+    # document from some other run. Exact equality is UNCONDITIONAL once an
+    # envelope is declared: `_read_envelope` keeps `session_id` only when
+    # the document supplies a string, so an absent or non-string `sessionId`
+    # arrives here as None — and None is not the declared session. Skipping
+    # the check for it would let the one document that proves nothing about
+    # binding be the one document exempt from proving it.
+    elif envelope is not None and envelope["session_id"] != session_id:
+        reasons.append("session_evidence_unbound")
+    # (c) freshness. The child creates the session at launch, so
+    # `created_at` must fall inside this attempt's window. Both bounds are
+    # untruncated internal values: the receipt's own timestamps are
+    # truncated to whole seconds, and comparing those against a
+    # microsecond-precision `created_at` misjudges every attempt that
+    # finishes inside one second.
+    else:
+        created_at = _parse_grok_timestamp(evidence["created_at"] or "")
+        if created_at is None or not (launch_anchor <= created_at <= graded_at):
+            reasons.append("session_evidence_unbound")
+
+    if expect_agent is not None and summary.get("agent_name") != expect_agent:
+        reasons.append(_reason("effective_agent_mismatch",
+                               summary.get("agent_name")))
+    if expect_sandbox is not None and \
+            summary.get("sandbox_profile") != expect_sandbox:
+        # Absent counts as a mismatch: a version that stopped recording the
+        # field is precisely the fail-open case this expectation exists to
+        # catch, and treating absence as "fine" would disarm it silently.
+        reasons.append(_reason("effective_sandbox_mismatch",
+                               summary.get("sandbox_profile")))
+
+    terminal_event = evidence["terminal_event"]
+    if terminal_event is not None and terminal_event["outcome"] != "completed":
+        # An opportunistic second line of defence, independent of DD-1: it
+        # only works when the undocumented file is readable, and that limit
+        # is documented rather than papered over.
+        reasons.append(_reason("session_terminal_event",
+                               terminal_event["outcome"]))
+    return reasons
+
+
+def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
+    """Read at most `limit` bytes from a gate surface.
+
+    Returns `(data, oversized)`; `data` is None when the file could not be
+    read at all or when it is over budget. Reading `limit + 1` is what
+    makes "exactly at the limit" distinguishable from "over it" without a
+    stat/read race. The open goes through `_open_regular`, so a symlink,
+    FIFO or device planted at a gate surface is refused rather than
+    followed or waited on.
+    """
+    try:
+        fd, _ = _open_regular(path)
+        with os.fdopen(fd, "rb") as f:
+            data = f.read(limit + 1)
+    except OSError:
+        return None, False
+    if len(data) > limit:
+        return None, True
+    return data, False
+
+
+def _read_envelope(stdout_path: Path) -> dict:
+    """Read one grok headless JSON document off a finished attempt's stdout.
+
+    Always returns the same six keys, whatever went wrong. `text` is an
+    INTERNAL field — it feeds the verdict check and nothing else, and is
+    dropped by `_receipt_envelope` before the receipt is written: the raw
+    output already lives in the stdout file this read came from, and a
+    receipt carries abbreviated evidence, not a second copy of the payload.
+
+    `error_type` carries the document's own `type` discriminator for grok's
+    `{"type": "error", ...}` failure object, and doubles as the read-failure
+    channel (`evidence_oversized` / `envelope_unreadable`) so a caller can
+    tell an over-budget stdout from a merely malformed one.
+    """
+    envelope = {"parse_ok": False, "stop_reason": None, "session_id": None,
+                "served_models": None, "text": None, "error_type": None}
+    data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    if oversized:
+        envelope["error_type"] = "evidence_oversized"
+        return envelope
+    if data is None:
+        envelope["error_type"] = "envelope_unreadable"
+        return envelope
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return envelope
+    if not isinstance(doc, dict):
+        # A bare array or scalar parses as JSON but is not an envelope.
+        return envelope
+    envelope["parse_ok"] = True
+    for key, field in (("stopReason", "stop_reason"), ("sessionId", "session_id"),
+                       ("text", "text"), ("type", "error_type")):
+        value = doc.get(key)
+        if isinstance(value, str):
+            envelope[field] = value
+    usage = doc.get("modelUsage")
+    if isinstance(usage, dict):
+        # DD-7: the SERVED model identifiers, recorded as observed and
+        # never normalized against the declared `--model-id` — the
+        # supervisor does not cross-check a caller's declaration.
+        envelope["served_models"] = sorted(usage)
+    return envelope
+
+
+def _receipt_envelope(envelope: dict) -> dict:
+    """The five keys an envelope contributes to a receipt. `session_id` is
+    here as the audit evidence for what the attempt-binding cross-proof
+    (DD-3) actually compared; `text` is deliberately absent."""
+    return {k: envelope[k] for k in
+            ("parse_ok", "stop_reason", "session_id", "served_models",
+             "error_type")}
+
+
+def _grade_envelope(envelope: dict) -> list[str]:
+    """Fail-closed gate on a declared envelope. Returns the reasons it
+    failed, empty when it is a success candidate."""
+    if envelope["error_type"] == "evidence_oversized":
+        return ["evidence_oversized"]
+    if not envelope["parse_ok"]:
+        return ["envelope_unparseable"]
+    stop_reason = envelope["stop_reason"]
+    if stop_reason != ENVELOPE_OK_STOP_REASON:
+        return [_reason("envelope_stop_reason", stop_reason)]
+    return []
+
+
+def _stdout_digest(stdout_path: Path) -> str | None:
+    data, _ = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
 def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
     return {
         "attempt_id": args.attempt_id,
@@ -259,14 +1239,35 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         "argv": args.argv,
         "prompt_sha256": None,
         "output_schema": args.output_schema,
+        # DD-1: the DECLARED envelope contract, null when none was
+        # declared. Every key this tranche adds is present on every
+        # receipt and null on the undeclared path — that is what keeps
+        # the exact-field contract one key set instead of one per
+        # declaration combination.
+        "output_envelope": args.output_envelope,
+        # DD-3: what actually took effect, read from the session directory
+        # the caller declared. Null when none was declared.
+        "session_evidence": None,
         "process": {"pid": None, "process_group_id": None,
                     "supervisor_pid": os.getpid()},
-        "timing": {"started_at": None, "deadline_at": None, "finished_at": None},
+        "timing": {"started_at": None, "deadline_at": None,
+                   "finished_at": None, "launch_anchor_at": None},
         "result": {
             "state": "STARTING", "exit_status": None,
             "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
             "output_sha256": None, "schema_valid": None,
             "termination_confirmed": None,
+            # DD-1 evidence and DD-5's shared cause vocabulary. `envelope`
+            # is recorded on every terminal state once declared (error
+            # objects and non-zero exits included) — recording is
+            # unconditional, gating is not.
+            "envelope": None,
+            "invalid_reasons": None,
+            # DD-2: the per-artifact proof set. Null when nothing was
+            # required, and null on every termination that never reached
+            # grading — a baseline is evidence about a comparison that was
+            # actually made, not a field to fill in for its own sake.
+            "artifacts": None,
         },
     }
 
@@ -315,7 +1316,61 @@ def _commit_terminal(receipt_dir: Path, receipt: dict, claim_path: Path) -> int:
     return EXIT_BY_STATE[receipt["result"]["state"]]
 
 
+def _backfill_terminal_evidence(args, receipt: dict,
+                                stdout_path: Path) -> None:
+    """Record, at an already-decided terminal state, the evidence that was
+    never graded.
+
+    Everything here is best-effort by construction and RECORDS only; the
+    caller wraps it so that a failure inside it cannot become the attempt's
+    outcome (R2-W1).
+    """
+    if args.session_evidence is not None \
+            and receipt["session_evidence"] is None:
+        # Recording is unconditional where gating is not, for the same
+        # reason the envelope backfill below is: a FAILED, TIMED_OUT or
+        # TERMINATION_UNCONFIRMED attempt is where the effective agent, the
+        # effective sandbox profile and the turn's cancellation category are
+        # MOST worth having, and grading is the one thing that never runs
+        # there. The state is already decided; nothing collected here is
+        # graded, so nothing collected here can relabel it. Both reads are
+        # bounded (SUMMARY_MAX_BYTES, EVENTS_TAIL_BYTES) and best-effort — a
+        # session directory that was never written leaves the same
+        # always-present shape full of nulls rather than costing the attempt
+        # its receipt.
+        _, receipt["session_evidence"] = \
+            _session_evidence_view(args.session_evidence)
+
+    if args.output_envelope is not None \
+            and receipt["result"]["envelope"] is None:
+        # Recording is unconditional even where gating is not: a TIMED_OUT,
+        # FAILED or TERMINATION_UNCONFIRMED attempt still leaves its
+        # envelope in the receipt as evidence, and none of those states is
+        # relabeled by what it says.
+        receipt["result"]["envelope"] = _receipt_envelope(
+            _read_envelope(stdout_path))
+
+
 def cmd_run(args) -> int:
+    """Own the artifact pins' lifetime, and nothing else.
+
+    The pins are descriptors this process holds on required-artifact inodes
+    from before the child starts until after grading (R2-C1). They have to be
+    given back on EVERY way out of `_run_attempt` — the terminal return, the
+    preflight `return 2`s that happen after some pins were already taken, and
+    the crash that leaves through `main`'s guard as exit 9. A `finally` around
+    one call is the only shape that is true of all three; a release written at
+    each return site is a list that grows a hole the first time someone adds a
+    branch.
+    """
+    pins: list[dict] = []
+    try:
+        return _run_attempt(args, pins)
+    finally:
+        _release_artifact_pins(pins)
+
+
+def _run_attempt(args, pins: list[dict]) -> int:
     # Everything that can fail before spawn is validated before any receipt
     # exists — a preflight failure must never leave a permanent STARTING
     # receipt behind (status/cancel only know how to unwind RUNNING).
@@ -338,6 +1393,83 @@ def cmd_run(args) -> int:
             print(f"{name} must be 64 lowercase hex chars, got {value!r}",
                   file=sys.stderr)
             return 2
+
+    # --- Grok seat integrity preflight (DD-1) -------------------------
+    # Everything below refuses BEFORE spawn and before any receipt or
+    # claim exists: a usage error must never burn an attempt-id or leave
+    # a permanent STARTING receipt that only `cancel` knows how to unwind.
+    if args.session_evidence is not None:
+        evidence_format, sep, evidence_dir = args.session_evidence.partition(":")
+        if not sep or evidence_format not in SESSION_EVIDENCE_FORMATS \
+                or not evidence_dir:
+            print(f"--session-evidence must be FORMAT:DIR with FORMAT in "
+                  f"{list(SESSION_EVIDENCE_FORMATS)}, got "
+                  f"{args.session_evidence!r}", file=sys.stderr)
+            return 2
+    if args.session_id is not None and not UUID_RE.match(args.session_id):
+        print(f"--session-id must be a UUID, got {args.session_id!r}",
+              file=sys.stderr)
+        return 2
+    if args.session_evidence is not None and args.session_id is None:
+        # Attempt binding has nothing to bind to without the id the child
+        # was handed: a session directory that named no particular attempt
+        # would let any leftover directory stand in for this one.
+        print("--session-evidence requires --session-id: the evidence is "
+              "bound to this attempt by the session id, or not at all",
+              file=sys.stderr)
+        return 2
+    if args.expect_sandbox_profile is not None:
+        if not args.expect_sandbox_profile.strip():
+            print("--expect-sandbox-profile must not be empty", file=sys.stderr)
+            return 2
+        if args.session_evidence is None:
+            print("--expect-sandbox-profile requires --session-evidence: the "
+                  "effective sandbox profile is only observable in the "
+                  "session summary", file=sys.stderr)
+            return 2
+    if args.expect_effective_agent is not None:
+        if not args.expect_effective_agent.strip():
+            print("--expect-effective-agent must not be empty",
+                  file=sys.stderr)
+            return 2
+        if args.session_evidence is None:
+            # An expectation with nothing to compare against would be
+            # silently ignored, and a gate that can be silently disarmed
+            # by omitting an unrelated argument is not a gate. The name it
+            # checks (`summary.agent_name`) only exists in the session
+            # evidence.
+            print("--expect-effective-agent requires --session-evidence: "
+                  "the effective agent name is only observable in the "
+                  "session summary", file=sys.stderr)
+            return 2
+    if args.transport_id and args.transport_id.endswith(XAI_TRANSPORT_SUFFIX):
+        missing = [name for name, value in (
+            ("--output-envelope", args.output_envelope),
+            ("--session-evidence", args.session_evidence)) if value is None]
+        if missing:
+            print(f"--transport-id {args.transport_id!r} dispatches into "
+                  f"grok, whose cancelled turns exit 0 — it requires "
+                  f"{' and '.join(missing)}. Half a declaration is not a "
+                  f"declaration; see references/adapters.md \"Dispatch "
+                  f"contract\".", file=sys.stderr)
+            return 2
+
+    artifact_root = None
+    artifact_entries: list[dict] = []
+    if args.require_artifact:
+        if not _finite_positive(args.require_artifact_baseline_max_bytes):
+            print("--require-artifact-baseline-max-bytes must be a finite "
+                  "number > 0", file=sys.stderr)
+            return 2
+        captured = _capture_artifact_baselines(args, pins)
+        if isinstance(captured, str):
+            print(f"error: {captured}", file=sys.stderr)
+            return 2
+        artifact_root, artifact_entries = captured
+    elif args.require_artifact_sha256:
+        print("--require-artifact-sha256 without --require-artifact "
+              "constrains nothing", file=sys.stderr)
+        return 2
 
     prompt_sha256 = None
     stdin_f = subprocess.DEVNULL
@@ -482,6 +1614,13 @@ def cmd_run(args) -> int:
         # stdout/stderr go straight to files: no pipe buffer to fill, no
         # drain thread to forget, no deadlock when the child floods.
         with os.fdopen(stdout_fd, "wb") as out_f, os.fdopen(stderr_fd, "wb") as err_f:
+            # The lower bound of DD-3's session freshness window, captured
+            # HERE rather than after Popen: the child creates its session
+            # directory at launch, and `started_at` is stamped once Popen
+            # has already returned — a bound stamped after the event it is
+            # supposed to precede is not a bound. Kept untruncated for the
+            # comparison; the receipt shows the human-readable form.
+            launch_anchor = time.time()
             try:
                 proc = subprocess.Popen(
                     args.argv, stdin=stdin_f, stdout=out_f, stderr=err_f,
@@ -515,6 +1654,8 @@ def cmd_run(args) -> int:
                 receipt["process"] = {"pid": proc.pid, "process_group_id": pgid,
                                       "supervisor_pid": os.getpid()}
                 receipt["timing"]["started_at"] = _utcnow()
+                receipt["timing"]["launch_anchor_at"] = datetime.fromtimestamp(
+                    launch_anchor, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 receipt["timing"]["deadline_at"] = deadline_at
                 receipt["result"]["state"] = "RUNNING"
                 write_receipt(receipt_dir, receipt)
@@ -575,12 +1716,108 @@ def cmd_run(args) -> int:
                         receipt["result"]["state"] = "TIMED_OUT"
                     elif exit_status != 0:
                         receipt["result"]["state"] = "FAILED"
+                    elif (args.output_envelope is not None
+                          or args.session_evidence is not None
+                          or artifact_entries):
+                        # The ladder inside grading, in order: envelope
+                        # (DD-1) -> output schema -> artifacts (DD-2) ->
+                        # a final deadline re-check. The envelope comes
+                        # before the schema so a cancelled turn that
+                        # happens to have emitted a well-formed verdict is
+                        # still a cancelled turn.
+                        reasons: list[str] = []
+                        timed_out = False
+                        envelope = None
+                        if args.output_envelope is not None:
+                            envelope = _read_envelope(stdout_path)
+                            receipt["result"]["envelope"] = _receipt_envelope(
+                                envelope)
+                            receipt["result"]["output_sha256"] = _stdout_digest(
+                                stdout_path)
+                            reasons = _grade_envelope(envelope)
+                            if not reasons:
+                                # With an envelope declared the verdict
+                                # grammar applies to the envelope's `text`,
+                                # not to the raw JSON document carrying it —
+                                # the document's own bytes never match
+                                # VERDICT_RE at line start. An empty `text`
+                                # is fine under schema `none`: DD-2's
+                                # artifact contract, not stdout length, is
+                                # what proves that seat finished.
+                                schema_ok = (
+                                    args.output_schema != "review"
+                                    or bool(VERDICT_RE.search(
+                                        envelope["text"] or "")))
+                                if not schema_ok:
+                                    reasons = ["schema_invalid"]
+                            else:
+                                schema_ok = False
+                            receipt["result"]["schema_valid"] = schema_ok
+                        else:
+                            ok, digest = _validate_output(
+                                stdout_path, args.output_schema)
+                            receipt["result"]["output_sha256"] = digest
+                            receipt["result"]["schema_valid"] = ok
+                            if not ok:
+                                reasons = ["schema_invalid"]
+                        if args.session_evidence is not None:
+                            # Ladder step 5, alongside the output schema:
+                            # recorded whatever the terminal state, gating
+                            # only where success is still on the table.
+                            evidence, receipt["session_evidence"] = \
+                                _session_evidence_view(args.session_evidence)
+                            reasons = reasons + _grade_session_evidence(
+                                evidence, session_id=args.session_id,
+                                envelope=envelope, launch_anchor=launch_anchor,
+                                graded_at=time.time(),
+                                expect_agent=args.expect_effective_agent,
+                                expect_sandbox=args.expect_sandbox_profile)
+                        if artifact_entries:
+                            records, artifact_reasons, aborted = _grade_artifacts(
+                                artifact_entries, artifact_root,
+                                deadline_monotonic,
+                                args.require_artifact_allow_unchanged)
+                            receipt["result"]["artifacts"] = records
+                            reasons = reasons + artifact_reasons
+                            timed_out = aborted
+                        if timed_out:
+                            # A hash abandoned mid-file is a deadline
+                            # outcome, not a content verdict.
+                            receipt["result"]["state"] = "TIMED_OUT"
+                        elif reasons:
+                            receipt["result"]["state"] = "INVALID_OUTPUT"
+                        elif _deadline_expired(deadline_monotonic):
+                            receipt["result"]["state"] = "TIMED_OUT"
+                        else:
+                            receipt["result"]["state"] = "SUCCEEDED"
+                        if reasons:
+                            receipt["result"]["invalid_reasons"] = reasons
                     else:
                         ok, digest = _validate_output(stdout_path, args.output_schema)
                         receipt["result"]["output_sha256"] = digest
                         receipt["result"]["schema_valid"] = ok
-                        receipt["result"]["state"] = (
-                            "SUCCEEDED" if ok else "INVALID_OUTPUT")
+                        if ok and _deadline_expired(deadline_monotonic):
+                            receipt["result"]["state"] = "TIMED_OUT"
+                        else:
+                            receipt["result"]["state"] = (
+                                "SUCCEEDED" if ok else "INVALID_OUTPUT")
+
+                # R2-W1: the whole backfill is one guarded region. Both
+                # readers below are already exception-safe on their own; this
+                # is the outer statement of the invariant they serve, in the
+                # one place a violation of it would do the damage. Above this
+                # point a terminal state has ALREADY been selected — FAILED
+                # from a non-zero exit, TIMED_OUT from the deadline,
+                # TERMINATION_UNCONFIRMED from a group that would not die.
+                # Everything here only RECORDS. An exception escaping into
+                # the post-spawn `except Exception` below would re-run the
+                # termination ladder and overwrite that state with CANCELLED
+                # and exit 9, which is a supervisor crash reported in place
+                # of an attempt outcome that was already known.
+                try:
+                    _backfill_terminal_evidence(args, receipt, stdout_path)
+                except Exception:  # noqa: BLE001 — see above
+                    pass
 
                 receipt["timing"]["finished_at"] = _utcnow()
                 # DEFER-2: terminal persistence is best-effort. OSError here
@@ -831,7 +2068,12 @@ def cmd_verify_evidence(args) -> int:
     proves a completed reviewer attempt per seat — not that the transport
     opened distinct real model sessions, which no receipt field can show.
     This is the producer-side check behind route_task.py's exact-count
-    rule — run it BEFORE typing --isolation-evidence."""
+    rule — run it BEFORE typing --isolation-evidence.
+
+    Compatibility: a 1.4.x `to_xai` receipt that survived the upgrade was
+    valid under its own contract but fails the envelope checks below. That
+    is an intended, narrow, fail-closed window — verify an older evidence
+    set with the older `verify-evidence`."""
     receipt_dir = Path(args.receipt_dir)
     ids = [x.strip() for x in args.ids.split(",") if x.strip()]
     # Same chokepoint `run`/`status`/`cancel` use — every id is validated
@@ -904,6 +2146,37 @@ def cmd_verify_evidence(args) -> int:
             problems.append(f"{attempt_id}: decision_fingerprint is "
                             f"{receipt.get('decision_fingerprint')!r}, not the "
                             f"expected value")
+        # DD-6. Two checks, both about grok's exit-0 cancellation.
+        #
+        # The first is near-tautological beside SUCCEEDED, and that is what
+        # it is for: it catches a hand-assembled evidence set, where the
+        # state word was chosen rather than earned.
+        envelope = receipt.get("result", {}).get("envelope")
+        if envelope is not None and \
+                envelope.get("stop_reason") != ENVELOPE_OK_STOP_REASON:
+            problems.append(
+                f"{attempt_id}: envelope stop_reason is "
+                f"{envelope.get('stop_reason')!r}, not "
+                f"{ENVELOPE_OK_STOP_REASON!r}")
+        # The second is the second net behind the pre-spawn preflight. That
+        # preflight refuses a PARTIAL declaration before the attempt starts;
+        # this refuses a COMPLETE absence at the moment such a receipt is
+        # promoted to review evidence. `transport_id` is a caller
+        # declaration like every other linkage field, so a dispatch that
+        # declares nothing at all is silent to both — that residue belongs
+        # to the Layer B recipe, and adapters.md says so rather than
+        # leaving it implied.
+        transport_id = receipt.get("transport_id") or ""
+        if transport_id.endswith(XAI_TRANSPORT_SUFFIX):
+            for label, value in (("result.envelope", envelope),
+                                 ("session_evidence",
+                                  receipt.get("session_evidence"))):
+                if value is None:
+                    problems.append(
+                        f"{attempt_id}: transport_id {transport_id!r} "
+                        f"dispatches into grok but the receipt carries no "
+                        f"{label} — a cancelled grok turn exits 0, so this "
+                        f"receipt cannot show the turn finished")
         declared_models.append(receipt.get("model_id"))
         seats.append(receipt.get("seat"))
     if len(seats) != len(set(seats)):
@@ -951,6 +2224,55 @@ def build_parser() -> argparse.ArgumentParser:
                      help="fed to the child's stdin; omit for DEVNULL")
     run.add_argument("--output-schema", choices=["none", "review"],
                      default="none")
+    # --- Grok seat integrity (2026-08-25 design) ----------------------
+    # All four are declared here together so the parser has one shape; the
+    # grading semantics of the last three belong to DD-3.
+    run.add_argument("--output-envelope", choices=list(ENVELOPE_FORMATS),
+                     default=None,
+                     help="version-named stdout contract to grade against; "
+                          "a cancelled grok turn exits 0, so its stopReason "
+                          "is the only machine-readable finish evidence")
+    run.add_argument("--session-evidence", default=None,
+                     help="FORMAT:DIR, e.g. grok-session-v1:<session dir>. "
+                          "The caller computes DIR; the supervisor derives "
+                          "no path (see references/adapters.md)")
+    run.add_argument("--session-id", default=None,
+                     help="the session UUID this attempt declared to the "
+                          "child (grok's -s); the axis attempt-binding "
+                          "cross-proves stdout against the session dir")
+    run.add_argument("--require-artifact", action="append", default=[],
+                     metavar="PATH",
+                     help="a file this attempt must have written (or "
+                          "changed) IN PLACE before it can be SUCCEEDED; "
+                          "repeatable. The path is pinned to one inode "
+                          "before spawn (an absent one is reserved) and must "
+                          "still name that inode at grading, so a rename "
+                          "over it is refused; it must be the only name for "
+                          "that inode; and a pre-spawn baseline that cannot "
+                          "be read is absence only on a confirmed ENOENT")
+    run.add_argument("--artifact-root", default=None, metavar="DIR",
+                     help="containment fence for every --require-artifact; "
+                          "resolved and pinned before spawn")
+    run.add_argument("--require-artifact-sha256", action="append", default=[],
+                     metavar="PATH=HEX64",
+                     help="fixed-content contract for one declared artifact; "
+                          "must be 1:1 with --require-artifact")
+    run.add_argument("--require-artifact-allow-unchanged", action="store_true",
+                     help="accept an artifact whose content equals its "
+                          "pre-spawn baseline (deterministic regeneration); "
+                          "recorded in the receipt as an explicit opt-in")
+    run.add_argument("--require-artifact-baseline-max-bytes", type=float,
+                     default=ARTIFACT_BASELINE_MAX_BYTES,
+                     help="per-file cap on the pre-spawn baseline hash, "
+                          "which has no deadline to be bounded by")
+    run.add_argument("--expect-effective-agent", default=None,
+                     help="require the session summary's agent_name to "
+                          "equal this exactly; requires --session-evidence")
+    run.add_argument("--expect-sandbox-profile", default=None,
+                     help="require the session summary's sandbox_profile to "
+                          "equal this exactly, so a --sandbox flag that "
+                          "quietly did nothing cannot pass as success; "
+                          "requires --session-evidence")
     run.add_argument("argv", nargs="+",
                      help="command to execute, after `--`")
 

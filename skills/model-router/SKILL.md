@@ -539,6 +539,8 @@ attempt whose process tree could not be confirmed dead blocks
 write-capable retries: re-route with `--flags termination_unconfirmed` and
 let the human gate hold it.
 
+A grok seat also declares `--output-envelope`, `--session-evidence` and `--session-id`: a cancelled grok turn still exits 0 (`references/adapters.md`, "Grok seat profiles").
+
 Routing-dispatched seats carry the decision with them: pass the route's
 `decision_fingerprint` / `policy_sha256` to `dispatch_agent.py run`, then
 check `verify-evidence --expect-fingerprint --expect-models` — the review

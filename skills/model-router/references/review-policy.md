@@ -329,6 +329,37 @@ no parseable verdict block.
 - `MEDIUM` (single reviewer): same re-dispatch rule; a second silence goes
   to a human with whatever partial evidence exists.
 
+**A silence caused by the recipe is not a model failure.** Check the
+receipt's `result.invalid_reasons` before you attribute anything. Reasons
+naming a cancelled turn (`envelope_stop_reason:cancelled`,
+`session_terminal_event:cancelled`) or unusable evidence
+(`session_evidence_unreadable`, `session_evidence_unbound`) say the seat's
+transport recipe killed the turn — a headless CLI with no TTY cancels a
+tool call it cannot prompt for, and the model never got to review anything.
+Fix the recipe (usually a missing allow rule or an over-broad tool surface),
+then re-dispatch **the same model once**; that is the ordinary single
+re-dispatch above, not an extra round. Do **not** carry these forward in
+`--prior-failures`: that argument reports models that failed at the work,
+and routing away from a model that was never allowed to start degrades the
+next route for no reason. Reasons naming missing or unchanged artifacts
+(`artifact_missing:*`, `artifact_unchanged:*`) or an artifact the evidence
+layer refuses to certify (`artifact_multiply_linked:*`, an inode with a
+second name; `artifact_identity_replaced:*`, a path that stopped naming the
+inode pinned before the attempt started) are the same class of finding for a
+producing seat — a workspace or recipe defect, not a model that failed the
+work. `artifact_identity_replaced:*` has one common innocent cause worth
+knowing before you go looking for an attack: a seat whose writer does the
+write-a-temp-file-and-rename dance. That idiom installs a new inode and is
+refused by design (`adapters.md`, "A required artifact must still be the
+inode that was pinned"); fix the seat to write in place and re-dispatch the
+same model once. `artifact_reservation_cleanup_failed:*` is not about the
+model at all: the supervisor could not remove the placeholder it created for
+an absent required path, so that file is still there and the receipt says so.
+Read it with the `artifact_missing:*` it accompanies — the seat produced
+nothing — and clear the leftover before re-dispatching, or the next attempt's
+baseline starts from the supervisor's own bytes. Who reports failure history
+is always the caller; the router changes nothing here.
+
 ## Reading verdicts
 
 **Reason about content, not the verdict token.** Models are quite capable of
