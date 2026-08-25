@@ -329,6 +329,23 @@ no parseable verdict block.
 - `MEDIUM` (single reviewer): same re-dispatch rule; a second silence goes
   to a human with whatever partial evidence exists.
 
+**A silence caused by the recipe is not a model failure.** Check the
+receipt's `result.invalid_reasons` before you attribute anything. Reasons
+naming a cancelled turn (`envelope_stop_reason:cancelled`,
+`session_terminal_event:cancelled`) or unusable evidence
+(`session_evidence_unreadable`, `session_evidence_unbound`) say the seat's
+transport recipe killed the turn — a headless CLI with no TTY cancels a
+tool call it cannot prompt for, and the model never got to review anything.
+Fix the recipe (usually a missing allow rule or an over-broad tool surface),
+then re-dispatch **the same model once**; that is the ordinary single
+re-dispatch above, not an extra round. Do **not** carry these forward in
+`--prior-failures`: that argument reports models that failed at the work,
+and routing away from a model that was never allowed to start degrades the
+next route for no reason. Reasons naming missing or unchanged artifacts
+(`artifact_missing:*`, `artifact_unchanged:*`) are the same class of
+finding for a producing seat. Who reports failure history is always the
+caller; the router changes nothing here.
+
 ## Reading verdicts
 
 **Reason about content, not the verdict token.** Models are quite capable of

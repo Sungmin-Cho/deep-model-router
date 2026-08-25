@@ -2250,3 +2250,66 @@ def test_session_evidence_without_session_id_is_refused_pre_spawn(tmp_path):
         extra=("--session-evidence", f"grok-session-v1:{session_dir}"))
     assert proc.returncode == 2, proc.stdout
     assert receipt is None
+
+
+# ---------------------------------------------------------------------------
+# DD-5 — one vocabulary for `result.invalid_reasons`. No new terminal state:
+# every gate this tranche adds converges on INVALID_OUTPUT, and the CAUSE is
+# what gained resolution.
+# ---------------------------------------------------------------------------
+
+
+def test_every_reason_this_supervisor_emits_is_in_the_vocabulary(tmp_path):
+    """The vocabulary has teeth or it is decoration. `_reason` refuses an
+    unregistered prefix at construction time, so a new cause cannot be
+    f-strung in at a call site and quietly become a fourth thing retry
+    policy has to guess about."""
+    dispatch_agent = _in_process(tmp_path)
+    for flag in dispatch_agent.INVALID_REASON_FLAGS:
+        assert dispatch_agent._is_documented_reason(flag)
+    for prefix in dispatch_agent.INVALID_REASON_PREFIXES:
+        assert dispatch_agent._is_documented_reason(
+            dispatch_agent._reason(prefix, "x"))
+        # An absent detail is still a well-formed member, never a bare
+        # prefix that a consumer would have to special-case.
+        assert dispatch_agent._reason(prefix, None).endswith(":<absent>")
+    with pytest.raises(ValueError):
+        dispatch_agent._reason("a_prefix_nobody_registered", "x")
+    assert not dispatch_agent._is_documented_reason("invented_out_of_band")
+
+
+def test_reasons_from_a_multi_gate_failure_are_all_documented(tmp_path):
+    """An end-to-end sweep: one attempt that trips the envelope, the session
+    binding and the artifact contract at once must report every cause, and
+    every reported cause must be a vocabulary member."""
+    dispatch_agent = _in_process(tmp_path)
+    root = tmp_path / "work"
+    root.mkdir()
+    target = root / "plan.md"
+    target.write_text("LEFTOVER")
+    session_dir = tmp_path / "session"
+    doc = grok_doc(stop_reason="cancelled", session_id=OTHER_UUID)
+    fake = write_fake(
+        tmp_path, "multi.py",
+        session_writer(session_dir, agent_name="grok-build-plan",
+                       sandbox_profile="off")
+        + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake], schema="none",
+        extra=(*ENVELOPE_ARGS,
+               *session_args(session_dir,
+                             extra=("--expect-effective-agent", "general-purpose",
+                                    "--expect-sandbox-profile", "workspace")),
+               *artifact_args(root, target)))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    reasons = receipt["result"]["invalid_reasons"]
+    assert "envelope_stop_reason:cancelled" in reasons
+    assert "session_evidence_unbound" in reasons
+    assert "effective_agent_mismatch:grok-build-plan" in reasons
+    assert "effective_sandbox_mismatch:off" in reasons
+    assert f"artifact_unchanged:{target}" in reasons
+    for reason in reasons:
+        assert dispatch_agent._is_documented_reason(reason), reason
+    # No new terminal state was invented for any of it.
+    assert receipt["result"]["state"] in dispatch_agent.STATES

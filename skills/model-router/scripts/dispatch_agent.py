@@ -189,6 +189,69 @@ ARTIFACT_HASH_CHUNK_BYTES = 8 * 1024 * 1024
 SUMMARY_MAX_BYTES = 1024 * 1024
 EVENTS_TAIL_BYTES = 256 * 1024
 
+# --- The `result.invalid_reasons` vocabulary (DD-5) --------------------
+#
+# No new terminal state: a cancelled turn, a violated envelope, missing
+# artifacts and unbindable session evidence all converge on the existing
+# INVALID_OUTPUT (exit 6) — "an attempt that finished inside its deadline
+# with exit 0 but did not produce the contracted output", which is what
+# INVALID_OUTPUT already meant. `STATES`, `EXIT_BY_STATE` and the
+# documented state machine stay invariant; the CAUSE is what gains
+# resolution, and it lives here.
+#
+# That distinction is operationally load-bearing. An INVALID_OUTPUT whose
+# reasons name a cancellation or unreadable evidence is a seat RECIPE or
+# transport defect, not a model capability failure — re-dispatch the same
+# model once after fixing the recipe, and do not report it through
+# `--prior-failures` as if the model had failed. `references/
+# review-policy.md` carries that guidance for orchestrators.
+#
+# A reason is either an exact member of the first tuple, or
+# `"<prefix>:<detail>"` for a prefix in the second. `_reason` is the only
+# constructor for the parameterized form and REFUSES an unregistered
+# prefix, so the vocabulary cannot drift by someone f-stringing a new one
+# in at a call site.
+INVALID_REASON_FLAGS = (
+    "envelope_unparseable",         # stdout was not one JSON object
+    "evidence_oversized",           # a gate surface exceeded its budget
+    "schema_invalid",               # --output-schema was not satisfied
+    "session_evidence_unreadable",  # declared, but summary.json is not there
+    "session_evidence_unbound",     # evidence belongs to some other attempt
+)
+INVALID_REASON_PREFIXES = (
+    "envelope_stop_reason",         # :<the non-end_turn value>
+    "artifact_missing",             # :<path>
+    "artifact_empty",               # :<path>
+    "artifact_not_regular_file",    # :<path> — symlink, FIFO, device
+    "artifact_escaped_root",        # :<path>
+    "artifact_unchanged",           # :<path> — a prior attempt's leftover
+    "artifact_sha256_mismatch",     # :<path>
+    "effective_agent_mismatch",     # :<observed agent_name>
+    "effective_sandbox_mismatch",   # :<observed sandbox_profile>
+    "session_terminal_event",       # :<non-completed turn_ended outcome>
+)
+
+
+def _reason(prefix: str, detail: object) -> str:
+    """Build one parameterized `invalid_reasons` member.
+
+    Raises on an unregistered prefix rather than accepting it: a vocabulary
+    that anyone can extend at a call site is not a vocabulary, and the
+    consumers of these strings (retry policy, review policy) key off the
+    prefix.
+    """
+    if prefix not in INVALID_REASON_PREFIXES:
+        raise ValueError(f"undocumented invalid_reason prefix {prefix!r}")
+    text = "" if detail is None else str(detail)
+    return f"{prefix}:{text or '<absent>'}"
+
+
+def _is_documented_reason(reason: str) -> bool:
+    if reason in INVALID_REASON_FLAGS:
+        return True
+    prefix, sep, _ = reason.partition(":")
+    return bool(sep) and prefix in INVALID_REASON_PREFIXES
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -505,27 +568,27 @@ def _grade_artifacts(entries: list[dict], root: Path,
             current = path
         record["contained"] = _contained(current, root)
         if not record["contained"]:
-            reasons.append(f"artifact_escaped_root:{path}")
+            reasons.append(_reason("artifact_escaped_root", path))
             continue
         try:
             fd, st = _open_regular(path)
         except NotARegularFile:
-            reasons.append(f"artifact_not_regular_file:{path}")
+            reasons.append(_reason("artifact_not_regular_file", path))
             continue
         except OSError as exc:
             # ELOOP is O_NOFOLLOW refusing a symlink planted at the
             # artifact path — reporting that as "missing" would send an
             # operator looking for a file that is right there. The two
             # get different reasons because they have different remedies.
-            reasons.append(
-                f"artifact_not_regular_file:{path}"
-                if exc.errno == errno.ELOOP else f"artifact_missing:{path}")
+            reasons.append(_reason(
+                "artifact_not_regular_file" if exc.errno == errno.ELOOP
+                else "artifact_missing", path))
             continue
         record["exists"] = True
         record["size"] = st.st_size
         if st.st_size == 0:
             os.close(fd)
-            reasons.append(f"artifact_empty:{path}")
+            reasons.append(_reason("artifact_empty", path))
             continue
         digest = _hash_artifact(fd, deadline_monotonic)
         if digest is None:
@@ -542,11 +605,11 @@ def _grade_artifacts(entries: list[dict], root: Path,
             if allow_unchanged:
                 record["artifact_unchanged_accepted"] = True
             else:
-                reasons.append(f"artifact_unchanged:{path}")
+                reasons.append(_reason("artifact_unchanged", path))
         if entry["expected_sha256"] is not None:
             record["expected_sha256_match"] = digest == entry["expected_sha256"]
             if not record["expected_sha256_match"]:
-                reasons.append(f"artifact_sha256_mismatch:{path}")
+                reasons.append(_reason("artifact_sha256_mismatch", path))
     return records, reasons, aborted
 
 
@@ -668,23 +731,23 @@ def _grade_session_evidence(evidence: dict, *, session_id: str,
             reasons.append("session_evidence_unbound")
 
     if expect_agent is not None and summary.get("agent_name") != expect_agent:
-        reasons.append(
-            f"effective_agent_mismatch:{summary.get('agent_name') or '<absent>'}")
+        reasons.append(_reason("effective_agent_mismatch",
+                               summary.get("agent_name")))
     if expect_sandbox is not None and \
             summary.get("sandbox_profile") != expect_sandbox:
         # Absent counts as a mismatch: a version that stopped recording the
         # field is precisely the fail-open case this expectation exists to
         # catch, and treating absence as "fine" would disarm it silently.
-        reasons.append(
-            f"effective_sandbox_mismatch:"
-            f"{summary.get('sandbox_profile') or '<absent>'}")
+        reasons.append(_reason("effective_sandbox_mismatch",
+                               summary.get("sandbox_profile")))
 
     terminal_event = evidence["terminal_event"]
     if terminal_event is not None and terminal_event["outcome"] != "completed":
         # An opportunistic second line of defence, independent of DD-1: it
         # only works when the undocumented file is readable, and that limit
         # is documented rather than papered over.
-        reasons.append(f"session_terminal_event:{terminal_event['outcome']}")
+        reasons.append(_reason("session_terminal_event",
+                               terminal_event["outcome"]))
     return reasons
 
 
@@ -772,7 +835,7 @@ def _grade_envelope(envelope: dict) -> list[str]:
         return ["envelope_unparseable"]
     stop_reason = envelope["stop_reason"]
     if stop_reason != ENVELOPE_OK_STOP_REASON:
-        return [f"envelope_stop_reason:{stop_reason or '<absent>'}"]
+        return [_reason("envelope_stop_reason", stop_reason)]
     return []
 
 
