@@ -939,11 +939,18 @@ RECEIPT_KEYS = {
     # design §4 B2 — decision linkage and the requested-vs-served slots.
     "decision_fingerprint", "policy_sha256", "transport_id",
     "host_cli_version", "observed_model_id", "observed_model_source",
-    # 2026-08-25 grok seat integrity — DD-1 declares the envelope contract.
-    "output_envelope",
+    # 2026-08-25 grok seat integrity — DD-1 declares the envelope contract,
+    # DD-3 the effective-policy evidence read from the session directory.
+    "output_envelope", "session_evidence",
 }
 RECEIPT_PROCESS_KEYS = {"pid", "process_group_id", "supervisor_pid"}
-RECEIPT_TIMING_KEYS = {"started_at", "deadline_at", "finished_at"}
+RECEIPT_TIMING_KEYS = {
+    "started_at", "deadline_at", "finished_at",
+    # DD-3: the untruncated pre-Popen anchor the session freshness window
+    # opens at. `started_at` is stamped AFTER Popen, so it is unusable as a
+    # lower bound.
+    "launch_anchor_at",
+}
 RECEIPT_RESULT_KEYS = {
     "state", "exit_status", "stdout_path", "stderr_path", "output_sha256",
     "schema_valid", "termination_confirmed",
@@ -1333,13 +1340,15 @@ def test_fully_declared_to_xai_dispatch_passes_preflight_and_spawns(tmp_path):
     """The positive half of the preflight — a complete declaration set runs
     normally."""
     session_dir = tmp_path / "session"
-    session_dir.mkdir()
-    fake = write_fake(tmp_path, "env_xai.py", envelope_fake(grok_doc()))
+    doc = grok_doc()
+    fake = write_fake(
+        tmp_path, "env_xai.py",
+        session_writer(session_dir)
+        + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
     proc, receipt = run_dispatch(
         tmp_path, [sys.executable, fake],
         extra=("--transport-id", "claude_code.to_xai", *ENVELOPE_ARGS,
-               "--session-evidence", f"grok-session-v1:{session_dir}",
-               "--session-id", SESSION_UUID))
+               *session_args(session_dir)))
     assert proc.returncode == 0, proc.stderr
     assert receipt["result"]["state"] == "SUCCEEDED"
 
@@ -1943,4 +1952,301 @@ def test_sha256_mapping_unknown_dup_conflict_is_refused_pre_spawn(
                                  extra=artifact_args(root, target,
                                                      extra=tuple(extra)))
     assert proc.returncode == 2, f"{label}: {proc.stdout}"
+    assert receipt is None
+
+
+# ---------------------------------------------------------------------------
+# DD-3 — session evidence, attempt binding, and the effective-agent /
+# effective-sandbox gates. The receipt must carry what a seat was GIVEN
+# alongside what actually took effect, and an unrelated or leftover session
+# directory must never stand in as this attempt's evidence.
+# ---------------------------------------------------------------------------
+
+
+def session_writer(session_dir, *, session_id=SESSION_UUID,
+                   agent_name="general-purpose", sandbox_profile="workspace",
+                   outcome="completed", cancellation_category=None,
+                   events_padding=0, events_padding_after=False,
+                   summary_padding=0, created_at=None, write_summary=True):
+    """Python source for a fake child that writes a grok session directory
+    WHILE IT RUNS.
+
+    The timing matters: `created_at` must land inside
+    [launch_anchor, grading], and a fixture written by the test before the
+    supervisor ever spawns would sit before the anchor. Static fixtures are
+    the natural shape only for the mismatch/staleness cases, which is
+    exactly how they are written below.
+    """
+    event = {"ts": "2026-08-25T08:50:43.239Z", "type": "turn_ended",
+             "outcome": outcome}
+    if cancellation_category is not None:
+        event["cancellation_category"] = cancellation_category
+    summary = {
+        "info": {"id": session_id, "cwd": "/tmp/x"},
+        "current_model_id": "grok-4.6", "reasoning_effort": "low",
+        "agent_name": agent_name, "sandbox_profile": sandbox_profile,
+    }
+    return "\n".join([
+        "import datetime, json",
+        "from pathlib import Path",
+        f"d = Path({str(session_dir)!r})",
+        "d.mkdir(parents=True, exist_ok=True)",
+        f"summary = {summary!r}",
+        (f"summary['created_at'] = {created_at!r}" if created_at else
+         "summary['created_at'] = datetime.datetime.now("
+         "datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')"),
+        f"summary['pad'] = 'p' * {summary_padding}",
+        (f"(d / 'summary.json').write_text(json.dumps(summary))"
+         if write_summary else "pass"),
+        f"pad = [json.dumps({{'type': 'phase_changed', 'pad': 'q' * 64}})] * {events_padding}",
+        f"lines = ([json.dumps({event!r})] + pad) if {events_padding_after!r} "
+        f"else (pad + [json.dumps({event!r})])",
+        "(d / 'events.jsonl').write_text('\\n'.join(lines) + '\\n')",
+    ]) + "\n"
+
+
+def session_args(session_dir, *, session_id=SESSION_UUID, extra=()):
+    return ("--session-evidence", f"grok-session-v1:{session_dir}",
+            "--session-id", session_id, *extra)
+
+
+def test_bound_fresh_session_evidence_is_succeeded_and_recorded(tmp_path):
+    """The receipt now carries requested and EFFECTIVE side by side — G2's
+    whole point. Issue #14's `requested acceptEdits / effective
+    grok-build-plan` mismatch becomes visible on one page."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_ok.py",
+                      session_writer(session_dir) + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    evidence = receipt["session_evidence"]
+    assert evidence["summary"]["agent_name"] == "general-purpose"
+    assert evidence["summary"]["current_model_id"] == "grok-4.6"
+    assert evidence["summary"]["reasoning_effort"] == "low"
+    assert evidence["summary"]["sandbox_profile"] == "workspace"
+    assert evidence["session_id"] == SESSION_UUID
+    assert evidence["created_at"]
+    assert evidence["terminal_event"] == {"outcome": "completed",
+                                          "cancellation_category": None}
+    assert receipt["timing"]["launch_anchor_at"]
+
+
+def test_unreadable_summary_blocks_success_but_not_failures(tmp_path):
+    """Fail-closed tightens the SUCCESS direction only: a FAILED attempt is
+    not relabeled by what its evidence does or does not say."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_none.py",
+                      session_writer(session_dir, write_summary=False)
+                      + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unreadable" in receipt["result"]["invalid_reasons"]
+
+    fail_fake = write_fake(
+        tmp_path, "sess_fail.py",
+        session_writer(session_dir, write_summary=False)
+        + "import sys\nprint('verdict: PASS')\nsys.exit(4)\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fail_fake],
+                                 attempt_id="t2",
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 1
+    assert receipt["result"]["state"] == "FAILED"
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def test_stale_or_unrelated_session_dir_is_unbound(tmp_path):
+    """A leftover directory that happens to carry the expected agent_name is
+    not this attempt's evidence — `info.id` binds it or nothing does."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_stale.py",
+        session_writer(session_dir, session_id=OTHER_UUID)
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=session_args(session_dir,
+                           extra=("--expect-effective-agent", "general-purpose")))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unbound" in receipt["result"]["invalid_reasons"]
+
+
+def test_envelope_session_id_mismatch_is_unbound(tmp_path):
+    """The stdout document and the session directory must name the SAME
+    session — that cross-proof is why `session_id` is kept in the receipt's
+    envelope evidence."""
+    session_dir = tmp_path / "session"
+    doc = grok_doc(session_id=OTHER_UUID)
+    fake = write_fake(
+        tmp_path, "sess_xid.py",
+        session_writer(session_dir)
+        + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=(*ENVELOPE_ARGS, *session_args(session_dir)))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unbound" in receipt["result"]["invalid_reasons"]
+
+
+def test_created_at_outside_launch_window_is_unbound(tmp_path):
+    """Freshness: the session is created by the child at launch, so a
+    `created_at` before this attempt's anchor belongs to a different run."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_old.py",
+        session_writer(session_dir, created_at="2020-01-01T00:00:00.000000Z")
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "session_evidence_unbound" in receipt["result"]["invalid_reasons"]
+
+
+def test_sub_second_success_with_untruncated_comparison_is_succeeded(tmp_path):
+    """R3 regression. The receipt's own timestamps are truncated to whole
+    seconds; grok's `created_at` has microseconds. Comparing the truncated
+    anchor against the precise value rejects every attempt that finishes
+    inside one second — which is every fake-child fixture in this file, and
+    plenty of real short turns. The comparison runs on untruncated internal
+    values for exactly that reason."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_fast.py",
+                      session_writer(session_dir) + "print('verdict: PASS')\n")
+    started = time.monotonic()
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert time.monotonic() - started < 5
+
+
+def test_effective_agent_mismatch_is_invalid_output(tmp_path):
+    """G3's detection axis: a write-capable seat that silently inherited the
+    read-only default agent cannot reach SUCCEEDED by any path. This gate is
+    required in EVERY branch, shipped maker recipe or not."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_agent.py",
+        session_writer(session_dir, agent_name="grok-build-plan")
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=session_args(session_dir,
+                           extra=("--expect-effective-agent", "general-purpose")))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "effective_agent_mismatch:grok-build-plan" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_effective_sandbox_mismatch_is_invalid_output(tmp_path):
+    """The sandbox fail-open guard: a recipe that ships a `--sandbox` flag
+    must not succeed on a machine or version where the flag quietly did
+    nothing. `sandbox_profile` is unofficial, so it gates only when the
+    caller declares an expectation."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_sbx.py",
+        session_writer(session_dir, sandbox_profile="off")
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=session_args(session_dir,
+                           extra=("--expect-sandbox-profile", "workspace")))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "effective_sandbox_mismatch:off" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_absent_sandbox_profile_fails_an_expectation_closed(tmp_path):
+    """Absent is not "fine": a version that stopped recording the field is
+    exactly the fail-open case this expectation exists to catch."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_nosbx.py",
+        session_writer(session_dir, sandbox_profile=None)
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=session_args(session_dir,
+                           extra=("--expect-sandbox-profile", "workspace")))
+    assert proc.returncode == 6, proc.stderr
+    assert "effective_sandbox_mismatch:<absent>" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_terminal_event_cancelled_blocks_success_even_with_clean_stdout(
+        tmp_path):
+    """A second line of defence, independent of DD-1: even with a perfectly
+    clean stdout, a session whose last turn ended `cancelled` is not a
+    success."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_cancel.py",
+        session_writer(session_dir, outcome="cancelled",
+                       cancellation_category="permission_cancelled")
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert receipt["session_evidence"]["terminal_event"] == {
+        "outcome": "cancelled",
+        "cancellation_category": "permission_cancelled"}
+    assert "session_terminal_event:cancelled" in \
+        receipt["result"]["invalid_reasons"]
+
+
+def test_oversized_events_jsonl_is_nongating_with_null_terminal_event(tmp_path):
+    """R3, both reviewers converging: `events.jsonl` is undocumented, so it
+    is a CIRCUMSTANTIAL surface, not a gate — and that has to hold on the
+    size axis too. The 256 KiB tail is a read budget, not a contract: not
+    finding a complete terminal event inside it leaves `terminal_event`
+    null and changes no state."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_bigev.py",
+        session_writer(session_dir, events_padding=8000,
+                       events_padding_after=True)
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert receipt["session_evidence"]["terminal_event"] is None
+    assert receipt["result"]["invalid_reasons"] is None
+
+
+def test_oversized_summary_json_is_invalid_output(tmp_path):
+    """The other half of the size rule: `summary.json` IS a gate surface
+    (officially documented, and what the binding is proved against), so an
+    over-budget one is a typed refusal rather than an unbounded parse."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(
+        tmp_path, "sess_bigsum.py",
+        session_writer(session_dir, summary_padding=1024 * 1024 + 64)
+        + "print('verdict: PASS')\n")
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=session_args(session_dir))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "evidence_oversized" in receipt["result"]["invalid_reasons"]
+
+
+def test_session_evidence_without_session_id_is_refused_pre_spawn(tmp_path):
+    """Attempt binding has nothing to bind to without the id the child was
+    given, so the two arguments are mutually required."""
+    session_dir = tmp_path / "session"
+    fake = write_fake(tmp_path, "sess_noid.py", HAPPY)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--session-evidence", f"grok-session-v1:{session_dir}"))
+    assert proc.returncode == 2, proc.stdout
     assert receipt is None

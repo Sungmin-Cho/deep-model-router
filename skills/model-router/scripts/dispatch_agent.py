@@ -173,6 +173,22 @@ ARTIFACT_BASELINE_MAX_BYTES = 64 * 1024 * 1024
 ARTIFACT_BASELINE_BUDGET_BYTES = 256 * 1024 * 1024
 ARTIFACT_HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
+# --- Session evidence (DD-3) ------------------------------------------
+#
+# The effective agent identity and the effective sandbox profile appear
+# nowhere on stdout — only in the session directory grok writes as it runs.
+# That is what lets a receipt carry REQUESTED and EFFECTIVE side by side,
+# which is the whole of G2: issue #14's "requested acceptEdits, effective
+# grok-build-plan" becomes visible on one page instead of being inferred
+# from an absence.
+#
+# The two surfaces are graded differently on purpose. `summary.json` and
+# its `agent_name`/`info` fields are officially documented [UG-17], so they
+# GATE. `events.jsonl` is not in the documented layout at all, so it is
+# recorded when available and never gates — including on the size axis.
+SUMMARY_MAX_BYTES = 1024 * 1024
+EVENTS_TAIL_BYTES = 256 * 1024
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -534,6 +550,144 @@ def _grade_artifacts(entries: list[dict], root: Path,
     return records, reasons, aborted
 
 
+def _read_session_evidence(evidence_dir: Path) -> dict:
+    """Read what the session directory can prove about this attempt.
+
+    Always returns the same shape. `summary` is None when the file is
+    missing or unreadable and `summary_oversized` says which of the two it
+    was; `terminal_event` is None whenever the tail scan cannot produce a
+    complete one, for ANY reason — absent file, unparseable line, or a
+    terminal event that sits outside the tail window. That last case is
+    why the window is a read budget rather than a contract: an
+    `events.jsonl` larger than the tail must not turn a clean attempt into
+    a failure, because this surface is undocumented and gating on it would
+    make an internal file load-bearing.
+    """
+    evidence = {"format": None, "dir": str(evidence_dir), "summary": None,
+                "summary_oversized": False, "session_id": None,
+                "created_at": None, "terminal_event": None}
+    data, oversized = _capped_bytes(evidence_dir / "summary.json",
+                                    SUMMARY_MAX_BYTES)
+    if oversized:
+        evidence["summary_oversized"] = True
+    elif data is not None:
+        try:
+            summary = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            summary = None
+        if isinstance(summary, dict):
+            evidence["summary"] = {
+                key: summary.get(key) for key in
+                ("agent_name", "current_model_id", "reasoning_effort",
+                 "sandbox_profile")}
+            info = summary.get("info")
+            if isinstance(info, dict) and isinstance(info.get("id"), str):
+                evidence["session_id"] = info["id"]
+            if isinstance(summary.get("created_at"), str):
+                evidence["created_at"] = summary["created_at"]
+
+    events, _ = _tail_bytes(evidence_dir / "events.jsonl", EVENTS_TAIL_BYTES)
+    if events:
+        # Reverse scan: the last complete `turn_ended` in the window wins.
+        # The first line of a tail read is usually a fragment, so every
+        # line that does not parse is simply skipped rather than treated
+        # as evidence of anything.
+        for line in reversed(events.split(b"\n")):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "turn_ended":
+                evidence["terminal_event"] = {
+                    "outcome": event.get("outcome"),
+                    "cancellation_category": event.get(
+                        "cancellation_category")}
+                break
+    return evidence
+
+
+def _tail_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
+    """Read at most the last `limit` bytes of a circumstantial surface."""
+    try:
+        fd, st = _open_regular(path)
+    except OSError:
+        return None, False
+    with os.fdopen(fd, "rb") as f:
+        if st.st_size > limit:
+            f.seek(st.st_size - limit)
+            return f.read(limit), True
+        return f.read(), False
+
+
+def _parse_grok_timestamp(value: str) -> float | None:
+    """grok stamps `created_at` with microseconds and a `Z` suffix."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def _grade_session_evidence(evidence: dict, *, session_id: str,
+                            envelope: dict | None, launch_anchor: float,
+                            graded_at: float, expect_agent: str | None,
+                            expect_sandbox: str | None) -> list[str]:
+    """The success gate over session evidence. Returns the reasons it fails.
+
+    Failure tightens the SUCCESS direction only — the caller never applies
+    these to a FAILED, TIMED_OUT or TERMINATION_UNCONFIRMED attempt, whose
+    state is already decided by something that outranks evidence.
+    """
+    if evidence["summary_oversized"]:
+        return ["evidence_oversized"]
+    summary = evidence["summary"]
+    if summary is None:
+        return ["session_evidence_unreadable"]
+
+    reasons: list[str] = []
+    # (a) the session directory names the session this attempt declared.
+    if evidence["session_id"] != session_id:
+        reasons.append("session_evidence_unbound")
+    # (b) stdout and the session directory name the SAME session. Without
+    # this cross-proof a correct directory could be paired with a stdout
+    # document from some other run.
+    elif envelope is not None and envelope["session_id"] is not None \
+            and envelope["session_id"] != session_id:
+        reasons.append("session_evidence_unbound")
+    # (c) freshness. The child creates the session at launch, so
+    # `created_at` must fall inside this attempt's window. Both bounds are
+    # untruncated internal values: the receipt's own timestamps are
+    # truncated to whole seconds, and comparing those against a
+    # microsecond-precision `created_at` misjudges every attempt that
+    # finishes inside one second.
+    else:
+        created_at = _parse_grok_timestamp(evidence["created_at"] or "")
+        if created_at is None or not (launch_anchor <= created_at <= graded_at):
+            reasons.append("session_evidence_unbound")
+
+    if expect_agent is not None and summary.get("agent_name") != expect_agent:
+        reasons.append(
+            f"effective_agent_mismatch:{summary.get('agent_name') or '<absent>'}")
+    if expect_sandbox is not None and \
+            summary.get("sandbox_profile") != expect_sandbox:
+        # Absent counts as a mismatch: a version that stopped recording the
+        # field is precisely the fail-open case this expectation exists to
+        # catch, and treating absence as "fine" would disarm it silently.
+        reasons.append(
+            f"effective_sandbox_mismatch:"
+            f"{summary.get('sandbox_profile') or '<absent>'}")
+
+    terminal_event = evidence["terminal_event"]
+    if terminal_event is not None and terminal_event["outcome"] != "completed":
+        # An opportunistic second line of defence, independent of DD-1: it
+        # only works when the undocumented file is readable, and that limit
+        # is documented rather than papered over.
+        reasons.append(f"session_terminal_event:{terminal_event['outcome']}")
+    return reasons
+
+
 def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
     """Read at most `limit` bytes from a gate surface.
 
@@ -661,9 +815,13 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         # the exact-field contract one key set instead of one per
         # declaration combination.
         "output_envelope": args.output_envelope,
+        # DD-3: what actually took effect, read from the session directory
+        # the caller declared. Null when none was declared.
+        "session_evidence": None,
         "process": {"pid": None, "process_group_id": None,
                     "supervisor_pid": os.getpid()},
-        "timing": {"started_at": None, "deadline_at": None, "finished_at": None},
+        "timing": {"started_at": None, "deadline_at": None,
+                   "finished_at": None, "launch_anchor_at": None},
         "result": {
             "state": "STARTING", "exit_status": None,
             "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
@@ -768,6 +926,23 @@ def cmd_run(args) -> int:
         print(f"--session-id must be a UUID, got {args.session_id!r}",
               file=sys.stderr)
         return 2
+    if args.session_evidence is not None and args.session_id is None:
+        # Attempt binding has nothing to bind to without the id the child
+        # was handed: a session directory that named no particular attempt
+        # would let any leftover directory stand in for this one.
+        print("--session-evidence requires --session-id: the evidence is "
+              "bound to this attempt by the session id, or not at all",
+              file=sys.stderr)
+        return 2
+    if args.expect_sandbox_profile is not None:
+        if not args.expect_sandbox_profile.strip():
+            print("--expect-sandbox-profile must not be empty", file=sys.stderr)
+            return 2
+        if args.session_evidence is None:
+            print("--expect-sandbox-profile requires --session-evidence: the "
+                  "effective sandbox profile is only observable in the "
+                  "session summary", file=sys.stderr)
+            return 2
     if args.expect_effective_agent is not None:
         if not args.expect_effective_agent.strip():
             print("--expect-effective-agent must not be empty",
@@ -955,6 +1130,13 @@ def cmd_run(args) -> int:
         # stdout/stderr go straight to files: no pipe buffer to fill, no
         # drain thread to forget, no deadlock when the child floods.
         with os.fdopen(stdout_fd, "wb") as out_f, os.fdopen(stderr_fd, "wb") as err_f:
+            # The lower bound of DD-3's session freshness window, captured
+            # HERE rather than after Popen: the child creates its session
+            # directory at launch, and `started_at` is stamped once Popen
+            # has already returned — a bound stamped after the event it is
+            # supposed to precede is not a bound. Kept untruncated for the
+            # comparison; the receipt shows the human-readable form.
+            launch_anchor = time.time()
             try:
                 proc = subprocess.Popen(
                     args.argv, stdin=stdin_f, stdout=out_f, stderr=err_f,
@@ -988,6 +1170,8 @@ def cmd_run(args) -> int:
                 receipt["process"] = {"pid": proc.pid, "process_group_id": pgid,
                                       "supervisor_pid": os.getpid()}
                 receipt["timing"]["started_at"] = _utcnow()
+                receipt["timing"]["launch_anchor_at"] = datetime.fromtimestamp(
+                    launch_anchor, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 receipt["timing"]["deadline_at"] = deadline_at
                 receipt["result"]["state"] = "RUNNING"
                 write_receipt(receipt_dir, receipt)
@@ -1048,7 +1232,9 @@ def cmd_run(args) -> int:
                         receipt["result"]["state"] = "TIMED_OUT"
                     elif exit_status != 0:
                         receipt["result"]["state"] = "FAILED"
-                    elif args.output_envelope is not None or artifact_entries:
+                    elif (args.output_envelope is not None
+                          or args.session_evidence is not None
+                          or artifact_entries):
                         # The ladder inside grading, in order: envelope
                         # (DD-1) -> output schema -> artifacts (DD-2) ->
                         # a final deadline re-check. The envelope comes
@@ -1057,6 +1243,7 @@ def cmd_run(args) -> int:
                         # still a cancelled turn.
                         reasons: list[str] = []
                         timed_out = False
+                        envelope = None
                         if args.output_envelope is not None:
                             envelope = _read_envelope(stdout_path)
                             receipt["result"]["envelope"] = _receipt_envelope(
@@ -1089,6 +1276,23 @@ def cmd_run(args) -> int:
                             receipt["result"]["schema_valid"] = ok
                             if not ok:
                                 reasons = ["schema_invalid"]
+                        if args.session_evidence is not None:
+                            # Ladder step 5, alongside the output schema:
+                            # recorded whatever the terminal state, gating
+                            # only where success is still on the table.
+                            evidence_format, _, evidence_dir = \
+                                args.session_evidence.partition(":")
+                            evidence = _read_session_evidence(Path(evidence_dir))
+                            evidence["format"] = evidence_format
+                            receipt["session_evidence"] = {
+                                k: v for k, v in evidence.items()
+                                if k != "summary_oversized"}
+                            reasons = reasons + _grade_session_evidence(
+                                evidence, session_id=args.session_id,
+                                envelope=envelope, launch_anchor=launch_anchor,
+                                graded_at=time.time(),
+                                expect_agent=args.expect_effective_agent,
+                                expect_sandbox=args.expect_sandbox_profile)
                         if artifact_entries:
                             records, artifact_reasons, aborted = _grade_artifacts(
                                 artifact_entries, artifact_root,
@@ -1536,6 +1740,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--expect-effective-agent", default=None,
                      help="require the session summary's agent_name to "
                           "equal this exactly; requires --session-evidence")
+    run.add_argument("--expect-sandbox-profile", default=None,
+                     help="require the session summary's sandbox_profile to "
+                          "equal this exactly, so a --sandbox flag that "
+                          "quietly did nothing cannot pass as success; "
+                          "requires --session-evidence")
     run.add_argument("argv", nargs="+",
                      help="command to execute, after `--`")
 
