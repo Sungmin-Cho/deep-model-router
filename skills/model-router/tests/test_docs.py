@@ -146,6 +146,30 @@ def test_adapters_fences_mirror_the_grok_seat_strings():
             assert not missing, (host, key, missing)
 
 
+def _collapsed(text: str) -> str:
+    """Whitespace-normalize so line-wrapped 'assumed' sentences cannot
+    silently pass a negative pin."""
+    return re.sub(r"\s+", " ", text)
+
+
+def test_adapters_grok_section_wording():
+    """Issue #16: grok-hosted bridges are verified from a darwin grok host;
+    Codex → xai stays assumed; native grok isolation stays degraded."""
+    adapters = _collapsed((SKILL / "references" / "adapters.md").read_text())
+    profiles = _collapsed((SKILL / "references" / "model-profiles.md").read_text())
+    yaml_text = _collapsed(re.sub(r"(?m)^# ?", "", (SKILL / "config" / "model-routing.yaml").read_text()))
+    assert "grok → claude, grok → openai — assumed" not in adapters
+    assert "verified (darwin grok host" in adapters
+    assert "Codex → xai — assumed" in adapters or "Codex -> xai — assumed" in adapters
+    assert "Assumed from this host" not in adapters
+    assert "degraded unless both reviewers run as separate processes" in adapters
+    assert "native `--agents` surface remains outside that claim" in adapters
+    review_policy = _collapsed((SKILL / "references" / "review-policy.md").read_text())
+    assert "Codex and grok native subagents carry an unverified assumption" in review_policy
+    assert "grok → claude, and grok → openai use the same commands and are recorded as assumed" not in profiles
+    assert "grok → claude, and grok → openai use the same commands and are recorded as assumed" not in yaml_text
+
+
 # ---------------------------------------------------------------------------
 # F-04 — the observability contract must not promise fields nothing produces
 # (DD-3)

@@ -17,6 +17,7 @@ says so rather than bending the policy to match.
 Run:  python3 -m pytest skills/model-router/tests/ -q
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -411,9 +412,38 @@ def test_ledger_does_not_overclaim():
         assert e.get("evidence"), f"{item} claims a status with no evidence"
     codex_isolation = next(k for k in entries if "Codex native subagent" in k)
     assert entries[codex_isolation]["status"] != "verified"
+    grok_isolation = next(k for k in entries if "grok native subagent" in k)
+    assert entries[grok_isolation]["status"] != "verified"
     for binding in ("worker_fast binding", "worker_balanced binding"):
         key = next(k for k in entries if binding in k)
         assert entries[key]["status"] == "price_verified_quality_probed"
+
+
+def test_grok_hosted_bridge_facts():
+    """Issue #16: the grok-hosted bridged directions are verified, to the
+    same ledger standard as the Claude Code -> xai seat; the native surface
+    and the codex-hosted direction are not, and must not ride along."""
+    t = CFG["transports"]
+    assert t["grok"]["to_claude"]["verified"] is True
+    assert t["grok"]["to_openai"]["verified"] is True
+    assert t["grok"]["to_claude"]["isolation"] == "separate_process"
+    assert t["grok"]["to_openai"]["isolation"] == "separate_process"
+    assert t["grok"]["native"]["isolation"] == "unverified"
+    assert t["claude_code"]["to_xai"]["verified"] is True
+    assert t["codex"]["to_xai"]["verified"] is False
+    entries = {e["item"]: e for e in CFG["verification_ledger"]["entries"]}
+    for item in ("grok -> Claude transport", "grok -> OpenAI transport"):
+        e = entries[item]
+        assert e["status"] == "verified"
+        assert "darwin" in e["evidence"]
+        assert re.search(r"grok \d+\.\d+\.\d+", e["evidence"])
+        assert str(e["probed_on"]) >= "2026-08-29"
+        assert re.search(r"g16-r\d+-", e["evidence"]), item
+    assert entries["grok native subagent isolation"]["status"] == (
+        "flag_verified_semantics_unverified")
+    assert entries[
+        "Grok reviewer seat recipe (transports.*.to_xai.mechanism_reviewer)"
+    ]["status"] == "verified"
 
 
 # ---------------------------------------------------------------------------

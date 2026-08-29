@@ -144,8 +144,10 @@ Verification is per direction, not a blanket "the bridges work":
 - Claude Code → openai (`codex exec`) — verified
 - Codex → claude (`claude -p`) — verified
 - Claude Code → xai (the grok reviewer seat profile) — verified
-- Codex → xai, grok → claude, grok → openai — assumed (same mechanisms, the
-  hosted direction was not probed)
+- grok → claude, grok → openai (`claude -p` / `codex exec` from a grok
+  host) — verified (darwin grok host, 2026-08-29; see the ledger)
+- Codex → xai — assumed (same mechanism, the hosted direction was not
+  probed)
 
 **Passing the prompt.** A reviewer's prompt contains the diff, and diffs
 contain quotes, backticks, `$`, and newlines. Build argv programmatically —
@@ -366,8 +368,13 @@ adapter can offer.
 semantics have **not** been verified. Until they are, treat a grok-native dual
 review as degraded unless both reviewers run as separate processes.
 
-**To claude models:** the `claude -p --effort` command above. Assumed from this
-host; the flag itself is verified.
+**To claude models:** the `claude -p --effort` command above. Verified from
+a darwin grok host (2026-08-29): dispatched under `dispatch_agent.py` with
+`--output-schema review` and a read-only permission mode; separate process
+by construction, and the receipt `attempt_id` is the isolation-evidence
+id. A positional prompt placed after a variadic `claude` flag
+(`--allowedTools`, `--add-dir`) is swallowed by that flag; deliver via
+`--prompt-file` or place the prompt after only fixed-arity flags.
 
 **To openai models:**
 
@@ -379,7 +386,15 @@ codex exec -m <id> \
     "<prompt>"
 ```
 
-Assumed from this host; the same mechanism is verified from Claude Code.
+Verified from a darwin grok host (2026-08-29): dispatched under
+`dispatch_agent.py` with `--output-schema review` and `-s read-only`;
+separate process by construction, and the receipt `attempt_id` is the
+isolation-evidence id.
+
+A grok-hosted dual review is certifiable exactly when both reviewers run
+over these two bridges as supervised separate processes with distinct
+receipt attempt ids; the native `--agents` surface remains outside that
+claim and a review built on it stays degraded.
 
 ### Confirming a transport
 

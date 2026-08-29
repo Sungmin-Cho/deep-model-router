@@ -1369,6 +1369,62 @@ def test_grok_host_outbound_transports_pass_preflight(tmp_path):
         assert receipt["result"]["state"] == "SUCCEEDED"
 
 
+def test_grok_hosted_reviewer_pair_forms_a_verifiable_evidence_set(tmp_path):
+    """Issue #16: two grok-hosted outbound reviewer seats, distinct attempt
+    ids, form a verify-evidence set. Fake children only — CI never invokes
+    claude/codex/grok."""
+    fake = write_fake(tmp_path, "happy_pair.py", HAPPY)
+    receipts = tmp_path / "receipts"
+    ids = []
+    models = ("claude-fable-5", "gpt-5.6-sol")
+    transports = ("grok.to_claude", "grok.to_openai")
+    seats = ("reviewer-1", "reviewer-2")
+    for model, transport, seat in zip(models, transports, seats):
+        attempt = f"g16-t1-{seat}"
+        ids.append(attempt)
+        proc, receipt = run_dispatch(
+            tmp_path, [sys.executable, fake],
+            attempt_id=attempt,
+            extra=("--runtime", "grok", "--transport-id", transport,
+                   "--model-id", model, "--seat", seat,
+                   "--decision-fingerprint", "ab" * 32,
+                   "--policy-sha256", "cd" * 32))
+        assert proc.returncode == 0, proc.stderr
+        assert receipt["result"]["state"] == "SUCCEEDED"
+        assert receipt["result"]["schema_valid"] is True
+        assert receipt["seat"] == seat
+        assert receipt["model_id"] == model
+    verdict = subprocess.run(
+        [sys.executable, str(SCRIPT), "verify-evidence",
+         "--receipt-dir", str(receipts),
+         "--ids", ",".join(ids), "--expect-count", "2",
+         "--expect-models", ",".join(models),
+         "--expect-fingerprint", "ab" * 32],
+        capture_output=True, text=True, timeout=30)
+    assert verdict.returncode == 0, verdict.stderr
+    # Negative: duplicate id is a count failure, not a reused attempt.
+    dup = subprocess.run(
+        [sys.executable, str(SCRIPT), "verify-evidence",
+         "--receipt-dir", str(receipts),
+         "--ids", f"{ids[0]},{ids[0]}", "--expect-count", "2"],
+        capture_output=True, text=True, timeout=30)
+    assert dup.returncode != 0
+    # Negative: a third attempt with the first seat collides on seat.
+    third = "g16-t1-reviewer-1-again"
+    proc, _ = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        attempt_id=third,
+        extra=("--runtime", "grok", "--transport-id", "grok.to_claude",
+               "--model-id", "claude-fable-5", "--seat", "reviewer-1"))
+    assert proc.returncode == 0, proc.stderr
+    seat_clash = subprocess.run(
+        [sys.executable, str(SCRIPT), "verify-evidence",
+         "--receipt-dir", str(receipts),
+         "--ids", f"{ids[0]},{third}", "--expect-count", "2"],
+        capture_output=True, text=True, timeout=30)
+    assert seat_clash.returncode != 0
+
+
 def test_envelope_oversized_stdout_is_invalid_output(tmp_path):
     """The envelope is a GATE surface, so its read is bounded and an
     over-budget stdout is a typed refusal, not an unbounded parse."""
