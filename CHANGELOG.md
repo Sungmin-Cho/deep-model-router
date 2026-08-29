@@ -7,6 +7,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] — 2026-08-29 (grok-hosted bridge verification)
+
+### Changed
+
+- `grok.to_claude` and `grok.to_openai` are now verified from a Darwin grok
+  host: trivial round-trip, the reviewer-seat models addressed, and two
+  concurrent read-only reviewer seats completing with schema-valid verdicts
+  under the dispatch supervisor, with distinct receipt attempt ids as the
+  isolation evidence. The verification ledger records the host platform,
+  CLI versions, and date. A grok-hosted dual review over these bridges is
+  no longer built on an assumption.
+- Grok native subagent isolation remains unverified and is deliberately
+  untouched by this probe: a grok-native dual review is still degraded
+  unless both reviewers run as separate processes.
+
 ## [1.5.0] — 2026-08-25 (grok seat integrity)
 
 ### Added

@@ -100,8 +100,8 @@ delegation time — you have already paid for a fresh context window — so it
 should be made on merit.
 
 Not every bridge is verified in every direction. Claude Code → openai,
-Codex → claude, and Claude Code → xai have been probed. Codex → xai, grok →
-claude, and grok → openai use the same commands and are recorded as assumed.
+Codex → claude, Claude Code → xai, grok → claude, and grok → openai have
+been probed. Codex → xai uses the same command and is recorded as assumed.
 A route that depends on an assumed edge still has to be invocable in the
 session that emits it — see `adapters.md`.
 

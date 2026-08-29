@@ -533,11 +533,10 @@ models:
 #
 # One binding, not one per runtime. Roles are filled by whichever model is
 # best for the job regardless of provider. Not every bridge is verified in
-# every direction. Claude Code → openai, Codex → claude, and Claude Code →
-# xai have been probed. Codex → xai, grok → claude, and grok → openai use
-# the same commands and are recorded as assumed. The per-provider bindings
-# below are degraded fallbacks for when a bridge is down — not alternate
-# defaults.
+# every direction. Claude Code → openai, Codex → claude, Claude Code → xai,
+# grok → claude, and grok → openai have been probed. Codex → xai uses the
+# same command and is recorded as assumed. The per-provider bindings below
+# are degraded fallbacks for when a bridge is down — not alternate defaults.
 
 role_bindings:
   default:
@@ -763,13 +762,20 @@ transports:
   grok:
     native: { mechanism: subagent, isolation: unverified }
     to_claude:
+      # Same argv as codex.to_claude — argv is host-independent — but
+      # `verified` is per direction: probed 2026-08-29 FROM a darwin grok
+      # host under dispatch_agent.py (round-trip, positional prompt slot,
+      # read-only reviewer seat with a schema-valid verdict, concurrent-pair
+      # verify-evidence). See the "grok -> Claude transport" ledger entry.
       mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> \"<prompt>\""
       isolation: separate_process
-      verified: false
+      verified: true
     to_openai:
+      # Same per-direction rule; probed 2026-08-29 from the same darwin
+      # grok host. See the "grok -> OpenAI transport" ledger entry.
       mechanism: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check \"<prompt>\""
       isolation: separate_process
-      verified: false
+      verified: true
 
 # Ordered replacement candidates, consulted when a role's bound model is
 # unavailable. Entries are registry keys, tried in order; the resolver skips
@@ -977,14 +983,49 @@ verification_ledger:
       evidence: "same grok -p mechanism as the verified Claude Code -> xAI edge; not probed from Codex"
 
     - item: "grok -> Claude transport"
-      status: assumed
-      probed_on: 2026-08-14
-      evidence: "claude -p --effort is verified to exist; the grok-hosted direction was not probed"
+      status: verified
+      probed_on: 2026-08-29
+      evidence: >
+        Probed FROM a grok host: grok 1.0.13 (5e9a58528b76) on darwin,
+        claude CLI 2.1.251 (Claude Code), 2026-08-29 (issue #16). Trivial
+        round-trip via supervisor stdin (haiku at low, --permission-mode
+        plan; attempt g16-r01-rt-claude) SUCCEEDED. Positional "<prompt>"
+        slot (g16-r01-rt-claude-pos) also SUCCEEDED. HIGH-band read-only
+        reviewer seat (claude-fable-5, the post-self-review-deconflict
+        seat from the archived route.json, at high, --output-schema
+        review, --permission-mode plan, no --bare; attempt
+        g16-r01-rev-claude) SUCCEEDED with a schema-valid verdict. Ran
+        concurrently with the grok -> OpenAI reviewer (attempt
+        g16-r01-rev-openai); both receipts observed RUNNING with distinct
+        pids; the pair passed verify-evidence --expect-count 2 with
+        distinct attempt ids and seats, fingerprint- and model-bound.
+        attempt_id is the isolation-evidence id: codex exec exposes no
+        caller-visible session id, so attempt_id is the identifier both
+        legs can carry. Separate process by construction. Host- and
+        platform-specific (darwin) — re-probe from any other grok host
+        platform. Receipts: docs/design/reviews/
+        2026-08-29-issue-16-grok-host-verification/ (gitignored local
+        archive).
 
     - item: "grok -> OpenAI transport"
-      status: assumed
-      probed_on: 2026-08-14
-      evidence: "codex exec mechanism is verified from Claude Code; the grok-hosted direction was not probed"
+      status: verified
+      probed_on: 2026-08-29
+      evidence: >
+        Probed FROM a grok host: grok 1.0.13 (5e9a58528b76) on darwin,
+        codex-cli 0.150.1, 2026-08-29 (issue #16). Trivial round-trip
+        (luna at low, -s read-only, prompt via stdin `-`; attempt
+        g16-r01-rt-openai) SUCCEEDED. HIGH-band read-only reviewer seat
+        (gpt-5.6-sol at high, --output-schema review, -s read-only;
+        attempt g16-r01-rev-openai) SUCCEEDED with a schema-valid
+        verdict. Ran concurrently with the grok -> Claude reviewer
+        (attempt g16-r01-rev-claude); both receipts observed RUNNING with
+        distinct pids; the pair passed verify-evidence --expect-count 2
+        with distinct attempt ids and seats, fingerprint- and
+        model-bound. attempt_id is the isolation-evidence id. Separate
+        process by construction. Host- and platform-specific (darwin) —
+        re-probe from any other grok host platform. Receipts:
+        docs/design/reviews/2026-08-29-issue-16-grok-host-verification/
+        (gitignored local archive).
 
     - item: "grok native subagent isolation"
       status: flag_verified_semantics_unverified
