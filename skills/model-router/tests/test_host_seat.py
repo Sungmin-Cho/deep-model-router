@@ -32,6 +32,41 @@ from route_task import (  # noqa: E402
 CFG = load_config()
 REGISTRY_IDS = {model["id"] for model in CFG["models"].values()}
 
+EXPECTED_ASK_ROWS = [
+    "| default | worker_fast nominal / HIGH |",
+    "| uncertainty == 3 | ≥ worker_balanced |",
+    "| critical-domain flag AND uncertainty >= 2 | ≥ worker_balanced |",
+    "| ARCHITECTURE AND band(HIGH+) | ≥ senior_engineer |",
+    "| ARCHITECTURE AND uncertainty == 3 | ≥ principal_architect |",
+    "| routing_confidence < 0.60 | effort MAX |",
+    "| blast_radius >= 2 | effort MAX |",
+]
+
+
+def test_routing_policy_ask_table_matches_code_cell_by_cell():
+    md = (SKILL / "references" / "routing-policy.md").read_text()
+    start = md.index("<!-- ask-table:start -->")
+    end = md.index("<!-- ask-table:end -->")
+    block = md[start:end]
+    rows = [l.strip() for l in block.splitlines()
+            if l.strip().startswith("|") and "---" not in l
+            and not l.strip().startswith("| condition")]
+    assert rows == EXPECTED_ASK_ROWS
+
+
+def test_recommendation_total_order_is_well_defined():
+    def recommend(family, tier_req):
+        rows = sorted((m["capability_tier"], key)
+                      for key, m in CFG["models"].items()
+                      if m["family"] == family
+                      and m.get("dispatchable", True)
+                      and m["capability_tier"] >= tier_req)
+        return rows[0][1] if rows else None
+    assert recommend("claude", 0) == "claude_worker_fast"
+    assert recommend("claude", 1) == "claude_worker_balanced"
+    assert recommend("claude", 3) == "claude_architect"
+    assert recommend("xai", 2) is None
+
 
 def _t(**kw):
     kw.setdefault("task_class", next(iter(CFG["worker_selection"])))

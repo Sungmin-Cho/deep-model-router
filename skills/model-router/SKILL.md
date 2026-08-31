@@ -1,6 +1,6 @@
 ---
 name: model-router
-description: Choose which model and reasoning-effort level should do a piece of software-engineering work, and how thoroughly that work must be reviewed, based on complexity, uncertainty, blast radius, reversibility, task type, and prior failures. Use this whenever you are about to delegate implementation, debugging, refactoring, architecture, migration, investigation, or review work to a subagent or another model — and especially before touching authentication, authorization, payments, database schemas, data migrations, concurrency, or anything else where a mistake is expensive or hard to undo. Also use it when a first attempt has failed and you are deciding whether to retry or escalate, when two reviewers disagree, or when someone asks which model to use for a task. Also use it when dispatching routed work to a background agent or bridge process, and when a dispatched worker or reviewer timed out, returned nothing, or cannot be confirmed dead.
+description: Choose which model and reasoning-effort level should do a piece of software-engineering work, and how thoroughly that work must be reviewed, based on complexity, uncertainty, blast radius, reversibility, task type, and prior failures. Use this whenever you are about to delegate implementation, debugging, refactoring, architecture, migration, investigation, or review work to a subagent or another model — and especially before touching authentication, authorization, payments, database schemas, data migrations, concurrency, or anything else where a mistake is expensive or hard to undo. Also use it when a first attempt has failed and you are deciding whether to retry or escalate, when two reviewers disagree, or when someone asks which model to use for a task. Also use it when dispatching routed work to a background agent or bridge process, and when a dispatched worker or reviewer timed out, returned nothing, or cannot be confirmed dead. Also when the host session itself may be under- or over-provisioned.
 ---
 
 # Model Router
@@ -175,7 +175,7 @@ execute:
 | Terminal | Meaning |
 |---|---|
 | `HUMAN_REQUIRED` | the retry budget is spent; no executable route is emitted |
-| `ESCALATE_ROUTING` | routing confidence fell below 0.60 — re-classify at higher effort or ask a human |
+| `ESCALATE_ROUTING` | routing confidence fell below 0.60 — re-classify at higher effort or ask a human; for a host orchestrator, use user `/effort` or delegate to a higher-effort seat |
 | `INDEPENDENCE_UNAVAILABLE` | the band requires independent review and it cannot be had — no distinct-model assignment exists, or the caller reported isolation unavailable |
 | `RETRY_HISTORY_REQUIRED` | `--prior-failures N` without one concrete model id per failure. The router does not guess what ran |
 | `SUPPLY_EXHAUSTED` | no usable model remains for a role the route needs — an operational shortage, not a bad request |
@@ -542,6 +542,11 @@ let the human gate hold it.
 
 A grok seat also declares `--output-envelope`, `--session-evidence` and `--session-id`: a cancelled grok turn still exits 0 (`references/adapters.md`, "Grok seat profiles").
 
+Host-seat advisory: emit `upgrade_recommended` once per decision. Recommend
+`/model` only for `model_comparison: below`, using the lowest tier-satisfying
+host-family model; downshift only after session-pattern hysteresis, once per
+session. Full rules: `references/routing-policy.md`.
+
 Routing-dispatched seats carry the decision with them: pass the route's
 `decision_fingerprint` / `policy_sha256` to `dispatch_agent.py run`, then
 check `verify-evidence --expect-fingerprint --expect-models` — the review
@@ -554,12 +559,16 @@ is worse than no route. Check the runtime, which model families are reachable,
 whether effort control exists, whether the cross-provider bridge works, and
 whether subagent isolation is available.
 
+Declare the host model id with `--host-model`; pass `--host-effort` only when
+the environment supplied a reliable effort value. Conversion and utterance
+detail are defined in `references/routing-policy.md`.
+
 A model that does not resolve is unavailable — fall back per
 `references/adapters.md` and record it; never a hard failure.
 
 ## References
 
-Read these when the situation calls for them; not needed for a routine route.
+Read these when needed; not for a routine route.
 
 - **`references/routing-policy.md`** — dimensions, bands, overrides, and worker/effort selection.
 - **`references/model-profiles.md`** — role purposes, authority limits, and bindings.
@@ -569,7 +578,5 @@ Read these when the situation calls for them; not needed for a routine route.
 - **`references/examples.md`** — worked routing decisions, including failures.
 - **`references/observation.md`** — RouteObservationV1 and `validate_observation.py`.
 
-Configuration lives in `config/model-routing.yaml`. Model identifiers appear
-there and nowhere else — when models or prices change, update the registry and
-recalibrate; the role system stays fixed. That separation is what keeps this
-portable across runtimes and alive across model generations.
+Configuration lives in `config/model-routing.yaml`; model identifiers belong
+there. Update the registry when models or prices change; roles stay portable.

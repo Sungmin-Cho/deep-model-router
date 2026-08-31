@@ -32,6 +32,26 @@ the policy. Regenerate rather than edit by hand.
 - [When the retry budget is spent](#when-the-retry-budget-is-spent)
 - [What these cases are meant to teach](#what-these-cases-are-meant-to-teach)
 
+### Host below the ask — auth debugging on a fast-tier host
+
+```bash
+$SKILL_DIR/scripts/route_task.py --class DEBUGGING \
+    --complexity 2 --uncertainty 2 --blast-radius 2 --reversibility 1 \
+    --flags auth_sensitive \
+    --host-model claude-haiku-4-5-20251001 --host-effort HIGH
+```
+
+(`--host-model` and the echoed `declared.model` keep the concrete id — the
+registry-key substitution rule above applies to seat bindings only.)
+
+The result is `risk_score: 11`, `band CRITICAL`, with
+`policy_ask {tier 1, effort MAX, raised_by [orchestrator_critical_u2,
+orchestrator_blast_high]}`; `model_comparison below` and
+`effort_comparison below (HIGH < MAX)` produce `upgrade_recommended`. The note
+is `host seat below orchestrator ask: model tier 0 < 1; effort HIGH < MAX [...]`.
+The route itself — worker, reviewers, and exit — is unchanged by the
+declaration.
+
 ---
 
 ## The cheap path

@@ -580,7 +580,10 @@ def test_d8_model_ids_appear_only_in_the_registry():
     offenders = {}
     for path in sorted((SKILL / "references").glob("*.md")):
         text = path.read_text()
-        hits = sorted(i for i in ids if i in text)
+        # Host-seat examples intentionally retain one concrete --host-model
+        # id; registry-key substitution applies only to seat bindings.
+        hits = sorted(i for i in ids if i in text and not (
+            path.name == "examples.md" and i == "claude-haiku-4-5-20251001"))
         if hits:
             offenders[path.name] = hits
     assert offenders == {}, f"model ids duplicated outside the registry: {offenders}"
