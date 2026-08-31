@@ -252,10 +252,28 @@ def test_declared_host_seat_changes_both_hashes():
 
 
 def test_undeclared_preserves_legacy_hash_by_key_omission():
-    legacy = request_sha256_of(_t())
-    task = _t()
-    task._host_seat = None
-    assert request_sha256_of(task) == legacy
+    # Pinned from the pre-host_seat canonical payload for `_t()` at this
+    # policy/configuration. An unconditional `"host_seat": null` changes this
+    # digest, so this is a regression test for key omission rather than two
+    # equivalent instances of the current implementation.
+    assert request_sha256_of(_t()) == (
+        "c92c316c148058bee7609995a276c8607b5dd0eb822189de0686b5c085b3204e")
+
+
+def test_whitespace_padded_registered_model_is_normalized_for_lookup_and_hash():
+    plain = _route_with_host("claude-haiku-4-5-20251001")
+    padded = _route_with_host(" \tclaude-haiku-4-5-20251001\n ")
+    assert padded["host_seat_advisory"]["declared"] == {
+        "model": "claude-haiku-4-5-20251001", "effort": None}
+    assert padded["host_seat_advisory"]["model_comparison"] == "at"
+    assert padded["request_sha256"] == plain["request_sha256"]
+
+
+def test_whitespace_padded_registered_model_cannot_bypass_policy_validation():
+    with pytest.raises(ValidationError, match="family"):
+        _route_with_host(" gpt-5.6-sol ")
+    with pytest.raises(ValidationError, match="ceiling"):
+        _route_with_host("\tgrok-4.6\n", "MAX", over=dict(runtime="grok"))
 
 
 def test_model_only_equals_model_with_null_effort():

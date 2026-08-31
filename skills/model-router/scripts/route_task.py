@@ -568,6 +568,7 @@ class Task:
         model = hs.get("model")
         if not isinstance(model, str) or not model.strip():
             raise ValidationError("host_seat.model: expected a non-empty model id")
+        model = model.strip()
         effort = hs.get("effort")
         if effort is not None and effort not in policy.efforts:
             raise ValidationError(
