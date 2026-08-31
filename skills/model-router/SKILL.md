@@ -489,6 +489,7 @@ excluded_prior_failures: []    # models withheld because they already failed
 escalation_count:  retry_count:
 routing_confidence:  routing_confidence_kind:   # a heuristic gate score,
                                # not a calibrated success probability
+host_seat_advisory:            # declared + policy_ask{tier,effort,raised_by} + comparisons + advisory
 requires_human_confirmation:
 human_confirmation_deferred:   # a production hotfix: dispatch now, confirm after
 human_control_causes: []       # which human_in_the_loop controls fired, by
@@ -560,20 +561,13 @@ A model that does not resolve is unavailable — fall back per
 
 Read these when the situation calls for them; not needed for a routine route.
 
-- **`references/routing-policy.md`** — dimensions, bands, overrides, worker and effort
-  selection in full, with the reasoning behind each weight.
-- **`references/model-profiles.md`** — the five roles, what each is for, what each must not
-  be the sole authority on, and the current bindings.
-- **`references/review-policy.md`** — review by band, independence mechanics per runtime,
-  who may hold the judge seat, the reviewer output contract, disagreements.
-- **`references/control-loop.md`** — escalation triggers, retry limits, which model "ran"
-  and how that inference has gone wrong, routing confidence, observability.
-- **`references/adapters.md`** — runtime differences, effort mapping, transports, the
-  dispatch contract for background execution, and the fallback matrices. Read when a
-  model is unavailable, before a background dispatch, or when you cross the bridge.
-- **`references/examples.md`** — worked routing decisions, including the four cases an
-  earlier version of this policy got wrong.
-- **`references/observation.md`** — RouteObservationV1 (`validate_observation.py`).
+- **`references/routing-policy.md`** — dimensions, bands, overrides, and worker/effort selection.
+- **`references/model-profiles.md`** — role purposes, authority limits, and bindings.
+- **`references/review-policy.md`** — review bands, independence, judges, disagreements.
+- **`references/control-loop.md`** — escalation, retries, routing confidence, and observability.
+- **`references/adapters.md`** — runtime differences, effort mapping, dispatch, fallbacks.
+- **`references/examples.md`** — worked routing decisions, including failures.
+- **`references/observation.md`** — RouteObservationV1 and `validate_observation.py`.
 
 Configuration lives in `config/model-routing.yaml`. Model identifiers appear
 there and nowhere else — when models or prices change, update the registry and

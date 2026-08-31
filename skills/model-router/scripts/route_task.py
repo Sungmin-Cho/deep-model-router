@@ -1435,6 +1435,46 @@ def routing_confidence(task: Task, fallbacks: list[str], cfg: dict) -> float:
     return round(max(0.0, min(1.0, c)), 2)
 
 
+def orchestrator_ask(task: Task, policy: Policy, cfg: dict, band: str,
+                     confidence: float) -> dict:
+    """What the policy asks of the orchestrator seat for this route.
+
+    The ask always starts from the canonical default binding's nominal tier;
+    scarcity and degraded bindings never lower that bar.
+    """
+    router = cfg["router"]
+    nominal = {
+        role: policy.tier_of[cfg["models"][key]["id"]]
+        for role, key in cfg["role_bindings"]["default"].items()
+    }
+    critical = bool(task.critical_flags(policy))
+    tier_rules = (
+        ("orchestrator_uncertainty_3", task.uncertainty == 3, "worker_balanced"),
+        ("orchestrator_critical_u2", critical and task.uncertainty >= 2,
+         "worker_balanced"),
+        ("orchestrator_architecture_high",
+         task.task_class == "ARCHITECTURE" and band in ("HIGH", "CRITICAL"),
+         "senior_engineer"),
+        ("orchestrator_architecture_ambiguity",
+         task.task_class == "ARCHITECTURE" and task.uncertainty == 3,
+         "principal_architect"),
+    )
+    tier = nominal[router["default_orchestrator"]]
+    effort = router["default_orchestrator_effort"]
+    raised: list[str] = []
+    for code, fires, role in tier_rules:
+        if fires:
+            raised.append(code)
+            tier = max(tier, nominal[role])
+    if confidence < cfg["router"]["confidence"]["escalate_below"]:
+        raised.append("orchestrator_low_confidence")
+        effort = "MAX"
+    if task.blast_radius >= 2:
+        raised.append("orchestrator_blast_high")
+        effort = "MAX"
+    return {"tier": tier, "effort": effort, "raised_by": raised}
+
+
 # --------------------------------------------------------------------------
 # Stage 8 — emit
 # --------------------------------------------------------------------------
@@ -1888,6 +1928,14 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     # two disagreeing; round 17's fix put the correction after the
     # post-conditions and round 18 moved the whole plan below the loop instead.
     confidence = routing_confidence(task, fallbacks, cfg)
+    ask = orchestrator_ask(task, policy, cfg, band, confidence)
+    host_seat_advisory = {
+        "declared": None,
+        "policy_ask": ask,
+        "model_comparison": "undeclared",
+        "effort_comparison": "undeclared",
+        "advisory": "none",
+    }
 
     review_independence = independence(review, task)
     supplied = len({e.strip() for e in task.isolation_evidence if e.strip()})
@@ -2203,6 +2251,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         "decision_fingerprint": decision_fingerprint_of(
             request_sha, policy_hash, plugin_manifest_version()),
         "effective_policy": effective_policy,
+        "host_seat_advisory": host_seat_advisory,
         "selected_capability_tier": (
             policy.tier_of[worker_model] if worker_model else None),
         "selected_families": sorted({
