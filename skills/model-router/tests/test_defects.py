@@ -998,8 +998,6 @@ DOCUMENTED_BUT_UNREAD = {
     "verification_ledger": "provenance of the identifiers, read by people",
     "router.default_worker": "states the policy's starting point; the table in "
                              "worker_selection is what executes",
-    "router.default_orchestrator": "guidance for the calling agent, not the router",
-    "router.default_orchestrator_effort": "guidance for the calling agent",
     # Round 10, from the instrumented reader below. Each of these is read by
     # nobody across 34,848 routes; the reason is what separates "documented on
     # purpose" from "forgotten".
@@ -1079,6 +1077,13 @@ DOCUMENTED_BUT_UNREAD.update({
     for key, model in CFG["models"].items()
     if key not in _BOUND_MODEL_KEYS and "dispatchable" in model
 })
+
+
+def test_orchestrator_defaults_are_no_longer_excused():
+    """T1이 두 키에 소비자(Policy 검증)를 붙였다. 읽히는 키가 unread
+    allowlist에 남는 것은 excuse의 거짓말이므로 명시적으로 금지한다."""
+    assert "router.default_orchestrator" not in DOCUMENTED_BUT_UNREAD
+    assert "router.default_orchestrator_effort" not in DOCUMENTED_BUT_UNREAD
 
 
 class _Recording(Mapping):

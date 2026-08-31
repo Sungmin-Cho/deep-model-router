@@ -304,6 +304,20 @@ class Policy:
                     f"{sorted(unknown)}; a trigger outside the flags vocabulary "
                     f"can never fire")
 
+        orch = cfg["router"]["default_orchestrator"]
+        orch_effort = cfg["router"]["default_orchestrator_effort"]
+        if orch not in cfg["role_tiers"]:
+            raise ConfigError(
+                f"router.default_orchestrator names {orch!r}, which is not a role")
+        if orch not in cfg["role_bindings"]["default"]:
+            raise ConfigError(
+                f"router.default_orchestrator {orch!r} has no seat in "
+                f"role_bindings.default")
+        if orch_effort not in self.efforts:
+            raise ConfigError(
+                f"router.default_orchestrator_effort {orch_effort!r} is not one of "
+                f"{list(self.efforts)}")
+
         # What each band demands of a reviewer, expressed as a model tier and
         # derived from the band's own configured reviewer roles under the
         # canonical binding. Computed, never written down twice: a floor kept
