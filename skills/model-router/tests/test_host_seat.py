@@ -9,6 +9,7 @@ Run:  python3 -m pytest skills/model-router/tests/ -q
 """
 
 import copy
+import json as _json
 import sys
 from pathlib import Path
 
@@ -20,8 +21,12 @@ sys.path.insert(0, str(SKILL / "scripts"))
 from route_task import (  # noqa: E402
     ConfigError,
     Task,
+    ValidationError,
     load_config,
+    main,
     route,
+    request_sha256_of,
+    task_from_request_v1,
 )
 
 CFG = load_config()
@@ -156,3 +161,170 @@ def test_advisory_block_is_emitted_on_every_route_with_no_declaration():
     assert adv["effort_comparison"] == "undeclared"
     assert adv["advisory"] == "none"
     assert "policy_ask" in adv
+
+
+# ---------------------------------------------------------------------------
+# Task 3 — declared host seat: comparison, validation, identity, and inputs.
+# ---------------------------------------------------------------------------
+
+def _route_with_host(model, effort=None, over=None):
+    task = _t(**(over or {}))
+    task._host_seat = {"model": model, "effort": effort}
+    return route(task, CFG)
+
+
+# --- comparison and advisory [DD-3] ---
+
+def test_haiku_vs_default_ask_is_at_and_silent():
+    adv = _advisory(_route_with_host("claude-haiku-4-5-20251001"))
+    assert adv["model_comparison"] == "at"
+    assert adv["effort_comparison"] == "undeclared"
+    assert adv["advisory"] == "none"
+
+
+def test_model_below_alone_triggers_upgrade():
+    adv = _advisory(_route_with_host("claude-haiku-4-5-20251001",
+                                     over=dict(uncertainty=3)))
+    assert adv["model_comparison"] == "below"
+    assert adv["advisory"] == "upgrade_recommended"
+
+
+def test_effort_below_alone_triggers_upgrade_by_index_not_string():
+    adv = _advisory(_route_with_host("claude-fable-5", "HIGH",
+                                     over=dict(blast_radius=2)))
+    assert adv["model_comparison"] == "above"
+    assert adv["effort_comparison"] == "below"
+    assert adv["advisory"] == "upgrade_recommended"
+
+
+def test_above_on_both_axes_stays_none():
+    adv = _advisory(_route_with_host("claude-fable-5", "MAX"))
+    assert adv["model_comparison"] == "above"
+    assert adv["effort_comparison"] == "above"
+    assert adv["advisory"] == "none"
+
+
+def test_unrecognized_model_still_compares_effort():
+    adv = _advisory(_route_with_host("claude-nova-6", "HIGH",
+                                     over=dict(blast_radius=2)))
+    assert adv["model_comparison"] == "unrecognized"
+    assert adv["effort_comparison"] == "below"
+    assert adv["advisory"] == "upgrade_recommended"
+
+
+def test_effort_undeclared_with_max_ask_stays_none_in_decision_layer():
+    adv = _advisory(_route_with_host("claude-fable-5",
+                                     over=dict(blast_radius=2)))
+    assert adv["effort_comparison"] == "undeclared"
+    assert adv["advisory"] == "none"
+
+
+# --- validation [DD-1] ---
+
+def test_family_mismatch_with_runtime_is_loud():
+    with pytest.raises(ValidationError):
+        _route_with_host("gpt-5.6-sol")
+
+
+def test_ceiling_violation_is_loud():
+    with pytest.raises(ValidationError):
+        _route_with_host("grok-4.6", "MAX", over=dict(runtime="grok"))
+
+
+def test_unrecognized_model_skips_family_and_ceiling_checks():
+    _route_with_host("claude-nova-6", "MAX")
+
+
+def test_empty_model_and_bad_effort_are_loud():
+    with pytest.raises(ValidationError):
+        _route_with_host("")
+    with pytest.raises(ValidationError):
+        _route_with_host("claude-fable-5", "ULTRA")
+
+
+# --- hash and output contract [IA-1b] ---
+
+def test_declared_host_seat_changes_both_hashes():
+    a = route(_t(), CFG)
+    b = _route_with_host("claude-fable-5", "MAX")
+    assert a["request_sha256"] != b["request_sha256"]
+    assert a["decision_fingerprint"] != b["decision_fingerprint"]
+
+
+def test_undeclared_preserves_legacy_hash_by_key_omission():
+    legacy = request_sha256_of(_t())
+    task = _t()
+    task._host_seat = None
+    assert request_sha256_of(task) == legacy
+
+
+def test_model_only_equals_model_with_null_effort():
+    t1 = _t()
+    t1._host_seat = {"model": "claude-fable-5", "effort": None}
+    t2 = _t()
+    t2._host_seat = {"model": "claude-fable-5"}
+    out1, out2 = route(t1, CFG), route(t2, CFG)
+    assert out1["request_sha256"] == out2["request_sha256"]
+    assert (out1["host_seat_advisory"]["declared"]
+            == out2["host_seat_advisory"]["declared"]
+            == {"model": "claude-fable-5", "effort": None})
+
+
+# --- RouteRequestV1 / CLI ---
+
+def _req(**extra):
+    return {"route_schema_version": 1, "task_class": "IMPLEMENTATION",
+            "complexity": 1, "uncertainty": 1, "blast_radius": 1,
+            "reversibility": 1, **extra}
+
+
+def test_request_v1_accepts_optional_host_seat():
+    task = task_from_request_v1(_req(host_seat={"model": "claude-fable-5",
+                                                "effort": "MAX"}))
+    assert task._host_seat == {"model": "claude-fable-5", "effort": "MAX"}
+
+
+def test_request_v1_host_seat_type_and_keys_are_strict():
+    for bad in ("claude-fable-5", ["claude-fable-5"],
+                {"model": "claude-fable-5", "mode": "x"}):
+        with pytest.raises(ValidationError):
+            task_from_request_v1(_req(host_seat=bad))
+    assert task_from_request_v1(_req(host_seat=None))._host_seat is None
+
+
+def test_cli_host_effort_without_model_exits_2():
+    rc = main(["--class", "IMPLEMENTATION", "--complexity", "1",
+               "--uncertainty", "1", "--blast-radius", "1",
+               "--reversibility", "1", "--host-effort", "MAX"])
+    assert rc == 2
+
+
+def test_legacy_json_rejects_host_seat():
+    payload = dict({"task_class": "IMPLEMENTATION", "complexity": 1,
+                    "uncertainty": 1, "blast_radius": 1,
+                    "reversibility": 1},
+                   host_seat={"model": "claude-fable-5"})
+    rc = main(["--json", _json.dumps(payload)])
+    assert rc == 2
+
+
+def test_request_json_wins_over_host_flags(tmp_path, capsys):
+    p = tmp_path / "req.json"
+    p.write_text(_json.dumps(_req()))
+    rc = main(["--request-json", str(p), "--host-model", "claude-fable-5",
+               "--format", "json"])
+    assert rc == 0
+    out = _json.loads(capsys.readouterr().out)
+    assert out["host_seat_advisory"]["declared"] is None
+
+
+def test_cli_host_flags_declare_on_flags_path(capsys):
+    rc = main(["--class", "IMPLEMENTATION", "--complexity", "1",
+               "--uncertainty", "1", "--blast-radius", "1",
+               "--reversibility", "1",
+               "--host-model", "claude-haiku-4-5-20251001",
+               "--host-effort", "HIGH", "--format", "json"])
+    assert rc == 0
+    out = _json.loads(capsys.readouterr().out)
+    assert out["host_seat_advisory"]["declared"] == {
+        "model": "claude-haiku-4-5-20251001", "effort": "HIGH"}

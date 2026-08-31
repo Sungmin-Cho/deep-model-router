@@ -56,6 +56,7 @@ REQUEST_V1_KEYS = frozenset({
     "route_schema_version", "task_class", "complexity", "uncertainty",
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
+    "host_seat",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -64,6 +65,7 @@ LOCAL_POLICY_KEYS = frozenset({
     "minimum_capability_tier", "minimum_effort", "minimum_reviewers",
     "minimum_provider_families", "allowed_families",
 })
+HOST_SEAT_KEYS = frozenset({"model", "effort"})
 
 
 _PLUGIN_VERSION_CACHE: dict[str, str] = {}
@@ -505,6 +507,8 @@ class Task:
     _policy: Any = field(default=None, repr=False, compare=False)
     # RouteRequestV1 local_policy. None = omitted. Not accepted via --json.
     _local_policy: dict | None = field(default=None, repr=False, compare=False)
+    # RouteRequestV1's optional declaration of the host's actual seat.
+    _host_seat: dict | None = field(default=None, repr=False, compare=False)
 
     def validate(self, policy: Policy) -> None:
         self._require_choice("task_class", self.task_class, policy.task_classes)
@@ -548,7 +552,40 @@ class Task:
         # holding a Policy to check the vocabulary against, and it also covers
         # a `Task` constructed directly.
         self._validate_local_policy(policy)
+        self._validate_host_seat(policy)
         self._policy = policy
+
+    def _validate_host_seat(self, policy: Policy) -> None:
+        hs = self._host_seat
+        if hs is None:
+            return
+        if not isinstance(hs, dict):
+            raise ValidationError(
+                f"host_seat: expected an object or null, got {type(hs).__name__}")
+        if (unknown := set(hs) - HOST_SEAT_KEYS):
+            raise ValidationError(
+                f"host_seat has unknown field(s): {', '.join(sorted(unknown))}")
+        model = hs.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise ValidationError("host_seat.model: expected a non-empty model id")
+        effort = hs.get("effort")
+        if effort is not None and effort not in policy.efforts:
+            raise ValidationError(
+                f"host_seat.effort: {effort!r} is not one of {list(policy.efforts)}")
+        if model in policy.tier_of:
+            family = policy.family_of[model]
+            local = policy.local_family[self.runtime]
+            if family != local:
+                raise ValidationError(
+                    f"host_seat.model {model!r} is family {family!r}, but a "
+                    f"{self.runtime} host runs family {local!r}")
+            ceiling = policy.ceiling_of.get(model)
+            if (effort is not None and ceiling is not None
+                    and policy.efforts.index(effort) > policy.efforts.index(ceiling)):
+                raise ValidationError(
+                    f"host_seat.effort {effort!r} exceeds {model!r}'s ceiling "
+                    f"{ceiling!r} — that host state cannot exist")
+        self._host_seat = {"model": model, "effort": effort}
 
     def _validate_local_policy(self, policy: Policy) -> None:
         lp = self._local_policy
@@ -1475,6 +1512,27 @@ def orchestrator_ask(task: Task, policy: Policy, cfg: dict, band: str,
     return {"tier": tier, "effort": effort, "raised_by": raised}
 
 
+def host_seat_comparisons(declared: dict | None, ask: dict,
+                          policy: Policy) -> tuple[str, str, str]:
+    if declared is None:
+        return "undeclared", "undeclared", "none"
+    tier = policy.tier_of.get(declared["model"])
+    if tier is None:
+        model_cmp = "unrecognized"
+    else:
+        model_cmp = ("below" if tier < ask["tier"]
+                     else "at" if tier == ask["tier"] else "above")
+    effort = declared.get("effort")
+    if effort is None:
+        effort_cmp = "undeclared"
+    else:
+        d, a = policy.efforts.index(effort), policy.efforts.index(ask["effort"])
+        effort_cmp = "below" if d < a else "at" if d == a else "above"
+    advisory = ("upgrade_recommended"
+                if "below" in (model_cmp, effort_cmp) else "none")
+    return model_cmp, effort_cmp, advisory
+
+
 # --------------------------------------------------------------------------
 # Stage 8 — emit
 # --------------------------------------------------------------------------
@@ -1535,6 +1593,11 @@ def request_sha256_of(task: Task) -> str:
                                       if e.strip()}),
         "local_policy": lp_norm,
     }
+    if task._host_seat is not None:
+        canonical["host_seat"] = {
+            "model": task._host_seat["model"],
+            "effort": task._host_seat.get("effort"),
+        }
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -1929,12 +1992,14 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     # post-conditions and round 18 moved the whole plan below the loop instead.
     confidence = routing_confidence(task, fallbacks, cfg)
     ask = orchestrator_ask(task, policy, cfg, band, confidence)
+    declared = task._host_seat
+    model_cmp, effort_cmp, advisory = host_seat_comparisons(declared, ask, policy)
     host_seat_advisory = {
-        "declared": None,
+        "declared": dict(declared) if declared else None,
         "policy_ask": ask,
-        "model_comparison": "undeclared",
-        "effort_comparison": "undeclared",
-        "advisory": "none",
+        "model_comparison": model_cmp,
+        "effort_comparison": effort_cmp,
+        "advisory": advisory,
     }
 
     review_independence = independence(review, task)
@@ -2461,6 +2526,8 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                    help="whether reviewer context isolation can be achieved this session")
     p.add_argument("--isolation-evidence", default="",
                    help="comma-separated distinct session ids, one per dispatched reviewer")
+    p.add_argument("--host-model", default=None)
+    p.add_argument("--host-effort", default=None)
     p.add_argument("--format", default="text", choices=["text", "json"])
     return p
 
@@ -2508,6 +2575,14 @@ def task_from_request_v1(payload: dict) -> Task:
     if lp is not None and not isinstance(lp, dict):
         raise ValidationError("local_policy must be an object")
 
+    hs = payload.get("host_seat")
+    if hs is not None:
+        if not isinstance(hs, dict):
+            raise ValidationError("host_seat must be an object or null")
+        if (unknown := set(hs) - HOST_SEAT_KEYS):
+            raise ValidationError(
+                f"host_seat has unknown field(s): {', '.join(sorted(unknown))}")
+
     isolation = snap.get("isolation") if snap else None
     flags = payload.get("flags") or []
     if isinstance(flags, str):
@@ -2528,6 +2603,7 @@ def task_from_request_v1(payload: dict) -> Task:
         isolation_available=None if isolation is None else isolation == "available",
         isolation_evidence=list(snap.get("isolation_evidence") or []),
         _local_policy=lp,
+        _host_seat=hs,
     )
 
 
@@ -2584,6 +2660,13 @@ def main(argv: list[str] | None = None) -> int:
                 isolation_available=None if args.isolation is None else args.isolation == "available",
                 isolation_evidence=_split(args.isolation_evidence),
             )
+            if args.host_effort and not args.host_model:
+                raise ValidationError("--host-effort requires --host-model")
+            if args.host_model:
+                task._host_seat = {
+                    "model": args.host_model,
+                    "effort": args.host_effort,
+                }
         result = route(task)
 
         if args.format == "json":
