@@ -33,12 +33,12 @@ CFG = load_config()
 REGISTRY_IDS = {model["id"] for model in CFG["models"].values()}
 
 EXPECTED_ASK_ROWS = [
-    "| default | worker_fast nominal / HIGH |",
+    f"| default | {CFG['router']['default_orchestrator']} nominal / {CFG['router']['default_orchestrator_effort']} |",
     "| uncertainty == 3 | ≥ worker_balanced |",
     "| critical-domain flag AND uncertainty >= 2 | ≥ worker_balanced |",
     "| ARCHITECTURE AND band(HIGH+) | ≥ senior_engineer |",
     "| ARCHITECTURE AND uncertainty == 3 | ≥ principal_architect |",
-    "| routing_confidence < 0.60 | effort MAX |",
+    f"| routing_confidence < {CFG['router']['confidence']['escalate_below']:.2f} | effort MAX |",
     "| blast_radius >= 2 | effort MAX |",
 ]
 

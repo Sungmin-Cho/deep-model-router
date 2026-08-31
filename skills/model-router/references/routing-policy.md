@@ -277,6 +277,8 @@ reasoning-centric ladder below remains the authoritative distinction.
 The v1 ask is deliberately finite:
 
 <!-- ask-table:start -->
+| condition | ask |
+|---|---|
 | default | worker_fast nominal / HIGH |
 | uncertainty == 3 | ≥ worker_balanced |
 | critical-domain flag AND uncertainty >= 2 | ≥ worker_balanced |
