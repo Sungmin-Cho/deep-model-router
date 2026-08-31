@@ -472,7 +472,14 @@ def test_a_terminal_route_withholds_every_execution_binding():
         assert rv["judge_model"] is None
         assert rv["effort"] is None
         echoed = set().union(*(set(out[k]) for k in _ECHOES_CALLER_INPUT))
-        named = {i for i in ids if i in json.dumps(out)} - echoed
+        # The one nested caller echo: exactly host_seat_advisory.declared.model.
+        # Scrub that single path, then scan — a global exemption set would excuse
+        # the same id leaking anywhere else in the route.
+        scrubbed = copy.deepcopy(out)
+        declared = (scrubbed.get("host_seat_advisory") or {}).get("declared")
+        if declared:
+            declared["model"] = None
+        named = {i for i in ids if i in json.dumps(scrubbed)} - echoed
         assert not named, (
             f"terminal route ({out['terminal']}) still names {sorted(named)} — "
             f"a consumer can dispatch it")

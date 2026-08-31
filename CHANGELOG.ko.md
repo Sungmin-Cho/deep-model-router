@@ -7,6 +7,22 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.6.0] — 2026-09-01
+
+### 추가됨
+
+- 선택적 `host_seat` 선언(`--host-model` / `--host-effort`, RouteRequestV1
+  `host_seat`) — 라우터가 호스트 세션을 정책이 요구하는 오케스트레이터
+  프로파일과 비교해 보고한다.
+- 모든 route의 `host_seat_advisory` 블록: 오케스트레이터 요구
+  (tier/effort/raised_by)와 선언된 호스트 비교 결과, `upgrade_recommended`
+  권고, 호스트가 요구보다 낮을 때 id 없는 안내. route 자체는 바뀌지 않는다.
+
+### 변경됨
+
+- `router.default_orchestrator` / `default_orchestrator_effort`를 이제
+  라우터가 읽고 검증한다(이전에는 호출자 안내만 담당).
+
 ## [1.5.1] — 2026-08-29 (grok 호스트 브리지 검증)
 
 ### 변경됨

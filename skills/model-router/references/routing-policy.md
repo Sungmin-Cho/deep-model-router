@@ -266,6 +266,63 @@ on task class before checking flags.
 
 ## Orchestrator policy
 
+### The orchestrator seat is host-bound
+
+The orchestrator policy is an advisory ask for the host session. The plugin
+controls dispatch seats; the host is user-owned, and only the user can apply
+`/model` or `/effort`. This advisory consumes that gap without pretending to
+control the host. The orchestrator still classifies and decomposes, and the
+reasoning-centric ladder below remains the authoritative distinction.
+
+The v1 ask is deliberately finite:
+
+<!-- ask-table:start -->
+| condition | ask |
+|---|---|
+| default | worker_fast nominal / HIGH |
+| uncertainty == 3 | ≥ worker_balanced |
+| critical-domain flag AND uncertainty >= 2 | ≥ worker_balanced |
+| ARCHITECTURE AND band(HIGH+) | ≥ senior_engineer |
+| ARCHITECTURE AND uncertainty == 3 | ≥ principal_architect |
+| routing_confidence < 0.60 | effort MAX |
+| blast_radius >= 2 | effort MAX |
+<!-- ask-table:end -->
+
+Deferred from v1: stable-graph enforcement, architecture-in-decomposition,
+the five-or-more-subtasks/conflict refinement, and the
+ARCHITECTURE×CRITICAL (uncertainty < 3) cap.
+
+#### Native effort to conceptual effort
+
+Convert a declared native effort through the host-local family's `effort_map`:
+the map is historical and ordered; if native spellings overlap, choose the
+lower conceptual level. Claude has no distinct native MINIMAL tier, so the
+documented `MINIMAL -> low` pair is an upward-collapse approximation: inversion
+selects LOW rather than treating native `low` as proof of MINIMAL. xAI `xhigh`
+maps to VERY_HIGH. Unknown or unavailable
+native values are not silently converted; ask the host to declare a reliable
+conceptual value or leave effort undeclared.
+
+#### Utterance policy
+
+**A — upgrade.** Emit `upgrade_recommended` immediately, once per decision,
+when either axis is below its ask. Recommend `/model` only when
+`model_comparison: below`, selecting the first registry row satisfying
+`family == local_family ∧ dispatchable != false ∧ capability_tier ≥ ask.tier`,
+sorted `(capability_tier asc, registry key asc)`. Do not compare prices within a
+tier. If no candidate exists, or the declared model is unrecognized, delegate
+the dispatch and make no `/model` utterance. A higher effort for an orchestrator
+host is applied by the user with `/effort` or by delegating to a higher-effort
+seat.
+
+**B — effort unknown.** Ask for a host effort declaration only when the
+`raised_by` list contains an effort-raising rule; otherwise remain silent.
+
+**Downshift.** Require a session pattern and hysteresis before recommending a
+lower seat. It is MUST to apply the common five-decision guard; the
+`(a-effort)` and `(a-model)` utterances are SHOULDs, not guarantees. The
+constant 5 is a policy constant in this document.
+
 The orchestrator is the thing doing the classifying and decomposing. Default it
 to `worker_fast` at `HIGH` effort — its job (classify, build the task graph,
 detect dependencies, select workers and reviewers, notice escalation

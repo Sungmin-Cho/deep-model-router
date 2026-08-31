@@ -56,6 +56,7 @@ REQUEST_V1_KEYS = frozenset({
     "route_schema_version", "task_class", "complexity", "uncertainty",
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
+    "host_seat",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -64,6 +65,7 @@ LOCAL_POLICY_KEYS = frozenset({
     "minimum_capability_tier", "minimum_effort", "minimum_reviewers",
     "minimum_provider_families", "allowed_families",
 })
+HOST_SEAT_KEYS = frozenset({"model", "effort"})
 
 
 _PLUGIN_VERSION_CACHE: dict[str, str] = {}
@@ -304,6 +306,20 @@ class Policy:
                     f"{sorted(unknown)}; a trigger outside the flags vocabulary "
                     f"can never fire")
 
+        orch = cfg["router"]["default_orchestrator"]
+        orch_effort = cfg["router"]["default_orchestrator_effort"]
+        if orch not in cfg["role_tiers"]:
+            raise ConfigError(
+                f"router.default_orchestrator names {orch!r}, which is not a role")
+        if orch not in cfg["role_bindings"]["default"]:
+            raise ConfigError(
+                f"router.default_orchestrator {orch!r} has no seat in "
+                f"role_bindings.default")
+        if orch_effort not in self.efforts:
+            raise ConfigError(
+                f"router.default_orchestrator_effort {orch_effort!r} is not one of "
+                f"{list(self.efforts)}")
+
         # What each band demands of a reviewer, expressed as a model tier and
         # derived from the band's own configured reviewer roles under the
         # canonical binding. Computed, never written down twice: a floor kept
@@ -491,6 +507,8 @@ class Task:
     _policy: Any = field(default=None, repr=False, compare=False)
     # RouteRequestV1 local_policy. None = omitted. Not accepted via --json.
     _local_policy: dict | None = field(default=None, repr=False, compare=False)
+    # RouteRequestV1's optional declaration of the host's actual seat.
+    _host_seat: dict | None = field(default=None, repr=False, compare=False)
 
     def validate(self, policy: Policy) -> None:
         self._require_choice("task_class", self.task_class, policy.task_classes)
@@ -534,7 +552,41 @@ class Task:
         # holding a Policy to check the vocabulary against, and it also covers
         # a `Task` constructed directly.
         self._validate_local_policy(policy)
+        self._validate_host_seat(policy)
         self._policy = policy
+
+    def _validate_host_seat(self, policy: Policy) -> None:
+        hs = self._host_seat
+        if hs is None:
+            return
+        if not isinstance(hs, dict):
+            raise ValidationError(
+                f"host_seat: expected an object or null, got {type(hs).__name__}")
+        if (unknown := set(hs) - HOST_SEAT_KEYS):
+            raise ValidationError(
+                f"host_seat has unknown field(s): {', '.join(sorted(unknown))}")
+        model = hs.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise ValidationError("host_seat.model: expected a non-empty model id")
+        model = model.strip()
+        effort = hs.get("effort")
+        if effort is not None and effort not in policy.efforts:
+            raise ValidationError(
+                f"host_seat.effort: {effort!r} is not one of {list(policy.efforts)}")
+        if model in policy.tier_of:
+            family = policy.family_of[model]
+            local = policy.local_family[self.runtime]
+            if family != local:
+                raise ValidationError(
+                    f"host_seat.model {model!r} is family {family!r}, but a "
+                    f"{self.runtime} host runs family {local!r}")
+            ceiling = policy.ceiling_of.get(model)
+            if (effort is not None and ceiling is not None
+                    and policy.efforts.index(effort) > policy.efforts.index(ceiling)):
+                raise ValidationError(
+                    f"host_seat.effort {effort!r} exceeds {model!r}'s ceiling "
+                    f"{ceiling!r} — that host state cannot exist")
+        self._host_seat = {"model": model, "effort": effort}
 
     def _validate_local_policy(self, policy: Policy) -> None:
         lp = self._local_policy
@@ -1421,6 +1473,67 @@ def routing_confidence(task: Task, fallbacks: list[str], cfg: dict) -> float:
     return round(max(0.0, min(1.0, c)), 2)
 
 
+def orchestrator_ask(task: Task, policy: Policy, cfg: dict, band: str,
+                     confidence: float) -> dict:
+    """What the policy asks of the orchestrator seat for this route.
+
+    The ask always starts from the canonical default binding's nominal tier;
+    scarcity and degraded bindings never lower that bar.
+    """
+    router = cfg["router"]
+    nominal = {
+        role: policy.tier_of[cfg["models"][key]["id"]]
+        for role, key in cfg["role_bindings"]["default"].items()
+    }
+    critical = bool(task.critical_flags(policy))
+    tier_rules = (
+        ("orchestrator_uncertainty_3", task.uncertainty == 3, "worker_balanced"),
+        ("orchestrator_critical_u2", critical and task.uncertainty >= 2,
+         "worker_balanced"),
+        ("orchestrator_architecture_high",
+         task.task_class == "ARCHITECTURE" and band in ("HIGH", "CRITICAL"),
+         "senior_engineer"),
+        ("orchestrator_architecture_ambiguity",
+         task.task_class == "ARCHITECTURE" and task.uncertainty == 3,
+         "principal_architect"),
+    )
+    tier = nominal[router["default_orchestrator"]]
+    effort = router["default_orchestrator_effort"]
+    raised: list[str] = []
+    for code, fires, role in tier_rules:
+        if fires:
+            raised.append(code)
+            tier = max(tier, nominal[role])
+    if confidence < cfg["router"]["confidence"]["escalate_below"]:
+        raised.append("orchestrator_low_confidence")
+        effort = "MAX"
+    if task.blast_radius >= 2:
+        raised.append("orchestrator_blast_high")
+        effort = "MAX"
+    return {"tier": tier, "effort": effort, "raised_by": raised}
+
+
+def host_seat_comparisons(declared: dict | None, ask: dict,
+                          policy: Policy) -> tuple[str, str, str]:
+    if declared is None:
+        return "undeclared", "undeclared", "none"
+    tier = policy.tier_of.get(declared["model"])
+    if tier is None:
+        model_cmp = "unrecognized"
+    else:
+        model_cmp = ("below" if tier < ask["tier"]
+                     else "at" if tier == ask["tier"] else "above")
+    effort = declared.get("effort")
+    if effort is None:
+        effort_cmp = "undeclared"
+    else:
+        d, a = policy.efforts.index(effort), policy.efforts.index(ask["effort"])
+        effort_cmp = "below" if d < a else "at" if d == a else "above"
+    advisory = ("upgrade_recommended"
+                if "below" in (model_cmp, effort_cmp) else "none")
+    return model_cmp, effort_cmp, advisory
+
+
 # --------------------------------------------------------------------------
 # Stage 8 — emit
 # --------------------------------------------------------------------------
@@ -1481,6 +1594,11 @@ def request_sha256_of(task: Task) -> str:
                                       if e.strip()}),
         "local_policy": lp_norm,
     }
+    if task._host_seat is not None:
+        canonical["host_seat"] = {
+            "model": task._host_seat["model"],
+            "effort": task._host_seat.get("effort"),
+        }
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -1874,6 +1992,16 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     # two disagreeing; round 17's fix put the correction after the
     # post-conditions and round 18 moved the whole plan below the loop instead.
     confidence = routing_confidence(task, fallbacks, cfg)
+    ask = orchestrator_ask(task, policy, cfg, band, confidence)
+    declared = task._host_seat
+    model_cmp, effort_cmp, advisory = host_seat_comparisons(declared, ask, policy)
+    host_seat_advisory = {
+        "declared": dict(declared) if declared else None,
+        "policy_ask": ask,
+        "model_comparison": model_cmp,
+        "effort_comparison": effort_cmp,
+        "advisory": advisory,
+    }
 
     review_independence = independence(review, task)
     supplied = len({e.strip() for e in task.isolation_evidence if e.strip()})
@@ -2173,6 +2301,17 @@ def route(task: Task, cfg: dict | None = None) -> dict:
                     f"provider may substitute another {policy.family_of[model]} "
                     f"model for {', '.join(matched)} content; the requested "
                     f"identity of {key} is declared_only")
+    all_notes = worker_notes + effort_notes
+    if advisory == "upgrade_recommended":
+        clauses = []
+        if model_cmp == "below":
+            clauses.append(
+                f"model tier {policy.tier_of[declared['model']]} < {ask['tier']}")
+        if effort_cmp == "below":
+            clauses.append(f"effort {declared['effort']} < {ask['effort']}")
+        suffix = f" [{', '.join(ask['raised_by'])}]" if ask["raised_by"] else ""
+        all_notes.append("host seat below orchestrator ask: "
+                         + "; ".join(clauses) + suffix)
     effective_policy = {
         "minimum_capability_tier": lp.get("minimum_capability_tier"),
         "minimum_effort": lp.get("minimum_effort"),
@@ -2189,6 +2328,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         "decision_fingerprint": decision_fingerprint_of(
             request_sha, policy_hash, plugin_manifest_version()),
         "effective_policy": effective_policy,
+        "host_seat_advisory": host_seat_advisory,
         "selected_capability_tier": (
             policy.tier_of[worker_model] if worker_model else None),
         "selected_families": sorted({
@@ -2280,7 +2420,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         # that boolean would block on this too, which is the whole thing the
         # deferral exists to avoid.
         "human_confirmation_deferred": deferred,
-        "notes": worker_notes + effort_notes,
+        "notes": all_notes,
     }
     result["rationale"] = explain(task, result, policy)
     return result
@@ -2398,6 +2538,8 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                    help="whether reviewer context isolation can be achieved this session")
     p.add_argument("--isolation-evidence", default="",
                    help="comma-separated distinct session ids, one per dispatched reviewer")
+    p.add_argument("--host-model", default=None)
+    p.add_argument("--host-effort", default=None)
     p.add_argument("--format", default="text", choices=["text", "json"])
     return p
 
@@ -2445,6 +2587,14 @@ def task_from_request_v1(payload: dict) -> Task:
     if lp is not None and not isinstance(lp, dict):
         raise ValidationError("local_policy must be an object")
 
+    hs = payload.get("host_seat")
+    if hs is not None:
+        if not isinstance(hs, dict):
+            raise ValidationError("host_seat must be an object or null")
+        if (unknown := set(hs) - HOST_SEAT_KEYS):
+            raise ValidationError(
+                f"host_seat has unknown field(s): {', '.join(sorted(unknown))}")
+
     isolation = snap.get("isolation") if snap else None
     flags = payload.get("flags") or []
     if isinstance(flags, str):
@@ -2465,6 +2615,7 @@ def task_from_request_v1(payload: dict) -> Task:
         isolation_available=None if isolation is None else isolation == "available",
         isolation_evidence=list(snap.get("isolation_evidence") or []),
         _local_policy=lp,
+        _host_seat=hs,
     )
 
 
@@ -2521,6 +2672,13 @@ def main(argv: list[str] | None = None) -> int:
                 isolation_available=None if args.isolation is None else args.isolation == "available",
                 isolation_evidence=_split(args.isolation_evidence),
             )
+            if args.host_effort and not args.host_model:
+                raise ValidationError("--host-effort requires --host-model")
+            if args.host_model:
+                task._host_seat = {
+                    "model": args.host_model,
+                    "effort": args.host_effort,
+                }
         result = route(task)
 
         if args.format == "json":
@@ -2595,6 +2753,11 @@ def _print_text(r: dict) -> None:
     if r["excluded_prior_failures"]:
         print(f"excluded:    {r['excluded_prior_failures']} (already failed)")
     print(f"confidence:  {r['routing_confidence']}")
+    adv = r["host_seat_advisory"]
+    if adv["advisory"] == "upgrade_recommended":
+        detail = next((n for n in r["notes"]
+                       if n.startswith("host seat below")), "")
+        print(f"host-seat advisory: upgrade recommended — {detail}")
 
     if r["requires_human_confirmation"]:
         print("human:       CONFIRMATION REQUIRED")
