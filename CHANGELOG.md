@@ -7,6 +7,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-09-01
+
+### Added
+
+- Optional `host_seat` declaration (`--host-model` / `--host-effort`,
+  RouteRequestV1 `host_seat`) — the router reports how the host session
+  compares to the orchestrator profile the policy asks for.
+- `host_seat_advisory` block on every route: the orchestrator ask
+  (tier/effort/raised_by) and declared-host comparisons; an
+  `upgrade_recommended` advisory and an id-free note when the host is
+  below the ask. The route itself never changes.
+
+### Changed
+
+- `router.default_orchestrator` / `default_orchestrator_effort` are now
+  read and validated by the router (previously caller guidance only).
+
 ## [1.5.1] — 2026-08-29 (grok-hosted bridge verification)
 
 ### Changed
