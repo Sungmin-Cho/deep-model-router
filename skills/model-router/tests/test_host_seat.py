@@ -30,6 +30,7 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+REGISTRY_IDS = {model["id"] for model in CFG["models"].values()}
 
 
 def _t(**kw):
@@ -286,6 +287,100 @@ def test_model_only_equals_model_with_null_effort():
     assert (out1["host_seat_advisory"]["declared"]
             == out2["host_seat_advisory"]["declared"]
             == {"model": "claude-fable-5", "effort": None})
+
+
+# --- Task 4 — id-free advisory surfaces and terminal path precision. ---
+
+def _below_note(out):
+    notes = [n for n in out["notes"] if n.startswith("host seat below")]
+    assert len(notes) <= 1
+    return notes[0] if notes else None
+
+
+def test_below_note_is_id_free_and_pinned_both_axes():
+    out = _route_with_host("claude-haiku-4-5-20251001", "HIGH",
+                           over=dict(uncertainty=3, blast_radius=2))
+    note = _below_note(out)
+    assert "model tier 0 < 1" in note and "effort HIGH < MAX" in note
+    assert not any(i in note for i in REGISTRY_IDS)
+
+
+def test_below_note_clauses_per_axis():
+    # Model only: MAX effort at the MAX ask. Clauses join with "; "; the
+    # raised_by suffix contains only codes, so the prose has no effort clause.
+    out = _route_with_host("claude-haiku-4-5-20251001", "MAX",
+                           over=dict(uncertainty=3, blast_radius=2))
+    note = _below_note(out)
+    assert "model tier 0 < 1" in note
+    assert "effort" not in note.split("[")[0]
+    # Effort only.
+    out2 = _route_with_host("claude-fable-5", "HIGH",
+                            over=dict(blast_radius=2))
+    note2 = _below_note(out2)
+    assert "effort HIGH < MAX" in note2 and "model tier" not in note2
+    # An unrecognized model still has an effort-only shortfall.
+    out3 = _route_with_host("claude-nova-6", "HIGH",
+                            over=dict(blast_radius=2))
+    note3 = _below_note(out3)
+    assert "effort HIGH < MAX" in note3 and "model tier" not in note3
+
+
+def test_no_note_when_at_above_or_undeclared():
+    for out in (route(_t(), CFG),
+                _route_with_host("claude-fable-5", "MAX")):
+        assert _below_note(out) is None
+
+
+def test_ia1_route_is_invariant_to_host_seat():
+    over = dict(task_class="DEBUGGING", uncertainty=2,
+                flags=["auth_sensitive"])
+    a = route(_t(**over), CFG)
+    t = _t(**over)
+    t._host_seat = {"model": "claude-haiku-4-5-20251001", "effort": "LOW"}
+    b = route(t, CFG)
+    volatile = {"host_seat_advisory", "request_sha256",
+                "decision_fingerprint", "notes", "rationale"}
+    assert ({k: v for k, v in a.items() if k not in volatile}
+            == {k: v for k, v in b.items() if k not in volatile})
+    assert a["notes"] == [n for n in b["notes"]
+                          if not n.startswith("host seat")]
+
+
+def test_terminal_keeps_declared_and_is_path_precise():
+    roles = list(CFG["role_tiers"])
+    t = _t(task_class="ARCHITECTURE", uncertainty=3,
+           unavailable_roles=roles)  # Supply-exhausted terminal.
+    t._host_seat = {"model": "claude-sonnet-5", "effort": "HIGH"}
+    out = route(t, CFG)
+    assert out["terminal"] is not None
+    adv = out["host_seat_advisory"]
+    assert adv["declared"]["model"] == "claude-sonnet-5"
+    assert isinstance(adv["policy_ask"]["tier"], int)
+    assert adv["model_comparison"] == "below"  # Tier 1 < 3.
+    # Path precision: after scrubbing only declared.model, that id is absent
+    # everywhere except top-level caller-input echoes.
+    scrubbed = copy.deepcopy(out)
+    scrubbed["host_seat_advisory"]["declared"]["model"] = None
+    dumped = _json.dumps(scrubbed)
+    echoed = set(out["unavailable_models"]) | set(out["excluded_prior_failures"])
+    assert not ({i for i in REGISTRY_IDS if i in dumped} - echoed)
+
+
+def test_text_advisory_line_is_conditional_and_id_free(capsys):
+    argv = ["--class", "IMPLEMENTATION", "--complexity", "1",
+            "--uncertainty", "1", "--blast-radius", "2",
+            "--reversibility", "1"]
+    rc = main(argv + ["--host-model", "claude-haiku-4-5-20251001",
+                      "--host-effort", "HIGH"])
+    assert rc == 0  # HIGH band, no gate.
+    txt = capsys.readouterr().out
+    line = next(l for l in txt.splitlines()
+                if l.startswith("host-seat advisory"))
+    assert "upgrade recommended" in line
+    assert not any(i in line for i in REGISTRY_IDS)
+    rc2 = main(argv)  # Undeclared: no advisory line.
+    assert rc2 == 0
+    assert "host-seat advisory" not in capsys.readouterr().out
 
 
 # --- RouteRequestV1 / CLI ---

@@ -2301,6 +2301,17 @@ def route(task: Task, cfg: dict | None = None) -> dict:
                     f"provider may substitute another {policy.family_of[model]} "
                     f"model for {', '.join(matched)} content; the requested "
                     f"identity of {key} is declared_only")
+    all_notes = worker_notes + effort_notes
+    if advisory == "upgrade_recommended":
+        clauses = []
+        if model_cmp == "below":
+            clauses.append(
+                f"model tier {policy.tier_of[declared['model']]} < {ask['tier']}")
+        if effort_cmp == "below":
+            clauses.append(f"effort {declared['effort']} < {ask['effort']}")
+        suffix = f" [{', '.join(ask['raised_by'])}]" if ask["raised_by"] else ""
+        all_notes.append("host seat below orchestrator ask: "
+                         + "; ".join(clauses) + suffix)
     effective_policy = {
         "minimum_capability_tier": lp.get("minimum_capability_tier"),
         "minimum_effort": lp.get("minimum_effort"),
@@ -2409,7 +2420,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         # that boolean would block on this too, which is the whole thing the
         # deferral exists to avoid.
         "human_confirmation_deferred": deferred,
-        "notes": worker_notes + effort_notes,
+        "notes": all_notes,
     }
     result["rationale"] = explain(task, result, policy)
     return result
@@ -2742,6 +2753,11 @@ def _print_text(r: dict) -> None:
     if r["excluded_prior_failures"]:
         print(f"excluded:    {r['excluded_prior_failures']} (already failed)")
     print(f"confidence:  {r['routing_confidence']}")
+    adv = r["host_seat_advisory"]
+    if adv["advisory"] == "upgrade_recommended":
+        detail = next((n for n in r["notes"]
+                       if n.startswith("host seat below")), "")
+        print(f"host-seat advisory: upgrade recommended — {detail}")
 
     if r["requires_human_confirmation"]:
         print("human:       CONFIRMATION REQUIRED")
