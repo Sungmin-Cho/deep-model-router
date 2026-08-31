@@ -294,8 +294,10 @@ ARCHITECTURE×CRITICAL (uncertainty < 3) cap.
 
 Convert a declared native effort through the host-local family's `effort_map`:
 the map is historical and ordered; if native spellings overlap, choose the
-lower conceptual level. Thus Claude `low` maps to LOW, with its documented
-MINIMAL exception, and xAI `xhigh` maps to VERY_HIGH. Unknown or unavailable
+lower conceptual level. Claude has no distinct native MINIMAL tier, so the
+documented `MINIMAL -> low` pair is an upward-collapse approximation: inversion
+selects LOW rather than treating native `low` as proof of MINIMAL. xAI `xhigh`
+maps to VERY_HIGH. Unknown or unavailable
 native values are not silently converted; ask the host to declare a reliable
 conceptual value or leave effort undeclared.
 
