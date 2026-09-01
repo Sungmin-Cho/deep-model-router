@@ -457,11 +457,20 @@ def test_grok_hosted_bridge_facts():
 # ---------------------------------------------------------------------------
 
 def _balanced_task(**kw):
-    """A route whose worker is `worker_balanced` under the default binding."""
+    """A route whose worker is `worker_balanced` under the default binding.
+
+    Declared `read_only` so the seat under test is reachable at all. This
+    section is about `worker_balanced_selection` — which of the two balanced
+    seats a flag prefers — and on a WRITE route the xai primary is not a
+    candidate on this host in the first place (issue #19: `to_xai` ships no
+    maker recipe), so the comparison would have nothing to compare. The rule
+    stays live for read-only seats and, natively, on the grok host.
+    """
     kw.setdefault("task_class", "REFACTORING")
     kw.setdefault("complexity", 2)
     kw.setdefault("uncertainty", 1)
     kw.setdefault("blast_radius", 1)
+    kw.setdefault("worker_seat", "read_only")
     return r(**kw)
 
 
@@ -512,7 +521,8 @@ def test_large_context_rule_is_actually_consumed():
     without = {**CFG, "worker_balanced_selection": {
         k: v for k, v in SEL.items() if k != "prefer_alt_when_flags"}}
     out = route(Task(task_class="REFACTORING", complexity=2, uncertainty=1,
-                     blast_radius=1, reversibility=0, flags=["large_context"]),
+                     blast_radius=1, reversibility=0, flags=["large_context"],
+                     worker_seat="read_only"),
                 without)
     assert out["selected_model"] == PRIMARY_ID
 
@@ -561,7 +571,8 @@ def test_latency_sensitive_rule_is_actually_consumed():
     without = {**CFG, "worker_balanced_selection": {
         k: v for k, v in SEL.items() if k != "prefer_alt_when_flags"}}
     out = route(Task(task_class="REFACTORING", complexity=2, uncertainty=1,
-                     blast_radius=1, reversibility=0, flags=["latency_sensitive"]),
+                     blast_radius=1, reversibility=0, flags=["latency_sensitive"],
+                     worker_seat="read_only"),
                 without)
     assert out["selected_model"] == PRIMARY_ID
 

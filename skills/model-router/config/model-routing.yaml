@@ -195,6 +195,37 @@ worker_selection:
   OPERATIONS:    { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: senior_engineer }
 
 # Applied after the table, before effort selection.
+# Does this class's WORKER need a write-capable dispatch recipe?
+#
+# The router names models; the caller dispatches them. But a route that names
+# a model whose transport has no write-capable seat, for work that writes, is
+# not executable as written — and until this table existed the caller had to
+# notice that themselves and re-route with `--unavailable-models`.
+#
+# Fail-closed. `read_only` is reserved for the two classes whose WORKER output
+# is a judgement rather than an artifact; everything else is presumed to need a
+# write-capable recipe. A class generalisation is wrong for some routes in both
+# directions — an INVESTIGATION that files its report as a file, an
+# IMPLEMENTATION spike that only reads — so the caller overrides it per route
+# with `--worker-seat` / RouteRequestV1 `worker_seat`. What the caller must not
+# have to do is discover the gap after dispatch fails.
+#
+# This is a routing input, not a dispatch instruction: `read_only` does not
+# tell anyone to run a read-only seat, it says this route may be staffed by a
+# model that only has one.
+task_write_seat:
+  MECHANICAL:     write
+  DOCUMENTATION:  write
+  TESTING:        write
+  IMPLEMENTATION: write
+  REFACTORING:    write
+  DEBUGGING:      write
+  MIGRATION:      write
+  ARCHITECTURE:   write
+  OPERATIONS:     write
+  INVESTIGATION:  read_only
+  REVIEW:         read_only
+
 worker_promotions:
   - class: ARCHITECTURE
     when: uncertainty == 3 OR long_horizon
@@ -659,6 +690,13 @@ transports:
       mechanism: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check \"<prompt>\""
       isolation: separate_process
       verified: true
+      # Whether this direction may seat WRITE work. Declared, never inferred:
+      # capability used to be read off the mechanism key's spelling, so renaming
+      # a read-only seat's key to `mechanism` silently authorized write dispatch
+      # through it. `verified` above attests the direction; this attests the
+      # write seat, and Policy refuses a `true` here that the verification
+      # ledger contradicts or that no write-capable recipe backs.
+      write_verified: true
     to_xai:
       # Seat profiles, not one mechanism: a read-only reviewer and a
       # write-capable maker need opposite tool surfaces, and a headless
@@ -696,21 +734,29 @@ transports:
       # Edit the tool call succeeded and the external inode's contents
       # were overwritten. A hard link is an ordinary regular file, so it
       # satisfies both the lexical path rule and the sandbox path check.
+      # Re-probed 2026-09-01 on grok 1.0.13: unchanged, and unchanged
+      # under --sandbox strict as well. See the verification ledger.
       # Full ledger: docs/design/reviews/2026-08-25-grok-seat-integrity/
       # probes/LEDGER-implementation.md (gitignored local archive).
       # This blocks grok maker dispatch at Layer B (no recipe to
-      # follow), NOT at the router — see the adapters.md xai fallback
-      # row for --unavailable-models, and design §7 for the deferred
-      # router/transport coupling.
+      # follow). Since 2026-09-01 the router also refuses to NAME a seat
+      # for write work when its direction here has no write-capable
+      # recipe — `task_write_seat` above, `Policy.write_capable`, and
+      # the route's `worker_seat` block. Adding `mechanism_maker` to a
+      # direction is all it takes to restore it; no code changes.
       mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
       isolation: separate_process
       verified: true
+      # The reviewer seat is verified; the WRITE seat is not, and this says so
+      # in the same place the router reads. Re-probed 2026-09-01 on grok 1.0.13.
+      write_verified: false
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
     to_claude:
       mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> \"<prompt>\""
       isolation: separate_process
       verified: true
+      write_verified: true
     to_xai:
       # Same argv — argv is host-independent — but `verified` stays
       # per direction: the probes ran from a Claude Code host only.
@@ -750,15 +796,20 @@ transports:
       # Edit the tool call succeeded and the external inode's contents
       # were overwritten. A hard link is an ordinary regular file, so it
       # satisfies both the lexical path rule and the sandbox path check.
+      # Re-probed 2026-09-01 on grok 1.0.13: unchanged, and unchanged
+      # under --sandbox strict as well. See the verification ledger.
       # Full ledger: docs/design/reviews/2026-08-25-grok-seat-integrity/
       # probes/LEDGER-implementation.md (gitignored local archive).
       # This blocks grok maker dispatch at Layer B (no recipe to
-      # follow), NOT at the router — see the adapters.md xai fallback
-      # row for --unavailable-models, and design §7 for the deferred
-      # router/transport coupling.
+      # follow). Since 2026-09-01 the router also refuses to NAME a seat
+      # for write work when its direction here has no write-capable
+      # recipe — `task_write_seat` above, `Policy.write_capable`, and
+      # the route's `worker_seat` block. Adding `mechanism_maker` to a
+      # direction is all it takes to restore it; no code changes.
       mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
       isolation: separate_process
       verified: false
+      write_verified: false
   grok:
     native: { mechanism: subagent, isolation: unverified }
     to_claude:
@@ -770,12 +821,14 @@ transports:
       mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> \"<prompt>\""
       isolation: separate_process
       verified: true
+      write_verified: true
     to_openai:
       # Same per-direction rule; probed 2026-08-29 from the same darwin
       # grok host. See the "grok -> OpenAI transport" ledger entry.
       mechanism: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check \"<prompt>\""
       isolation: separate_process
       verified: true
+      write_verified: true
 
 # Ordered replacement candidates, consulted when a role's bound model is
 # unavailable. Entries are registry keys, tried in order; the resolver skips
@@ -957,6 +1010,27 @@ verification_ledger:
         this release; the reviewer seat, the envelope contract and the
         artifact contract ship independently. Results are machine- and
         platform-specific (darwin) — re-probe on any other platform.
+        RE-PROBED 2026-09-01 on grok 1.0.13 (5e9a58528b76), darwin 25.6.0
+        arm64, with the same shipping-candidate argv: the hard-link escape
+        REPRODUCES unchanged (external inode identical, contents overwritten,
+        stopReason end_turn, permission_resolved allow -> tool_completed
+        success, and NO FsViolation recorded — the kernel never saw a
+        violation because the path used is genuinely inside the workspace).
+        It also reproduces under --sandbox strict, the strictest built-in
+        profile, so this is not a profile-selection mistake: a path-based
+        sandbox cannot distinguish a hard link from the file it aliases.
+        Two further containment facts measured the same day, neither of them
+        in the 2026-08-25 ledger: (a) `~/.grok` is WRITABLE under both
+        workspace and strict — config.toml, sandbox.toml, trusted_folders.toml,
+        plugins/ and agents/ included; only the hooks paths are protected, and
+        that protection surfaces as a cancelled turn rather than a kernel
+        denial — so the grok state directory is a second escape axis
+        independent of hard links; (b) the session summary records
+        `sandbox_profile` but no `enforced` flag, while
+        `~/.grok/sandbox-events.jsonl` records `ProfileApplied.enforced` —
+        so `--expect-sandbox-profile` grades a requested profile against a
+        source that cannot say whether it was applied. A future maker recipe
+        needs a containment story that survives all three.
 
     - item: "Grok headless prompt delivery through the supervisor"
       status: verified

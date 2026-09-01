@@ -630,8 +630,14 @@ def test_d9_parity_holds_including_the_native_effort_spelling():
     # The route above happens to emit equal requested and effective, so the
     # wrong key cannot fail. This one splits them: requested MAX, effective
     # VERY_HIGH (the worker's ceiling).
+    #
+    # On the grok host, because the only seat with a ceiling below MAX is the
+    # xai one and a cross-family WRITE route can no longer reach it — the maker
+    # recipe for `to_xai` did not pass its shipping gate (issue #19). The grok
+    # host seats it natively, which is what this test needs and which the
+    # write-seat coupling deliberately leaves alone.
     split = r(task_class="DEBUGGING", complexity=2, uncertainty=2,
-              blast_radius=1, reversibility=0,
+              blast_radius=1, reversibility=0, runtime="grok",
               flags=["auth_sensitive", "unknown_root_cause"])
     assert split["selected_effort"] == "MAX"
     assert split["selected_effort_effective"] == "VERY_HIGH"
@@ -840,6 +846,12 @@ def test_d10_a_below_tier_substitute_is_only_taken_when_nothing_better_is_free()
         seated = dict(zip(rv["reviewers"], rv["reviewer_models"]))
         tier = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
         resolver = Resolver(task, Policy.of(CFG))
+        # Ask the question the ROUTER asked. On a write route the worker's
+        # role is restricted to seats this host has a write-capable recipe
+        # for, so a model that cannot fill that role was never free to be
+        # seated — `resolved` is keyed by role, and a role holds one model.
+        resolver.worker_writes = out["worker_seat"]["kind"] == "write"
+        resolver.write_seat_role = out["selected_role"]
         worker_tier = tier[out["selected_model"]]
         weak = [seated[sub["with"]] for sub in rv["self_review_avoided"]
                 if seated.get(sub["with"]) and tier[seated[sub["with"]]] < worker_tier]
@@ -1036,8 +1048,24 @@ DOCUMENTED_BUT_UNREAD = {
     "effort_map.gemini": "unbound family: registered for suite ID spelling, "
                          "dispatchable:false, never seated so effort_map.gemini "
                          "leaves are completeness-only",
-    "transports": "how the CALLER invokes each model; the router names models, "
-                  "it does not dispatch them",
+    "transports.claude_code.native": "how the CALLER invokes the host's own "
+        "seat; there is no recipe to check because there is no bridge",
+    "transports.codex.native": "see above",
+    "transports.grok.native": "see above",
+    "transports.claude_code.to_openai.mechanism": "the argv the CALLER runs; "
+        "the router reads only whether a write-capable key is PRESENT",
+    "transports.claude_code.to_openai.isolation": "dispatch property, not a "
+        "routing input",
+    "transports.claude_code.to_xai.mechanism_reviewer": "see mechanism above",
+    "transports.claude_code.to_xai.isolation": "see isolation above",
+    "transports.codex.to_claude.mechanism": "see mechanism above",
+    "transports.codex.to_claude.isolation": "see isolation above",
+    "transports.codex.to_xai.mechanism_reviewer": "see mechanism above",
+    "transports.codex.to_xai.isolation": "see isolation above",
+    "transports.grok.to_claude.mechanism": "see mechanism above",
+    "transports.grok.to_claude.isolation": "see isolation above",
+    "transports.grok.to_openai.mechanism": "see mechanism above",
+    "transports.grok.to_openai.isolation": "see isolation above",
 }
 
 # Per model and per leaf, not as a blanket `models` exemption. The audit of
@@ -2592,8 +2620,13 @@ def test_d23_the_same_role_writes_one_ceiling_row():
     """When `_deconflict` cannot substitute, the worker stays in
     `review["reviewers"]` and both clamps would write it. Design §4.3.3:
     the same seat appears once. The broken floor must survive the merge."""
+    # On the grok host: an xai-only supply is that host's own degraded
+    # binding, and the seat is native there. Off it, MECHANICAL is a write
+    # class and `to_xai` ships no maker recipe (issue #19), so an xai-only
+    # supply has no worker at all and never reaches the ceiling merge this
+    # test is about.
     out = r(task_class="MECHANICAL", complexity=3, uncertainty=3,
-            blast_radius=3, reversibility=3,
+            blast_radius=3, reversibility=3, runtime="grok",
             unavailable_models=_leave_only("grok-4.6"))
     roles = [rec["role"] for rec in out["effort_ceiling_applied"]]
     assert len(roles) == len(set(roles)), (
