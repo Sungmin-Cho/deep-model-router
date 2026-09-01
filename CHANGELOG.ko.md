@@ -7,6 +7,39 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.8.0] — 2026-09-01 (grok 메이커 좌석)
+
+### Changed
+
+- Claude Code 쓰기 라우트가 다시 `xai_frontier`를 앉힌다. 스킵 노트 대신
+  디스패치가 `--seat-profile grok-maker-v1`을 써야 한다는 고지가 남는다.
+  Codex 호스트의 쓰기 라우트는 여전히 xai를 건너뛴다.
+
+### Added
+
+- **Claude Code → xAI 쓰기 가능 메이커 좌석**, 감독기 측 예방 하에 출하.
+  `transports.claude_code.to_xai.mechanism_maker`와 `write_verified: true`,
+  원장 `verified`가 함께 맞다. argv만으로는 봉쇄가 아니다: 경로 기반
+  샌드박스는 여전히 하드 링크와 원본을 구분하지 못한다. 디스패치는
+  `--seat-profile grok-maker-v1`을 써야 한다.
+- `dispatch_agent.py`: `--child-cwd` / `--require-single-linked-cwd`
+  (정규 파일 `st_nlink > 1`이면 기동 거부); `--grok-home` /
+  `--grok-auth-seed` (시도별 홈, auth는 새 inode로 복사);
+  `--expect-sandbox-enforced` (`ProfileApplied.enforced` 채점);
+  `--seat-profile grok-maker-v1` (위 전부 + 봉투·세션 증거, 아니면
+  스폰 전 거부).
+- 같은 메이커 argv를 `codex.to_xai`에도 거울로 싣되, 그 방향은
+  `verified: false` / `write_verified: false`로 둔다.
+
+### Security
+
+- grok argv 수준에서 하드 링크 이탈은 그대로다: cwd 안 별칭이 바깥
+  inode를 덮어쓰며, 바깥 경로를 deny한 커스텀 프로파일에서도 그렇다
+  (grok 1.0.13 / Darwin arm64). 출하 주장은 감독기 예방 + `ln`이 없는
+  도구 화이트리스트 + 시도별 `GROK_HOME` (workspace 쓰기 허가는
+  `$GROK_HOME`을 따르고 `~/.grok`가 아니다) + fail-closed 커스텀
+  프로파일 + 이벤트 로그 Write/Edit deny다.
+
 ## [1.7.0] — 2026-09-01 (쓰기 좌석 라우팅)
 
 ### Changed

@@ -721,35 +721,21 @@ transports:
       # completed cleanly (P-10) and is shipped as a further reduction
       # of the prompt-injection read surface.
       #
-      # mechanism_maker is DELIBERATELY ABSENT — it did not pass its
-      # shipping gate and there is no grok maker argv of record in this
-      # release. The write axis passed (P-6: path-scoped
-      # --allow "Write(./**)"/"Edit(./**)" completes; P-7: the same
-      # with --sandbox workspace completes and the session summary
-      # confirms sandbox_profile: workspace). The ESCAPE-DENIAL axis
-      # failed: probed 2026-08-25 on grok 1.0.5 / darwin, --sandbox
-      # workspace blocks a write through a SYMLINK out of the cwd
-      # (EPERM, target inode and digest unchanged) but does NOT block a
-      # write through a HARD LINK inside the cwd — for both Write and
-      # Edit the tool call succeeded and the external inode's contents
-      # were overwritten. A hard link is an ordinary regular file, so it
-      # satisfies both the lexical path rule and the sandbox path check.
-      # Re-probed 2026-09-01 on grok 1.0.13: unchanged, and unchanged
-      # under --sandbox strict as well. See the verification ledger.
-      # Full ledger: docs/design/reviews/2026-08-25-grok-seat-integrity/
-      # probes/LEDGER-implementation.md (gitignored local archive).
-      # This blocks grok maker dispatch at Layer B (no recipe to
-      # follow). Since 2026-09-01 the router also refuses to NAME a seat
-      # for write work when its direction here has no write-capable
-      # recipe — `task_write_seat` above, `Policy.write_capable`, and
-      # the route's `worker_seat` block. Adding `mechanism_maker` to a
-      # direction is all it takes to restore it; no code changes.
+      # Maker argv is not containment by itself. Path-based sandbox still
+      # cannot tell a hard link from the file it names (1.0.5 and 1.0.13).
+      # Shipping this string authorizes write dispatch only when the
+      # supervisor also applies --seat-profile grok-maker-v1: a disposable
+      # single-linked --child-cwd, a per-attempt --grok-home seeded from
+      # --grok-auth-seed, custom profile dmr-maker-v1 (fail-closed), and
+      # --expect-sandbox-enforced. See adapters.md "Grok seat profiles".
       mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
+      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
       isolation: separate_process
       verified: true
-      # The reviewer seat is verified; the WRITE seat is not, and this says so
-      # in the same place the router reads. Re-probed 2026-09-01 on grok 1.0.13.
-      write_verified: false
+      # Claude Code -> xAI write seat: recipe + this flag + the ledger
+      # entry below. Codex -> xAI stays write_verified: false (unprobed
+      # host direction).
+      write_verified: true
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
     to_claude:
@@ -783,30 +769,11 @@ transports:
       # completed cleanly (P-10) and is shipped as a further reduction
       # of the prompt-injection read surface.
       #
-      # mechanism_maker is DELIBERATELY ABSENT — it did not pass its
-      # shipping gate and there is no grok maker argv of record in this
-      # release. The write axis passed (P-6: path-scoped
-      # --allow "Write(./**)"/"Edit(./**)" completes; P-7: the same
-      # with --sandbox workspace completes and the session summary
-      # confirms sandbox_profile: workspace). The ESCAPE-DENIAL axis
-      # failed: probed 2026-08-25 on grok 1.0.5 / darwin, --sandbox
-      # workspace blocks a write through a SYMLINK out of the cwd
-      # (EPERM, target inode and digest unchanged) but does NOT block a
-      # write through a HARD LINK inside the cwd — for both Write and
-      # Edit the tool call succeeded and the external inode's contents
-      # were overwritten. A hard link is an ordinary regular file, so it
-      # satisfies both the lexical path rule and the sandbox path check.
-      # Re-probed 2026-09-01 on grok 1.0.13: unchanged, and unchanged
-      # under --sandbox strict as well. See the verification ledger.
-      # Full ledger: docs/design/reviews/2026-08-25-grok-seat-integrity/
-      # probes/LEDGER-implementation.md (gitignored local archive).
-      # This blocks grok maker dispatch at Layer B (no recipe to
-      # follow). Since 2026-09-01 the router also refuses to NAME a seat
-      # for write work when its direction here has no write-capable
-      # recipe — `task_write_seat` above, `Policy.write_capable`, and
-      # the route's `worker_seat` block. Adding `mechanism_maker` to a
-      # direction is all it takes to restore it; no code changes.
+      # Same maker argv as claude_code.to_xai (argv is host-independent).
+      # verified and write_verified stay false: this direction was not
+      # probed from a Codex host. The string is not authorization.
       mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
+      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
       isolation: separate_process
       verified: false
       write_verified: false
@@ -986,51 +953,40 @@ verification_ledger:
         session summary reports sandbox_profile: read-only, so it ships.
         All four turns ended stopReason: end_turn.
 
-    - item: "Grok maker seat recipe (transports.*.to_xai.mechanism_maker)"
-      status: not_shipped
-      probed_on: 2026-08-25
+    - item: "Grok maker seat recipe (transports.claude_code.to_xai.mechanism_maker)"
+      status: verified
+      probed_on: 2026-09-01
       evidence: >
-        grok 1.0.5 (5115b46bc909) on darwin. Write axis PASSED — P-6: the
-        path-scoped rules --allow "Write(./**)" --allow "Edit(./**)" complete
-        a file creation (end_turn); P-2: --allow "Edit(./**)" maps to the
-        edit tool and modifies an existing file; P-7: the same recipe plus
-        --sandbox workspace completes and the summary reports
-        sandbox_profile: workspace. Escape-denial axis FAILED — P-9, run with
-        the final shipping-candidate argv (sandbox included), planted an
-        alias inside the cwd pointing at an external file and induced both a
-        Write and an Edit through it. Through a SYMLINK both were blocked
-        (tool_started + permission allow, then tool_completed outcome=error
-        "Operation not permitted"; external inode and SHA-256 unchanged).
-        Through a HARD LINK both SUCCEEDED and overwrote the external inode's
-        contents (inode identical, digest changed) — a hard link is an
-        ordinary regular file, so it passes both the lexical path rule and
-        the sandbox path check. Positive tool-call evidence exists in all
-        four cases, so the "no attempt was made" re-probe clause does not
-        apply. Per the plan's two-axis gate the maker seat is NOT SHIPPED in
-        this release; the reviewer seat, the envelope contract and the
-        artifact contract ship independently. Results are machine- and
-        platform-specific (darwin) — re-probe on any other platform.
-        RE-PROBED 2026-09-01 on grok 1.0.13 (5e9a58528b76), darwin 25.6.0
-        arm64, with the same shipping-candidate argv: the hard-link escape
-        REPRODUCES unchanged (external inode identical, contents overwritten,
-        stopReason end_turn, permission_resolved allow -> tool_completed
-        success, and NO FsViolation recorded — the kernel never saw a
-        violation because the path used is genuinely inside the workspace).
-        It also reproduces under --sandbox strict, the strictest built-in
-        profile, so this is not a profile-selection mistake: a path-based
-        sandbox cannot distinguish a hard link from the file it aliases.
-        Two further containment facts measured the same day, neither of them
-        in the 2026-08-25 ledger: (a) `~/.grok` is WRITABLE under both
-        workspace and strict — config.toml, sandbox.toml, trusted_folders.toml,
-        plugins/ and agents/ included; only the hooks paths are protected, and
-        that protection surfaces as a cancelled turn rather than a kernel
-        denial — so the grok state directory is a second escape axis
-        independent of hard links; (b) the session summary records
-        `sandbox_profile` but no `enforced` flag, while
-        `~/.grok/sandbox-events.jsonl` records `ProfileApplied.enforced` —
-        so `--expect-sandbox-profile` grades a requested profile against a
-        source that cannot say whether it was applied. A future maker recipe
-        needs a containment story that survives all three.
+        grok 1.0.13 (5e9a58528b76) on Darwin 25.6.0 arm64, 2026-09-01.
+        Argv-level escape-denial still FAILS: a hard link inside cwd
+        overwrites the outside inode under a custom profile that denies
+        the outside path (S6: same inode, digest changed, 0 FsViolation,
+        end_turn). Built-in workspace and strict failed the same way on
+        1.0.5 and 1.0.13. Supervisor-side prevention is what ships:
+        (A) pre-spawn tree walk of --child-cwd refuses any regular file
+        with st_nlink > 1 (S9 would have refused S6); --tools whitelist
+        without run_terminal_cmd cannot create a new hard link (S8:
+        Write/StrReplace create a regular file only; victim unchanged).
+        (C) per-attempt GROK_HOME: workspace write grants follow
+        $GROK_HOME, not ~/.grok (S4: FsViolation + EPERM on a real-home
+        canary even with an explicit Write allow; ProfileApplied
+        read_write_paths named the attempt home). Empty GROK_HOME does
+        not log in (S1); copying auth.json onto a new inode logs in
+        (S2 mode 0444 rewritten by grok to 0600 on the copy, S3 mode
+        0600; source inode untouched). summary.grok_home equals the
+        attempt home. (D) unknown custom --sandbox refuses to start
+        (S0 fail-closed). ProfileApplied.enforced=true is in the
+        attempt-home sandbox-events.jsonl. --deny Write/Edit of that
+        events file blocks model forgery while the grok logger still
+        appends the genuine ProfileApplied (S11: BLOCKED Denied by
+        permission policy; same inode; no forged bytes). Write axis
+        still holds under the shipped argv (S7: made.txt MADE-I19,
+        end_turn, tools whitelist + custom profile + GROK_HOME).
+        Dispatch of this seat MUST use --seat-profile grok-maker-v1
+        (child-cwd audit, grok-home, auth seed, expect-sandbox-enforced,
+        envelope, session evidence). claude_code.to_xai write_verified
+        is true; codex.to_xai stays false (direction unprobed from a
+        Codex host). Machine- and platform-specific (darwin/arm64).
 
     - item: "Grok headless prompt delivery through the supervisor"
       status: verified

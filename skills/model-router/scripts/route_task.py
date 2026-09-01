@@ -471,21 +471,29 @@ class Policy:
                     continue
                 if entry.get("write_verified") is not True:
                     continue
-                if not ("mechanism_maker" in entry or "mechanism" in entry):
+                recipe = entry.get("mechanism_maker") or entry.get("mechanism")
+                if not (isinstance(recipe, str) and recipe.strip()):
                     raise ConfigError(
                         f"transports.{runtime}.{name} declares write_verified: true "
                         f"with no write-capable mechanism string to dispatch")
-                contradicted = [
-                    item for item in ledger
-                    if isinstance(item, Mapping)
-                    and f".{name}.mechanism_maker" in str(item.get("item", ""))
-                    and item.get("status") != "verified"
-                ]
-                if contradicted:
-                    raise ConfigError(
-                        f"transports.{runtime}.{name} declares write_verified: true, but "
-                        f"verification_ledger records {contradicted[0].get('item')!r} as "
-                        f"{contradicted[0].get('status')!r}")
+                if "mechanism_maker" in entry:
+                    needle = f"{runtime}.{name}.mechanism_maker"
+                    matching = [
+                        item for item in ledger
+                        if isinstance(item, Mapping)
+                        and needle in str(item.get("item", ""))
+                    ]
+                    if not matching:
+                        raise ConfigError(
+                            f"transports.{runtime}.{name} declares write_verified: true, "
+                            f"but verification_ledger has no maker-seat row")
+                    bad = [item for item in matching
+                           if item.get("status") != "verified"]
+                    if bad:
+                        raise ConfigError(
+                            f"transports.{runtime}.{name} declares write_verified: true, but "
+                            f"verification_ledger records {bad[0].get('item')!r} as "
+                            f"{bad[0].get('status')!r}")
 
     def worker_seat_kind(self, task_class: str) -> str:
         """The class default for whether this route's worker writes.
@@ -1929,6 +1937,11 @@ def route(task: Task, cfg: dict | None = None) -> dict:
             worker_notes.append(
                 f"{worker}: no write-capable {policy.family_of[nominal]} seat "
                 f"on {task.runtime}; {got}")
+        elif seated and policy.family_of.get(seated) == "xai" \
+                and policy.local_family.get(task.runtime) != "xai":
+            worker_notes.append(
+                f"{worker}: xai write seat on {task.runtime} requires "
+                "dispatch_agent --seat-profile grok-maker-v1")
     # From here on every reader of the worker's role — review seating, judge
     # seating, the final resolve — must see the seat the worker actually got.
     resolver.write_seat_role = worker

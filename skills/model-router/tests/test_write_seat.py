@@ -75,11 +75,17 @@ def test_the_host_own_family_is_write_capable_through_its_native_seat():
 
 
 def test_a_seat_split_transport_without_a_maker_is_not_write_capable():
-    """The whole point: `to_xai` carries `mechanism_reviewer` and no
-    `mechanism_maker`, so no xai write dispatch has a recipe of record."""
-    assert "mechanism_maker" not in CFG["transports"]["claude_code"]["to_xai"]
-    assert POLICY.write_capable("claude_code", "xai") is False
+    """A direction that only carries `mechanism_reviewer` is not write-capable.
+    The shipped Claude Code maker is the opposite case; Codex -> xAI still
+    has no write authorization (verified and write_verified stay false)."""
     assert POLICY.write_capable("codex", "xai") is False
+
+
+def test_the_shipped_claude_code_maker_is_write_capable():
+    """Issue #19 shipping half: recipe + write_verified + ledger together."""
+    assert "mechanism_maker" in CFG["transports"]["claude_code"]["to_xai"]
+    assert CFG["transports"]["claude_code"]["to_xai"]["write_verified"] is True
+    assert POLICY.write_capable("claude_code", "xai") is True
 
 
 def test_a_seat_agnostic_verified_transport_is_write_capable():
@@ -258,13 +264,13 @@ READ_ONLY_ROUTE = dict(task_class="REVIEW", complexity=0, uncertainty=0,
                        blast_radius=1, reversibility=2)
 
 
-def test_a_write_route_is_not_staffed_by_a_family_with_no_maker_recipe():
-    """The defect issue #19 reports: `worker_balanced` binds the xai seat and
-    `to_xai` ships no `mechanism_maker`, so the emitted worker had no argv of
-    record and the caller had to re-route by hand."""
+def test_a_write_route_is_staffed_by_the_shipped_claude_code_maker():
+    """The defect issue #19 reported is closed on the probed direction:
+    `worker_balanced` binds the xai seat and `claude_code.to_xai` now
+    ships a write-capable maker, so the emitted worker has an argv of record."""
     out = route(Task(**WRITE_ROUTE, runtime="claude_code"), CFG)
-    assert out["selected_model"] != "grok-4.6"
-    assert POLICY.write_capable("claude_code", POLICY.family_of[out["selected_model"]])
+    assert out["selected_model"] == "grok-4.6"
+    assert POLICY.write_capable("claude_code", "xai")
 
 
 def test_the_same_defect_on_the_codex_host():
@@ -311,9 +317,10 @@ def test_shipping_a_verified_maker_returns_the_seat_with_no_code_change():
 def test_the_skip_is_disclosed_as_the_policy_decision_it_is():
     """It goes in `notes` — "every promotion, floor, compensation and policy
     decision the route actually made" — naming the seat, the host direction and
-    what was seated instead."""
-    out = route(Task(**WRITE_ROUTE, runtime="claude_code"), CFG)
-    assert any("no write-capable xai seat" in n and "claude_code" in n
+    what was seated instead. After the Claude Code maker shipped, the skip
+    remains on the unprobed Codex direction."""
+    out = route(Task(**WRITE_ROUTE, runtime="codex"), CFG)
+    assert any("no write-capable xai seat" in n and "codex" in n
                for n in out["notes"]), out["notes"]
     # Families, never ids: a terminal route must withhold every execution
     # binding, and `notes` is part of the route.
@@ -358,7 +365,7 @@ def test_a_role_holds_one_model_so_the_skip_reaches_that_whole_role():
     INDEPENDENCE_UNAVAILABLE.
     """
     task = Task(task_class="MECHANICAL", complexity=2, uncertainty=2,
-                blast_radius=2, reversibility=0, runtime="claude_code",
+                blast_radius=2, reversibility=0, runtime="codex",
                 unavailable_models=["claude-fable-5",
                                     "claude-haiku-4-5-20251001",
                                     "claude-opus-5"])
@@ -421,12 +428,18 @@ def test_the_coupling_changes_nothing_on_the_grok_host():
     assert checked > 1_000, checked
 
 
-def test_the_two_bridging_hosts_no_longer_seat_the_xai_worker_for_write_work():
+def test_the_unprobed_codex_direction_does_not_seat_the_xai_worker_for_write_work():
+    """claude_code.to_xai is write-verified; codex.to_xai is not."""
     left = [(t, o) for t, o in _sweep_routes()
-            if t.runtime in ("claude_code", "codex")
+            if t.runtime == "codex"
             and o["selected_model"] == "grok-4.6"]
     assert left, "the xai seat must survive for read-only work"
     assert all(o["worker_seat"]["kind"] == "read_only" for _, o in left)
+    claude_write = [(t, o) for t, o in _sweep_routes()
+                    if t.runtime == "claude_code"
+                    and o["worker_seat"]["kind"] == "write"
+                    and o["selected_model"] == "grok-4.6"]
+    assert claude_write, "the shipped maker must staff Claude Code write work"
 
 
 def test_write_capable_reads_a_mapping_config_not_only_a_dict():
@@ -459,7 +472,8 @@ def test_write_capable_reads_a_mapping_config_not_only_a_dict():
     policy = Policy(_View(CFG))
     assert policy.write_capable("claude_code", "openai") is True
     assert policy.write_capable("codex", "claude") is True
-    assert policy.write_capable("claude_code", "xai") is False
+    assert policy.write_capable("claude_code", "xai") is True
+    assert policy.write_capable("codex", "xai") is False
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +491,7 @@ def test_a_real_outage_after_the_policy_skip_is_still_recorded():
     must not buy itself by committing the second.
     """
     task = Task(task_class="REFACTORING", complexity=0, uncertainty=2,
-                blast_radius=0, reversibility=0, runtime="claude_code",
+                blast_radius=0, reversibility=0, runtime="codex",
                 unavailable_models=["claude-sonnet-5"])
     out = route(task, CFG)
     assert out["selected_model"] == "gpt-5.6-terra"
@@ -491,8 +505,8 @@ def test_a_real_outage_after_the_policy_skip_is_still_recorded():
 def test_the_policy_skip_alone_still_records_no_fallback():
     """The other side of the same rule, pinned so a fix for the one above
     cannot re-introduce the scarcity report the skip must not make."""
-    out = route(Task(**WRITE_ROUTE, runtime="claude_code"), CFG)
-    assert out["selected_model"] == "claude-sonnet-5"
+    out = route(Task(**WRITE_ROUTE, runtime="codex"), CFG)
+    assert out["selected_model"] != "grok-4.6"
     assert not [f for f in out["fallbacks_applied"] if "worker_balanced:" in f]
 
 
@@ -510,7 +524,10 @@ def test_a_maker_recipe_alone_does_not_authorize_write_dispatch():
     in the same file. Reusing the direction flag as maker authorization meant a
     one-line config addition re-opened the measured hard-link and `~/.grok`
     escape paths without any probe."""
-    cfg = _with_transport(mechanism_maker="UNPROBED-MAKER")
+    cfg = _with_transport(mechanism_maker="UNPROBED-MAKER", write_verified=False)
+    for item in cfg["verification_ledger"]["entries"]:
+        if "maker seat recipe" in item["item"]:
+            item["status"] = "not_shipped"
     assert Policy(cfg).write_capable("claude_code", "xai") is False
 
 
@@ -523,6 +540,11 @@ def test_renaming_the_reviewer_recipe_does_not_authorize_write_dispatch():
     cfg = copy.deepcopy(CFG)
     entry = cfg["transports"]["claude_code"]["to_xai"]
     entry["mechanism"] = entry.pop("mechanism_reviewer")
+    entry.pop("mechanism_maker", None)
+    entry["write_verified"] = False
+    for item in cfg["verification_ledger"]["entries"]:
+        if "maker seat recipe" in item["item"]:
+            item["status"] = "not_shipped"
     assert Policy(cfg).write_capable("claude_code", "xai") is False
 
 
@@ -531,7 +553,38 @@ def test_write_verified_must_agree_with_the_verification_ledger():
     verified while the ledger still records that seat as not shipped. The
     ledger is the record; a second source that can silently disagree with it is
     the sand this file's header refuses to build on."""
-    cfg = _with_transport(mechanism_maker="UNPROBED-MAKER", write_verified=True)
+    cfg = _with_transport(write_verified=True)
+    for item in cfg["verification_ledger"]["entries"]:
+        if "maker seat recipe" in item["item"]:
+            item["status"] = "not_shipped"
+    with pytest.raises(ConfigError, match="verification_ledger"):
+        Policy(cfg)
+
+
+def test_a_claude_code_ledger_row_does_not_authorize_codex():
+    """The ledger item names the probed direction. A wildcard
+    `transports.*.to_xai.mechanism_maker` row would let Codex flip
+    write_verified without a Codex-host probe."""
+    import copy
+    cfg = copy.deepcopy(CFG)
+    cfg["transports"]["codex"]["to_xai"]["verified"] = True
+    cfg["transports"]["codex"]["to_xai"]["write_verified"] = True
+    with pytest.raises(ConfigError, match="verification_ledger"):
+        Policy(cfg)
+
+
+def test_an_empty_maker_recipe_does_not_authorize_write_dispatch():
+    cfg = _with_transport(mechanism_maker="   ")
+    with pytest.raises(ConfigError, match="write_verified"):
+        Policy(cfg)
+
+
+def test_write_verified_without_a_ledger_row_is_refused():
+    cfg = _with_transport(write_verified=True)
+    cfg["verification_ledger"]["entries"] = [
+        item for item in cfg["verification_ledger"]["entries"]
+        if "maker seat recipe" not in item.get("item", "")
+    ]
     with pytest.raises(ConfigError, match="verification_ledger"):
         Policy(cfg)
 
@@ -540,6 +593,7 @@ def test_write_verified_requires_a_recipe_to_dispatch():
     """The mirror check: a direction cannot claim a verified write seat while
     carrying no write-capable mechanism string at all."""
     cfg = _with_transport(write_verified=True)
+    del cfg["transports"]["claude_code"]["to_xai"]["mechanism_maker"]
     with pytest.raises(ConfigError, match="write_verified"):
         Policy(cfg)
 
@@ -580,7 +634,7 @@ def test_supply_exhausted_names_the_write_seat_when_that_is_the_cause():
     is up. A reason that states things which did not happen is the shape this
     module spends its rounds removing."""
     task = Task(task_class="IMPLEMENTATION", complexity=1, uncertainty=1,
-                blast_radius=1, reversibility=1, runtime="claude_code")
+                blast_radius=1, reversibility=1, runtime="codex")
     task._local_policy = {"allowed_families": ["xai"]}
     out = route(task, CFG)
     assert out["terminal"] == "SUPPLY_EXHAUSTED"

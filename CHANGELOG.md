@@ -7,6 +7,41 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-09-01 (grok maker seat)
+
+### Changed
+
+- Claude Code write routes seat `xai_frontier` again. The skip note is
+  replaced by a disclosure that dispatch must use
+  `--seat-profile grok-maker-v1`. Codex-hosted write routes still skip xai.
+
+### Added
+
+- **Claude Code → xAI write-capable maker seat**, under supervisor
+  prevention. `transports.claude_code.to_xai.mechanism_maker` plus
+  `write_verified: true` plus a `verified` ledger entry. The argv is not
+  containment: path-based sandbox still cannot tell a hard link from the
+  file it names. Dispatch MUST use `--seat-profile grok-maker-v1`.
+- `dispatch_agent.py`: `--child-cwd` / `--require-single-linked-cwd` (refuse
+  spawn if any regular file in the child tree has `st_nlink > 1`);
+  `--grok-home` / `--grok-auth-seed` (attempt-private home, auth copied onto
+  a new inode); `--expect-sandbox-enforced` (grade
+  `$GROK_HOME/sandbox-events.jsonl` `ProfileApplied.enforced`);
+  `--seat-profile grok-maker-v1` (all of the above, plus envelope and
+  session evidence, or pre-spawn refusal).
+- The same maker argv is mirrored on `codex.to_xai` but that direction
+  stays `verified: false` / `write_verified: false`.
+
+### Security
+
+- Hard-link escape remains possible at the grok argv: a planted alias
+  inside cwd still overwrites the outside inode, including under a custom
+  profile that denies the outside path (grok 1.0.13 / Darwin arm64). The
+  shipping claim is supervisor prevention plus a tools whitelist that
+  cannot `ln`, a per-attempt `GROK_HOME` (workspace write grants follow
+  `$GROK_HOME`, not `~/.grok`), a fail-closed custom profile, and a deny
+  rule on the events log so the model cannot forge `ProfileApplied`.
+
 ## [1.7.0] — 2026-09-01 (write-seat routing)
 
 ### Changed

@@ -209,9 +209,13 @@ grok --no-auto-update -m <id> --effort <native-effort> \
 native token from the effort map above, never the conceptual level.
 `<fresh-uuid>` is the same value the supervisor gets as `--session-id`.
 
-There is **no maker seat string in this release.** It did not pass its
-shipping gate (see "Grok seat profiles"), so no grok write-capable dispatch
-has a recipe of record.
+The maker seat string in this release is the `mechanism_maker` on
+`claude_code.to_xai` (mirrored on `codex.to_xai` but not authorized there).
+Argv alone is not containment. Dispatch MUST use
+`--seat-profile grok-maker-v1` so the supervisor applies the disposable
+single-linked `--child-cwd`, the per-attempt `--grok-home` / `--grok-auth-seed`,
+the custom `dmr-maker-v1` profile, and `--expect-sandbox-enforced`. See
+"Grok seat profiles".
 
 Also a separate process with a fresh session.
 
@@ -286,18 +290,47 @@ regular-file fd, not only a pipe — the official docs state a piped stdin is
 for a review prompt, and the full recipe including `--deny MCPTool`,
 `--disable-web-search` and `--sandbox read-only` completes with a verdict.
 
-**The maker seat does not ship in this release.** Its gate has two axes and
-only one passed. Writing works: path-scoped `--allow "Write(./**)"` and
-`--allow "Edit(./**)"` complete a create and an edit, with or without
-`--sandbox workspace`. Escape denial does not: with a symlink inside the cwd
-pointing outside it, the sandbox blocked the write (EPERM, external file
-untouched) — but with a **hard link** inside the cwd, both a Write and an
-Edit succeeded and overwrote the external file's contents. A hard link is an
-ordinary regular file, so it satisfies the lexical path rule and the
-sandbox's path check alike, and the official docs already note that the
-direct file tools do not resolve links. Until that is closed, there is no
-grok maker recipe of record; this blocks maker *dispatch* at Layer B, not
-model selection at the router (see the xai fallback row).
+**The maker seat ships on `claude_code.to_xai` only, under supervisor
+prevention.** Path-based sandbox still cannot tell a hard link from the
+file it names (1.0.5 and 1.0.13, workspace and strict, custom deny of the
+outside path included). What closed the three axes on darwin/arm64 grok
+1.0.13:
+
+- **A.** `--require-single-linked-cwd` on a disposable `--child-cwd` refuses
+  spawn if any regular file has `st_nlink > 1`. The shipped argv's
+  `--tools` whitelist has no `run_terminal_cmd`, so the child cannot `ln`;
+  Write/Edit create a regular file, not a hard link.
+- **C.** `--grok-home` injects an attempt-private home. Workspace write
+  grants follow `$GROK_HOME`, not `~/.grok`. Seed `auth.json` onto a new
+  inode with `--grok-auth-seed`.
+- **D.** `--sandbox dmr-maker-v1` is a custom profile (fail-closed if it
+  cannot apply). `--expect-sandbox-enforced` grades
+  `$GROK_HOME/sandbox-events.jsonl` `ProfileApplied.enforced == true`.
+  `--deny "Write(<grok-home>/sandbox-events.jsonl)"` (and Edit) blocks
+  model forgery of that log while the grok logger still appends.
+
+```bash
+grok --no-auto-update -m <id> --effort <native-effort> \
+    --output-format json -s <fresh-uuid> \
+    --agent general-purpose --permission-mode acceptEdits \
+    --tools read_file,list_dir,grep,search_replace \
+    --disallowed-tools Agent --no-subagents \
+    --allow "Write(./**)" --allow "Edit(./**)" \
+    --deny MCPTool \
+    --deny "Write(<grok-home>/sandbox-events.jsonl)" \
+    --deny "Edit(<grok-home>/sandbox-events.jsonl)" \
+    --disable-web-search --sandbox dmr-maker-v1 \
+    --prompt-file /dev/stdin
+```
+
+`--seat-profile grok-maker-v1` is what binds the supervisor flags to this
+argv. A raw paste of the child command without those flags is outside the
+shipping claim. Substitute `<grok-home>` in the deny rules with the same
+absolute path passed as `--grok-home`; a literal `<grok-home>` token does
+not protect the events file. `codex.to_xai` carries the same argv and stays
+`write_verified: false`. The ledger row names
+`transports.claude_code.to_xai.mechanism_maker` — it does not authorize
+the Codex direction.
 
 **Rule arguments must be quoted.** `Write(./**)` unquoted is a shell syntax
 error — the parentheses are metacharacters. The YAML and these fences carry
@@ -319,8 +352,11 @@ knowledge, and the layout is officially documented:
 $GROK_HOME/sessions/<URL-encoded-cwd>/<session-uuid>/
 ```
 
-`$GROK_HOME` defaults to `~/.grok`. The **cwd is the grok child's cwd**, and
-the supervisor passes no `cwd=` to `Popen`, so it is the supervisor's own cwd.
+`$GROK_HOME` defaults to `~/.grok`. The **cwd is the grok child's cwd**.
+With `--child-cwd` the supervisor passes that directory as `Popen(cwd=)`;
+without it the child inherits the supervisor's cwd. Maker dispatches must
+pass `--child-cwd` so the session path and the nlink audit name the same
+tree. Encode the child's realpath (`/tmp` vs `/private/tmp` on macOS).
 `<session-uuid>` is the value given to grok's `-s` — pass the same value to
 `--session-id`, which is what binds the evidence to the attempt.
 
@@ -731,11 +767,12 @@ never fails it.
 | `principal_architect` (claude) | `claude_architect`, then `claude_senior` |
 | Cross-family reviewer | Strongest available same-family reviewer; set `cross_family_review: false` |
 
-**No verified write-capable xai seat, and the router now knows it.** The
-router reads this table. A route whose worker seat has to write will not name
-a model whose direction here has no write-capable recipe — no
-`--unavailable-models` route-around is needed, and none should be used for
-this: it withholds the model from the review seats too.
+**Write-capable xai on Claude Code only.** `claude_code.to_xai` ships
+`mechanism_maker` with `write_verified: true` and a `verified` ledger
+entry. `codex.to_xai` carries the same argv but stays unverified for that
+host direction, so a Codex-hosted write route still will not name grok as
+the worker. No `--unavailable-models` route-around is needed for this, and
+none should be used for it: it withholds the model from the review seats too.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The

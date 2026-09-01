@@ -74,6 +74,7 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -217,6 +218,7 @@ INVALID_REASON_FLAGS = (
     "schema_invalid",               # --output-schema was not satisfied
     "session_evidence_unreadable",  # declared, but summary.json is not there
     "session_evidence_unbound",     # evidence belongs to some other attempt
+    "sandbox_event_missing",        # --expect-sandbox-enforced, no ProfileApplied
 )
 INVALID_REASON_PREFIXES = (
     "envelope_stop_reason",         # :<the non-end_turn value>
@@ -234,6 +236,22 @@ INVALID_REASON_PREFIXES = (
     "effective_agent_mismatch",     # :<observed agent_name>
     "effective_sandbox_mismatch",   # :<observed sandbox_profile>
     "session_terminal_event",       # :<non-completed turn_ended outcome>
+    "sandbox_profile_not_enforced",  # :<observed enforced value>
+    "sandbox_profile_event_mismatch",  # :<observed profile name>
+)
+
+MAKER_SEAT_PROFILE = "grok-maker-v1"
+MAKER_SANDBOX_PROFILE = "dmr-maker-v1"
+MAKER_SEAT_REQUIRED = (
+    ("--child-cwd", "child_cwd"),
+    ("--require-single-linked-cwd", "require_single_linked_cwd"),
+    ("--grok-home", "grok_home"),
+    ("--grok-auth-seed", "grok_auth_seed"),
+    ("--expect-sandbox-enforced", "expect_sandbox_enforced"),
+    ("--output-envelope", "output_envelope"),
+    ("--session-evidence", "session_evidence"),
+    ("--expect-effective-agent", "expect_effective_agent"),
+    ("--expect-sandbox-profile", "expect_sandbox_profile"),
 )
 
 
@@ -256,6 +274,147 @@ def _is_documented_reason(reason: str) -> bool:
         return True
     prefix, sep, _ = reason.partition(":")
     return bool(sep) and prefix in INVALID_REASON_PREFIXES
+
+
+def _audit_single_linked_tree(root: Path) -> str | None:
+    """Refuse any regular file in `root` whose inode has more than one name.
+
+    Walks without following symlinks. Any stat error is a refusal: a tree
+    we cannot inspect is not a tree we can claim is single-linked. This is
+    the supervisor-side prevention for the grok maker hard-link escape —
+    path-scoped Write/Edit and Seatbelt both see the inside path, so the
+    only real prevention is not launching if a second name is already there.
+    """
+    try:
+        root_st = os.lstat(root)
+    except OSError as exc:
+        return (f"--child-cwd {str(root)!r} could not be read: "
+                f"{os.strerror(exc.errno)}")
+    if stat.S_ISLNK(root_st.st_mode):
+        return f"--child-cwd {str(root)!r} is a symlink"
+    if not stat.S_ISDIR(root_st.st_mode):
+        return f"--child-cwd {str(root)!r} is not a directory"
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError as exc:
+                        return (f"--child-cwd contains an unreadable path "
+                                f"{entry.path}: {os.strerror(exc.errno)}")
+                    if stat.S_ISREG(st.st_mode) and st.st_nlink != 1:
+                        return (f"--child-cwd {str(root)!r} contains "
+                                f"{entry.path} with {st.st_nlink} links; "
+                                f"a hard link inside the cwd aliases an "
+                                f"inode the path-scoped write rules cannot "
+                                f"distinguish")
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(Path(entry.path))
+        except OSError as exc:
+            return (f"--child-cwd {str(current)!r} could not be scanned: "
+                    f"{os.strerror(exc.errno)}")
+    return None
+
+
+def _prepare_grok_home(home: Path, auth_seed: Path | None,
+                       sandbox_profile: str | None) -> str | None:
+    """Create an attempt-private GROK_HOME. Never follows a symlink."""
+    if home.exists() or os.path.lexists(home):
+        try:
+            st = os.lstat(home)
+        except OSError as exc:
+            return (f"--grok-home {str(home)!r} could not be read: "
+                    f"{os.strerror(exc.errno)}")
+        if stat.S_ISLNK(st.st_mode):
+            return f"--grok-home {str(home)!r} is a symlink"
+        return (f"--grok-home {str(home)!r} already exists; reuse of an "
+                "attempt home is refused")
+    try:
+        home.mkdir(mode=0o700, parents=True)
+    except OSError as exc:
+        return (f"--grok-home {str(home)!r} could not be created: "
+                f"{os.strerror(exc.errno)}")
+    if auth_seed is not None:
+        dest = home / "auth.json"
+        if dest.exists() or os.path.lexists(dest):
+            return (f"--grok-home {str(home)!r} already contains auth.json; "
+                    "reuse of an attempt home is refused")
+        try:
+            src_st = os.lstat(auth_seed)
+        except OSError as exc:
+            return (f"--grok-auth-seed {str(auth_seed)!r} could not be read: "
+                    f"{os.strerror(exc.errno)}")
+        if not stat.S_ISREG(src_st.st_mode) or stat.S_ISLNK(src_st.st_mode):
+            return f"--grok-auth-seed {str(auth_seed)!r} is not a regular file"
+        try:
+            shutil.copyfile(auth_seed, dest)
+            os.chmod(dest, 0o600)
+        except OSError as exc:
+            return (f"--grok-auth-seed could not be copied: "
+                    f"{os.strerror(exc.errno)}")
+    if sandbox_profile:
+        toml = home / "sandbox.toml"
+        try:
+            toml.write_text(
+                f"[profiles.{sandbox_profile}]\nextends = \"workspace\"\n")
+        except OSError as exc:
+            return (f"--grok-home sandbox.toml could not be written: "
+                    f"{os.strerror(exc.errno)}")
+    events = home / "sandbox-events.jsonl"
+    try:
+        fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except OSError as exc:
+        return (f"--grok-home sandbox-events.jsonl could not be reserved: "
+                f"{os.strerror(exc.errno)}")
+    return None
+
+
+def _grade_sandbox_events(home: Path, expected_profile: str
+                          ) -> tuple[dict, list[str]]:
+    """Read `$GROK_HOME/sandbox-events.jsonl` for ProfileApplied.enforced."""
+    path = home / "sandbox-events.jsonl"
+    view: dict = {"path": str(path), "enforced": None, "profile": None}
+    try:
+        fd, st = _open_regular(path)
+    except FileNotFoundError:
+        return view, ["sandbox_event_missing"]
+    except (OSError, NotARegularFile):
+        return view, ["sandbox_event_missing"]
+    try:
+        if st.st_nlink != 1:
+            os.close(fd)
+            return view, ["sandbox_event_missing"]
+        with os.fdopen(fd, "rb") as f:
+            data = f.read()
+    except OSError:
+        return view, ["sandbox_event_missing"]
+    applied = None
+    for line in data.split(b"\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj.get("event_type") == "ProfileApplied":
+            applied = obj
+    if applied is None:
+        return view, ["sandbox_event_missing"]
+    view["enforced"] = applied.get("enforced")
+    view["profile"] = applied.get("profile")
+    reasons: list[str] = []
+    if view["profile"] != expected_profile:
+        reasons.append(_reason("sandbox_profile_event_mismatch",
+                               view["profile"]))
+    if view["enforced"] is not True:
+        reasons.append(_reason("sandbox_profile_not_enforced",
+                               view["enforced"]))
+    return view, reasons
 
 
 def _utcnow() -> str:
@@ -1248,6 +1407,12 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         # DD-3: what actually took effect, read from the session directory
         # the caller declared. Null when none was declared.
         "session_evidence": None,
+        # Issue #19 maker-seat prevention. Always present, null when the
+        # caller did not declare a child cwd / attempt-private GROK_HOME.
+        "child_cwd": args.child_cwd,
+        "grok_home": args.grok_home,
+        "seat_profile": args.seat_profile,
+        "require_single_linked_cwd": bool(args.require_single_linked_cwd),
         "process": {"pid": None, "process_group_id": None,
                     "supervisor_pid": os.getpid()},
         "timing": {"started_at": None, "deadline_at": None,
@@ -1268,6 +1433,9 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
             # grading — a baseline is evidence about a comparison that was
             # actually made, not a field to fill in for its own sake.
             "artifacts": None,
+            # Issue #19: ProfileApplied.enforced evidence. Null when
+            # --expect-sandbox-enforced was not declared.
+            "sandbox_events": None,
         },
     }
 
@@ -1454,6 +1622,85 @@ def _run_attempt(args, pins: list[dict]) -> int:
                   f"contract\".", file=sys.stderr)
             return 2
 
+    if args.seat_profile == MAKER_SEAT_PROFILE:
+        missing = [name for name, attr in MAKER_SEAT_REQUIRED
+                   if not getattr(args, attr)]
+        if missing:
+            print(f"--seat-profile {MAKER_SEAT_PROFILE} requires "
+                  f"{', '.join(missing)}", file=sys.stderr)
+            return 2
+        if args.expect_sandbox_enforced != MAKER_SANDBOX_PROFILE:
+            print(f"--seat-profile {MAKER_SEAT_PROFILE} requires "
+                  f"--expect-sandbox-enforced {MAKER_SANDBOX_PROFILE}",
+                  file=sys.stderr)
+            return 2
+        if args.expect_sandbox_profile not in (None, MAKER_SANDBOX_PROFILE):
+            print(f"--seat-profile {MAKER_SEAT_PROFILE} requires "
+                  f"--expect-sandbox-profile {MAKER_SANDBOX_PROFILE} "
+                  f"(or omitted)", file=sys.stderr)
+            return 2
+    if args.require_single_linked_cwd and not args.child_cwd:
+        print("--require-single-linked-cwd requires --child-cwd: the "
+              "supervisor will not audit its own ambient cwd",
+              file=sys.stderr)
+        return 2
+    if args.grok_auth_seed and not args.grok_home:
+        print("--grok-auth-seed requires --grok-home", file=sys.stderr)
+        return 2
+    if args.expect_sandbox_enforced is not None:
+        if not args.expect_sandbox_enforced.strip():
+            print("--expect-sandbox-enforced must not be empty",
+                  file=sys.stderr)
+            return 2
+        if not args.grok_home:
+            print("--expect-sandbox-enforced requires --grok-home: "
+                  "ProfileApplied is recorded in $GROK_HOME/"
+                  "sandbox-events.jsonl", file=sys.stderr)
+            return 2
+
+    if args.child_cwd is not None:
+        child = Path(args.child_cwd)
+        try:
+            # Resolve the named path but do not follow a final symlink:
+            # the audit refuses a linked cwd, and realpath would hide it.
+            child = child if child.is_absolute() else Path.cwd() / child
+            err = _audit_single_linked_tree(child) if args.require_single_linked_cwd \
+                else None
+            if err is None and not args.require_single_linked_cwd:
+                st = os.lstat(child)
+                if stat.S_ISLNK(st.st_mode):
+                    err = f"--child-cwd {str(child)!r} is a symlink"
+                elif not stat.S_ISDIR(st.st_mode):
+                    err = f"--child-cwd {str(child)!r} is not a directory"
+            if err is not None:
+                print(f"error: {err}", file=sys.stderr)
+                return 2
+            if args.require_single_linked_cwd:
+                try:
+                    os.chmod(child, 0o700)
+                except OSError as exc:
+                    print(f"error: --child-cwd {str(child)!r} could not be "
+                          f"mode 0700: {os.strerror(exc.errno)}",
+                          file=sys.stderr)
+                    return 2
+        except OSError as exc:
+            print(f"error: --child-cwd {args.child_cwd!r} could not be "
+                  f"read: {os.strerror(exc.errno)}", file=sys.stderr)
+            return 2
+        args.child_cwd = str(child.resolve())
+
+    if args.grok_home is not None:
+        home = Path(args.grok_home)
+        home = home if home.is_absolute() else Path.cwd() / home
+        seed = Path(args.grok_auth_seed) if args.grok_auth_seed else None
+        if seed is not None and not seed.is_absolute():
+            seed = Path.cwd() / seed
+        err = _prepare_grok_home(home, seed, args.expect_sandbox_enforced)
+        if err is not None:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        args.grok_home = str(home.resolve())
+
     artifact_root = None
     artifact_entries: list[dict] = []
     if args.require_artifact:
@@ -1622,9 +1869,16 @@ def _run_attempt(args, pins: list[dict]) -> int:
             # comparison; the receipt shows the human-readable form.
             launch_anchor = time.time()
             try:
-                proc = subprocess.Popen(
-                    args.argv, stdin=stdin_f, stdout=out_f, stderr=err_f,
+                popen_kw = dict(
+                    stdin=stdin_f, stdout=out_f, stderr=err_f,
                     start_new_session=True)  # child leads its own group
+                if args.child_cwd is not None:
+                    popen_kw["cwd"] = args.child_cwd
+                if args.grok_home is not None:
+                    child_env = os.environ.copy()
+                    child_env["GROK_HOME"] = args.grok_home
+                    popen_kw["env"] = child_env
+                proc = subprocess.Popen(args.argv, **popen_kw)
             except OSError as exc:
                 receipt["result"]["state"] = "START_FAILED"
                 receipt["timing"]["finished_at"] = _utcnow()
@@ -1718,7 +1972,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         receipt["result"]["state"] = "FAILED"
                     elif (args.output_envelope is not None
                           or args.session_evidence is not None
-                          or artifact_entries):
+                          or artifact_entries
+                          or args.expect_sandbox_enforced is not None):
                         # The ladder inside grading, in order: envelope
                         # (DD-1) -> output schema -> artifacts (DD-2) ->
                         # a final deadline re-check. The envelope comes
@@ -1772,6 +2027,12 @@ def _run_attempt(args, pins: list[dict]) -> int:
                                 graded_at=time.time(),
                                 expect_agent=args.expect_effective_agent,
                                 expect_sandbox=args.expect_sandbox_profile)
+                        if args.expect_sandbox_enforced is not None:
+                            view, event_reasons = _grade_sandbox_events(
+                                Path(args.grok_home),
+                                args.expect_sandbox_enforced)
+                            receipt["result"]["sandbox_events"] = view
+                            reasons = reasons + event_reasons
                         if artifact_entries:
                             records, artifact_reasons, aborted = _grade_artifacts(
                                 artifact_entries, artifact_root,
@@ -2273,6 +2534,32 @@ def build_parser() -> argparse.ArgumentParser:
                           "equal this exactly, so a --sandbox flag that "
                           "quietly did nothing cannot pass as success; "
                           "requires --session-evidence")
+    run.add_argument("--child-cwd", default=None, metavar="DIR",
+                     help="directory the child is launched in; when "
+                          "--require-single-linked-cwd is also set, the "
+                          "supervisor walks this tree before spawn and "
+                          "refuses any regular file with st_nlink != 1")
+    run.add_argument("--require-single-linked-cwd", action="store_true",
+                     help="refuse to spawn if --child-cwd contains a "
+                          "regular file whose inode has more than one name; "
+                          "requires --child-cwd")
+    run.add_argument("--grok-home", default=None, metavar="DIR",
+                     help="attempt-private GROK_HOME injected into the "
+                          "child environment only; created 0700 if absent; "
+                          "a symlink is refused")
+    run.add_argument("--grok-auth-seed", default=None, metavar="FILE",
+                     help="regular file copied onto a NEW inode at "
+                          "$GROK_HOME/auth.json; requires --grok-home")
+    run.add_argument("--expect-sandbox-enforced", default=None, metavar="PROFILE",
+                     help="require $GROK_HOME/sandbox-events.jsonl to "
+                          "contain ProfileApplied with this profile and "
+                          "enforced=true; requires --grok-home")
+    run.add_argument("--seat-profile", default=None,
+                     choices=[MAKER_SEAT_PROFILE],
+                     help="typed maker-seat declaration; grok-maker-v1 "
+                          "requires the workspace audit, per-attempt home, "
+                          "auth seed, envelope, session evidence, and "
+                          "enforced-sandbox gates together")
     run.add_argument("argv", nargs="+",
                      help="command to execute, after `--`")
 
