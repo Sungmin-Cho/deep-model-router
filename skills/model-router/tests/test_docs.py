@@ -509,3 +509,110 @@ def test_model_profiles_quality_evidence_matches_ledger():
     for label, score in (("luna", "436/446"), ("haiku", "442/446"),
                          ("xai frontier", "446/446"), ("sonnet-5", "445/446")):
         assert any(label in s and score in s for s in sentences), (label, score)
+
+
+# ---------------------------------------------------------------------------
+# examples.md is a transcript, so it has to be re-derivable from the router
+# ---------------------------------------------------------------------------
+
+def _example_transcripts():
+    """(command argv, transcript text) for every routed example in examples.md.
+
+    A fenced block invoking `route_task.py` is always followed by the fenced
+    block holding what it printed.
+    """
+    import shlex
+    text = (SKILL / "references" / "examples.md").read_text()
+    blocks = re.findall(r"^```\n(.*?)^```$", text, re.MULTILINE | re.DOTALL)
+    pairs = []
+    for index, block in enumerate(blocks):
+        if "route_task.py" not in block:
+            continue
+        argv = shlex.split(block.replace("\\\n", " "))
+        argv = argv[argv.index([a for a in argv if a.endswith("route_task.py")][0]) + 1:]
+        if index + 1 < len(blocks):
+            pairs.append((argv, blocks[index + 1]))
+    return pairs
+
+
+def test_examples_md_transcripts_are_what_the_router_actually_emits():
+    """examples.md is what an agent reads to PREDICT a route, so a stale
+    transcript teaches a binding the router will not produce.
+
+    Round 1 of the issue #19 review found five transcripts still naming the xai
+    worker for write classes after the write-seat coupling moved them, and
+    nothing caught it: the only existing check on this file is that it contains
+    a `$SKILL_DIR` invocation. Registry keys, not model ids — `test_d8` forbids
+    ids in `references/*.md`, so the transcripts spell the key and this oracle
+    translates before comparing.
+    """
+    import sys
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from route_task import Policy, Task, load_config, route  # noqa: E402
+
+    cfg = load_config()
+    policy = Policy.of(cfg)
+    drifted = []
+    for argv, transcript in _example_transcripts():
+        emitted = re.search(r"^worker:\s+(\S+)\s+->\s+(\S+)$", transcript, re.MULTILINE)
+        if not emitted:
+            continue
+        if any("<" in token for token in argv):
+            # `test_d8` forbids model ids in `references/*.md`, so a few
+            # examples spell an id as a `<registry key>` placeholder. Those
+            # cannot be replayed; the transcript beside them is still checked
+            # by the id-free assertions elsewhere in this file.
+            continue
+        task = _task_from_argv(argv)
+        out = route(task, cfg)
+        if out["terminal"] or not out["selected_model"]:
+            continue
+        actual_key = policy.id_to_key[out["selected_model"]]
+        if (emitted.group(1), emitted.group(2)) != (out["selected_role"], actual_key):
+            drifted.append(
+                f"{' '.join(argv[:4])}: doc says {emitted.group(1)} -> {emitted.group(2)}, "
+                f"router emits {out['selected_role']} -> {actual_key}")
+    assert not drifted, "examples.md no longer matches the router:\n  " + "\n  ".join(drifted)
+
+
+def _task_from_argv(argv):
+    """The subset of flags examples.md actually uses."""
+    import sys
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from route_task import Task  # noqa: E402
+
+    flags = {}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in ("--reasoning-centric", "--format"):
+            # `--format json` takes a value; the boolean flag does not.
+            if token == "--format":
+                index += 2
+                continue
+            flags["reasoning_centric"] = True
+            index += 1
+            continue
+        if index + 1 >= len(argv):
+            index += 1
+            continue
+        value = argv[index + 1]
+        key = token[2:].replace("-", "_")
+        flags[key] = value
+        index += 2
+    split = lambda v: [x for x in v.split(",") if x]  # noqa: E731
+    return Task(
+        task_class=flags["class"],
+        complexity=int(flags["complexity"]),
+        uncertainty=int(flags["uncertainty"]),
+        blast_radius=int(flags["blast_radius"]),
+        reversibility=int(flags["reversibility"]),
+        reasoning_centric=bool(flags.get("reasoning_centric", False)),
+        flags=split(flags.get("flags", "")),
+        prior_failures=int(flags.get("prior_failures", 0)),
+        prior_models=split(flags.get("prior_models", "")),
+        runtime=flags.get("runtime", "claude_code"),
+        worker_seat=flags.get("worker_seat"),
+        unavailable_roles=split(flags.get("unavailable", "")),
+        unavailable_models=split(flags.get("unavailable_models", "")),
+    )

@@ -99,7 +99,7 @@ independence, so there is nothing to fail to enforce.
 ```
 python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
     --complexity 1 --uncertainty 0 --blast-radius 1 --reversibility 0 \
-    --flags auth_sensitive
+    --flags auth_sensitive --runtime grok
 ```
 
 ```
@@ -142,6 +142,14 @@ was used.
 The worker is `xai_frontier`. HIGH is at or below that model's ceiling, so
 requested and effective effort stay equal.
 
+`--runtime grok` is load-bearing here and in the next example, and is the
+only reason they still seat that model. `IMPLEMENTATION` and `DEBUGGING` are
+`write` classes, and a host that has to BRIDGE to xai has no write-capable
+recipe of record, so the seat moves to the claude balanced model there. On
+the grok host that same seat is native — the host session itself does the
+work — so it stays, and with it the one effort ceiling below `MAX` that
+these two examples exist to teach.
+
 ---
 
 ## Debugging with an unknown root cause
@@ -152,7 +160,7 @@ requested and effective effort stay equal.
 ```
 python3 "$SKILL_DIR"/scripts/route_task.py --class DEBUGGING \
     --complexity 2 --uncertainty 2 --blast-radius 1 --reversibility 0 \
-    --flags auth_sensitive,unknown_root_cause
+    --flags auth_sensitive,unknown_root_cause --runtime grok
 ```
 
 ```
@@ -271,7 +279,7 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class MECHANICAL \
 risk_score:  10
 risk_band:   HIGH
 overrides:   (none)
-worker:      worker_balanced  ->  xai_frontier
+worker:      worker_balanced  ->  claude_worker_balanced
 effort:      HIGH  (native: high)
 review:
   band:            HIGH
@@ -284,6 +292,7 @@ cross_family_review: True
 fallbacks:   (none)
 confidence:  0.87
 notes:
+  - worker_balanced: no write-capable xai seat on claude_code; seated the claude one
   - band HIGH floored effort at HIGH
 
 MECHANICAL scored 10/18 (c=2 u=2 b=2 r=0) -> band HIGH. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied.
@@ -416,7 +425,7 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
 risk_score:  5
 risk_band:   MEDIUM
 overrides:   (none)
-worker:      worker_balanced  ->  xai_frontier
+worker:      worker_balanced  ->  claude_worker_balanced
 effort:      MEDIUM  (native: medium)
 review:
   band:            MEDIUM
@@ -431,13 +440,16 @@ excluded:    ['openai_worker_fast'] (already failed)
 confidence:  0.9
 notes:
   - escalated above capability tier 0
+  - worker_balanced: no write-capable xai seat on claude_code; seated the claude one
 
 IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
 ```
 
 Without the failure this routes to `worker_fast`. With it, the router refuses
 to hand the task back to the capability tier that already failed. The first
-escalation is now `xai_frontier`.
+escalation is `worker_balanced`, which on this host
+seats the claude balanced model: the xai seat that role nominally binds has
+no write-capable recipe of record, and `IMPLEMENTATION` writes.
 
 **The escalation requires the history.** `--prior-failures 1` on its own is
 `RETRY_HISTORY_REQUIRED`:
@@ -492,7 +504,7 @@ risk_score:  9
 risk_band:   HIGH
 overrides:   ['critical_domain']
   already satisfied by another rule: ['critical_domain']
-worker:      worker_balanced  ->  xai_frontier
+worker:      worker_balanced  ->  claude_worker_balanced
 effort:      HIGH  (native: high)
 review:
   band:            HIGH
@@ -504,6 +516,8 @@ review:
 cross_family_review: False
 fallbacks:   (none)
 confidence:  0.95
+notes:
+  - worker_balanced: no write-capable xai seat on claude_code; seated the claude one
 
 IMPLEMENTATION scored 9/18 (c=2 u=1 b=2 r=1) -> band HIGH. Overrides applied: critical_domain. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: security_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, principal_architect, independence_required=True, review_independence=degraded. Reviewer slot substituted: reasoning_specialist -> principal_architect (would have duplicated another reviewer). No fallbacks applied. cross_family_review=false — reviewers share a family; weigh the second verdict accordingly.
 ```
