@@ -1061,6 +1061,9 @@ DOCUMENTED_BUT_UNREAD = {
     "transports.codex.to_claude.mechanism": "see mechanism above",
     "transports.codex.to_claude.isolation": "see isolation above",
     "transports.codex.to_xai.mechanism_reviewer": "see mechanism above",
+    "transports.codex.to_xai.mechanism_maker": "argv is host-independent so "
+        "the string is mirrored; write_capable never reads it because "
+        "verified and write_verified stay false on this unprobed direction",
     "transports.codex.to_xai.isolation": "see isolation above",
     "transports.grok.to_claude.mechanism": "see mechanism above",
     "transports.grok.to_claude.isolation": "see isolation above",

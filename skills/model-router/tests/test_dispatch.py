@@ -944,6 +944,8 @@ RECEIPT_KEYS = {
     # 2026-08-25 grok seat integrity — DD-1 declares the envelope contract,
     # DD-3 the effective-policy evidence read from the session directory.
     "output_envelope", "session_evidence",
+    # Issue #19 maker-seat prevention — always present, null when undeclared.
+    "child_cwd", "grok_home", "seat_profile", "require_single_linked_cwd",
 }
 RECEIPT_PROCESS_KEYS = {"pid", "process_group_id", "supervisor_pid"}
 RECEIPT_TIMING_KEYS = {
@@ -964,6 +966,8 @@ RECEIPT_RESULT_KEYS = {
     # DD-2 — the per-artifact proof set, null when nothing was required and
     # on every non-grading termination.
     "artifacts",
+    # Issue #19 — ProfileApplied.enforced evidence, null when undeclared.
+    "sandbox_events",
 }
 
 

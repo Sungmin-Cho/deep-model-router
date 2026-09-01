@@ -105,11 +105,11 @@ def test_grok_seat_profiles_pin_the_probed_tokens():
     meta-tool `--tools` leaves behind, and `--output-format json` is what
     makes the supervisor's envelope gate possible at all.
 
-    Maker: asserted only IF PRESENT. It is absent in this release — the
-    escape-denial axis of its shipping gate failed (a hard link inside the
-    cwd defeats both the path rule and `--sandbox workspace`), so there is
-    no maker argv of record. `mechanism_reviewer`, by contrast, is required
-    unconditionally: issue #14's misjudgement is removed by the reviewer
+    Maker: required. Argv-level hard-link denial still fails; shipping
+    depends on the supervisor's grok-maker-v1 contract (single-linked
+    child cwd, per-attempt GROK_HOME, custom fail-closed profile,
+    ProfileApplied.enforced). `mechanism_reviewer` remains required
+    independently: issue #14's misjudgement is removed by the reviewer
     seat plus the envelope and artifact contracts, with or without a maker.
     """
     for host in ("claude_code", "codex"):
@@ -120,15 +120,17 @@ def test_grok_seat_profiles_pin_the_probed_tokens():
                       "--disable-web-search", "--prompt-file /dev/stdin"):
             assert token in reviewer, (host, token, reviewer)
         assert "-p " not in reviewer, host
-        maker = spec.get("mechanism_maker")
-        if maker is not None:
-            for token in ("--agent", '--allow "Write(./**)"',
-                          '--allow "Edit(./**)"', "--output-format json",
-                          "--prompt-file /dev/stdin"):
-                # Quoted: the parentheses in a rule argument are shell
-                # metacharacters, so an unquoted form is a syntax error the
-                # moment anyone pastes it.
-                assert token in maker, (host, token, maker)
+        maker = spec["mechanism_maker"]
+        for token in ("--agent", '--allow "Write(./**)"',
+                      '--allow "Edit(./**)"', "--output-format json",
+                      "--prompt-file /dev/stdin", "--deny MCPTool",
+                      "--disallowed-tools Agent", "--no-subagents",
+                      "--sandbox dmr-maker-v1",
+                      "search_replace"):
+            # Quoted: the parentheses in a rule argument are shell
+            # metacharacters, so an unquoted form is a syntax error the
+            # moment anyone pastes it.
+            assert token in maker, (host, token, maker)
 
 
 def test_adapters_fences_mirror_the_grok_seat_strings():

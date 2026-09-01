@@ -218,12 +218,13 @@ it is inferred from a spelling:
 2. the direction declares `write_verified: true`.
 
 `verified` attests the DIRECTION and is not authorization on its own: for
-`to_xai` it attests the reviewer seat while the verification ledger records the
-maker seat as not shipped. Policy refuses a `write_verified: true` that no
-write-capable recipe backs, or that the ledger contradicts, so shipping a write
-seat means all three — the recipe, the flag, and the recorded probe. It stays a
-lookup rather than a rule about any one provider: do those three and the
-direction comes back with no code change.
+`to_xai` it attests the reviewer seat. The maker seat is a separate
+authorization: `claude_code.to_xai` ships `write_verified: true` with a
+matching ledger entry; `codex.to_xai` does not. Policy refuses a
+`write_verified: true` that no write-capable recipe backs, or that the
+ledger contradicts, so shipping a write seat means all three — the recipe,
+the flag, and the recorded probe. It stays a lookup rather than a rule
+about any one provider.
 
 **What it is not.** Skipping a seat the policy never offered for this kind of
 work is a binding decision, like the balanced-seat preference above it — not a
