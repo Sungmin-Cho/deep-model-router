@@ -211,6 +211,19 @@ what was established. Keeping them apart is the whole point — collapsing them
 converts a safety control into a false assurance, and false assurance is worse
 than no assurance because nobody goes looking for the problem.
 
+### Shortfalls
+
+`review_depth_reduced` is non-empty when the seats that could be filled are
+weaker than the band asks. The route stays executable and asks a human: the
+router cannot restore the depth, and whether a thinner review is acceptable is a
+judgement about the change. Review depth is never spent to buy a judge seat —
+neither by demoting a reviewer below the band nor by re-seating one onto the
+implementer's own model; the adjudicator is reported unavailable instead.
+`band_floor_unsatisfiable` marks a shortage that will *not* clear by retrying,
+and a compensation's bonus seat never upgrades the band's own independence
+requirement. `effort_below_floor` fires when a seated model's ceiling is below
+the effort a floor required; the route stays executable and asks a human.
+
 | State | Meaning |
 |---|---|
 | `not_applicable` | the band does not require independence |

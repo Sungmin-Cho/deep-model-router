@@ -731,16 +731,33 @@ never fails it.
 | `principal_architect` (claude) | `claude_architect`, then `claude_senior` |
 | Cross-family reviewer | Strongest available same-family reviewer; set `cross_family_review: false` |
 
-**No verified write-capable xai seat.** The router does not consume transport
-profiles, so the absent maker recipe does not stop it from *selecting* an xai
-model for write-capable work — that block is at Layer B, where there is no
-recipe to dispatch. When you need a write-capable seat and the xai maker is
-unshipped, route around it explicitly: `route_task.py --unavailable-models <the xai
-worker id from the config registry>` (or `--flags bridge_down` if the whole
-xai bridge is out). Read-only
-xai reviewer seats are unaffected. Coupling this mechanically — the router
-avoiding a seat whose transport has no shipped recipe — is deferred to a
-separate tranche (design §7).
+**No verified write-capable xai seat, and the router now knows it.** The
+router reads this table. A route whose worker seat has to write will not name
+a model whose direction here has no write-capable recipe — no
+`--unavailable-models` route-around is needed, and none should be used for
+this: it withholds the model from the review seats too.
+
+Which routes write is a class default in `task_write_seat`, overridable per
+route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The
+emitted route carries a `worker_seat` block — the kind applied, where it came
+from, and which families this host can dispatch write work to — and, when the
+requirement moved the seat, an id-free note saying so. It is a binding
+decision, not scarcity: it is not recorded in `fallbacks_applied` and does not
+spend routing confidence.
+
+Three things this deliberately does not do. It does not touch the **host's own
+family** — `transports.<runtime>.native` is the host session writing, not a
+bridge, so a grok host still implements with the xai seat. It does not touch
+**read-only seats**: the verified xai reviewer is seated on write routes
+exactly as before. And it is not an xai rule — it is a lookup. Restoring a
+direction takes three things together, and no fewer: the maker recipe, the
+direction's own `write_verified: true`, and a verification-ledger entry
+recording that the maker seat was probed. Policy fails closed when they
+disagree, so a recipe added without the probe authorizes nothing.
+
+One limit worth knowing: a resolved role holds one model per route, so when
+the worker sits on the role that binds the skipped seat, that model is absent
+from the whole route rather than falling through to a reviewer seat.
 
 ### Degraded bindings
 

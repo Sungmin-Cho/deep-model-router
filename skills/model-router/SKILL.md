@@ -135,10 +135,11 @@ Other inputs worth knowing:
 |---|---|
 | `--format json` | machine-readable route |
 | `--runtime claude_code\|codex\|grok` | the host, and the degraded binding that survives when that host's cross-provider bridge is down. Effort spelling comes from the selected model's family, not from this flag |
+| `--worker-seat write\|read_only` | override the class default for whether this route's worker needs a write-capable dispatch recipe |
 | `--prior-failures N` | after a failed attempt; `--prior-models` must then name **one concrete model id per failure** |
 | `--unavailable <role>` / `--unavailable-models <id>` | a specific role or model does not resolve |
 | `--flags bridge_down` | the whole cross-provider transport is unreachable — switches to the degraded single-provider binding |
-| `--isolation available\|unavailable` / `--isolation-evidence <ids>` | whether isolation *can* be achieved this session, and one distinct session id per dispatched reviewer |
+| `--isolation available\|unavailable` / `--isolation-evidence <ids>` | whether isolation *can* be achieved this session, and one **distinct** session id per dispatched reviewer |
 | `--request-json <file>` | RouteRequestV1 file (`route_schema_version`, `local_policy`, `availability_snapshot`). Wins over `--json` and flags |
 
 **Independence has five states, and only one of them is a claim.** A route is
@@ -193,17 +194,7 @@ scarcity a role holds whatever model is left, so `worker_fast` can end up on the
 frontier model and `worker_balanced` on a weaker one; ranking by role label
 ranks the assignment backwards exactly when scarcity makes it matter.
 
-`review_depth_reduced` is non-empty when the seats that could be filled are
-weaker than the band asks. The route stays executable and asks a human: the
-router cannot restore the depth, and whether a thinner review is acceptable is a
-judgement about the change. Review depth is never spent to buy a judge seat —
-neither by demoting a reviewer below the band nor by re-seating one onto the
-implementer's own model; the adjudicator is reported unavailable instead.
-`band_floor_unsatisfiable` marks a shortage that will *not* clear by retrying,
-and a compensation's bonus seat never upgrades the band's own independence
-requirement. `effort_below_floor` fires when a seated model's ceiling is below
-the effort a floor required; the route stays executable and asks a human.
-`references/review-policy.md` has the seating rules.
+Shortfall reporting — `review_depth_reduced`, `band_floor_unsatisfiable`, `effort_below_floor` — and the seating rules are in `references/review-policy.md`.
 
 If you cannot run the script, compute it by hand from the tables below — the
 script reads `config/model-routing.yaml`, and this file describes the same
@@ -489,6 +480,7 @@ excluded_prior_failures: []    # models withheld because they already failed
 escalation_count:  retry_count:
 routing_confidence:  routing_confidence_kind:   # a heuristic gate score,
                                # not a calibrated success probability
+worker_seat:                   # kind + source + write_capable_families
 host_seat_advisory:            # declared + policy_ask{tier,effort,raised_by} + comparisons + advisory
 requires_human_confirmation:
 human_confirmation_deferred:   # a production hotfix: dispatch now, confirm after

@@ -11,6 +11,7 @@ Those live in `config/model-routing.yaml` and `adapters.md`.
 - [Flags](#flags)
 - [Bands and overrides](#bands-and-overrides)
 - [Implementation tiers](#implementation-tiers)
+- [Write seats](#write-seats)
 - [Effort ceilings](#effort-ceilings)
 - [Architecture routing](#architecture-routing)
 - [Debugging policy](#debugging-policy)
@@ -190,6 +191,52 @@ The band table gives the answer; these tiers explain the shape of it.
 
 At Tier 3, `reasoning_centric` picks the lane: `false` → `worker_balanced` or
 `senior_engineer`; `true` → `reasoning_specialist`.
+
+## Write seats
+
+A worker seat that has to write needs a dispatch recipe that can write. Not
+every direction has one: `transports` is split per seat where the seats need
+opposite tool surfaces, and a seat that failed its shipping gate is expressed
+by omitting its key. The router reads that, so it will not name a model for
+work it knows no conforming dispatcher can execute.
+
+**Which routes write.** `task_write_seat` gives each task class a default.
+It is fail-closed: `read_only` is reserved for the classes whose worker output
+is a judgement rather than an artifact, and everything else is presumed to
+write. A class generalisation is wrong in both directions — an investigation
+that files its report as a file writes; an implementation spike that only
+reads does not — so the caller overrides it per route with
+`--worker-seat write|read_only`, or RouteRequestV1 `worker_seat`. An
+undeclared seat hashes exactly as it did before the field existed.
+
+**What counts as write-capable**, for a host and a target family — and none of
+it is inferred from a spelling:
+
+1. the family is the host's own — the native seat is the host session itself
+   and needs no recipe. Policy holds `local_family` and the transports table to
+   the same answer, so this branch cannot be opened by editing the other table;
+2. the direction declares `write_verified: true`.
+
+`verified` attests the DIRECTION and is not authorization on its own: for
+`to_xai` it attests the reviewer seat while the verification ledger records the
+maker seat as not shipped. Policy refuses a `write_verified: true` that no
+write-capable recipe backs, or that the ledger contradicts, so shipping a write
+seat means all three — the recipe, the flag, and the recorded probe. It stays a
+lookup rather than a rule about any one provider: do those three and the
+direction comes back with no code change.
+
+**What it is not.** Skipping a seat the policy never offered for this kind of
+work is a binding decision, like the balanced-seat preference above it — not a
+model going missing. It is disclosed in `notes` and in the route's
+`worker_seat` block, never in `fallbacks_applied`, and it does not spend
+routing confidence or promote a review band.
+
+**What it does not touch.** Review and judge seats read, so they are never
+filtered: a read-only reviewer whose direction ships no maker is seated on a
+write route exactly as before. One limit follows from the resolved plan being
+keyed by role: when the worker sits on the role that binds the skipped seat,
+that model is absent from the whole route rather than falling through to a
+reviewer seat.
 
 ## Effort ceilings
 

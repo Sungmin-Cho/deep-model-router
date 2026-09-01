@@ -42,6 +42,7 @@ import hashlib
 import json
 import sys
 import traceback
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 
 from policy_digest import canonical_policy_sha256, policy_sha256
@@ -56,7 +57,7 @@ REQUEST_V1_KEYS = frozenset({
     "route_schema_version", "task_class", "complexity", "uncertainty",
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
-    "host_seat",
+    "host_seat", "worker_seat",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -66,6 +67,10 @@ LOCAL_POLICY_KEYS = frozenset({
     "minimum_provider_families", "allowed_families",
 })
 HOST_SEAT_KEYS = frozenset({"model", "effort"})
+# Whether a route's WORKER needs a write-capable dispatch recipe. Two values,
+# not a boolean: the route records which one it applied, and `read_only` has to
+# read as a decision on the seat rather than as "false".
+WORKER_SEAT_KINDS = ("write", "read_only")
 
 
 _PLUGIN_VERSION_CACHE: dict[str, str] = {}
@@ -236,6 +241,24 @@ class Policy:
         self.efforts: list[str] = list(cfg["effort_levels"])
         self.roles: list[str] = list(cfg["role_tiers"])
         self.task_classes: list[str] = list(cfg["worker_selection"])
+        # Which classes need a write-capable worker seat. Completeness is
+        # checked here rather than at lookup time: a class the table forgets
+        # would otherwise reach `worker_seat_kind` and need a default invented
+        # on the spot, and the only default available there is the fail-open
+        # one ("assume it does not write"), which is the exact shape this
+        # table exists to remove.
+        self.task_write_seat: dict[str, str] = dict(cfg["task_write_seat"])
+        missing = sorted(set(self.task_classes) - set(self.task_write_seat))
+        unknown = sorted(set(self.task_write_seat) - set(self.task_classes))
+        if missing or unknown:
+            raise ConfigError(
+                f"task_write_seat must name exactly the task classes; "
+                f"missing {missing}, unknown {unknown}")
+        for task_class, kind in self.task_write_seat.items():
+            if kind not in WORKER_SEAT_KINDS:
+                raise ConfigError(
+                    f"task_write_seat.{task_class} is {kind!r}; "
+                    f"expected one of {list(WORKER_SEAT_KINDS)}")
         self.critical_domain_flags: tuple[str, ...] = tuple(cfg["flags"]["critical_domain"])
         # Every dimension at its maximum. The band table is declared over 0..this.
         self.max_risk_score: int = MAX_DIMENSION_SCORE * sum(cfg["router"]["score_weights"].values())
@@ -403,6 +426,117 @@ class Policy:
             runtime: cfg["models"][next(iter(cfg["role_bindings"][binding].values()))]["family"]
             for runtime, binding in self.degraded_binding.items()
         }
+        self._validate_native_families(cfg)
+        self._validate_write_seats(cfg)
+
+    def _validate_native_families(self, cfg: dict) -> None:
+        """`local_family` and `transports` must answer "which family is native
+        here?" the same way.
+
+        `write_capable`'s first branch trusts `local_family`, which is derived
+        from `runtimes.<rt>.degraded_binding` — a different table from the
+        `transports.<rt>.native` its own docstring names, and the only branch
+        with no verification flag or recipe behind it. Nothing held the two in
+        step, so pointing a runtime's degraded binding at another family made a
+        genuine CROSS-family direction answer "native, therefore write-capable"
+        without reading anything else: fail-open in the one place that cannot
+        afford it. A host does not bridge to itself, so the agreement is
+        checkable — the native family is exactly the one with no `to_<family>`
+        entry.
+        """
+        for runtime, family in self.local_family.items():
+            entries = cfg["transports"].get(runtime) or {}
+            if f"to_{family}" in entries:
+                raise ConfigError(
+                    f"runtimes.{runtime}.degraded_binding makes {family!r} the native "
+                    f"family, but transports.{runtime}.to_{family} exists — a host does "
+                    f"not bridge to itself, so one of the two tables is wrong")
+
+    def _validate_write_seats(self, cfg: dict) -> None:
+        """`write_verified` must be backed by a recipe and agree with the ledger.
+
+        The flag is the sole authorization for cross-family write dispatch, so
+        the two ways it could lie are both closed here rather than left to a
+        reader: a direction claiming a verified write seat with no write-capable
+        mechanism string behind it, and one claiming it while the verification
+        ledger still records that seat as anything but verified. The ledger is
+        this file's record of what was actually probed; a second source that can
+        silently disagree with it is exactly the sand its own header refuses to
+        build on.
+        """
+        ledger = (cfg.get("verification_ledger") or {}).get("entries") or []
+        for runtime, entries in cfg["transports"].items():
+            for name, entry in entries.items():
+                if name == "native" or not isinstance(entry, Mapping):
+                    continue
+                if entry.get("write_verified") is not True:
+                    continue
+                if not ("mechanism_maker" in entry or "mechanism" in entry):
+                    raise ConfigError(
+                        f"transports.{runtime}.{name} declares write_verified: true "
+                        f"with no write-capable mechanism string to dispatch")
+                contradicted = [
+                    item for item in ledger
+                    if isinstance(item, Mapping)
+                    and f".{name}.mechanism_maker" in str(item.get("item", ""))
+                    and item.get("status") != "verified"
+                ]
+                if contradicted:
+                    raise ConfigError(
+                        f"transports.{runtime}.{name} declares write_verified: true, but "
+                        f"verification_ledger records {contradicted[0].get('item')!r} as "
+                        f"{contradicted[0].get('status')!r}")
+
+    def worker_seat_kind(self, task_class: str) -> str:
+        """The class default for whether this route's worker writes.
+
+        Validated at build time, so this is a lookup and never a guess: a
+        missing class has no honest default to fall back on, and a default
+        invented here would be a fail-open one.
+        """
+        return self.task_write_seat[task_class]
+
+    def write_capable(self, runtime: str, family: str) -> bool:
+        """Does this host have a recipe of record for dispatching WRITE work
+        to this family?
+
+        The router names models; it does not dispatch them. But a route that
+        names a model no conforming dispatcher can execute for the work it was
+        selected to do is exactly the "executable as written" failure this
+        module's docstring forbids — so the seat capability is read here, from
+        the same table the caller will follow.
+
+        Two ways to be write-capable, and neither is inferred from a spelling:
+
+        1. The family is the host's own. `transports.<runtime>.native` is the
+           host session itself, not a bridge, so requiring a recipe there would
+           refuse the one seat that needs none. `_validate_native_families`
+           holds `local_family` and the transports table to the same answer, so
+           this branch cannot be opened by editing the other table.
+        2. The direction declares `write_verified: true`. `verified` attests
+           the DIRECTION — for `to_xai` it attests the reviewer seat, while the
+           verification ledger records the maker seat as not shipped — so it
+           was never authorization for write dispatch, and reusing it meant one
+           added config line re-opened the escape paths the maker gate exists
+           to close. `_validate_write_seats` requires a write-capable recipe
+           behind the flag and refuses a value the ledger contradicts.
+
+        This stays a lookup rather than a hardcoded family exclusion: the day a
+        maker recipe passes its gate, shipping it and recording the probe in
+        the ledger is all it takes to let the family back in.
+        """
+        if family == self.local_family.get(runtime):
+            return True
+        entry = self.cfg["transports"].get(runtime, {}).get(f"to_{family}")
+        # `Mapping`, not `dict`: `Policy.of` supports a non-dict Mapping config
+        # on purpose, and the config audit's read-recorder is one. An
+        # `isinstance(entry, dict)` guard short-circuited to False for every
+        # cross-family direction under such a config — taking the verified
+        # openai and claude bridges down with the unshipped xai maker, and
+        # never reading `verified` at all.
+        if not isinstance(entry, Mapping) or entry.get("verified") is not True:
+            return False
+        return entry.get("write_verified") is True
 
     @classmethod
     def of(cls, cfg: dict) -> "Policy":
@@ -495,6 +629,12 @@ class Task:
     prior_failures: int = 0
     prior_models: list[str] = field(default_factory=list)
     runtime: str = "claude_code"
+    # Does THIS route's worker need a write-capable dispatch recipe? None means
+    # "use the class default" (`task_write_seat`). Declared, it wins in both
+    # directions — the class generalisation is wrong both ways, and a caller
+    # who can only tighten it would still be reaching for
+    # `--unavailable-models` in the other direction.
+    worker_seat: str | None = None
     unavailable_roles: list[str] = field(default_factory=list)
     unavailable_models: list[str] = field(default_factory=list)
     # Caller's attestation that reviewer isolation *can* be achieved. This is a
@@ -517,6 +657,9 @@ class Task:
         self._require_bool("reasoning_centric", self.reasoning_centric)
         self._require_int("prior_failures", self.prior_failures, minimum=0)
         self._require_choice("runtime", self.runtime, sorted(policy.runtimes))
+        if self.worker_seat is not None:
+            self._require_choice("worker_seat", self.worker_seat,
+                                 list(WORKER_SEAT_KINDS))
         self._require_str_list("flags", self.flags, policy.known_flags, "flag")
         self._require_str_list("unavailable_roles", self.unavailable_roles,
                                frozenset(policy.roles), "role")
@@ -801,7 +944,8 @@ def history_gap(task: Task, policy: Policy) -> str | None:
             f"model id per failure")
 
 
-def _promote_above(floor: int, policy: Policy, resolver: "Resolver") -> str | None:
+def _promote_above(floor: int, policy: Policy, resolver: "Resolver",
+                   *, write: bool = False) -> str | None:
     """The weakest role whose RESOLVED model outranks `floor`.
 
     `None` when no such role exists — a real exhaustion, not a clamp.
@@ -819,7 +963,7 @@ def _promote_above(floor: int, policy: Policy, resolver: "Resolver") -> str | No
 
     """
     def tier(role):
-        model = resolver.peek(role)
+        model = resolver.peek(role, write=write)
         return policy.tier_of[model] if model else -1
 
     stronger = [r for r in policy.roles if tier(r) > floor]
@@ -865,9 +1009,9 @@ def select_worker(task: Task, band: str, policy: Policy,
         # leave the worker on a low-ordinal role holding a strong model.
         named = cfg["router"]["floors"]["critical_domain_worker"]
         floor_tier = policy.tier_of[cfg["models"][resolver.binding[named]]["id"]]
-        current = resolver.peek(worker)
+        current = resolver.peek(worker, write=True)
         if current is None or policy.tier_of[current] < floor_tier:
-            promoted = _promote_above(floor_tier - 1, policy, resolver)
+            promoted = _promote_above(floor_tier - 1, policy, resolver, write=True)
             # Recorded only when a promotion was found. The tier precondition
             # on the branch above is what suppresses the spurious notes — an
             # earlier comment here credited a `peek(promoted) != current` test
@@ -926,7 +1070,7 @@ def select_worker(task: Task, band: str, policy: Policy,
         # The structure was checked before this function ran (see
         # `history_gap`), so reaching here means the history is exact.
         floor = max(policy.tier_of[m] for m in task.prior_models)
-        current = resolver.peek(worker)
+        current = resolver.peek(worker, write=True)
         if current is not None and policy.tier_of[current] > floor:
             # Already stronger than everything that failed. `_promote_above`
             # returns the WEAKEST role above the floor, so taking it here
@@ -936,7 +1080,8 @@ def select_worker(task: Task, band: str, policy: Policy,
             # at exit 0. Evidence of difficulty must never weaken a route.
             notes.append(f"retry keeps {worker}: already above the failed "
                          f"capability tier {floor}")
-        elif (promoted := _promote_above(floor, policy, resolver)) is not None:
+        elif (promoted := _promote_above(floor, policy, resolver,
+                                         write=True)) is not None:
             notes.append(f"escalated above capability tier {floor}")
             worker = promoted
         else:
@@ -998,7 +1143,7 @@ def select_review(band: str, worker: str, policy: Policy, resolver: "Resolver") 
     spec = dict(cfg["review"][band])
 
     if band == "MEDIUM":
-        worker_family = resolver.family_for_role(worker)
+        worker_family = resolver.family_for_role(worker, write=True)
         preferred = spec["preferred_by_implementer"].get(worker)
         ordered = [c for c in ([preferred] if preferred else []) + list(spec["candidates"]) if c]
         seen, ranked = set(), []
@@ -1058,7 +1203,7 @@ def _deconflict(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -
     (`independence_compromised`) rather than being handed a route that looks
     independent.
     """
-    worker_model = resolver.peek(worker)
+    worker_model = resolver.peek(worker, write=True)
     # Round 7. The ladder position was standing in for capability here too,
     # while the config declares `capability_tier` the single axis for
     # substitution-vs-replaced. Latent rather than live in today's registry —
@@ -1144,7 +1289,7 @@ def _seat_judge(review: dict, worker: str, judge_role: str, policy: "Policy",
         return policy.tier_of[model] if model else -1
 
     def taken(reviewers):
-        return {resolver.peek(worker)} | {resolver.peek(x) for x in reviewers}
+        return {resolver.peek(worker, write=True)} | {resolver.peek(x) for x in reviewers}
 
     def pick(reviewers):
         # No party may outrank its adjudicator — including the implementer,
@@ -1188,7 +1333,7 @@ def _seat_judge(review: dict, worker: str, judge_role: str, policy: "Policy",
     highest = max(range(len(reviewers)), key=lambda i: tier(reviewers[i]), default=None)
     if highest is not None:
         used = taken(reviewers) - {resolver.peek(reviewers[highest])} | {
-            resolver.peek(worker)} | {
+            resolver.peek(worker, write=True)} | {
             resolver.peek(x) for i, x in enumerate(reviewers) if i != highest}
         alternatives = [x for x in policy.roles
                         if x not in reviewers and resolver.peek(x)
@@ -1233,7 +1378,7 @@ def _restate(records: list[dict] | None, old: str, new: str) -> list[dict]:
 
 def _extra_reviewer(review: dict, worker: str, policy: "Policy", resolver: "Resolver") -> str | None:
     """A reviewer whose model is not already in use by the worker or a peer."""
-    taken = {resolver.peek(worker)} | {resolver.peek(x) for x in review["reviewers"]}
+    taken = {resolver.peek(worker, write=True)} | {resolver.peek(x) for x in review["reviewers"]}
     pool = [x for x in policy.roles
             if x not in review["reviewers"] and x != worker
             and resolver.peek(x) and resolver.peek(x) not in taken]
@@ -1298,6 +1443,30 @@ class Resolver:
         self.failed = task.failed_models(policy)
         self.unusable = self.blocked | self.failed
 
+        # Does THIS route's worker seat have to write? Set by `route()`.
+        #
+        # The requirement belongs to the SEAT, which is why every lookup below
+        # takes `write=` rather than the resolver deciding from a role name.
+        # Round 1 of this tranche scoped it by role and `test_d10` caught the
+        # consequence immediately: `worker_balanced` is the only role that
+        # binds the xai seat, so making that ROLE write-only made the model
+        # invisible to review seating too — a route substituted a tier-0
+        # reviewer while the tier-1 xai seat sat free. Losing the verified
+        # read-only reviewer along with the unshipped maker is the one outcome
+        # the 2026-08-25 gate decided must not happen.
+        self.worker_writes: bool = False
+        # The role the worker seat ended up on, once `select_worker` has
+        # decided it. `resolved` is keyed by role, so a role holds exactly ONE
+        # model per route — the write requirement therefore has to reach every
+        # reader of that role, or review seating reasons about a model
+        # `resolve` is not going to hand it. Round 2 of this tranche tried to
+        # scope the requirement to the seat instead, so that the xai model
+        # could be skipped as the worker and still seated as a reviewer under
+        # the same role; the role-keyed map cannot express that, and the route
+        # came out INDEPENDENCE_UNAVAILABLE because the one entry resolved to
+        # the worker's model and the reviewer had nothing left.
+        self.write_seat_role: str | None = None
+
     def _primary(self, role: str) -> str | None:
         """The registry key this role binds to FOR THIS TASK.
 
@@ -1326,7 +1495,7 @@ class Resolver:
                 return alt
         return self.binding.get(role)
 
-    def _candidates(self, role: str) -> list[str]:
+    def _candidates(self, role: str, *, write: bool = False) -> list[str]:
         cfg = self.policy.cfg
         ordered: list[str] = []
         if (primary := self._primary(role)):
@@ -1353,24 +1522,46 @@ class Resolver:
                 continue
             if cfg["models"][k].get("dispatchable", True) is False:
                 continue
+            # A seat with no write-capable recipe in THIS host direction
+            # cannot fill a seat that has to write. The router still only
+            # names models; what it stops naming is one it knows no
+            # conforming dispatcher can execute for this work. `write` is the
+            # caller's statement about the SEAT — the same role read by the
+            # review seating is unfiltered, which is what keeps the verified
+            # read-only reviewer available on a write route.
+            if (self.worker_writes and (write or role == self.write_seat_role)
+                    and not self.policy.write_capable(
+                        self.task.runtime, cfg["models"][k]["family"])):
+                continue
             out.append(k)
         return out
 
-    def peek(self, role: str) -> str | None:
-        """The model this role would resolve to, or None if nothing is usable."""
+    def peek(self, role: str, *, write: bool = False) -> str | None:
+        """The model this role would resolve to, or None if nothing is usable.
+
+        `write=True` asks the question for a seat that has to write. Every
+        caller that is asking about the WORKER passes it; reviewer and judge
+        seating does not, because those seats read.
+        """
         cfg = self.policy.cfg
-        for key in self._candidates(role):
+        for key in self._candidates(role, write=write):
             model_id = cfg["models"][key]["id"]
             if model_id not in self.unusable:
                 return model_id
         return None
 
-    def family_for_role(self, role: str) -> str | None:
-        model = self.peek(role)
+    def family_for_role(self, role: str, *, write: bool = False) -> str | None:
+        model = self.peek(role, write=write)
         return self.policy.family_of[model] if model else None
 
-    def resolve(self, roles: list[str]) -> tuple[dict[str, str], list[str], list[str]]:
-        """Returns (role -> model id, fallback notes, compensation notes)."""
+    def resolve(self, roles: list[str], *, write_role: str | None = None
+                ) -> tuple[dict[str, str], list[str], list[str]]:
+        """Returns (role -> model id, fallback notes, compensation notes).
+
+        `write_role` names the one seat in `roles` that has to write. It is a
+        single role and not a set because a route has one worker; everything
+        else in `roles` is a reviewer or the judge.
+        """
         cfg = self.policy.cfg
         resolved: dict[str, str] = {}
         fallbacks = list(self.notes)
@@ -1378,14 +1569,47 @@ class Resolver:
         comp_cfg = cfg.get("fallback_compensations", {})
 
         for role in roles:
+            write = role == write_role
             primary_key = self._primary(role)
             primary_id = cfg["models"][primary_key]["id"] if primary_key else None
-            chosen_id = self.peek(role)
+            # A seat the policy never offered for THIS kind of work is not a
+            # model that went missing, and must not be billed as one. Same rule
+            # `_primary` already follows for the alt-seat preference: a swap the
+            # policy made on purpose is a binding decision, not a fallback.
+            #
+            # It is not cosmetic. `fallbacks_applied` feeds `routing_confidence`,
+            # which can promote the review band — so recording this as scarcity
+            # promoted the review of EVERY cross-family write route on the two
+            # hosts that bridge to xai, permanently, with no change in the risk
+            # that review is supposed to answer to. `test_s3` caught it as a
+            # band moving from HIGH to CRITICAL.
+            #
+            # The baseline MOVES to the first seat the policy does offer; it is
+            # never dropped. Round 1 of review dropped it, and that bought the
+            # first defect by committing its mirror image: the next candidate's
+            # genuine outage then had nothing to be compared against, so a real
+            # scarcity fallback, its 0.10 confidence penalty and the review
+            # promotion that follows all disappeared. Not recording a change
+            # that DID happen is the same failure as recording one that did not.
+            if (primary_id is not None and self.worker_writes
+                    and (write or role == self.write_seat_role)
+                    and not self.policy.write_capable(
+                        self.task.runtime, self.policy.family_of[primary_id])):
+                offered = self._candidates(role, write=write)
+                primary_id = cfg["models"][offered[0]]["id"] if offered else None
+            chosen_id = self.peek(role, write=write)
             if chosen_id is None:
-                raise SupplyExhausted(
-                    f"no usable model for role {role!r}: every candidate is unavailable, "
-                    f"already failed, or on the unreachable side of a downed bridge"
-                )
+                # The fourth cause is new and is often the only true one: the
+                # candidate exists, is available, has not failed and the bridge
+                # is up — it simply has no write-capable recipe for this seat.
+                # Enumerating three causes that did not happen is the shape
+                # this module removes everywhere else.
+                because = ("every candidate is unavailable, already failed, or on the "
+                           "unreachable side of a downed bridge")
+                if write and self.worker_writes:
+                    because += (f", or has no write-capable recipe for this seat on "
+                                f"{self.task.runtime}")
+                raise SupplyExhausted(f"no usable model for role {role!r}: {because}")
             resolved[role] = chosen_id
             if primary_id is not None and chosen_id != primary_id:
                 fallbacks.append(f"{role}: {primary_id} unavailable -> {chosen_id}")
@@ -1594,6 +1818,13 @@ def request_sha256_of(task: Task) -> str:
                                       if e.strip()}),
         "local_policy": lp_norm,
     }
+    # Key omission, not a null: an undeclared seat must hash exactly as it did
+    # before this field existed, or every stored fingerprint from an earlier
+    # release stops matching a request that did not change. Same rule
+    # `host_seat` follows, and `test_undeclared_preserves_legacy_hash_by_key_omission`
+    # is what holds it.
+    if task.worker_seat is not None:
+        canonical["worker_seat"] = task.worker_seat
     if task._host_seat is not None:
         canonical["host_seat"] = {
             "model": task._host_seat["model"],
@@ -1656,13 +1887,51 @@ def route(task: Task, cfg: dict | None = None) -> dict:
                             "the prior-model history is moot — surface this to a human")
         task = replace(task, prior_models=[])
 
+    # Resolved before the first candidate is looked at: this decides which
+    # models can fill the worker seat at all, so it cannot be computed after
+    # something has already been chosen without them.
+    seat_kind = task.worker_seat or policy.worker_seat_kind(task.task_class)
+    seat_source = "declared" if task.worker_seat else "task_class"
+    # A caller declaration that WEAKENS a class default is the one input that
+    # can hand write work back to a seat with no write-capable recipe. The
+    # opposite direction is disclosed, so this one is too — `isolation_available`
+    # sets the precedent that a caller's claim is announced, not absorbed.
+    seat_downgraded = (seat_source == "declared"
+                       and seat_kind == "read_only"
+                       and policy.worker_seat_kind(task.task_class) == "write")
+
     resolver = Resolver(task, policy)
+    resolver.worker_writes = seat_kind == "write"
 
     risk_score = score(task, cfg)
     band = band_from_score(risk_score, policy)
     band, overrides, redundant_overrides, route_path = apply_overrides(task, band, policy)
 
     worker, worker_notes, ceiling_exhausted = select_worker(task, band, policy, resolver)
+    # Disclosed as a policy decision, in `notes`, not as scarcity in
+    # `fallbacks_applied` — and computed here, while `write_seat_role` is still
+    # unset, so the unfiltered peek still answers what the role BINDS to.
+    if seat_downgraded:
+        # Id-free, like the skip note: a terminal route withholds bindings.
+        worker_notes.append(
+            f"worker seat declared read_only against the {task.task_class} default; "
+            f"a seat with no write-capable recipe on {task.runtime} may be named")
+    if seat_kind == "write":
+        nominal, seated = resolver.peek(worker), resolver.peek(worker, write=True)
+        if nominal is not None and nominal != seated:
+            # Families, not model ids. A terminal route must withhold every
+            # execution binding, and a note is part of the route — the
+            # host-seat advisory's id-free note is the same rule. The id of
+            # what WAS seated is `selected_model`, which a terminal route
+            # already nulls.
+            got = (f"seated the {policy.family_of[seated]} one"
+                   if seated else "no seat left")
+            worker_notes.append(
+                f"{worker}: no write-capable {policy.family_of[nominal]} seat "
+                f"on {task.runtime}; {got}")
+    # From here on every reader of the worker's role — review seating, judge
+    # seating, the final resolve — must see the seat the worker actually got.
+    resolver.write_seat_role = worker
     if history_note:
         worker_notes.append(history_note)
     effort, effort_notes = select_effort(task, band, policy)
@@ -1708,7 +1977,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         ceiling_records = []
         review = select_review(review_band, worker, policy, resolver)
         try:
-            resolved, fallbacks, compensations = resolver.resolve(roles_for(review))
+            resolved, fallbacks, compensations = resolver.resolve(roles_for(review), write_role=worker)
         except SupplyExhausted as exc:
             resolved, fallbacks, compensations = {}, [], []
             supply_exhausted = str(exc)
@@ -1788,7 +2057,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         # equals the final `resolved[worker]` whenever resolution succeeds.
         # Reviewer seating still moves below, so a reviewer clamp here would
         # still read a roster that does not ship.
-        worker_model = resolver.peek(worker)
+        worker_model = resolver.peek(worker, write=True)
         worker_effective = _clamp(policy, effort, worker_model)
         if worker_effective != effort:
             floor = _worker_effort_floor(task, band, policy)
@@ -1835,7 +2104,8 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         try:
             resolved, fallbacks, _ = resolver.resolve(
                 list(dict.fromkeys([worker] + list(review["reviewers"])
-                                   + ([judge_role] if judge_role else []))))
+                                   + ([judge_role] if judge_role else []))),
+                write_role=worker)
             # The final seat plan resolved, so any shortage seen while exploring a
             # preliminary one is not a fact about this route. Round 15: it was
             # sticky, and a LOW disagreement route whose provisional
@@ -2329,6 +2599,19 @@ def route(task: Task, cfg: dict | None = None) -> dict:
             request_sha, policy_hash, plugin_manifest_version()),
         "effective_policy": effective_policy,
         "host_seat_advisory": host_seat_advisory,
+        "worker_seat": {
+            "kind": seat_kind,
+            "source": seat_source,
+            "overrode_class_default": seat_downgraded,
+            # What this host can dispatch write work to, as the transport
+            # table stands. Recorded on every route, including `read_only`
+            # ones where it filtered nothing: the point of the metrics is to
+            # let someone reconstruct what was AVAILABLE at decision time, and
+            # a field that appears only when it bit cannot do that.
+            "write_capable_families": sorted(
+                f for f in set(policy.family_of.values())
+                if policy.write_capable(task.runtime, f)),
+        },
         "selected_capability_tier": (
             policy.tier_of[worker_model] if worker_model else None),
         "selected_families": sorted({
@@ -2538,6 +2821,10 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                    help="whether reviewer context isolation can be achieved this session")
     p.add_argument("--isolation-evidence", default="",
                    help="comma-separated distinct session ids, one per dispatched reviewer")
+    p.add_argument("--worker-seat", dest="worker_seat", default=None,
+                   choices=list(WORKER_SEAT_KINDS),
+                   help="override this route's class default for whether the "
+                        "worker needs a write-capable dispatch recipe")
     p.add_argument("--host-model", default=None)
     p.add_argument("--host-effort", default=None)
     p.add_argument("--format", default="text", choices=["text", "json"])
@@ -2610,6 +2897,7 @@ def task_from_request_v1(payload: dict) -> Task:
         prior_failures=len(prior),
         prior_models=list(prior),
         runtime=payload.get("runtime", "claude_code"),
+        worker_seat=payload.get("worker_seat"),
         unavailable_roles=list(snap.get("unavailable_roles") or []),
         unavailable_models=list(snap.get("unavailable_models") or []),
         isolation_available=None if isolation is None else isolation == "available",
@@ -2671,6 +2959,7 @@ def main(argv: list[str] | None = None) -> int:
                 unavailable_models=_split(args.unavailable_models),
                 isolation_available=None if args.isolation is None else args.isolation == "available",
                 isolation_evidence=_split(args.isolation_evidence),
+                worker_seat=args.worker_seat,
             )
             if args.host_effort and not args.host_model:
                 raise ValidationError("--host-effort requires --host-model")

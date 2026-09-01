@@ -7,6 +7,59 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-09-01 (write-seat routing)
+
+### Changed
+
+- **A route whose worker has to write is no longer staffed by a model this
+  host has no write-capable recipe for.** The router now reads the
+  `transports` table: a direction that ships only a read-only seat cannot fill
+  a write seat. On the Claude Code and Codex hosts this moves the xai worker
+  off write-capable work, which callers were previously doing by hand with
+  `--unavailable-models` — stop doing that for this purpose, it withholds the
+  model from the review seats too. Nothing changes for a host's own family
+  (the native seat needs no recipe), for read-only seats, or on routes
+  declared `read_only`.
+- Restoring a direction takes three things together: the maker recipe, the
+  direction's `write_verified: true`, and a verification-ledger entry recording
+  the probe. The coupling is a lookup, not a rule about a provider — but a
+  recipe added without the probe authorizes nothing.
+
+### Added
+
+- `task_write_seat`: the class default for whether a route's worker writes.
+  Fail-closed — only the two classes whose worker output is a judgement
+  (`REVIEW`, `INVESTIGATION`) default to `read_only`.
+- `--worker-seat write|read_only` and RouteRequestV1 `worker_seat` override
+  that default per route, in both directions. An undeclared seat hashes
+  exactly as it did before the field existed.
+- `worker_seat` block on every route: the kind applied, where it came from,
+  and the families this host can dispatch write work to. When the requirement
+  moved the seat, an id-free note records it — in `notes`, as the binding
+  decision it is, never in `fallbacks_applied`, so it does not spend routing
+  confidence or promote a review band.
+- `write_verified` on each transport direction: the sole authorization for
+  cross-family write dispatch. `verified` attests the direction — for `to_xai`
+  it attests the reviewer seat while the ledger records the maker seat as not
+  shipped — so it never authorized write work on its own. Policy refuses a
+  `write_verified: true` that no write-capable recipe backs or that the
+  verification ledger contradicts, and refuses a `degraded_binding` that makes
+  a bridged family look native.
+
+### Security
+
+- The grok maker seat stays unshipped, now on measured 1.0.13 evidence rather
+  than 1.0.5's. Re-probed 2026-09-01 on grok 1.0.13 / darwin with the same
+  shipping-candidate argv: a hard link inside the working directory still
+  overwrites the external inode it aliases, and still does so under
+  `--sandbox strict` — a path-based sandbox cannot tell a hard link from the
+  file it names, and the kernel records no violation because the path used is
+  genuinely inside the workspace. Two further containment facts are now on
+  record: `~/.grok` is writable under both profiles (config, sandbox and
+  trusted-folder state included; only the hooks paths are protected, and by a
+  cancelled turn rather than a kernel denial), and the session summary reports
+  a requested sandbox profile with no evidence it was enforced.
+
 ## [1.6.0] — 2026-09-01
 
 ### Added
