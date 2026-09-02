@@ -345,7 +345,10 @@ no parseable verdict block.
 **A silence caused by the recipe is not a model failure.** Check the
 receipt's `result.invalid_reasons` before you attribute anything. Reasons
 naming a cancelled turn (`envelope_stop_reason:cancelled`,
-`session_terminal_event:cancelled`) or unusable evidence
+`session_terminal_event:cancelled`), a document that declared its own failure
+(`envelope_reported_error`, whose `result.envelope.error_type` names which one
+— `error_max_turns` and a permission-cancelled turn are both recipe defects),
+or unusable evidence
 (`session_evidence_unreadable`, `session_evidence_unbound`) say the seat's
 transport recipe killed the turn — a headless CLI with no TTY cancels a
 tool call it cannot prompt for, and the model never got to review anything.

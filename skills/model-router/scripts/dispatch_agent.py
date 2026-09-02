@@ -98,7 +98,14 @@ EXIT_BY_STATE = {
     "TERMINATION_UNCONFIRMED": 5, "INVALID_OUTPUT": 6, "CANCELLED": 7,
 }
 
-VERDICT_RE = re.compile(r"^verdict:\s*(PASS|PASS_WITH_CHANGES|FAIL)\b", re.M)
+VERDICT_RE = re.compile(r"^verdict:\s*(PASS_WITH_CHANGES|PASS|FAIL)\b", re.M)
+# The same grammar unanchored. Used ONLY by the recovery in `_verdict_of`.
+VERDICT_ANYWHERE_RE = re.compile(r"verdict:\s*(PASS_WITH_CHANGES|PASS|FAIL)\b")
+# The schema's second field, on the line immediately after the verdict, and in
+# range. `confidence: 1.9` is not a confidence, and a `confidence:` paragraphs
+# away is not this verdict's.
+CONFIDENCE_NEXT_LINE_RE = re.compile(
+    r"[ \t]*\r?\n[ \t]*confidence:\s*(?:0(?:\.\d+)?|1(?:\.0+)?)(?![\d.])")
 
 # Safe identifier grammar for attempt-id: this string is interpolated
 # directly into filesystem paths, so it must never contain a path
@@ -127,7 +134,23 @@ HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 # applying a version-named output contract the caller explicitly declared
 # is the same kind of knowledge `--output-schema review` already encodes
 # about verdict grammar.
-ENVELOPE_FORMATS = ("grok-headless-json-v1",)
+GROK_ENVELOPE_FORMAT = "grok-headless-json-v1"
+ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1")
+
+# Which document key carries each envelope field, per format. The shapes are
+# analogous, not identical: grok discriminates a failure with a top-level
+# `type` ("error"), while a Claude `--output-format json` document is always
+# `type: "result"` and discriminates with `subtype` ("success", "error_*").
+# Both name the finishing reason and the served models the same way once
+# mapped, which is why one gate serves both.
+ENVELOPE_FIELDS = {
+    "grok-headless-json-v1": {"stop_reason": "stopReason",
+                              "session_id": "sessionId",
+                              "text": "text", "error_type": "type"},
+    "claude-print-json-v1": {"stop_reason": "stop_reason",
+                             "session_id": "session_id",
+                             "text": "result", "error_type": "subtype"},
+}
 # The envelope is a GATE surface, so its read is bounded: an unbounded
 # JSON parse of a child-controlled file is a denial-of-service surface on
 # the supervisor itself. Over budget is a typed refusal
@@ -140,6 +163,8 @@ ENVELOPE_MAX_BYTES = 4 * 1024 * 1024
 # envelope VERSION name: a grok upgrade that changes it gets a new
 # envelope version, never a new meaning for this one.
 ENVELOPE_OK_STOP_REASON = "end_turn"
+CLAUDE_RESULT_DOC_TYPE = "result"
+CLAUDE_OK_SUBTYPE = "success"
 
 SESSION_EVIDENCE_FORMATS = ("grok-session-v1",)
 
@@ -219,9 +244,12 @@ INVALID_REASON_FLAGS = (
     "session_evidence_unreadable",  # declared, but summary.json is not there
     "session_evidence_unbound",     # evidence belongs to some other attempt
     "sandbox_event_missing",        # --expect-sandbox-enforced, no ProfileApplied
+    "envelope_reported_error",      # the document says so itself (is_error)
 )
 INVALID_REASON_PREFIXES = (
     "envelope_stop_reason",         # :<the non-end_turn value>
+    "envelope_document_type",       # :<observed top-level `type`>
+    "envelope_subtype",             # :<observed non-success `subtype`>
     "artifact_missing",             # :<path>
     "artifact_empty",               # :<path>
     "artifact_not_regular_file",    # :<path> — symlink, FIFO, device
@@ -239,6 +267,13 @@ INVALID_REASON_PREFIXES = (
     "sandbox_profile_not_enforced",  # :<observed enforced value>
     "sandbox_profile_event_mismatch",  # :<observed profile name>
 )
+
+# A format in the choices with no field map is a KeyError inside the grading
+# region, which the post-spawn handler reports as CANCELLED — the attempt's
+# real outcome lost to a typo. Fail at import instead.
+assert set(ENVELOPE_FIELDS) == set(ENVELOPE_FORMATS), (
+    "ENVELOPE_FIELDS and ENVELOPE_FORMATS disagree: "
+    f"{set(ENVELOPE_FORMATS) ^ set(ENVELOPE_FIELDS)}")
 
 MAKER_SEAT_PROFILE = "grok-maker-v1"
 MAKER_SANDBOX_PROFILE = "dmr-maker-v1"
@@ -536,15 +571,22 @@ def terminate_group(proc: subprocess.Popen | None, pgid: int,
     return _await_group_death(pgid, grace)
 
 
-def _validate_output(stdout_path: Path, output_schema: str) -> tuple[bool, str | None]:
+def _validate_output(stdout_path: Path,
+                     output_schema: str) -> tuple[bool, str | None, str | None, bool]:
+    """`(ok, digest, verdict, recovered)`.
+
+    The verdict travels with the grade on this path too: an orchestrator that
+    has to re-parse the stdout file to learn what the seat said is one grammar
+    change away from disagreeing with the receipt.
+    """
     data = stdout_path.read_bytes()
     if not data.strip():
-        return False, None
+        return False, None, None, False
     digest = hashlib.sha256(data).hexdigest()
-    if output_schema == "review" and not VERDICT_RE.search(
-            data.decode(errors="replace")):
-        return False, digest
-    return True, digest
+    if output_schema != "review":
+        return True, digest, None, False
+    verdict, recovered = _verdict_of(data.decode(errors="replace"))
+    return verdict is not None, digest, verdict, recovered
 
 
 class NotARegularFile(OSError):
@@ -1298,10 +1340,15 @@ def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
     return data, False
 
 
-def _read_envelope(stdout_path: Path) -> dict:
-    """Read one grok headless JSON document off a finished attempt's stdout.
+def _read_envelope(stdout_path: Path, fmt: str) -> dict:
+    """Read one headless JSON document off a finished attempt's stdout.
 
-    Always returns the same six keys, whatever went wrong. `text` is an
+    `fmt` selects the key names (ENVELOPE_FIELDS); everything below is shape,
+    not vendor. Always returns the same eight keys, whatever went wrong.
+    `usage` is the child's own token accounting where the format carries it
+    (Claude does, grok does not) — recorded because the alternative is
+    scraping it back out of the stdout file, which is what every probe in the
+    2026-09-02 tranche had to do. `text` is an
     INTERNAL field — it feeds the verdict check and nothing else, and is
     dropped by `_receipt_envelope` before the receipt is written: the raw
     output already lives in the stdout file this read came from, and a
@@ -1313,7 +1360,9 @@ def _read_envelope(stdout_path: Path) -> dict:
     tell an over-budget stdout from a merely malformed one.
     """
     envelope = {"parse_ok": False, "stop_reason": None, "session_id": None,
-                "served_models": None, "text": None, "error_type": None}
+                "served_models": None, "text": None, "error_type": None,
+                "usage": None, "reported_error": False,
+                "doc_type": None, "fmt": fmt}
     data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
     if oversized:
         envelope["error_type"] = "evidence_oversized"
@@ -1329,11 +1378,27 @@ def _read_envelope(stdout_path: Path) -> dict:
         # A bare array or scalar parses as JSON but is not an envelope.
         return envelope
     envelope["parse_ok"] = True
-    for key, field in (("stopReason", "stop_reason"), ("sessionId", "session_id"),
-                       ("text", "text"), ("type", "error_type")):
+    for field, key in ENVELOPE_FIELDS[fmt].items():
         value = doc.get(key)
         if isinstance(value, str):
             envelope[field] = value
+    # A document that declares its own failure is not a success candidate
+    # whatever its finishing reason says; `is_error` is Claude's channel for
+    # that and absent from grok's, where `error_type` already carries it.
+    envelope["reported_error"] = doc.get("is_error") is True
+    doc_type = doc.get("type")
+    if isinstance(doc_type, str):
+        envelope["doc_type"] = doc_type
+    counts = doc.get("usage")
+    if isinstance(counts, dict):
+        # Finite and non-negative only. A child's document is untrusted input,
+        # Python parses `NaN`/`Infinity` happily, and json.dumps would then
+        # write a receipt no strict JSON reader (deep-loop among them) can
+        # parse — a malformed count must not cost the attempt its receipt.
+        envelope["usage"] = {
+            k: v for k, v in counts.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) and v >= 0}
     usage = doc.get("modelUsage")
     if isinstance(usage, dict):
         # DD-7: the SERVED model identifiers, recorded as observed and
@@ -1344,12 +1409,12 @@ def _read_envelope(stdout_path: Path) -> dict:
 
 
 def _receipt_envelope(envelope: dict) -> dict:
-    """The five keys an envelope contributes to a receipt. `session_id` is
+    """The six keys an envelope contributes to a receipt. `session_id` is
     here as the audit evidence for what the attempt-binding cross-proof
     (DD-3) actually compared; `text` is deliberately absent."""
     return {k: envelope[k] for k in
             ("parse_ok", "stop_reason", "session_id", "served_models",
-             "error_type")}
+             "error_type", "usage")}
 
 
 def _grade_envelope(envelope: dict) -> list[str]:
@@ -1359,10 +1424,67 @@ def _grade_envelope(envelope: dict) -> list[str]:
         return ["evidence_oversized"]
     if not envelope["parse_ok"]:
         return ["envelope_unparseable"]
+    reasons: list[str] = []
+    if envelope["fmt"] == "claude-print-json-v1":
+        # Fail closed on the discriminators the format actually carries. A
+        # document is only a finished turn when it says so three ways; reading
+        # `stop_reason` alone lets a foreign or malformed object through.
+        if envelope["doc_type"] != CLAUDE_RESULT_DOC_TYPE:
+            reasons.append(_reason("envelope_document_type",
+                                   envelope["doc_type"]))
+        if envelope["error_type"] != CLAUDE_OK_SUBTYPE:
+            reasons.append(_reason("envelope_subtype", envelope["error_type"]))
+    if envelope.get("reported_error"):
+        reasons.append("envelope_reported_error")
     stop_reason = envelope["stop_reason"]
     if stop_reason != ENVELOPE_OK_STOP_REASON:
-        return [_reason("envelope_stop_reason", stop_reason)]
-    return []
+        # Appended, never returned early: a turn that both declared an error
+        # and ended on a non-end_turn reason must report both, because the
+        # stop reason is what tells a recipe defect from a model failure
+        # (review-policy.md, "A silence caused by the recipe").
+        reasons.append(_reason("envelope_stop_reason", stop_reason))
+    return reasons
+
+
+def _is_spec_echo(text: str, pos: int) -> bool:
+    """`verdict: PASS | PASS_WITH_CHANGES | FAIL` is the format the review
+    prompt quotes, not an answer. The primary grammar accepted it at line
+    start for as long as it has existed — a seat that echoed the instructions
+    and reviewed nothing graded as having reviewed — so the guard belongs on
+    BOTH paths, not just the recovery."""
+    return text[pos:pos + 8].lstrip().startswith("|")
+
+
+def _verdict_of(text: str) -> tuple[str | None, bool]:
+    """`(verdict, recovered)` for one seat's output under schema `review`.
+
+    Measured 2026-09-02: a grok headless document's `text` can join the
+    model's progress notes to its final answer with no newline between them
+    (`...the plan expects.verdict: PASS_WITH_CHANGES\nconfidence: 0.86`), so
+    the line-anchored grammar reports no verdict on a turn that produced one
+    and the seat is re-dispatched over a formatting artifact.
+
+    The primary grammar is a line-anchored verdict that is not the format
+    spec. Failing that, ONE recovery: a headless format can join the model's
+    progress notes to its final answer with no newline between them (measured
+    2026-09-02 on this repo's own plan review), so the last unanchored verdict
+    counts if it is not the spec AND the schema's second field is on the very
+    next line, in range. Adjacency is the point: an unbounded search for
+    `confidence:` anywhere later accepts a document that quoted someone else's
+    verdict block and then said nothing of its own.
+
+    A recovery is never silent. The seat's output did need repair, and a
+    receipt that hid that would tell the next caller the recipe is fine.
+    """
+    text = text or ""
+    for match in VERDICT_RE.finditer(text):
+        if not _is_spec_echo(text, match.end()):
+            return match.group(1), False
+    candidates = [m for m in VERDICT_ANYWHERE_RE.finditer(text)
+                  if not _is_spec_echo(text, m.end())]
+    if candidates and CONFIDENCE_NEXT_LINE_RE.match(text, candidates[-1].end()):
+        return candidates[-1].group(1), True
+    return None, False
 
 
 def _stdout_digest(stdout_path: Path) -> str | None:
@@ -1421,6 +1543,12 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
             "state": "STARTING", "exit_status": None,
             "stdout_path": str(stdout_path), "stderr_path": str(stderr_path),
             "output_sha256": None, "schema_valid": None,
+            # Always present, so a consumer never has to ask whether this
+            # receipt's grader knew about verdicts. `verdict_recovered` says
+            # the seat's output needed repair to parse at all — the recipe
+            # that produced it should be fixed (adapters.md, "Output is a
+            # contract").
+            "verdict": None, "verdict_recovered": False,
             "termination_confirmed": None,
             # DD-1 evidence and DD-5's shared cause vocabulary. `envelope`
             # is recorded on every terminal state once declared (error
@@ -1516,7 +1644,7 @@ def _backfill_terminal_evidence(args, receipt: dict,
         # envelope in the receipt as evidence, and none of those states is
         # relabeled by what it says.
         receipt["result"]["envelope"] = _receipt_envelope(
-            _read_envelope(stdout_path))
+            _read_envelope(stdout_path, args.output_envelope))
 
 
 def cmd_run(args) -> int:
@@ -1611,6 +1739,14 @@ def _run_attempt(args, pins: list[dict]) -> int:
                   "session summary", file=sys.stderr)
             return 2
     if args.transport_id and args.transport_id.endswith(XAI_TRANSPORT_SUFFIX):
+        if args.output_envelope not in (None, GROK_ENVELOPE_FORMAT):
+            print(f"--transport-id {args.transport_id!r} dispatches into grok, "
+                  f"so its envelope must be {GROK_ENVELOPE_FORMAT!r}, not "
+                  f"{args.output_envelope!r}: a declaration that names another "
+                  f"format grades another vendor's document shape and would "
+                  f"pass a cancelled grok turn on null fields.",
+                  file=sys.stderr)
+            return 2
         missing = [name for name, value in (
             ("--output-envelope", args.output_envelope),
             ("--session-evidence", args.session_evidence)) if value is None]
@@ -1984,7 +2120,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         timed_out = False
                         envelope = None
                         if args.output_envelope is not None:
-                            envelope = _read_envelope(stdout_path)
+                            envelope = _read_envelope(
+                                stdout_path, args.output_envelope)
                             receipt["result"]["envelope"] = _receipt_envelope(
                                 envelope)
                             receipt["result"]["output_sha256"] = _stdout_digest(
@@ -1999,20 +2136,24 @@ def _run_attempt(args, pins: list[dict]) -> int:
                                 # is fine under schema `none`: DD-2's
                                 # artifact contract, not stdout length, is
                                 # what proves that seat finished.
-                                schema_ok = (
-                                    args.output_schema != "review"
-                                    or bool(VERDICT_RE.search(
-                                        envelope["text"] or "")))
+                                verdict, recovered = _verdict_of(
+                                    envelope["text"] or "")
+                                schema_ok = (args.output_schema != "review"
+                                             or verdict is not None)
+                                receipt["result"]["verdict"] = verdict
+                                receipt["result"]["verdict_recovered"] = recovered
                                 if not schema_ok:
                                     reasons = ["schema_invalid"]
                             else:
                                 schema_ok = False
                             receipt["result"]["schema_valid"] = schema_ok
                         else:
-                            ok, digest = _validate_output(
+                            ok, digest, verdict, recovered = _validate_output(
                                 stdout_path, args.output_schema)
                             receipt["result"]["output_sha256"] = digest
                             receipt["result"]["schema_valid"] = ok
+                            receipt["result"]["verdict"] = verdict
+                            receipt["result"]["verdict_recovered"] = recovered
                             if not ok:
                                 reasons = ["schema_invalid"]
                         if args.session_evidence is not None:
@@ -2054,9 +2195,12 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         if reasons:
                             receipt["result"]["invalid_reasons"] = reasons
                     else:
-                        ok, digest = _validate_output(stdout_path, args.output_schema)
+                        ok, digest, verdict, recovered = _validate_output(
+                            stdout_path, args.output_schema)
                         receipt["result"]["output_sha256"] = digest
                         receipt["result"]["schema_valid"] = ok
+                        receipt["result"]["verdict"] = verdict
+                        receipt["result"]["verdict_recovered"] = recovered
                         if ok and _deadline_expired(deadline_monotonic):
                             receipt["result"]["state"] = "TIMED_OUT"
                         else:
@@ -2438,6 +2582,23 @@ def cmd_verify_evidence(args) -> int:
                         f"dispatches into grok but the receipt carries no "
                         f"{label} — a cancelled grok turn exits 0, so this "
                         f"receipt cannot show the turn finished")
+            declared_format = receipt.get("output_envelope")
+            if declared_format not in (None, GROK_ENVELOPE_FORMAT):
+                problems.append(
+                    f"{attempt_id}: transport_id {transport_id!r} dispatches "
+                    f"into grok but the receipt declares envelope format "
+                    f"{declared_format!r} — another vendor's document shape "
+                    f"was graded, so this receipt says nothing about a "
+                    f"cancelled grok turn")
+        if receipt.get("result", {}).get("verdict_recovered") is True:
+            # Not a problem: the verdict WAS recovered and the review did run.
+            # It is a signal, and the one person who can fix the recipe is the
+            # one reading this — so it goes to stderr rather than into a
+            # receipt field nobody opens.
+            print(f"note: {attempt_id}: the verdict was recovered from a "
+                  f"run-in line; the seat's output needed repair to parse and "
+                  f"its recipe should be fixed (references/adapters.md, "
+                  f"\"Output is a contract\")", file=sys.stderr)
         declared_models.append(receipt.get("model_id"))
         seats.append(receipt.get("seat"))
     if len(seats) != len(set(seats)):
@@ -2490,9 +2651,12 @@ def build_parser() -> argparse.ArgumentParser:
     # grading semantics of the last three belong to DD-3.
     run.add_argument("--output-envelope", choices=list(ENVELOPE_FORMATS),
                      default=None,
-                     help="version-named stdout contract to grade against; "
-                          "a cancelled grok turn exits 0, so its stopReason "
-                          "is the only machine-readable finish evidence")
+                     help="version-named stdout contract to grade against, "
+                          "read with that format's own key names. A cancelled "
+                          "grok turn exits 0, so its stopReason is the only "
+                          "machine-readable finish evidence; a Claude document "
+                          "additionally carries type/subtype/is_error "
+                          "discriminators and its own token counts")
     run.add_argument("--session-evidence", default=None,
                      help="FORMAT:DIR, e.g. grok-session-v1:<session dir>. "
                           "The caller computes DIR; the supervisor derives "
