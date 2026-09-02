@@ -7,6 +7,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-09-02 (Fable 5.1, lean Claude bridge seats)
+
+### Changed
+
+- The grok and Codex hosts' Claude bridge seats — reviewers and workers alike — no
+  longer load the user's global MCP servers (`--strict-mcp-config`); a caller
+  that needs one adds `--mcp-config <file>` immediately after `-p`.
+- `principal_architect` is Claude Fable 5.1. Claude Fable 5 stays valid as
+  history input (`--prior-models`, `--unavailable-models`, `--host-model`)
+  and is never seated.
+- A single fallback no longer raises the review band by itself; routes that
+  record a fallback report a `routing_confidence` higher by 0.04.
+
+### Added
+
+- A route whose declared host model is not in the registry carries a note
+  saying the registry may be stale.
+
 ## [1.8.0] — 2026-09-01 (grok maker seat)
 
 ### Changed

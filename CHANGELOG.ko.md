@@ -7,6 +7,24 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.9.0] — 2026-09-02 (Fable 5.1, 가벼운 Claude 브리지 좌석)
+
+### Changed
+
+- grok과 Codex 호스트의 Claude 브리지 좌석이 — 리뷰어와 워커 모두 — 사용자 전역 MCP
+  서버를 더 이상 싣지 않는다(`--strict-mcp-config`). 필요한 호출자는
+  `--mcp-config <file>`을 `-p` 바로 뒤에 붙인다.
+- `principal_architect`가 Claude Fable 5.1이다. Claude Fable 5는 이력
+  입력(`--prior-models`, `--unavailable-models`, `--host-model`)으로는 계속
+  유효하며 어떤 좌석에도 앉지 않는다.
+- 단일 fallback만으로는 리뷰 밴드가 올라가지 않는다. fallback을 기록한
+  라우트의 `routing_confidence`가 0.04 높아진다.
+
+### Added
+
+- 선언된 호스트 모델이 레지스트리에 없는 라우트는 레지스트리가 낡았을 수
+  있다는 note를 싣는다.
+
 ## [1.8.0] — 2026-09-01 (grok 메이커 좌석)
 
 ### Changed
