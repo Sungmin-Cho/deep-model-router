@@ -419,8 +419,9 @@ review as degraded unless both reviewers run as separate processes.
 drops every MCP server the user's global config would otherwise load into the
 seat (measured at ~80% of a headless seat's boot context); reviewers and
 workers alike lose user-global MCP servers. A caller that needs one adds
-`--mcp-config <file>` **immediately after `-p`** — it is a variadic flag, and
-placed last it swallows the positional prompt — and that call is a variant
+`--mcp-config <file>` **before another option, never last** — it is variadic,
+so it consumes values until the next option, and left open at the end it eats
+the positional prompt (`-p` is the natural place) — and that call is a variant
 the ledger does not vouch for. Verified from a darwin grok host (2026-08-29
 transport; 2026-09-02 this string) and from a nested Codex host (2026-09-02).
 A positional prompt placed after a variadic `claude` flag (`--allowedTools`,
@@ -900,6 +901,19 @@ from the whole route rather than falling through to a reviewer seat.
 ### Degraded bindings
 
 When a bridge is down entirely, fall back to the single-provider binding:
+
+**This one IS scarcity, and is recorded as a fallback.** The alt-seat swap
+above is a binding decision because nothing became unavailable — the caller
+stated a fact about the task and the policy picked a different seat on merit.
+`bridge_down` is the opposite: a whole provider is unreachable, the route names
+models the default binding would not have named, and the confidence it reports
+should say so. Moving it into `notes` and out of `fallbacks_applied` was
+proposed and declined for that reason: it would make a degraded route report a
+healthy route's confidence, against the rule at the end of this file that the
+metrics must let someone reconstruct what was *available* when a route was
+decided. The cost that motivated the proposal — a review band promoted on the
+most common profile at the moment capacity is scarcest — was fixed at its root
+instead, by re-deriving the penalty (1.9.0).
 
 Registry keys, not model ids — resolve them through `config/model-routing.yaml`,
 which is the only place a concrete identifier appears:
