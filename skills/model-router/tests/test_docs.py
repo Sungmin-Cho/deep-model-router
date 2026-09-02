@@ -636,3 +636,62 @@ def test_every_verified_model_id_is_named_verbatim_in_a_verified_ledger_row():
     missing = sorted(m["id"] for m in CFG["models"].values()
                      if m.get("verified") is True and not any(_whole_token(m["id"], b) for b in blobs))
     assert missing == [], f"verified ids with no verbatim ledger row: {missing}"
+
+
+ATTEMPT_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+CLAUDE_VARIADIC_FLAGS = ("--add-dir", "--allowedTools", "--allowed-tools", "--betas",
+                         "--disallowedTools", "--disallowed-tools", "--file",
+                         "--mcp-config", "--tools")
+
+
+def _to_claude_mechanisms():
+    for host, entries in CFG["transports"].items():
+        spec = entries.get("to_claude")
+        if isinstance(spec, dict):
+            for key, mech in _mechanisms(spec).items():
+                yield host, key, mech
+
+
+def _direction_rows(host):
+    needle = f"transports.{host}.to_claude.mechanism"
+    return [e for e in CFG["verification_ledger"]["entries"] if needle in str(e.get("item", ""))]
+
+
+def _flags_in_order(mech: str, argv: str, where):
+    flags = [t for t in mech.split() if t.startswith("-")]
+    toks = argv.split()
+    positions = [toks.index(f) for f in flags]           # ValueError: a probed argv missing a shipped flag
+    assert positions == sorted(positions), (where, flags, argv)
+
+
+def test_to_claude_recipes_end_with_the_prompt_and_carry_no_variadic_flag():
+    """A variadic claude flag swallows a positional prompt that follows it.
+    The shipped string carries none; `--mcp-config` is a caller variant."""
+    for host, key, mech in _to_claude_mechanisms():
+        toks = mech.split()
+        assert toks[-1] == '"<prompt>"', (host, key, toks[-1])
+        bad = [t for t in toks if t.split("=", 1)[0] in CLAUDE_VARIADIC_FLAGS]
+        assert not bad, (host, key, bad)
+
+
+def test_strict_mcp_token_and_direction_ledger_row_come_together():
+    """The token ships only with a verified row that names the direction by
+    machine path, quotes the exact probed argv (flags in the same order),
+    dates the probe, and lists every probe it rests on."""
+    for host, key, mech in _to_claude_mechanisms():
+        rows = [r for r in _direction_rows(host) if r.get("status") == "verified"]
+        has_token = "--strict-mcp-config" in mech.split()
+        assert has_token == bool(rows), (host, has_token, [r.get("item") for r in rows])
+        for row in rows:
+            assert DATE_RE.match(str(row.get("probed_on", ""))), row.get("item")
+            assert str(row.get("cli_version", "")).strip(), row.get("item")
+            assert ATTEMPT_ID_RE.match(str(row.get("attempt_id", ""))), row.get("attempt_id")
+            _flags_in_order(mech, str(row["argv"]), (host, "argv"))
+            probes = row.get("probes") or []
+            assert probes, (host, "a direction row must list its probes")
+            for probe in probes:
+                assert ATTEMPT_ID_RE.match(str(probe.get("attempt_id", ""))), probe
+                assert probe.get("outcome") == "SUCCEEDED", probe
+                if probe.get("vouches_for_recipe", True):         # a baseline without the token is listed, not vouching [P2-sol-F5]
+                    _flags_in_order(mech, str(probe["argv"]), (host, probe["attempt_id"]))
