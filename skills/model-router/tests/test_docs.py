@@ -618,3 +618,21 @@ def _task_from_argv(argv):
         unavailable_roles=split(flags.get("unavailable", "")),
         unavailable_models=split(flags.get("unavailable_models", "")),
     )
+
+
+def _whole_token(needle: str, text: str) -> bool:
+    return re.search(r"(^|[^A-Za-z0-9._-])" + re.escape(needle) + r"([^A-Za-z0-9._-]|$)", text) is not None
+
+
+def _ledger_blob(entry) -> str:                    # DD-2: item or evidence vouch; argv fields do not [P2-sol-F4]
+    return f"{entry.get('item', '')}\n{entry.get('evidence', '')}"
+
+
+def test_every_verified_model_id_is_named_verbatim_in_a_verified_ledger_row():
+    """`claude-fable-5` is a substring of `claude-fable-5-1`; an unanchored
+    `in` would let a successor's row vouch for a retired id. Whole tokens only."""
+    rows = [e for e in CFG["verification_ledger"]["entries"] if e.get("status") == "verified"]
+    blobs = [_ledger_blob(e) for e in rows]
+    missing = sorted(m["id"] for m in CFG["models"].values()
+                     if m.get("verified") is True and not any(_whole_token(m["id"], b) for b in blobs))
+    assert missing == [], f"verified ids with no verbatim ledger row: {missing}"

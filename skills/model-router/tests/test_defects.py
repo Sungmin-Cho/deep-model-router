@@ -42,6 +42,10 @@ from route_task import (  # noqa: E402
 CFG = load_config()
 
 
+def _whole_token(needle: str, text: str) -> bool:
+    return re.search(r"(^|[^A-Za-z0-9._-])" + re.escape(needle) + r"([^A-Za-z0-9._-]|$)", text) is not None
+
+
 def _leave_only(*keep):
     """Everything but the one model this probe is about. Enumerating five ids
     meant the oracle went stale the moment the registry grew."""
@@ -582,7 +586,7 @@ def test_d8_model_ids_appear_only_in_the_registry():
         text = path.read_text()
         # Host-seat examples intentionally retain one concrete --host-model
         # id; registry-key substitution applies only to seat bindings.
-        hits = sorted(i for i in ids if i in text and not (
+        hits = sorted(i for i in ids if _whole_token(i, text) and not (
             path.name == "examples.md" and i == "claude-haiku-4-5-20251001"))
         if hits:
             offenders[path.name] = hits
