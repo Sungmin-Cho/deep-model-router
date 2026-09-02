@@ -7,6 +7,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] — 2026-09-02 (honest promotion record)
+
+### Fixed
+
+- A route promoted for low routing confidence no longer contradicts itself.
+  Promoting the review band reseats reviewers, which can retire the fallback
+  whose penalty triggered the promotion; the route now discloses that the
+  promoted plan's confidence recovered instead of reporting a confidence at or
+  above the threshold beside the promotion. The band still stands.
+
+### Added
+
+- The dispatch contract records that a Claude seat's output cannot be certified
+  with `--require-artifact` — its file tools install content on a new inode —
+  and says to certify by content hash beside the receipt instead.
+
 ## [1.9.0] — 2026-09-02 (Fable 5.1, lean Claude bridge seats)
 
 ### Changed

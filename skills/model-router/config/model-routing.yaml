@@ -935,6 +935,36 @@ verification_ledger:
         variant this row does not vouch for. Receipts:
         docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/.
 
+    - item: "Claude seat write axis, and why --require-artifact cannot certify it"
+      status: verified
+      probed_on: 2026-09-02
+      evidence: >
+        Two facts, measured on Claude Code 2.1.258 / Darwin 25.6.0 arm64.
+        WRITE AXIS: a `claude -p ... --permission-mode acceptEdits
+        --strict-mcp-config` seat writes exactly the content it is asked for.
+        Two runs against a pre-existing single-linked file — one with the
+        token, one without — each left the file containing exactly MADE-19.
+        CERTIFICATION: both runs installed that content on a NEW inode
+        (299749070 -> 299749158 with the token; 299749197 -> 299749738
+        without), so the file tools replace rather than truncate in place, and
+        that is a property of the tools, not of --strict-mcp-config.
+        dispatch_agent pins one inode before spawn, so such an attempt grades
+        INVALID_OUTPUT artifact_identity_replaced with NO digest recorded --
+        the receipt proves nothing about the content either way. That is
+        exactly what the grok-hosted p5-strict-worker receipt shows; its retry
+        p5-strict-worker-2 asked for the terminal tool, which acceptEdits does
+        not auto-approve, and graded artifact_missing. A grok-hosted rerun
+        without the artifact contract was attempted twice on 2026-09-02 and
+        both grok turns ended stopReason: cancelled before the supervisor was
+        spawned (a headless grok turn cancels on a permission prompt it cannot
+        show), so no grok-host write receipt exists. The write axis therefore
+        rests on the two content measurements above, which are argv-level and
+        host-independent, while the direction's transport stays verified by
+        p1-fable51-id / p2a-strict / p3-fable51-reviewer. Callers certify a
+        Claude seat's output by a content hash recorded beside the receipt,
+        never by --require-artifact (references/adapters.md, "Dispatch
+        contract").
+
     - item: "transports.codex.to_claude.mechanism (--strict-mcp-config recipe)"
       status: verified
       probed_on: "2026-09-02"

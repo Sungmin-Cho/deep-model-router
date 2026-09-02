@@ -7,6 +7,21 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.9.1] — 2026-09-02 (정직한 승격 기록)
+
+### Fixed
+
+- 낮은 라우팅 신뢰도로 리뷰 밴드가 승격된 라우트가 더 이상 스스로를 반증하지
+  않는다. 승격은 리뷰어를 다시 앉히고, 그 과정에서 승격을 촉발한 fallback이
+  사라질 수 있다. 이제 라우트는 승격된 계획의 신뢰도가 회복됐다는 사실을
+  공시한다. 밴드는 그대로 유지된다.
+
+### Added
+
+- Claude 좌석의 산출물은 `--require-artifact`로 인증할 수 없다는 사실을 디스패치
+  계약에 기록했다. 파일 도구가 내용을 새 inode에 설치하기 때문이며, 대신
+  receipt 옆에 내용 해시를 기록해 인증한다.
+
 ## [1.9.0] — 2026-09-02 (Fable 5.1, 가벼운 Claude 브리지 좌석)
 
 ### Changed

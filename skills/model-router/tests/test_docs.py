@@ -718,3 +718,23 @@ def test_adapters_to_claude_fences_mirror_their_own_direction():
     text = (SKILL / "references" / "adapters.md").read_text()
     for host, key, mech in _to_claude_mechanisms():
         assert _section_fence_tokens(text, ADAPTERS_SECTION_OF_HOST[host]) == mech.split(), (host, key)
+
+
+def test_claude_write_seats_disclose_how_their_output_is_certified():
+    """`write_verified: true` on a to_claude direction says that seat may be
+    given write work. Its output cannot be certified with `--require-artifact`
+    (the file tools replace the inode -- measured), so the ledger must carry
+    that fact and adapters.md must tell a caller what to do instead. A
+    capability shipped without its limitation is the silent gap this ledger
+    exists to prevent."""
+    writers = [host for host, entries in CFG["transports"].items()
+               if isinstance(entries.get("to_claude"), dict)
+               and entries["to_claude"].get("write_verified") is True]
+    assert writers, "no to_claude direction seats write work; re-read this test"
+    rows = [r for r in CFG["verification_ledger"]["entries"]
+            if r.get("status") == "verified"
+            and "--require-artifact" in str(r.get("item", ""))]
+    assert len(rows) == 1, [r.get("item") for r in rows]
+    text = (SKILL / "references" / "adapters.md").read_text()
+    for needle in ("--require-artifact", "artifact_identity_replaced", "content"):
+        assert needle in text, needle

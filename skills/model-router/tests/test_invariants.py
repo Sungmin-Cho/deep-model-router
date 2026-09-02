@@ -979,3 +979,31 @@ def test_a_retired_model_never_sits_in_any_seat():
     for out in routes():
         seated = set(parties(out)) | {out["review"].get("judge_model")}
         assert not (retired & seated), (out["selected_model"], out["review"]["reviewer_models"], out["review"].get("judge_model"))
+
+
+def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
+    """The promotion decision reads the plan BEFORE the promotion; the emitted
+    confidence is the promoted plan's, and reseating reviewers can retire the
+    fallback whose penalty triggered the promotion. Where that happens the route
+    used to carry `low_routing_confidence_raised_review_to_X` beside a
+    confidence at or above the threshold — a reason the same route disproves.
+    The band still stands (un-promoting oscillates), so the recovery must be
+    stated, and it must be stated ONLY where it happened."""
+    threshold = CFG["router"]["confidence"]["extra_review_below"]
+    recovered = still_low = 0
+    for out in routes():
+        promoted = [o for o in out["band_overrides_applied"]
+                    if o.startswith("low_routing_confidence")]
+        note = [n for n in out["notes"] if "promoted plan resolves at" in n]
+        if not promoted:
+            assert not note, (out["routing_confidence"], note)
+            continue
+        if out["routing_confidence"] >= threshold:
+            recovered += 1
+            assert len(note) == 1, (out["routing_confidence"], promoted, out["notes"])
+            assert str(out["routing_confidence"]) in note[0], note
+        else:
+            still_low += 1
+            assert not note, (out["routing_confidence"], note)
+    assert recovered, "the sweep no longer reaches a promotion whose confidence recovered"
+    assert still_low, "the sweep no longer reaches an ordinary low-confidence promotion"

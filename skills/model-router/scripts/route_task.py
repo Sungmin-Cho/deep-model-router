@@ -2585,6 +2585,21 @@ def route(task: Task, cfg: dict | None = None) -> dict:
                     f"model for {', '.join(matched)} content; the requested "
                     f"identity of {key} is declared_only")
     all_notes = worker_notes + effort_notes
+    # A promotion is decided on the plan that existed BEFORE it, and the plan it
+    # produces is what ships: promoting the review band reseats reviewers, which
+    # can retire the very fallback whose penalty triggered the promotion. The
+    # emitted confidence is the promoted plan's, so a route could carry
+    # `low_routing_confidence_raised_review_to_X` beside a confidence at or above
+    # the threshold — a recorded reason the same route disproves. Un-promoting
+    # would oscillate (the un-promoted plan is low again), so the conservative
+    # band stands and the recovery is disclosed instead of hidden.
+    extra_review_below = cfg["router"]["confidence"]["extra_review_below"]
+    if promoted_once and confidence >= extra_review_below:
+        all_notes.append(
+            f"review band promoted on the pre-promotion plan's confidence; the "
+            f"promoted plan resolves at {confidence} (>= {extra_review_below}) "
+            f"— the promotion stands and the reported confidence is the "
+            f"promoted plan's")
     if advisory == "upgrade_recommended":
         clauses = []
         if model_cmp == "below":

@@ -584,6 +584,21 @@ Two caller-visible consequences, both deliberate:
   not leave a stray file where the caller declared there was none. Missing
   parent directories under `--artifact-root` are created with it.
 
+**A Claude seat cannot satisfy `--require-artifact` today.** Measured
+2026-09-02 on Claude Code 2.1.258 / Darwin: a `claude -p` seat at
+`--permission-mode acceptEdits` writes exactly the content it was asked for and
+installs it on a **new inode**, replacing a pre-existing single-linked file
+rather than truncating it in place — with and without `--strict-mcp-config`, so
+this is a property of the file tools and not of any recipe. Such an attempt
+grades `INVALID_OUTPUT` / `artifact_identity_replaced:<path>`, and since no
+digest is recorded on that path the receipt proves nothing about the content
+either way. Asking that seat for a shell that truncates in place does not
+rescue it: `acceptEdits` does not auto-approve the terminal tool, and the
+attempt grades `artifact_missing` instead. Certify a Claude seat's output by
+**content** — hash the file yourself and record the hash beside the receipt —
+and keep `--require-artifact` for seats whose tools write in place. The
+verification ledger carries the measurement and the two receipts behind it.
+
 **The supervisor's own I/O is checked like anyone else's.** Two consequences
 a caller can see:
 
