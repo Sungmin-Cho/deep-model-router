@@ -805,6 +805,8 @@ transports:
       # string) FROM a darwin grok host — see the
       # transports.grok.to_claude.mechanism ledger row.
       mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> --strict-mcp-config \"<prompt>\""
+      # Read-only reviewer; --allowedTools is closed by --strict-mcp-config.
+      mechanism_reviewer: "claude -p --model <id> --effort <effort> --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config \"<prompt>\""
       isolation: separate_process
       verified: true
       write_verified: true
@@ -934,6 +936,25 @@ verification_ledger:
         placed last swallows the positional prompt) and that call is a
         variant this row does not vouch for. Receipts:
         docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/.
+
+    - item: "transports.grok.to_claude.mechanism_reviewer"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "d8-grok-claude-reviewer"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config"
+      probes:
+        - { attempt_id: "d8-grok-claude-reviewer", argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config", outcome: SUCCEEDED }
+      evidence: >
+        Probed FROM a darwin grok host (grok 1.0.13) under dispatch_agent.py,
+        transport grok.to_claude, seat reviewer, --output-schema review.
+        Receipt d8-grok-claude-reviewer: state SUCCEEDED, exit_status 0,
+        schema_valid true, verdict PASS_WITH_CHANGES, verdict_recovered
+        false, termination_confirmed true. Child argv is the shipped
+        reviewer recipe: --permission-mode plan --allowedTools
+        Read,Glob,Grep,LS closed by --strict-mcp-config so the variadic
+        list cannot swallow the positional prompt. Receipts:
+        docs/design/reviews/2026-09-02-grok-host-carryovers/probes/d8/.
 
     - item: "claude-haiku-4-5-20251001 and claude-haiku-4-5 are two identities, not one"
       status: verified

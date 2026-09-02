@@ -655,9 +655,25 @@ def _to_claude_mechanisms():
                 yield host, key, mech
 
 
-def _direction_rows(host):
-    needle = f"transports.{host}.to_claude.mechanism"
-    return [e for e in CFG["verification_ledger"]["entries"] if needle in str(e.get("item", ""))]
+def _direction_rows(host, key="mechanism"):
+    """Rows whose item names this exact seat key, not a longer sibling.
+
+    `transports.{host}.to_claude.mechanism` is a prefix of
+    `...mechanism_reviewer`, so a substring match would let one seat's row
+    vouch for the other's argv.
+    """
+    needle = f"transports.{host}.to_claude.{key}"
+    rows = []
+    for e in CFG["verification_ledger"]["entries"]:
+        item = str(e.get("item", ""))
+        idx = item.find(needle)
+        if idx < 0:
+            continue
+        end = idx + len(needle)
+        if end < len(item) and (item[end].isalnum() or item[end] == "_"):
+            continue
+        rows.append(e)
+    return rows
 
 
 def _flags_in_order(mech: str, argv: str, where):
@@ -694,7 +710,7 @@ def test_strict_mcp_token_and_direction_ledger_row_come_together():
     machine path, quotes the exact probed argv (flags in the same order),
     dates the probe, and lists every probe it rests on."""
     for host, key, mech in _to_claude_mechanisms():
-        rows = [r for r in _direction_rows(host) if r.get("status") == "verified"]
+        rows = [r for r in _direction_rows(host, key) if r.get("status") == "verified"]
         has_token = "--strict-mcp-config" in mech.split()
         assert has_token == bool(rows), (host, has_token, [r.get("item") for r in rows])
         for row in rows:
@@ -711,27 +727,52 @@ def test_strict_mcp_token_and_direction_ledger_row_come_together():
                     _flags_in_order(mech, str(probe["argv"]), (host, probe["attempt_id"]))
 
 
-ADAPTERS_SECTION_OF_HOST = {"codex": "### Codex", "grok": "### Codex"}
+GROK_TO_CLAUDE_GENERAL = (
+    'claude -p --model <id> --effort <effort> --permission-mode <mode> '
+    '--strict-mcp-config "<prompt>"')
+GROK_TO_CLAUDE_REVIEWER = (
+    'claude -p --model <id> --effort <effort> --permission-mode plan '
+    '--allowedTools Read,Glob,Grep,LS --strict-mcp-config "<prompt>"')
+
+ADAPTERS_SECTION_OF_HOST = {"codex": "### Codex", "grok": "### grok"}
 
 
-def _section_fence_tokens(text: str, header: str) -> list[str]:
-    """Ordered tokens of the `claude -p` fence inside one adapters.md section,
-    with line-continuation backslashes dropped."""
+def _section_claude_fences(text: str, header: str) -> list[list[str]]:
+    """Ordered token lists of every `claude -p` fence in one adapters.md
+    section, with line-continuation backslashes dropped. Each grok seat has
+    its own fence; Codex still has exactly one."""
     start = text.index(header)
     nxt = re.search(r"\n### ", text[start + len(header):])
     body = text[start: start + len(header) + (nxt.start() if nxt else len(text))]
     fences = re.findall(r"```bash\n(.*?)```", body, re.S)
     claude = [f for f in fences if f.lstrip().startswith("claude -p")]
-    assert len(claude) == 1, (header, len(claude))
-    return [t for t in claude[0].replace("\\\n", " ").split() if t != "\\"]
+    assert claude, (header, "expected at least one claude -p fence")
+    return [[t for t in f.replace("\\\n", " ").split() if t != "\\"]
+            for f in claude]
 
 
 def test_adapters_to_claude_fences_mirror_their_own_direction():
-    """Direction-specific: the Codex fence must not be able to vouch for the
-    grok string or vice versa once the two may differ."""
+    """Direction- and seat-specific: Codex's one fence cannot vouch for a grok
+    string, and each grok seat matches its own fence rather than sharing one.
+
+    grok.to_claude ships a general write-capable `mechanism` and a read-only
+    `mechanism_reviewer`; the grok section of adapters.md must render both.
+    """
+    spec = CFG["transports"]["grok"]["to_claude"]
+    assert spec.get("mechanism") == GROK_TO_CLAUDE_GENERAL
+    assert spec.get("mechanism_reviewer") == GROK_TO_CLAUDE_REVIEWER
+    assert "mechanism_reviewer" not in CFG["transports"]["codex"]["to_claude"]
+
     text = (SKILL / "references" / "adapters.md").read_text()
     for host, key, mech in _to_claude_mechanisms():
-        assert _section_fence_tokens(text, ADAPTERS_SECTION_OF_HOST[host]) == mech.split(), (host, key)
+        fences = _section_claude_fences(text, ADAPTERS_SECTION_OF_HOST[host])
+        assert mech.split() in fences, (host, key, mech)
+    grok_fences = _section_claude_fences(text, "### grok")
+    assert grok_fences.count(GROK_TO_CLAUDE_GENERAL.split()) == 1
+    assert grok_fences.count(GROK_TO_CLAUDE_REVIEWER.split()) == 1
+    codex_fences = _section_claude_fences(text, "### Codex")
+    assert len(codex_fences) == 1
+    assert codex_fences[0] == CFG["transports"]["codex"]["to_claude"]["mechanism"].split()
 
 
 def test_every_write_verified_direction_is_bound_to_a_verified_ledger_row():

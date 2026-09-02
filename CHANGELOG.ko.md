@@ -7,6 +7,29 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.12.0] — 2026-09-02 (grok 호스트의 Claude 리뷰어 좌석)
+
+### Added
+
+- `transports.grok.to_claude.mechanism_reviewer`: `--permission-mode plan`,
+  `--allowedTools Read,Glob,Grep,LS`, `--strict-mcp-config`를 쓰는 별도 검증된
+  읽기 전용 Claude 리뷰어 레시피를 추가했다. 범용 mechanism은 변경하지 않고
+  쓰기 가능 좌석으로 유지한다.
+
+### Changed
+
+- 헤드리스 grok 호스트가 bare echo의 자동 허용을 증거로 오인하지 않고 감독기를
+  띄우는 방법과, 바깥 호스트의 sandbox가 Claude 자식의 키체인을 가릴 수 있다는
+  경계를 디스패치 계약에 기록했다.
+- Claude 브리지의 부팅 절감폭이 환경 의존적임을 명시했다. 전역 MCP 커넥터가 실제
+  handshake한 환경에서는 strict 플래그가 약 80%를 제거했지만, 그 스키마가 없던
+  과거 grok 호스트 프로브에서는 약 10%만 절감됐다.
+
+### Fixed
+
+- Claude transport의 원장 결속과 문서 fence를 방향·좌석별로 분리했다. 이제 범용
+  mechanism 행이 argv가 다른 reviewer mechanism을 조용히 보증할 수 없다.
+
 ## [1.11.1] — 2026-09-02 (산출물 핀을 유지하는 이유)
 
 ### Changed

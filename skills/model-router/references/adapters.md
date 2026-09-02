@@ -353,6 +353,16 @@ administrator lock (`disable_bypass_permissions_mode`), so a YOLO fallback is
 not even available everywhere. Use them only in a disposable isolated
 worktree where the caller explicitly accepts the risk.
 
+**A headless grok host must authorize the supervisor command itself.** On
+grok 1.0.13, `acceptEdits` and `dontAsk` cancelled before spawning
+`python3 dispatch_agent.py`; a bare `echo` was an auto-approved special case
+and therefore not a valid control. A full supervised grok-to-Claude write
+probe completed only when the outer grok host used `bypassPermissions` in a
+disposable, single-linked worktree with sandboxing off. Wrapping that outer
+host in the built-in workspace sandbox blocked the Claude child's keychain
+and produced `Not logged in` even without `--bare`. This is a host-launch
+recipe, not a transport mechanism or a containment claim.
+
 #### Deriving the session evidence directory
 
 The supervisor never derives this path — the caller declares it as
@@ -415,7 +425,32 @@ adapter can offer.
 semantics have **not** been verified. Until they are, treat a grok-native dual
 review as degraded unless both reviewers run as separate processes.
 
-**To claude models:** the `claude -p --effort` command above. `--strict-mcp-config`
+**To claude models:** two `claude -p` strings, one per seat. The general
+write-capable seat keeps the permission-mode slot (`write_verified` hangs
+on this string):
+
+```bash
+claude -p --model <id> \
+    --effort <effort> \
+    --permission-mode <mode> \
+    --strict-mcp-config \
+    "<prompt>"
+```
+
+The reviewer seat is read-only: `--permission-mode plan` and
+`--allowedTools Read,Glob,Grep,LS`, closed by `--strict-mcp-config` so the
+variadic list cannot swallow the positional prompt:
+
+```bash
+claude -p --model <id> \
+    --effort <effort> \
+    --permission-mode plan \
+    --allowedTools Read,Glob,Grep,LS \
+    --strict-mcp-config \
+    "<prompt>"
+```
+
+`--strict-mcp-config`
 drops every MCP server the user's global config would otherwise load into the
 seat (measured at ~80% of a headless seat's boot context); reviewers and
 workers alike lose user-global MCP servers. A caller that needs one adds
@@ -430,6 +465,11 @@ the prompt after only fixed-arity flags. Dispatched under `dispatch_agent.py`
 with `--output-schema review` and a read-only permission mode; separate
 process by construction, and the receipt `attempt_id` is the
 isolation-evidence id.
+
+The savings are environment-dependent because the flag can remove only MCP
+schemas that actually loaded: the Claude Code host and an unsandboxed grok
+host measured about 80% (64,012 to 13,490 tokens in the latter), while an
+earlier grok-host probe measured about 10% because those schemas were absent.
 
 **To openai models:**
 
