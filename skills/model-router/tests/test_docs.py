@@ -695,3 +695,26 @@ def test_strict_mcp_token_and_direction_ledger_row_come_together():
                 assert probe.get("outcome") == "SUCCEEDED", probe
                 if probe.get("vouches_for_recipe", True):         # a baseline without the token is listed, not vouching [P2-sol-F5]
                     _flags_in_order(mech, str(probe["argv"]), (host, probe["attempt_id"]))
+
+
+ADAPTERS_SECTION_OF_HOST = {"codex": "### Codex", "grok": "### grok"}   # P4 success (T6): {"codex": "### Codex", "grok": "### Codex"}
+
+
+def _section_fence_tokens(text: str, header: str) -> list[str]:
+    """Ordered tokens of the `claude -p` fence inside one adapters.md section,
+    with line-continuation backslashes dropped."""
+    start = text.index(header)
+    nxt = re.search(r"\n### ", text[start + len(header):])
+    body = text[start: start + len(header) + (nxt.start() if nxt else len(text))]
+    fences = re.findall(r"```bash\n(.*?)```", body, re.S)
+    claude = [f for f in fences if f.lstrip().startswith("claude -p")]
+    assert len(claude) == 1, (header, len(claude))
+    return [t for t in claude[0].replace("\\\n", " ").split() if t != "\\"]
+
+
+def test_adapters_to_claude_fences_mirror_their_own_direction():
+    """Direction-specific: the Codex fence must not be able to vouch for the
+    grok string or vice versa once the two may differ."""
+    text = (SKILL / "references" / "adapters.md").read_text()
+    for host, key, mech in _to_claude_mechanisms():
+        assert _section_fence_tokens(text, ADAPTERS_SECTION_OF_HOST[host]) == mech.split(), (host, key)

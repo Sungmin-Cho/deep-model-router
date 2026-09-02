@@ -795,12 +795,14 @@ transports:
   grok:
     native: { mechanism: subagent, isolation: unverified }
     to_claude:
-      # Same argv as codex.to_claude — argv is host-independent — but
-      # `verified` is per direction: probed 2026-08-29 FROM a darwin grok
-      # host under dispatch_agent.py (round-trip, positional prompt slot,
-      # read-only reviewer seat with a schema-valid verdict, concurrent-pair
-      # verify-evidence). See the "grok -> Claude transport" ledger entry.
-      mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> \"<prompt>\""
+      # 1.9.0: carries --strict-mcp-config (design 2026-09-02 DD-1) — the
+      # user-global MCP connector schemas were ~80% of a headless claude
+      # seat's boot context. argv now differs from codex.to_claude by that one
+      # token; the Codex direction keeps the pre-1.9.0 string until probed
+      # from a Codex host (D-3). `verified` stays per direction: probed
+      # 2026-08-29 (transport) and 2026-09-02 (this string) FROM a darwin
+      # grok host — see the transports.grok.to_claude.mechanism ledger row.
+      mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> --strict-mcp-config \"<prompt>\""
       isolation: separate_process
       verified: true
       write_verified: true
@@ -902,6 +904,34 @@ verification_ledger:
         unchanged from the Fable 5 entry: under security_sensitive the
         identity of a claude_architect seat is declared_only, disclosed per
         route by served_model_caveats.
+
+    - item: "transports.grok.to_claude.mechanism (--strict-mcp-config recipe)"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "p3-fable51-reviewer"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --strict-mcp-config"
+      probes:
+        - { attempt_id: "p3-fable51-reviewer", argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --strict-mcp-config", outcome: SUCCEEDED }
+        - { attempt_id: "p2a-strict", argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --strict-mcp-config --output-format json", outcome: SUCCEEDED }
+        - { attempt_id: "p2b-baseline", argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --output-format json", outcome: SUCCEEDED, vouches_for_recipe: false }
+        - { attempt_id: "p1-fable51-id", argv: "claude -p --model claude-fable-5-1 --effort low --permission-mode plan --strict-mcp-config --output-format json", outcome: SUCCEEDED }
+      evidence: >
+        Probed FROM a darwin grok host (grok 1.0.13) under dispatch_agent.py,
+        transport grok.to_claude. p2a-strict vs p2b-baseline (haiku, same
+        prompt, same day): context tokens 60106 vs 66727 (cumulative over the
+        turns; gap 6621): no MCP schema in this environment; token ships as
+        harmless (fail-open). p3-fable51-reviewer: read-only reviewer
+        seat (claude-fable-5-1 @ high, --output-schema review) SUCCEEDED,
+        schema_valid true. p1-fable51-id: id round-trip SUCCEEDED. p5-strict-worker
+        (acceptEdits) wrote MADE-19 but via the Write tool's inode replace
+        (artifact_identity_replaced); the retry asked for Bash which
+        acceptEdits does not auto-approve (artifact_missing). Workers lose
+        user-global MCP servers under this recipe; a caller that needs one
+        adds --mcp-config <file> immediately after -p (a variadic flag
+        placed last swallows the positional prompt) and that call is a
+        variant this row does not vouch for. Receipts:
+        docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/.
 
     - item: "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
       status: verified
