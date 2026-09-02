@@ -11,14 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The grok and Codex hosts' Claude bridge seats — reviewers and workers alike — no
+- The grok host's Claude bridge seats — reviewers and workers alike — no
   longer load the user's global MCP servers (`--strict-mcp-config`); a caller
-  that needs one adds `--mcp-config <file>` immediately after `-p`.
+  that needs one adds `--mcp-config <file>` immediately after `-p`. The same
+  recipe was probed from a nested `codex exec` turn under grok, not from an
+  interactive Codex session.
 - `principal_architect` is Claude Fable 5.1. Claude Fable 5 stays valid as
   history input (`--prior-models`, `--unavailable-models`, `--host-model`)
   and is never seated.
-- A single fallback no longer raises the review band by itself; routes that
-  record a fallback report a `routing_confidence` higher by 0.04.
+- A single fallback no longer raises the review band by itself. When both
+  the old and new penalty still record a fallback, `routing_confidence` is
+  higher by 0.04.
 
 ### Added
 

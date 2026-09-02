@@ -173,6 +173,13 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
             assert a["human_control_causes"] == b["human_control_causes"], inp
             assert a["requires_human_confirmation"] == b["requires_human_confirmation"], inp
             continue
+        # Worker is chosen from the risk band, not the review band. When both
+        # sides stay executable the seat is therefore unchanged; a HIGH review
+        # that cannot independently staff two reviewers can terminalise the
+        # 0.10 side and seat a worker only on 0.06.
+        if a["terminal"] is None and b["terminal"] is None:
+            for key in ("selected_role", "selected_model", "worker_seat"):
+                assert a[key] == b[key], (inp, key, a[key], b[key])
         if a["selected_effort"] not in (None, b["selected_effort"]) and b["selected_effort"] is not None:
             assert EFFORT_ORDER.index(b["selected_effort"]) < EFFORT_ORDER.index(a["selected_effort"]), (
                 inp, a["selected_effort"], b["selected_effort"])

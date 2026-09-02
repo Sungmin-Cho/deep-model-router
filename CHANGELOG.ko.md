@@ -11,14 +11,16 @@
 
 ### Changed
 
-- grok과 Codex 호스트의 Claude 브리지 좌석이 — 리뷰어와 워커 모두 — 사용자 전역 MCP
+- grok 호스트의 Claude 브리지 좌석이 — 리뷰어와 워커 모두 — 사용자 전역 MCP
   서버를 더 이상 싣지 않는다(`--strict-mcp-config`). 필요한 호출자는
-  `--mcp-config <file>`을 `-p` 바로 뒤에 붙인다.
+  `--mcp-config <file>`을 `-p` 바로 뒤에 붙인다. 같은 레시피는 grok 아래
+  중첩된 `codex exec` 턴에서 프로브됐으며, 대화형 Codex 세션에서 프로브된
+  것은 아니다.
 - `principal_architect`가 Claude Fable 5.1이다. Claude Fable 5는 이력
   입력(`--prior-models`, `--unavailable-models`, `--host-model`)으로는 계속
   유효하며 어떤 좌석에도 앉지 않는다.
-- 단일 fallback만으로는 리뷰 밴드가 올라가지 않는다. fallback을 기록한
-  라우트의 `routing_confidence`가 0.04 높아진다.
+- 단일 fallback만으로는 리뷰 밴드가 올라가지 않는다. 이전·이후 페널티가
+  둘 다 fallback을 기록하면 `routing_confidence`가 0.04 높아진다.
 
 ### Added
 
