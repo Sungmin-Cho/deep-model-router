@@ -718,3 +718,40 @@ def test_adapters_to_claude_fences_mirror_their_own_direction():
     text = (SKILL / "references" / "adapters.md").read_text()
     for host, key, mech in _to_claude_mechanisms():
         assert _section_fence_tokens(text, ADAPTERS_SECTION_OF_HOST[host]) == mech.split(), (host, key)
+
+
+def test_every_write_verified_direction_is_bound_to_a_verified_ledger_row():
+    """`write_verified: true` is the sole authorization for cross-family write
+    dispatch. Until 1.10.0 the ledger rule ran only for maker seats, so the four
+    `mechanism`-only directions authorised write work on nothing but a non-empty
+    string. `Policy._validate_write_seats` now refuses those at load; this pins
+    the rows, so deleting one is a named failure rather than a silent gap."""
+    for host, entries in CFG["transports"].items():
+        for name, entry in entries.items():
+            if name == "native" or not isinstance(entry, dict):
+                continue
+            if entry.get("write_verified") is not True:
+                continue
+            needle = (f"{host}.{name}.mechanism_maker" if "mechanism_maker" in entry
+                      else f"transports.{host}.{name}.write_verified")
+            rows = [r for r in CFG["verification_ledger"]["entries"]
+                    if r.get("status") == "verified" and needle in str(r.get("item", ""))]
+            assert len(rows) == 1, (host, name, needle, [r.get("item") for r in rows])
+
+
+def test_the_claude_artifact_limitation_is_documented_where_a_caller_hits_it():
+    """A Claude seat's output cannot be certified with `--require-artifact`
+    (its file tools replace the inode). The ledger records the measurement;
+    adapters.md has to tell a caller what to do instead, in one place. The
+    needles are checked INSIDE that paragraph on purpose: `--require-artifact`
+    and `artifact_identity_replaced` each already appeared elsewhere in the
+    file, so a file-wide search would have passed before the paragraph
+    existed."""
+    text = (SKILL / "references" / "adapters.md").read_text()
+    paras = [para for para in re.split(r"\n\n+", text)
+             if "cannot be certified with" in para]
+    assert len(paras) == 1, [para[:60] for para in paras]
+    for needle in ("new inode", "truncates in place", "artifact_unchanged",
+                   "content hash recorded beside the",
+                   "do not seat\na Claude worker", "never that the supervisor can"):
+        assert needle in paras[0], needle

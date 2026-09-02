@@ -476,6 +476,31 @@ class Policy:
                     raise ConfigError(
                         f"transports.{runtime}.{name} declares write_verified: true "
                         f"with no write-capable mechanism string to dispatch")
+                if "mechanism_maker" not in entry:
+                    # A direction with no maker seat authorises write dispatch on
+                    # `mechanism` alone. Until 1.10.0 that flag needed nothing but
+                    # a non-empty string: the ledger rule below only ever ran for
+                    # maker entries, so "Policy refuses a `true` the ledger
+                    # contradicts" was true of one shape of write seat and silent
+                    # about the other four.
+                    needle = f"transports.{runtime}.{name}.write_verified"
+                    matching = [
+                        item for item in ledger
+                        if isinstance(item, Mapping)
+                        and needle in str(item.get("item", ""))
+                    ]
+                    if not matching:
+                        raise ConfigError(
+                            f"transports.{runtime}.{name} declares write_verified: "
+                            f"true with no maker seat, and verification_ledger has "
+                            f"no row naming {needle}")
+                    bad = [item for item in matching
+                           if item.get("status") != "verified"]
+                    if bad:
+                        raise ConfigError(
+                            f"transports.{runtime}.{name} declares write_verified: "
+                            f"true, but verification_ledger records "
+                            f"{bad[0].get('item')!r} as {bad[0].get('status')!r}")
                 if "mechanism_maker" in entry:
                     needle = f"{runtime}.{name}.mechanism_maker"
                     matching = [
@@ -1970,6 +1995,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     # below the escalation floor still emit as executable.
     review_band = band
     promoted_once = False
+    promotion_confidence = None
     supply_exhausted: str | None = None
     # Everything the loop body mutates has to be restored at the top of each
     # pass, or the body is not idempotent and the "fixed point" is a fold.
@@ -2156,6 +2182,9 @@ def route(task: Task, cfg: dict | None = None) -> dict:
             overrides.append(f"low_routing_confidence_raised_review_to_{promoted}")
             review_band = promoted
             promoted_once = True
+            # The number the DECISION read. The one the route reports is the
+            # promoted plan's, and the two can differ (see the note below).
+            promotion_confidence = confidence
             continue
         break
     else:  # pragma: no cover - the band ladder is shorter than the pass budget
@@ -2585,6 +2614,21 @@ def route(task: Task, cfg: dict | None = None) -> dict:
                     f"model for {', '.join(matched)} content; the requested "
                     f"identity of {key} is declared_only")
     all_notes = worker_notes + effort_notes
+    # A promotion is decided on the plan that existed BEFORE it, and the plan it
+    # produces is what ships: promoting the review band reseats reviewers, which
+    # can retire the very fallback whose penalty triggered the promotion. The
+    # emitted confidence is the promoted plan's, so a route could carry
+    # `low_routing_confidence_raised_review_to_X` beside a confidence at or above
+    # the threshold — a recorded reason the same route disproves. Un-promoting
+    # would oscillate (the un-promoted plan is low again), so the conservative
+    # band stands and the recovery is disclosed instead of hidden.
+    extra_review_below = cfg["router"]["confidence"]["extra_review_below"]
+    if promoted_once and confidence >= extra_review_below:
+        all_notes.append(
+            f"review band promoted at pre-promotion confidence "
+            f"{promotion_confidence:.2f}; the promoted plan resolves at "
+            f"{confidence:.2f} (>= {extra_review_below:.2f}) — the promotion "
+            f"stands and the reported confidence is the promoted plan's")
     if advisory == "upgrade_recommended":
         clauses = []
         if model_cmp == "below":

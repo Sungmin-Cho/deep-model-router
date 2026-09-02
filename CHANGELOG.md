@@ -7,6 +7,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — 2026-09-02 (honest promotion record, bound write seats)
+
+### Fixed
+
+- A route promoted for low routing confidence no longer contradicts itself.
+  Promoting the review band reseats reviewers, which can retire the fallback
+  whose penalty triggered the promotion; the route now carries a note saying the
+  promotion was decided on the pre-promotion plan and that the reported
+  confidence is the promoted plan's, naming both numbers. The band still stands.
+
+### Added
+
+- A direction that declares `write_verified: true` without a maker seat now
+  needs a verified ledger row naming it, and the router refuses to load a config
+  where one is missing. Four directions were authorising write dispatch on
+  nothing but a non-empty recipe string.
+- The dispatch contract records that a Claude seat's output cannot be certified
+  with `--require-artifact` — its file tools install content on a new inode,
+  while an OpenAI seat truncates in place — and says to certify such a seat by a
+  content hash recorded beside the receipt instead.
+
 ## [1.9.0] — 2026-09-02 (Fable 5.1, lean Claude bridge seats)
 
 ### Changed

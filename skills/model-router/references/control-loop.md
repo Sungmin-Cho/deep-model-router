@@ -152,6 +152,12 @@ a policy gate score, not a calibrated success probability.
 | `0.60 – 0.79` | Execute, but raise the review band one level |
 | `< 0.60` | Escalate the *routing decision itself* — re-classify at higher effort, or ask a human |
 
+A band raised by the middle row stays raised even when the promoted plan then
+resolves at `>= 0.80`: promoting reseats reviewers, and that can retire the
+fallback whose penalty triggered the promotion. The route says so in a note
+naming both numbers — the pre-promotion confidence the decision read, and the
+promoted plan's confidence it reports.
+
 Low routing confidence must never be silently ignored. Both the value and the
 reason for it belong in the emitted rationale, because "the router wasn't sure"
 is exactly the context a human needs when the route turns out wrong.

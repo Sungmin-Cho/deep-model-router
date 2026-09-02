@@ -433,7 +433,9 @@ blocking uncertainty is. Silent looping is the error.
 
 Emit your own routing confidence, 0.0–1.0: 0.80+ execute as routed; 0.60–0.79
 execute but raise the review band one level; below 0.60 escalate the routing
-decision itself — re-classify at higher effort or ask a human.
+decision itself — re-classify at higher effort or ask a human. A band raised at
+0.60–0.79 stays raised even if the promoted plan then resolves at 0.80+, and
+the route notes both numbers.
 
 ## Step 5 — Emit the route
 

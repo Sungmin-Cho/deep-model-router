@@ -979,3 +979,43 @@ def test_a_retired_model_never_sits_in_any_seat():
     for out in routes():
         seated = set(parties(out)) | {out["review"].get("judge_model")}
         assert not (retired & seated), (out["selected_model"], out["review"]["reviewer_models"], out["review"].get("judge_model"))
+
+
+def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
+    """The promotion decision reads the plan BEFORE the promotion; the emitted
+    confidence is the promoted plan's, and reseating reviewers can retire the
+    fallback whose penalty triggered the promotion. Where that happens the route
+    used to carry `low_routing_confidence_raised_review_to_X` beside a
+    confidence at or above the threshold — a reason the same route disproves.
+    The band still stands (un-promoting oscillates), so the recovery must be
+    stated, and it must be stated ONLY where it happened."""
+    threshold = CFG["router"]["confidence"]["extra_review_below"]
+    recovered = still_low = 0
+    for out in routes():
+        promoted = [o for o in out["band_overrides_applied"]
+                    if o.startswith("low_routing_confidence")]
+        note = [n for n in out["notes"] if "promoted plan resolves at" in n]
+        if not promoted:
+            assert not note, (out["routing_confidence"], note)
+            continue
+        if out["routing_confidence"] >= threshold:
+            recovered += 1
+            assert len(note) == 1, (out["routing_confidence"], promoted, out["notes"])
+            # Both numbers, at a fixed width: `str(0.8)` is a substring of the
+            # threshold's own rendering, so a note that printed only the
+            # threshold would have satisfied a looser check.
+            assert f"resolves at {out['routing_confidence']:.2f} " in note[0], note
+            assert "pre-promotion confidence " in note[0], note
+            pre = float(note[0].split("pre-promotion confidence ")[1].split(";")[0])
+            assert pre < threshold <= out["routing_confidence"], (pre, out["routing_confidence"])
+            # "the promotion stands" is the note's whole claim; a future change
+            # that un-promoted while keeping the override string would leave
+            # this green without it.
+            ladder = list(CFG["router"]["bands"])
+            assert ladder.index(out["review"]["band"]) > ladder.index(out["risk_band"]), (
+                out["review"]["band"], out["risk_band"])
+        else:
+            still_low += 1
+            assert not note, (out["routing_confidence"], note)
+    assert recovered, "the sweep no longer reaches a promotion whose confidence recovered"
+    assert still_low, "the sweep no longer reaches an ordinary low-confidence promotion"
