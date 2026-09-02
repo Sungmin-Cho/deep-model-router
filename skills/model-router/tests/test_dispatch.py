@@ -24,7 +24,9 @@ SKILL = Path(__file__).resolve().parent.parent
 SCRIPT = SKILL / "scripts" / "dispatch_agent.py"
 sys.path.insert(0, str(SKILL / "scripts"))
 from route_task import default_config as _default_config  # noqa: E402
-ARCHITECT_ID = _default_config()["models"]["claude_architect"]["id"]
+_CFG = _default_config()
+ID = lambda key: _CFG["models"][key]["id"]                       # noqa: E731
+ARCHITECT_ID = ID("claude_architect")
 
 HAPPY = """
 print("verdict: PASS")
@@ -1083,20 +1085,20 @@ def test_malformed_digest_args_are_refused_pre_spawn(tmp_path):
 
 def test_expect_models_matches_declared_models_as_a_multiset(tmp_path):
     _fake_receipt(tmp_path, "e1", "reviewer-1", "SUCCEEDED",
-                  model_id="claude-opus-5")
+                  model_id=ID("claude_senior"))
     _fake_receipt(tmp_path, "e2", "reviewer-2", "SUCCEEDED",
-                  model_id="gpt-5.6-sol")
+                  model_id=ID("openai_reasoning"))
     ok = _verify(tmp_path, "e1,e2", 2,
-                 extra=["--expect-models", "gpt-5.6-sol,claude-opus-5"])
+                 extra=["--expect-models", f"{ID('openai_reasoning')},{ID('claude_senior')}"])
     assert ok == 0                      # 순서 무관
     bad = _verify(tmp_path, "e1,e2", 2,
-                  extra=["--expect-models", "claude-opus-5,grok-4.6"])
+                  extra=["--expect-models", f"{ID('claude_senior')},{ID('xai_frontier')}"])
     assert bad == 1                     # 불일치는 문제로 보고
 
 
 def test_expect_models_rejects_duplicates_empties_and_count_mismatch(tmp_path):
     _fake_receipt(tmp_path, "e3", "reviewer-1", "SUCCEEDED",
-                  model_id="claude-opus-5")
+                  model_id=ID("claude_senior"))
     assert _verify(tmp_path, "e3", 1, extra=["--expect-models", "a,,b"]) == 2
     assert _verify(tmp_path, "e3", 1, extra=["--expect-models", "a,a"]) == 2
     assert _verify(tmp_path, "e3", 1, extra=["--expect-models", "a,b"]) == 2  # count 1 != 2
@@ -1105,22 +1107,22 @@ def test_expect_models_rejects_duplicates_empties_and_count_mismatch(tmp_path):
 def test_expect_models_flags_a_null_model_receipt(tmp_path):
     _fake_receipt(tmp_path, "e4", "reviewer-1", "SUCCEEDED", model_id=None)
     assert _verify(tmp_path, "e4", 1,
-                   extra=["--expect-models", "claude-opus-5"]) == 1
+                   extra=["--expect-models", ID("claude_senior")]) == 1
 
 
 def test_expect_fingerprint_checks_every_receipt_and_grammar(tmp_path):
     fp = "ab" * 32
     _fake_receipt(tmp_path, "e5", "reviewer-1", "SUCCEEDED",
-                  model_id="claude-opus-5", decision_fingerprint=fp)
+                  model_id=ID("claude_senior"), decision_fingerprint=fp)
     _fake_receipt(tmp_path, "e6", "reviewer-2", "SUCCEEDED",
-                  model_id="gpt-5.6-sol", decision_fingerprint=fp)
+                  model_id=ID("openai_reasoning"), decision_fingerprint=fp)
     assert _verify(tmp_path, "e5,e6", 2, extra=["--expect-fingerprint", fp]) == 0
     assert _verify(tmp_path, "e5,e6", 2,
                    extra=["--expect-fingerprint", "cd" * 32]) == 1
     assert _verify(tmp_path, "e5,e6", 2,
                    extra=["--expect-fingerprint", "nothex"]) == 2
     _fake_receipt(tmp_path, "e7", "reviewer-1", "SUCCEEDED",
-                  model_id="claude-opus-5", decision_fingerprint=None)
+                  model_id=ID("claude_senior"), decision_fingerprint=None)
     assert _verify(tmp_path, "e7", 1, extra=["--expect-fingerprint", fp]) == 1
 
 
@@ -1174,7 +1176,7 @@ def test_expect_fingerprint_rejects_a_trailing_newline_as_usage_error(tmp_path):
     must be a usage error (2), not an evidence problem (1) — misreporting a
     caller's typo as an integrity failure erases the distinction B3 draws."""
     _fake_receipt(tmp_path, "nl1", "reviewer-1", "SUCCEEDED",
-                  model_id="claude-opus-5", decision_fingerprint="ab" * 32)
+                  model_id=ID("claude_senior"), decision_fingerprint="ab" * 32)
     assert _verify(tmp_path, "nl1", 1,
                    extra=["--expect-fingerprint", "ab" * 32 + "\n"]) == 2
 
@@ -1383,7 +1385,7 @@ def test_grok_hosted_reviewer_pair_forms_a_verifiable_evidence_set(tmp_path):
     fake = write_fake(tmp_path, "happy_pair.py", HAPPY)
     receipts = tmp_path / "receipts"
     ids = []
-    models = (ARCHITECT_ID, "gpt-5.6-sol")
+    models = (ARCHITECT_ID, ID("openai_reasoning"))
     transports = ("grok.to_claude", "grok.to_openai")
     seats = ("reviewer-1", "reviewer-2")
     for model, transport, seat in zip(models, transports, seats):
@@ -2189,7 +2191,7 @@ def session_writer(session_dir, *, session_id=SESSION_UUID,
         event["cancellation_category"] = cancellation_category
     summary = {
         "info": {"id": session_id, "cwd": "/tmp/x"},
-        "current_model_id": "grok-4.6", "reasoning_effort": "low",
+        "current_model_id": ID("xai_frontier"), "reasoning_effort": "low",
         "agent_name": agent_name, "sandbox_profile": sandbox_profile,
     }
     return "\n".join([
@@ -2229,7 +2231,7 @@ def test_bound_fresh_session_evidence_is_succeeded_and_recorded(tmp_path):
     assert receipt["result"]["state"] == "SUCCEEDED"
     evidence = receipt["session_evidence"]
     assert evidence["summary"]["agent_name"] == "general-purpose"
-    assert evidence["summary"]["current_model_id"] == "grok-4.6"
+    assert evidence["summary"]["current_model_id"] == ID("xai_frontier")
     assert evidence["summary"]["reasoning_effort"] == "low"
     assert evidence["summary"]["sandbox_profile"] == "workspace"
     assert evidence["session_id"] == SESSION_UUID
@@ -2703,7 +2705,7 @@ def _xai_receipt(tmp_path, attempt_id, seat, *, transport_id="claude_code.to_xai
         payload["session_evidence"] = {
             "format": "grok-session-v1", "dir": "/tmp/s",
             "summary": {"agent_name": "grok-build-plan",
-                        "current_model_id": "grok-4.6",
+                        "current_model_id": ID("xai_frontier"),
                         "reasoning_effort": "low", "sandbox_profile": "read-only"},
             "session_id": SESSION_UUID, "created_at": "2026-08-25T08:50:40.219543Z",
             "terminal_event": {"outcome": "completed",
@@ -2769,11 +2771,11 @@ def test_top_level_observed_pair_stays_null_unavailable_with_served_models_recor
         + f"import sys\nsys.stdout.write({json.dumps(doc)!r})\n")
     proc, receipt = run_dispatch(
         tmp_path, [sys.executable, fake],
-        extra=("--model-id", "grok-4.6", *ENVELOPE_ARGS,
+        extra=("--model-id", ID("xai_frontier"), *ENVELOPE_ARGS,
                *session_args(session_dir)))
     assert proc.returncode == 0, proc.stderr
     assert receipt["result"]["envelope"]["served_models"] == ["grok-4.6-build"]
-    assert receipt["model_id"] == "grok-4.6"
+    assert receipt["model_id"] == ID("xai_frontier")
     # Observed as served, recorded verbatim: the supervisor does not
     # normalize a served identifier against the declared one.
     assert receipt["observed_model_id"] is None

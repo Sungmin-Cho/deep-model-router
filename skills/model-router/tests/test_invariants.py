@@ -102,9 +102,9 @@ SCARCITY = [
     [ID("claude_architect"), ID("claude_worker_fast"), ID("claude_senior")],   # was MODEL_IDS[:3]
     [ID("claude_architect"), ID("claude_worker_fast"), ID("claude_senior"), ID("claude_worker_balanced")],  # was MODEL_IDS[:5]
     [ID("claude_senior"), ID("claude_worker_balanced"), ID("openai_worker_fast"), ID("openai_reasoning")],  # was MODEL_IDS[2:7]
-    _all_but("claude-opus-5", "gpt-5.6-sol", "grok-4.6"),
-    _all_but("grok-4.6"),
-    _all_but("claude-opus-5", "grok-4.6"),
+    _all_but(ID("claude_senior"), ID("openai_reasoning"), ID("xai_frontier")),
+    _all_but(ID("xai_frontier")),
+    _all_but(ID("claude_senior"), ID("xai_frontier")),
 ]
 
 RUNTIMES = sorted(CFG["runtimes"])

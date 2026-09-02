@@ -7,6 +7,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.10.1] — 2026-09-02 (레지스트리 id 출처 기록)
+
+### Changed
+
+- `claude-haiku-4-5-20251001`과 `claude-haiku-4-5`가 서로 다른 모델을 서빙한다는
+  사실을 검증 원장에 기록했다. 따라서 레지스트리는 날짜 접미를 떼지 않고 현행
+  핀을 유지한다.
+
 ## [1.10.0] — 2026-09-02 (정직한 승격 기록, 원장에 묶인 쓰기 좌석)
 
 ### Fixed

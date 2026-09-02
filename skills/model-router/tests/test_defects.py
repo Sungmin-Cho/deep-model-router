@@ -40,6 +40,7 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ID = lambda key: CFG["models"][key]["id"]                        # noqa: E731
 ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 
 
@@ -190,7 +191,7 @@ def test_d1_a_failed_model_is_never_re_emitted_under_a_new_role():
     # because the original probe used them; grok-4.6 is the family that was
     # missing. A family added to the registry without a prior here is a
     # retry path nobody exercises.
-    priors = ("claude-sonnet-5", "claude-opus-5", "gpt-5.6-sol", "grok-4.6")
+    priors = (ID("claude_worker_balanced"), ID("claude_senior"), ID("openai_reasoning"), ID("xai_frontier"))
     fam = {m["id"]: m["family"] for m in CFG["models"].values()}
     dispatchable_fams = {
         m["family"] for m in CFG["models"].values()
@@ -242,7 +243,7 @@ def test_d2_retry_exhaustion_is_terminal_not_a_route():
     # is spelled out. `worker_fast` used to stand in for it, and five rounds of
     # inferring which model that alias held produced five different defects.
     out = r(task_class="DEBUGGING", complexity=2, uncertainty=1, blast_radius=1,
-            prior_failures=cap, prior_models=["gpt-5.6-luna"] * cap)
+            prior_failures=cap, prior_models=[ID("openai_worker_fast")] * cap)
     assert out["terminal"] == "HUMAN_REQUIRED"
     assert out["selected_model"] is None, "an exhausted task must not get an executable route"
 
@@ -257,7 +258,7 @@ def test_d2_low_routing_confidence_is_terminal_not_a_route():
     # below the escalation floor is terminal, not an executable route.
     out = r(task_class="MECHANICAL", complexity=0, uncertainty=2, blast_radius=0,
             flags=["unknown_root_cause", "bridge_down"], prior_failures=2,
-            prior_models=["gpt-5.6-luna", "claude-sonnet-5"])
+            prior_models=[ID("openai_worker_fast"), ID("claude_worker_balanced")])
     assert out["routing_confidence"] < CFG["router"]["confidence"]["escalate_below"]
     assert out["terminal"] == "ESCALATE_ROUTING"
     assert out["selected_model"] is None
@@ -268,7 +269,7 @@ def test_d2_cli_exits_nonzero_on_a_terminal_state():
     p = cli("--class", "DEBUGGING", "--complexity", "2", "--uncertainty", "1",
             "--blast-radius", "1", "--reversibility", "0",
             "--prior-failures", cap,
-            "--prior-models", ",".join(["gpt-5.6-luna"] * int(cap)))
+            "--prior-models", ",".join([ID("openai_worker_fast")] * int(cap)))
     assert p.returncode != 0, "a terminal state must not exit 0"
     assert "HUMAN_REQUIRED" in p.stdout + p.stderr
 
@@ -429,7 +430,7 @@ def test_d4_low_band_review_is_not_applicable_rather_than_degraded():
 def test_d5_prior_models_accepts_concrete_model_ids():
     """selected_model is emitted as a model id, so feeding it back must work."""
     out = r(task_class="IMPLEMENTATION", complexity=1, uncertainty=1, blast_radius=1,
-            prior_failures=1, prior_models=["gpt-5.6-luna"])
+            prior_failures=1, prior_models=[ID("openai_worker_fast")])
     assert ROLES.index(out["selected_role"]) >= ROLES.index("worker_balanced")
     assert any("escalated above" in n for n in out["notes"])
 
@@ -588,7 +589,7 @@ def test_d8_model_ids_appear_only_in_the_registry():
         # Host-seat examples intentionally retain one concrete --host-model
         # id; registry-key substitution applies only to seat bindings.
         hits = sorted(i for i in ids if _whole_token(i, text) and not (
-            path.name == "examples.md" and i == "claude-haiku-4-5-20251001"))
+            path.name == "examples.md" and i == ID("claude_worker_fast")))
         if hits:
             offenders[path.name] = hits
     assert offenders == {}, f"model ids duplicated outside the registry: {offenders}"
@@ -686,8 +687,8 @@ SCARCITY_SWEEP = [
     [_ID("claude_architect"), _ID("claude_worker_fast"), _ID("claude_senior")], # was [:3]
     [_ID("claude_worker_fast"), _ID("claude_senior"), _ID("claude_worker_balanced")],  # was [1:4]
     [_ID("claude_senior"), _ID("claude_worker_balanced")],                      # was [2:5] minus the id-spelling-only row
-    sorted(set(_DISPATCHABLE) - {"claude-opus-5", "gpt-5.6-sol", "grok-4.6"}),
-    sorted(set(_DISPATCHABLE) - {"grok-4.6"}),
+    sorted(set(_DISPATCHABLE) - {ID("claude_senior"), ID("openai_reasoning"), ID("xai_frontier")}),
+    sorted(set(_DISPATCHABLE) - {ID("xai_frontier")}),
 ]
 
 
@@ -963,7 +964,7 @@ def test_d13_the_judge_retry_never_seats_the_implementer_as_its_own_reviewer():
     route traded a distinct, stronger reviewer for the implementer itself,
     recorded nothing (LOW's depth floor is 0, so the shortfall gate cannot fire
     either), and flipped requires_human_confirmation from true to false."""
-    keep = ("claude-opus-5", "gpt-5.6-terra")
+    keep = (ID("claude_senior"), ID("openai_worker_balanced"))
     out = r(task_class="MIGRATION", flags=["review_disagreement"], runtime="claude_code",
             unavailable_models=_leave_only(*keep))
     rv = out["review"]
@@ -1199,7 +1200,7 @@ def test_d14_every_config_rule_has_a_consumer_or_a_recorded_reason():
                   ["latency_sensitive"])
         for rt in sorted(CFG["runtimes"])
         for pf, pm in ((0, []), (1, ["senior_engineer"]), (2, []), (5, []))
-        for um in ([], [ARCHITECT_ID], ["claude-opus-5", "gpt-5.6-sol"])
+        for um in ([], [ARCHITECT_ID], [ID("claude_senior"), ID("openai_reasoning")])
         for iso in (None, True, False)
     ]
     for kw in probes:
@@ -1280,9 +1281,9 @@ _PERTURBATION_PROBES = [
     dict(task_class="REFACTORING", complexity=2, uncertainty=1, blast_radius=1,
          reversibility=0, flags=["review_disagreement"]),
     dict(task_class="REVIEW", complexity=2, uncertainty=1, blast_radius=1,
-         reversibility=0, prior_failures=1, prior_models=["grok-4.6"]),
+         reversibility=0, prior_failures=1, prior_models=[ID("xai_frontier")]),
     dict(task_class="MECHANICAL", complexity=2, uncertainty=1, blast_radius=1,
-         reversibility=0, prior_failures=1, prior_models=["claude-opus-5"]),
+         reversibility=0, prior_failures=1, prior_models=[ID("claude_senior")]),
     dict(task_class="MECHANICAL", complexity=2, uncertainty=1, blast_radius=1,
          reversibility=0, prior_failures=1, prior_models=[ARCHITECT_ID]),
 ]
@@ -1519,7 +1520,7 @@ def test_d15_every_human_control_action_is_validated_and_load_bearing():
         "on_judge_unavailable": dict(task_class="MECHANICAL", complexity=0, uncertainty=3,
                                      blast_radius=0, reversibility=0,
                                      flags=["review_disagreement"],
-                                     unavailable_models=[ARCHITECT_ID, "gpt-5.6-sol"]),
+                                     unavailable_models=[ARCHITECT_ID, ID("openai_reasoning")]),
         "on_review_depth_reduced": dict(task_class="IMPLEMENTATION", complexity=0,
                                         uncertainty=0, blast_radius=0, reversibility=0,
                                         flags=["auth_sensitive", "bridge_down"],
@@ -1688,7 +1689,8 @@ def test_d18_an_operational_shortage_is_a_terminal_not_invalid_input():
     proc = cli("--class", "IMPLEMENTATION", "--complexity", "1", "--uncertainty", "1",
                "--blast-radius", "1", "--reversibility", "0", "--flags", "bridge_down",
                "--prior-failures", "4", "--prior-models",
-               f"claude-haiku-4-5-20251001,claude-sonnet-5,claude-opus-5,{ARCHITECT_ID}")
+               f"{ID('claude_worker_fast')},{ID('claude_worker_balanced')},"
+               f"{ID('claude_senior')},{ARCHITECT_ID}")
     assert proc.returncode == 1, (
         f"an operational shortage exited {proc.returncode}; 2 means the caller's "
         f"input was wrong, and it was not")
@@ -1697,8 +1699,8 @@ def test_d18_an_operational_shortage_is_a_terminal_not_invalid_input():
 
     out = r(task_class="IMPLEMENTATION", complexity=1, uncertainty=1, blast_radius=1,
             flags=["bridge_down"], prior_failures=4,
-            prior_models=["claude-haiku-4-5-20251001", "claude-sonnet-5",
-                          "claude-opus-5", ARCHITECT_ID])
+            prior_models=[ID("claude_worker_fast"), ID("claude_worker_balanced"),
+                          ID("claude_senior"), ARCHITECT_ID])
     assert out["terminal"] in TERMINAL_STATES
     assert out["selected_model"] is None and out["requires_human_confirmation"]
 
@@ -1744,7 +1746,7 @@ def test_d22_a_production_hotfix_dispatches_now_and_owes_the_confirmation():
     # And a review that cannot be trusted still blocks, incident or not.
     degraded = r(task_class="DEBUGGING", complexity=1, uncertainty=2, blast_radius=3,
                  reversibility=0, flags=["production_hotfix", "auth_sensitive"],
-                 unavailable_models=["claude-opus-5", "gpt-5.6-sol"])
+                 unavailable_models=[ID("claude_senior"), ID("openai_reasoning")])
     assert degraded["review"]["review_depth_reduced"], "probe drifted"
     assert degraded["requires_human_confirmation"]
     assert not degraded["human_confirmation_deferred"]
@@ -1769,10 +1771,10 @@ def test_d20_a_shortage_never_buries_a_reason_the_caller_can_act_on():
     # subject of a test must never be its own precondition. It is also the only
     # positive coverage `SUPPLY_EXHAUSTED` has, so it asserts the terminal.
     produced = r(task_class="MECHANICAL", flags=["auth_sensitive"],
-                 unavailable_models=_leave_only("claude-haiku-4-5-20251001"))
+                 unavailable_models=_leave_only(ID("claude_worker_fast")))
     remaining = sorted({m["id"] for m in CFG["models"].values()}
                        - set(produced["unavailable_models"]))
-    assert remaining == ["claude-haiku-4-5-20251001"], (
+    assert remaining == [ID("claude_worker_fast")], (
         f"precondition 'one model left' drifted: remaining={remaining}")
     assert produced["terminal"] == "SUPPLY_EXHAUSTED", (
         f"a route with one model left emitted {produced['terminal']}")
@@ -1793,7 +1795,7 @@ def test_d21_the_promotion_decision_sees_the_confidence_that_ships():
     # Same remaining pair the five-id withhold used to leave: haiku + terra.
     # The promotion fires because that pair is thin, not because five names
     # were listed.
-    keep = ("claude-haiku-4-5-20251001", "gpt-5.6-terra")
+    keep = (ID("claude_worker_fast"), ID("openai_worker_balanced"))
     out = r(task_class="MECHANICAL", flags=["review_disagreement", "unknown_root_cause"],
             unavailable_models=_leave_only(*keep))
     remaining = sorted({m["id"] for m in CFG["models"].values()} - set(out["unavailable_models"]))
@@ -1810,7 +1812,7 @@ def test_d21_the_promotion_decision_sees_the_confidence_that_ships():
     for task_class in ("MECHANICAL", "IMPLEMENTATION", "DEBUGGING"):
         for flags in ([], ["review_disagreement"], ["review_disagreement", "unknown_root_cause"]):
             for scarce in ([], [ARCHITECT_ID],
-                           _leave_only("claude-haiku-4-5-20251001", "gpt-5.6-terra")):
+                           _leave_only(ID("claude_worker_fast"), ID("openai_worker_balanced"))):
                 o = r(task_class=task_class, flags=list(flags), unavailable_models=list(scarce))
                 if o["terminal"]:
                     continue
@@ -1834,9 +1836,9 @@ def test_d20_the_emitted_confidence_matches_the_emitted_fallbacks():
     from route_task import routing_confidence
     checked = 0
     for task_class in ("MECHANICAL", "IMPLEMENTATION", "ARCHITECTURE"):
-        for scarce in ([], [ARCHITECT_ID], [ARCHITECT_ID, "claude-opus-5"],
-                       [ARCHITECT_ID, "claude-opus-5", "claude-sonnet-5",
-                        "gpt-5.6-luna", "gpt-5.6-sol"]):
+        for scarce in ([], [ARCHITECT_ID], [ARCHITECT_ID, ID("claude_senior")],
+                       [ARCHITECT_ID, ID("claude_senior"), ID("claude_worker_balanced"),
+                        ID("openai_worker_fast"), ID("openai_reasoning")]):
             for flags in ([], ["review_disagreement"], ["auth_sensitive"]):
                 task = _task(task_class=task_class, flags=list(flags),
                              unavailable_models=list(scarce))
@@ -1856,7 +1858,7 @@ def test_d20_the_retry_cap_is_not_a_configurable_suggestion():
     cap+1th attempt shipped at exit 0. A budget any config value can opt out of
     is not a budget."""
     cap = CFG["retry"]["max_total_implementation_attempts"]
-    history = ["gpt-5.6-luna"] * cap
+    history = [ID("openai_worker_fast")] * cap
     out = route(_task(task_class="MECHANICAL", prior_failures=cap,
                       prior_models=list(history)), CFG)
     assert out["requires_human_confirmation"], f"attempt {cap + 1} was dispatchable"
@@ -1875,11 +1877,11 @@ def test_d19_a_recovered_seat_plan_is_not_reported_as_exhausted():
     several plans; a shortage seen in one it discarded is not a fact about the
     one it emitted."""
     out = r(task_class="MECHANICAL", flags=["review_disagreement"],
-            unavailable_models=[ARCHITECT_ID, "claude-opus-5", "claude-sonnet-5",
-                                "gpt-5.6-luna", "gpt-5.6-sol"])
+            unavailable_models=[ARCHITECT_ID, ID("claude_senior"), ID("claude_worker_balanced"),
+                                ID("openai_worker_fast"), ID("openai_reasoning")])
     assert out["terminal"] is None, (
         f"a complete seat plan was reported as {out['terminal']}: {out['notes']}")
-    assert out["selected_model"] == "claude-haiku-4-5-20251001"
+    assert out["selected_model"] == ID("claude_worker_fast")
     assert not any("supply exhausted" in n for n in out["notes"])
 
 
@@ -2147,7 +2149,7 @@ def test_d17_an_alias_in_prior_models_identifies_nothing_and_routes_nothing():
     """
     for kw in (dict(prior_failures=1, prior_models=["senior_engineer"]),
                dict(prior_failures=0, prior_models=["senior_engineer"]),
-               dict(prior_failures=2, prior_models=["senior_engineer", "gpt-5.6-sol"])):
+               dict(prior_failures=2, prior_models=["senior_engineer", ID("openai_reasoning")])):
         out = r(task_class="REFACTORING", complexity=2, **kw)
         assert out["terminal"] == "RETRY_HISTORY_REQUIRED", kw
         assert out["excluded_prior_failures"] == [], (
@@ -2157,7 +2159,7 @@ def test_d17_an_alias_in_prior_models_identifies_nothing_and_routes_nothing():
 
     # Naming models while declaring no failures is a contradiction, not a hint.
     contradiction = r(task_class="REFACTORING", complexity=2, prior_failures=0,
-                      prior_models=["gpt-5.6-luna"])
+                      prior_models=[ID("openai_worker_fast")])
     assert contradiction["terminal"] == "RETRY_HISTORY_REQUIRED"
     assert contradiction["selected_model"] is None
 
@@ -2466,7 +2468,7 @@ def test_d23_native_is_looked_up_from_the_effort_that_ships():
     out = route(_task(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
                       blast_radius=3, reversibility=2, flags=["auth_sensitive"],
                       unavailable_models=[ARCHITECT_ID]), cfg)
-    assert out["selected_model"] == "claude-opus-5", "probe drifted"
+    assert out["selected_model"] == ID("claude_senior"), "probe drifted"
     assert out["selected_effort"] == "MAX", "probe drifted"
     assert out["selected_effort_effective"] == "HIGH", (
         f"the cap did not apply: {out['selected_effort_effective']}")
@@ -2519,7 +2521,7 @@ def test_d23_a_merged_ceiling_row_reads_coherently():
     ids = sorted(m["id"] for m in cfg["models"].values())
     out = route(_task(task_class="MECHANICAL", complexity=3, uncertainty=3,
                       blast_radius=3, reversibility=3,
-                      unavailable_models=sorted(set(ids) - {"grok-4.6"})), cfg)
+                      unavailable_models=sorted(set(ids) - {ID("xai_frontier")})), cfg)
     assert out["review"]["independence_compromised"], "probe drifted"
     shared = [r for r in out["effort_ceiling_applied"]
               if r["floor_broken"] == "review.CRITICAL.effort"]
@@ -2566,7 +2568,7 @@ def test_d23_a_capped_reviewer_seat_gates_on_a_live_route():
             unavailable_models=[ARCHITECT_ID])
     assert out["terminal"] is None, f"probe went terminal: {out['terminal']}"
     assert out["review"]["band"] == "CRITICAL"
-    assert "grok-4.6" in out["review"]["reviewer_models"], (
+    assert ID("xai_frontier") in out["review"]["reviewer_models"], (
         f"probe drifted; reviewers are {out['review']['reviewer_models']}")
 
     capped = [rec for rec in out["effort_ceiling_applied"] if rec["floor_broken"]]
@@ -2609,9 +2611,9 @@ def test_d23_worker_clamp_reads_peek_not_the_provisional_resolved_map():
     cfg = {**CFG, "models": {**CFG["models"], "claude_worker_balanced": {
         **CFG["models"]["claude_worker_balanced"], "effort_ceiling": "LOW"}}}
     out = route(_task(task_class="MIGRATION", flags=["review_disagreement"],
-                      unavailable_models=_leave_only("claude-sonnet-5")), cfg)
+                      unavailable_models=_leave_only(ID("claude_worker_balanced"))), cfg)
     assert out["terminal"] is None, f"probe went terminal: {out['terminal']}"
-    assert out["selected_model"] == "claude-sonnet-5"
+    assert out["selected_model"] == ID("claude_worker_balanced")
     assert out["selected_effort"] == "HIGH"
     assert out["selected_effort_effective"] == "LOW", (
         f"worker clamp missed a LOW ceiling: effective={out['selected_effort_effective']} "
@@ -2620,7 +2622,7 @@ def test_d23_worker_clamp_reads_peek_not_the_provisional_resolved_map():
     worker_recs = [rec for rec in out["effort_ceiling_applied"]
                    if rec["role"] == out["selected_role"]]
     assert worker_recs, f"worker clamp wrote nothing: {out['effort_ceiling_applied']}"
-    assert worker_recs[0]["model"] == "claude-sonnet-5"
+    assert worker_recs[0]["model"] == ID("claude_worker_balanced")
     assert worker_recs[0]["requested"] == "HIGH"
     assert worker_recs[0]["capped_at"] == "LOW"
 
@@ -2636,7 +2638,7 @@ def test_d23_the_same_role_writes_one_ceiling_row():
     # test is about.
     out = r(task_class="MECHANICAL", complexity=3, uncertainty=3,
             blast_radius=3, reversibility=3, runtime="grok",
-            unavailable_models=_leave_only("grok-4.6"))
+            unavailable_models=_leave_only(ID("xai_frontier")))
     roles = [rec["role"] for rec in out["effort_ceiling_applied"]]
     assert len(roles) == len(set(roles)), (
         f"same seat twice: {out['effort_ceiling_applied']}")

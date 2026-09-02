@@ -31,6 +31,7 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ID = lambda key: CFG["models"][key]["id"]                        # noqa: E731
 ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 REGISTRY_IDS = {model["id"] for model in CFG["models"].values()}
 
@@ -169,7 +170,7 @@ def test_low_confidence_escalates_and_raises_ask_effort():
     # (yaml:47-63 / route_task.py:1399-1421 — P1-F1's measured arithmetic)
     out = route(_t(task_class="DEBUGGING", uncertainty=3,
                    flags=["unknown_root_cause"], prior_failures=2,
-                   prior_models=["gpt-5.6-luna", "grok-4.6"]), CFG)
+                   prior_models=[ID("openai_worker_fast"), ID("xai_frontier")]), CFG)
     assert out["routing_confidence"] == 0.50
     assert out["terminal"] == "ESCALATE_ROUTING"
     ask = _advisory(out)["policy_ask"]
@@ -180,7 +181,7 @@ def test_low_confidence_escalates_and_raises_ask_effort():
 def test_confidence_boundary_at_060_is_not_low():
     # 0.95 - 0.20 - 0.15 = 0.60; strict '<' means no escalation
     out = route(_t(task_class="DEBUGGING", uncertainty=3, prior_failures=2,
-                   prior_models=["gpt-5.6-luna", "grok-4.6"]), CFG)
+                   prior_models=[ID("openai_worker_fast"), ID("xai_frontier")]), CFG)
     assert out["routing_confidence"] == 0.60
     assert out["terminal"] != "ESCALATE_ROUTING"
     assert ("orchestrator_low_confidence"
@@ -218,14 +219,14 @@ def _route_with_host(model, effort=None, over=None):
 # --- comparison and advisory [DD-3] ---
 
 def test_haiku_vs_default_ask_is_at_and_silent():
-    adv = _advisory(_route_with_host("claude-haiku-4-5-20251001"))
+    adv = _advisory(_route_with_host(ID("claude_worker_fast")))
     assert adv["model_comparison"] == "at"
     assert adv["effort_comparison"] == "undeclared"
     assert adv["advisory"] == "none"
 
 
 def test_model_below_alone_triggers_upgrade():
-    adv = _advisory(_route_with_host("claude-haiku-4-5-20251001",
+    adv = _advisory(_route_with_host(ID("claude_worker_fast"),
                                      over=dict(uncertainty=3)))
     assert adv["model_comparison"] == "below"
     assert adv["advisory"] == "upgrade_recommended"
@@ -265,12 +266,12 @@ def test_effort_undeclared_with_max_ask_stays_none_in_decision_layer():
 
 def test_family_mismatch_with_runtime_is_loud():
     with pytest.raises(ValidationError):
-        _route_with_host("gpt-5.6-sol")
+        _route_with_host(ID("openai_reasoning"))
 
 
 def test_ceiling_violation_is_loud():
     with pytest.raises(ValidationError):
-        _route_with_host("grok-4.6", "MAX", over=dict(runtime="grok"))
+        _route_with_host(ID("xai_frontier"), "MAX", over=dict(runtime="grok"))
 
 
 def test_unrecognized_model_skips_family_and_ceiling_checks():
@@ -303,17 +304,17 @@ def test_undeclared_preserves_legacy_hash_by_key_omission():
 
 
 def test_whitespace_padded_registered_model_is_normalized_for_lookup_and_hash():
-    plain = _route_with_host("claude-haiku-4-5-20251001")
+    plain = _route_with_host(ID("claude_worker_fast"))
     padded = _route_with_host(" \tclaude-haiku-4-5-20251001\n ")
     assert padded["host_seat_advisory"]["declared"] == {
-        "model": "claude-haiku-4-5-20251001", "effort": None}
+        "model": ID("claude_worker_fast"), "effort": None}
     assert padded["host_seat_advisory"]["model_comparison"] == "at"
     assert padded["request_sha256"] == plain["request_sha256"]
 
 
 def test_whitespace_padded_registered_model_cannot_bypass_policy_validation():
     with pytest.raises(ValidationError, match="family"):
-        _route_with_host(" gpt-5.6-sol ")
+        _route_with_host(f" {ID('openai_reasoning')} ")
     with pytest.raises(ValidationError, match="ceiling"):
         _route_with_host("\tgrok-4.6\n", "MAX", over=dict(runtime="grok"))
 
@@ -339,7 +340,7 @@ def _below_note(out):
 
 
 def test_below_note_is_id_free_and_pinned_both_axes():
-    out = _route_with_host("claude-haiku-4-5-20251001", "HIGH",
+    out = _route_with_host(ID("claude_worker_fast"), "HIGH",
                            over=dict(uncertainty=3, blast_radius=2))
     note = _below_note(out)
     assert "model tier 0 < 1" in note and "effort HIGH < MAX" in note
@@ -349,7 +350,7 @@ def test_below_note_is_id_free_and_pinned_both_axes():
 def test_below_note_clauses_per_axis():
     # Model only: MAX effort at the MAX ask. Clauses join with "; "; the
     # raised_by suffix contains only codes, so the prose has no effort clause.
-    out = _route_with_host("claude-haiku-4-5-20251001", "MAX",
+    out = _route_with_host(ID("claude_worker_fast"), "MAX",
                            over=dict(uncertainty=3, blast_radius=2))
     note = _below_note(out)
     assert "model tier 0 < 1" in note
@@ -377,7 +378,7 @@ def test_ia1_route_is_invariant_to_host_seat():
                 flags=["auth_sensitive"])
     a = route(_t(**over), CFG)
     t = _t(**over)
-    t._host_seat = {"model": "claude-haiku-4-5-20251001", "effort": "LOW"}
+    t._host_seat = {"model": ID("claude_worker_fast"), "effort": "LOW"}
     b = route(t, CFG)
     volatile = {"host_seat_advisory", "request_sha256",
                 "decision_fingerprint", "notes", "rationale"}
@@ -391,11 +392,11 @@ def test_terminal_keeps_declared_and_is_path_precise():
     roles = list(CFG["role_tiers"])
     t = _t(task_class="ARCHITECTURE", uncertainty=3,
            unavailable_roles=roles)  # Supply-exhausted terminal.
-    t._host_seat = {"model": "claude-sonnet-5", "effort": "HIGH"}
+    t._host_seat = {"model": ID("claude_worker_balanced"), "effort": "HIGH"}
     out = route(t, CFG)
     assert out["terminal"] is not None
     adv = out["host_seat_advisory"]
-    assert adv["declared"]["model"] == "claude-sonnet-5"
+    assert adv["declared"]["model"] == ID("claude_worker_balanced")
     assert isinstance(adv["policy_ask"]["tier"], int)
     assert adv["model_comparison"] == "below"  # Tier 1 < 3.
     # Path precision: after scrubbing only declared.model, that id is absent
@@ -411,7 +412,7 @@ def test_text_advisory_line_is_conditional_and_id_free(capsys):
     argv = ["--class", "IMPLEMENTATION", "--complexity", "1",
             "--uncertainty", "1", "--blast-radius", "2",
             "--reversibility", "1"]
-    rc = main(argv + ["--host-model", "claude-haiku-4-5-20251001",
+    rc = main(argv + ["--host-model", ID("claude_worker_fast"),
                       "--host-effort", "HIGH"])
     assert rc == 0  # HIGH band, no gate.
     txt = capsys.readouterr().out
@@ -476,12 +477,12 @@ def test_cli_host_flags_declare_on_flags_path(capsys):
     rc = main(["--class", "IMPLEMENTATION", "--complexity", "1",
                "--uncertainty", "1", "--blast-radius", "1",
                "--reversibility", "1",
-               "--host-model", "claude-haiku-4-5-20251001",
+               "--host-model", ID("claude_worker_fast"),
                "--host-effort", "HIGH", "--format", "json"])
     assert rc == 0
     out = _json.loads(capsys.readouterr().out)
     assert out["host_seat_advisory"]["declared"] == {
-        "model": "claude-haiku-4-5-20251001", "effort": "HIGH"}
+        "model": ID("claude_worker_fast"), "effort": "HIGH"}
 
 
 UNRECOGNIZED_NOTE = "host seat model is not in the registry"
