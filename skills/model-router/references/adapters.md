@@ -584,20 +584,27 @@ Two caller-visible consequences, both deliberate:
   not leave a stray file where the caller declared there was none. Missing
   parent directories under `--artifact-root` are created with it.
 
-**A Claude seat cannot satisfy `--require-artifact` today.** Measured
+**A Claude seat's output cannot be certified with `--require-artifact`, and
+that is a property of the seat rather than of the contract.** Measured
 2026-09-02 on Claude Code 2.1.258 / Darwin: a `claude -p` seat at
-`--permission-mode acceptEdits` writes exactly the content it was asked for and
-installs it on a **new inode**, replacing a pre-existing single-linked file
-rather than truncating it in place — with and without `--strict-mcp-config`, so
-this is a property of the file tools and not of any recipe. Such an attempt
-grades `INVALID_OUTPUT` / `artifact_identity_replaced:<path>`, and since no
-digest is recorded on that path the receipt proves nothing about the content
-either way. Asking that seat for a shell that truncates in place does not
-rescue it: `acceptEdits` does not auto-approve the terminal tool, and the
-attempt grades `artifact_missing` instead. Certify a Claude seat's output by
-**content** — hash the file yourself and record the hash beside the receipt —
-and keep `--require-artifact` for seats whose tools write in place. The
-verification ledger carries the measurement and the two receipts behind it.
+`--permission-mode acceptEdits`, asked to overwrite a pre-existing
+single-linked file, writes exactly the content it was asked for and installs it
+on a **new inode** — with and without `--strict-mcp-config`, so this is not a
+property of any recipe, and only the tool that prompt drove was exercised. The
+same prompt through `codex exec -s workspace-write` truncates in place and
+keeps its inode, so the artifact contract certifies that seat normally; the
+limitation is the Claude file-writing path, not the check. A Claude attempt
+under `--require-artifact` therefore grades `INVALID_OUTPUT` /
+`artifact_identity_replaced:<path>` with no digest recorded, so the receipt
+proves nothing about the content either way. Asking that seat for a shell that
+truncates in place does not rescue it: `acceptEdits` does not auto-approve the
+terminal tool, and an absent reserved path then grades `artifact_missing` (a
+pre-existing one that the child never touches grades `artifact_unchanged`).
+So: certify a Claude seat's output by a **content hash recorded beside the
+receipt**, and if a workflow needs supervisor-certified artifacts, do not seat
+a Claude worker for it. `write_verified: true` on a direction says that seat
+may be given write work — the routing question — never that the supervisor can
+certify what it wrote. The verification ledger carries both measurements.
 
 **The supervisor's own I/O is checked like anyone else's.** Two consequences
 a caller can see:
@@ -719,7 +726,8 @@ python3 "$SKILL_DIR"/scripts/dispatch_agent.py run \
 
 `<uuid>` is one value used three times — grok's `-s`, the supervisor's
 `--session-id`, and the last path segment of the evidence directory. A seat
-that produces files adds `--require-artifact` / `--artifact-root`, and a
+that produces files adds `--require-artifact` / `--artifact-root` — except a
+Claude seat, whose output that contract cannot certify (above) — and a
 write-capable seat adds `--expect-effective-agent` so a silently inherited
 read-only default agent cannot be recorded as success.
 

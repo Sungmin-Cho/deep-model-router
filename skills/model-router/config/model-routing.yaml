@@ -935,35 +935,61 @@ verification_ledger:
         variant this row does not vouch for. Receipts:
         docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/.
 
-    - item: "Claude seat write axis, and why --require-artifact cannot certify it"
+    - item: "Claude child write axis (transports.codex.to_claude.write_verified, transports.grok.to_claude.write_verified)"
       status: verified
       probed_on: 2026-09-02
+      host: "Claude Code 2.1.258 on Darwin 25.6.0 arm64 (argv-level; the child is
+        what was measured, and a child's file tools do not depend on which host
+        spawned it)"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode acceptEdits --strict-mcp-config"
+      receipts: "docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/ (local, gitignored)"
+      probes:
+        - { attempt_id: "p5-strict-worker", outcome: INVALID_OUTPUT, note: "artifact_identity_replaced; no digest recorded" }
+        - { attempt_id: "p5-strict-worker-2", outcome: INVALID_OUTPUT, note: "retry asked for the terminal tool; acceptEdits does not auto-approve it; artifact_missing" }
       evidence: >
-        Two facts, measured on Claude Code 2.1.258 / Darwin 25.6.0 arm64.
-        WRITE AXIS: a `claude -p ... --permission-mode acceptEdits
-        --strict-mcp-config` seat writes exactly the content it is asked for.
-        Two runs against a pre-existing single-linked file — one with the
-        token, one without — each left the file containing exactly MADE-19.
-        CERTIFICATION: both runs installed that content on a NEW inode
-        (299749070 -> 299749158 with the token; 299749197 -> 299749738
-        without), so the file tools replace rather than truncate in place, and
-        that is a property of the tools, not of --strict-mcp-config.
-        dispatch_agent pins one inode before spawn, so such an attempt grades
-        INVALID_OUTPUT artifact_identity_replaced with NO digest recorded --
-        the receipt proves nothing about the content either way. That is
-        exactly what the grok-hosted p5-strict-worker receipt shows; its retry
-        p5-strict-worker-2 asked for the terminal tool, which acceptEdits does
-        not auto-approve, and graded artifact_missing. A grok-hosted rerun
-        without the artifact contract was attempted twice on 2026-09-02 and
-        both grok turns ended stopReason: cancelled before the supervisor was
-        spawned (a headless grok turn cancels on a permission prompt it cannot
-        show), so no grok-host write receipt exists. The write axis therefore
-        rests on the two content measurements above, which are argv-level and
-        host-independent, while the direction's transport stays verified by
-        p1-fable51-id / p2a-strict / p3-fable51-reviewer. Callers certify a
-        Claude seat's output by a content hash recorded beside the receipt,
-        never by --require-artifact (references/adapters.md, "Dispatch
-        contract").
+        WRITE AXIS -- verified, by content, without a receipt. Two direct runs
+        of the argv above against a pre-existing single-linked file (one with
+        --strict-mcp-config, one without) each left the file containing exactly
+        MADE-19. No dispatch receipt carries that: both runs were plain shell
+        invocations, and the two supervised attempts listed under `probes`
+        graded INVALID_OUTPUT for the reason below. Two attempts to rerun the
+        supervised probe FROM a grok host on 2026-09-02 both ended
+        stopReason: cancelled before the supervisor was spawned (a headless
+        grok turn cancels on a permission prompt it cannot show), so no
+        grok-host write receipt exists. What this row attests is therefore the
+        CHILD's write axis, which is what write_verified asks about: whether
+        this direction may seat write work.
+        CERTIFICATION -- the same two runs installed that content on a NEW
+        inode (299749070 -> 299749158 with the token; 299749197 -> 299749738
+        without), so the Claude file-writing path replaces rather than
+        truncates in place, and that is not a property of --strict-mcp-config.
+        Only the tool that prompt drove was exercised. dispatch_agent pins one
+        inode before spawn, so such an attempt grades INVALID_OUTPUT
+        artifact_identity_replaced with NO digest recorded -- the receipt
+        proves nothing about the content either way. The contrast is measured,
+        not assumed: the same prompt through codex exec -s workspace-write kept
+        its inode (see the OpenAI row), so the artifact contract is not broken
+        in general and write_verified is not withdrawn here. Callers certify a
+        Claude seat's output by a content hash recorded beside the receipt, and
+        a workflow that needs supervisor-certified artifacts does not seat a
+        Claude worker (references/adapters.md, "Dispatch contract").
+
+    - item: "OpenAI child write axis (transports.claude_code.to_openai.write_verified, transports.grok.to_openai.write_verified)"
+      status: verified
+      probed_on: 2026-09-02
+      host: "Claude Code 2.1.258 on Darwin 25.6.0 arm64 (argv-level, as above)"
+      cli_version: "codex-cli 0.152.0"
+      argv: "codex exec -m gpt-5.6-luna -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check \"<prompt>\""
+      evidence: >
+        A codex exec seat under -s workspace-write, asked to overwrite a
+        pre-existing single-linked file, left it containing exactly MADE-19 and
+        kept the SAME inode (299853529 before and after) -- it truncates in
+        place. So this child both writes and can be certified by
+        --require-artifact, which is the control that shows the Claude row's
+        limitation is a property of that child's tools rather than of the
+        artifact contract. A plain shell run, no receipt; recorded for the
+        write_verified rule in Policy._validate_write_seats.
 
     - item: "transports.codex.to_claude.mechanism (--strict-mcp-config recipe)"
       status: verified

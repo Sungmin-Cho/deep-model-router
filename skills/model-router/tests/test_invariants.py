@@ -1001,7 +1001,19 @@ def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
         if out["routing_confidence"] >= threshold:
             recovered += 1
             assert len(note) == 1, (out["routing_confidence"], promoted, out["notes"])
-            assert str(out["routing_confidence"]) in note[0], note
+            # Both numbers, at a fixed width: `str(0.8)` is a substring of the
+            # threshold's own rendering, so a note that printed only the
+            # threshold would have satisfied a looser check.
+            assert f"resolves at {out['routing_confidence']:.2f} " in note[0], note
+            assert "pre-promotion confidence " in note[0], note
+            pre = float(note[0].split("pre-promotion confidence ")[1].split(";")[0])
+            assert pre < threshold <= out["routing_confidence"], (pre, out["routing_confidence"])
+            # "the promotion stands" is the note's whole claim; a future change
+            # that un-promoted while keeping the override string would leave
+            # this green without it.
+            ladder = list(CFG["router"]["bands"])
+            assert ladder.index(out["review"]["band"]) > ladder.index(out["risk_band"]), (
+                out["review"]["band"], out["risk_band"])
         else:
             still_low += 1
             assert not note, (out["routing_confidence"], note)
