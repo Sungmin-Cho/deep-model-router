@@ -356,12 +356,22 @@ worktree where the caller explicitly accepts the risk.
 **A headless grok host must authorize the supervisor command itself.** On
 grok 1.0.13, `acceptEdits` and `dontAsk` cancelled before spawning
 `python3 dispatch_agent.py`; a bare `echo` was an auto-approved special case
-and therefore not a valid control. A full supervised grok-to-Claude write
-probe completed only when the outer grok host used `bypassPermissions` in a
-disposable, single-linked worktree with sandboxing off. Wrapping that outer
-host in the built-in workspace sandbox blocked the Claude child's keychain
-and produced `Not logged in` even without `--bare`. This is a host-launch
-recipe, not a transport mechanism or a containment claim.
+and therefore not a valid control. The controller invocation that carried the
+full supervised grok-to-Claude probe used `bypassPermissions` with sandboxing
+off. That is what was run, not what is required: short `python3` probes on the
+same host also passed the same gate under `auto`, and under `acceptEdits` with
+`--allow "Bash(python3)"`. Neither narrower mode was exercised end-to-end with
+the full supervisor, so they are a measured opening rather than a recommended
+recipe. Wrapping that outer host in the built-in workspace sandbox blocked the
+Claude child's keychain and produced `Not logged in` even without `--bare`.
+
+The child's receipt does not observe the outer host's permission mode — see
+"the effective permission mode is not observable at all" below — so no receipt
+here proves which mode the controller ran under. Nor was the acceptance run
+contained: its `--child-cwd` was a throwaway `/private/tmp/d14-supervisor-made-unsandboxed`,
+not a worktree, and it ran with `require_single_linked_cwd: false`, so the
+pre-spawn single-link audit never executed. This is a host-launch recipe, not
+a transport mechanism and not a containment claim.
 
 #### Deriving the session evidence directory
 
@@ -470,6 +480,11 @@ The savings are environment-dependent because the flag can remove only MCP
 schemas that actually loaded: the Claude Code host and an unsandboxed grok
 host measured about 80% (64,012 to 13,490 tokens in the latter), while an
 earlier grok-host probe measured about 10% because those schemas were absent.
+That earlier ~10% figure was **not reproduced**. The 2026-09-02 re-probe from
+a grok host landed on the 80% result instead, and nothing since has produced
+the 10% one again, so its original cause is recorded rather than explained:
+read the low number as a possibility this flag has on some hosts, not as a
+second measurement standing beside the first.
 
 **To openai models:**
 

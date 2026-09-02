@@ -655,25 +655,20 @@ def _to_claude_mechanisms():
                 yield host, key, mech
 
 
-def _direction_rows(host, key="mechanism"):
+def _direction_rows(host, key="mechanism", entries=None):
     """Rows whose item names this exact seat key, not a longer sibling.
 
     `transports.{host}.to_claude.mechanism` is a prefix of
     `...mechanism_reviewer`, so a substring match would let one seat's row
-    vouch for the other's argv.
+    vouch for the other's argv. The boundary is `_whole_token`'s and not a
+    second hand-rolled one: `_` was the only separator the local version
+    rejected, so `...mechanism-reviewer` and `...mechanism.reviewer` walked
+    straight through it.
     """
     needle = f"transports.{host}.to_claude.{key}"
-    rows = []
-    for e in CFG["verification_ledger"]["entries"]:
-        item = str(e.get("item", ""))
-        idx = item.find(needle)
-        if idx < 0:
-            continue
-        end = idx + len(needle)
-        if end < len(item) and (item[end].isalnum() or item[end] == "_"):
-            continue
-        rows.append(e)
-    return rows
+    if entries is None:
+        entries = CFG["verification_ledger"]["entries"]
+    return [e for e in entries if _whole_token(needle, str(e.get("item", "")))]
 
 
 def _flags_in_order(mech: str, argv: str, where):
@@ -681,6 +676,99 @@ def _flags_in_order(mech: str, argv: str, where):
     toks = argv.split()
     positions = [toks.index(f) for f in flags]           # ValueError: a probed argv missing a shipped flag
     assert positions == sorted(positions), (where, flags, argv)
+
+
+def _flag_values(command: str) -> dict:
+    """`{flag: value}` for a whitespace-split command line; a flag followed by
+    another option, or by nothing, has no value."""
+    toks = command.split()
+    values = {}
+    for i, tok in enumerate(toks):
+        if not tok.startswith("-"):
+            continue
+        nxt = toks[i + 1] if i + 1 < len(toks) else None
+        values[tok] = None if (nxt is None or nxt.startswith("-")) else nxt
+    return values
+
+
+def _is_placeholder(value: str) -> bool:
+    return "<" in value and ">" in value
+
+
+def _assert_argv_binds_mechanism(mech: str, argv: str, where):
+    """A probed argv vouches for a shipped seat only if it carries that seat's
+    flags in order AND that seat's fixed values.
+
+    Order alone is not the seat. A reviewer's read-only property lives entirely
+    in two literal values (`plan`, `Read,Glob,Grep,LS`), so an argv running
+    `acceptEdits`, or an allow-list with `Bash` in it, would otherwise keep
+    vouching for the read-only string this repo ships. Placeholder slots
+    (`<id>`, `<mode>`, `"<prompt>"`) are per-dispatch and bind nothing."""
+    _flags_in_order(mech, argv, where)
+    probed = _flag_values(argv)
+    for flag, value in _flag_values(mech).items():
+        if value is None or _is_placeholder(value):
+            continue
+        assert probed.get(flag) == value, (where, flag, value, probed.get(flag))
+
+
+def _assert_direction_row_binds(mech: str, row, where):
+    """One verified direction row, checked against the seat it vouches for.
+
+    The row's own `attempt_id` must be one of the probes it lists — a row citing
+    an attempt that appears in no probe names a receipt nothing here read — and
+    every listed probe must have succeeded, because a row rests on its probes
+    and an outcome that is not `SUCCEEDED` supports nothing."""
+    assert DATE_RE.match(str(row.get("probed_on", ""))), (where, row.get("item"))
+    assert str(row.get("cli_version", "")).strip(), (where, row.get("item"))
+    attempt = str(row.get("attempt_id", ""))
+    assert ATTEMPT_ID_RE.match(attempt), (where, attempt)
+    _assert_argv_binds_mechanism(mech, str(row["argv"]), (where, "argv"))
+    probes = row.get("probes") or []
+    assert probes, (where, "a direction row must list its probes")
+    listed = [str(p.get("attempt_id", "")) for p in probes]
+    assert attempt in listed, (where, "row attempt_id is in none of its probes",
+                               attempt, listed)
+    for probe in probes:
+        assert ATTEMPT_ID_RE.match(str(probe.get("attempt_id", ""))), (where, probe)
+        assert probe.get("outcome") == "SUCCEEDED", (where, probe)
+        if probe.get("vouches_for_recipe", True):         # a baseline without the token is listed, not vouching [P2-sol-F5]
+            _assert_argv_binds_mechanism(mech, str(probe["argv"]),
+                                         (where, probe["attempt_id"]))
+
+
+CLAUDE_REVIEWER_READ_ONLY_TOOLS = ("Glob", "Grep", "LS", "Read")
+CLAUDE_WRITE_CAPABLE_TOOLS = ("Bash", "Edit", "MultiEdit", "NotebookEdit", "Task", "Write")
+
+
+def _reviewer_seat_violations(reviewer: str, general: str) -> list:
+    """Why a `claude -p` reviewer string is not read-only, read off the string
+    itself rather than diffed against a pinned copy of it.
+
+    `GROK_TO_CLAUDE_REVIEWER` is a byte pin and nothing more: edit the constant
+    and the config together and a seat carrying `acceptEdits` or `Bash` ships
+    green. These properties do not move when both move. The general seat is
+    checked here too, because the reviewer is only meaningful as the *other*
+    string — a general mechanism pinned to `plan` or grown an allow-list has
+    quietly replaced the write-capable seat rather than added to it."""
+    violations = []
+    flags = _flag_values(reviewer)
+    if flags.get("--permission-mode") != "plan":
+        violations.append(f"reviewer permission mode is {flags.get('--permission-mode')!r}")
+    allowed = flags.get("--allowedTools") or ""
+    if tuple(sorted(t for t in allowed.split(",") if t)) != CLAUDE_REVIEWER_READ_ONLY_TOOLS:
+        violations.append(f"reviewer allow-list is {allowed!r}")
+    if "--strict-mcp-config" not in reviewer.split():
+        violations.append("reviewer dropped --strict-mcp-config")
+    for tool in CLAUDE_WRITE_CAPABLE_TOOLS:
+        if _whole_token(tool, reviewer):
+            violations.append(f"reviewer names the write-capable tool {tool}")
+    general_flags = _flag_values(general)
+    if not _is_placeholder(general_flags.get("--permission-mode") or ""):
+        violations.append("the general seat lost its permission-mode slot")
+    if "--allowedTools" in general_flags:
+        violations.append("the general seat grew an allow-list")
+    return violations
 
 
 def test_no_variadic_flag_can_swallow_a_to_claude_prompt():
@@ -708,23 +796,15 @@ def test_no_variadic_flag_can_swallow_a_to_claude_prompt():
 def test_strict_mcp_token_and_direction_ledger_row_come_together():
     """The token ships only with a verified row that names the direction by
     machine path, quotes the exact probed argv (flags in the same order),
-    dates the probe, and lists every probe it rests on."""
+    dates the probe, and lists every probe it rests on — including the one its
+    own `attempt_id` names, all of them successful, each vouching argv carrying
+    the seat's fixed values and not merely its flags."""
     for host, key, mech in _to_claude_mechanisms():
         rows = [r for r in _direction_rows(host, key) if r.get("status") == "verified"]
         has_token = "--strict-mcp-config" in mech.split()
         assert has_token == bool(rows), (host, has_token, [r.get("item") for r in rows])
         for row in rows:
-            assert DATE_RE.match(str(row.get("probed_on", ""))), row.get("item")
-            assert str(row.get("cli_version", "")).strip(), row.get("item")
-            assert ATTEMPT_ID_RE.match(str(row.get("attempt_id", ""))), row.get("attempt_id")
-            _flags_in_order(mech, str(row["argv"]), (host, "argv"))
-            probes = row.get("probes") or []
-            assert probes, (host, "a direction row must list its probes")
-            for probe in probes:
-                assert ATTEMPT_ID_RE.match(str(probe.get("attempt_id", ""))), probe
-                assert probe.get("outcome") == "SUCCEEDED", probe
-                if probe.get("vouches_for_recipe", True):         # a baseline without the token is listed, not vouching [P2-sol-F5]
-                    _flags_in_order(mech, str(probe["argv"]), (host, probe["attempt_id"]))
+            _assert_direction_row_binds(mech, row, (host, key))
 
 
 GROK_TO_CLAUDE_GENERAL = (
@@ -740,8 +820,14 @@ ADAPTERS_SECTION_OF_HOST = {"codex": "### Codex", "grok": "### grok"}
 def _section_claude_fences(text: str, header: str) -> list[list[str]]:
     """Ordered token lists of every `claude -p` fence in one adapters.md
     section, with line-continuation backslashes dropped. Each grok seat has
-    its own fence; Codex still has exactly one."""
-    start = text.index(header)
+    its own fence; Codex still has exactly one.
+
+    The header is anchored as a whole Markdown line. `text.index("### grok")` is
+    a prefix match, so a reordering that put `### grok runtime` first would have
+    validated a different section's fences without a word of complaint."""
+    anchor = re.search(r"^" + re.escape(header) + r"$", text, re.M)
+    assert anchor, (header, "no such section header line")
+    start = anchor.start()
     nxt = re.search(r"\n### ", text[start + len(header):])
     body = text[start: start + len(header) + (nxt.start() if nxt else len(text))]
     fences = re.findall(r"```bash\n(.*?)```", body, re.S)
@@ -773,6 +859,121 @@ def test_adapters_to_claude_fences_mirror_their_own_direction():
     codex_fences = _section_claude_fences(text, "### Codex")
     assert len(codex_fences) == 1
     assert codex_fences[0] == CFG["transports"]["codex"]["to_claude"]["mechanism"].split()
+
+
+# ---------------------------------------------------------------------------
+# The seat-binding helpers above are what actually decides whether a ledger row
+# vouches for a shipped string. Each negative below is a way a widened seat used
+# to stay green.
+# ---------------------------------------------------------------------------
+
+_REVIEWER_ARGV = ("claude -p --model anymodel --effort high --permission-mode plan "
+                  "--allowedTools Read,Glob,Grep,LS --strict-mcp-config")
+
+
+def _reviewer_row():
+    return {
+        "item": "transports.grok.to_claude.mechanism_reviewer",
+        "status": "verified",
+        "probed_on": "2026-09-02",
+        "cli_version": "0.0.0 (test)",
+        "attempt_id": "row-attempt",
+        "argv": _REVIEWER_ARGV,
+        "probes": [{"attempt_id": "row-attempt", "argv": _REVIEWER_ARGV,
+                    "outcome": "SUCCEEDED"}],
+    }
+
+
+def test_direction_rows_stop_at_a_hyphen_or_dot_boundary():
+    """`_direction_rows` had its own hand-rolled boundary (`isalnum() or "_"`),
+    so `...mechanism-reviewer` and `...mechanism.reviewer` still matched the
+    general seat's needle and one seat's row vouched for another's argv.
+    `_whole_token` already carries the right class."""
+    entries = [
+        {"item": "transports.grok.to_claude.mechanism-reviewer"},
+        {"item": "transports.grok.to_claude.mechanism.reviewer"},
+        {"item": "transports.grok.to_claude.mechanism_reviewer"},
+        {"item": "transports.grok.to_claude.mechanism (--strict-mcp-config recipe)"},
+    ]
+    matched = [r["item"] for r in _direction_rows("grok", "mechanism", entries=entries)]
+    assert matched == ["transports.grok.to_claude.mechanism (--strict-mcp-config recipe)"]
+
+
+def test_section_lookup_anchors_the_header_as_a_whole_markdown_line():
+    """`text.index("### grok")` is a prefix match: reorder the file so
+    `### grok runtime` comes first and the fence check silently validates a
+    different section."""
+    text = ("### grok runtime\n\n```bash\nclaude -p --model DECOY\n```\n\n"
+            "### grok\n\n```bash\nclaude -p --model REAL\n```\n")
+    assert _section_claude_fences(text, "### grok") == [
+        ["claude", "-p", "--model", "REAL"]]
+
+
+def test_argv_binding_rejects_a_widened_reviewer_seat():
+    """Flag order alone is not the seat. A reviewer's read-only property lives
+    entirely in two literal values, so an argv running `acceptEdits` or an
+    allow-list containing `Bash` must stop vouching for the shipped string."""
+    _assert_argv_binds_mechanism(GROK_TO_CLAUDE_REVIEWER, _REVIEWER_ARGV, "control")
+    for bad in (
+        _REVIEWER_ARGV.replace("--permission-mode plan", "--permission-mode acceptEdits"),
+        _REVIEWER_ARGV.replace("Read,Glob,Grep,LS", "Read,Glob,Grep,LS,Bash"),
+        _REVIEWER_ARGV.replace("Read,Glob,Grep,LS", "Bash"),
+    ):
+        with pytest.raises(AssertionError):
+            _assert_argv_binds_mechanism(GROK_TO_CLAUDE_REVIEWER, bad, "negative")
+
+
+def test_direction_row_binding_requires_its_own_attempt_and_successful_probes():
+    """A row names one `attempt_id` and lists the probes it rests on. Nothing
+    tied the two together, so a row could cite an attempt that appears in no
+    probe, and a probe list could carry an outcome that is not a success."""
+    _assert_direction_row_binds(GROK_TO_CLAUDE_REVIEWER, _reviewer_row(), "control")
+
+    foreign = _reviewer_row()
+    foreign["attempt_id"] = "some-other-attempt"
+    with pytest.raises(AssertionError):
+        _assert_direction_row_binds(GROK_TO_CLAUDE_REVIEWER, foreign, "negative")
+
+    failed = _reviewer_row()
+    failed["probes"][0]["outcome"] = "FAILED"
+    with pytest.raises(AssertionError):
+        _assert_direction_row_binds(GROK_TO_CLAUDE_REVIEWER, failed, "negative")
+
+    widened = _reviewer_row()
+    widened["probes"][0]["argv"] = _REVIEWER_ARGV.replace(
+        "Read,Glob,Grep,LS", "Read,Glob,Grep,LS,Bash")
+    with pytest.raises(AssertionError):
+        _assert_direction_row_binds(GROK_TO_CLAUDE_REVIEWER, widened, "negative")
+
+
+def test_grok_to_claude_reviewer_seat_is_structurally_read_only():
+    """Derived from the YAML, never compared to `GROK_TO_CLAUDE_REVIEWER`: the
+    byte pin is only a pin, and editing it together with the config would let a
+    write-capable reviewer seat ship green."""
+    spec = CFG["transports"]["grok"]["to_claude"]
+    assert _reviewer_seat_violations(spec["mechanism_reviewer"], spec["mechanism"]) == []
+
+
+def test_the_reviewer_seat_property_survives_moving_the_byte_pin():
+    """The same properties, asserted against strings the config does not hold —
+    this is what makes the test above more than a second copy of the pin."""
+    good = GROK_TO_CLAUDE_REVIEWER
+    assert _reviewer_seat_violations(good, GROK_TO_CLAUDE_GENERAL) == []
+    for bad in (
+        good.replace("--permission-mode plan", "--permission-mode acceptEdits"),
+        good.replace("Read,Glob,Grep,LS", "Read,Glob,Grep,LS,Bash"),
+        good.replace("Read,Glob,Grep,LS", "Read,Write"),
+        good.replace(" --strict-mcp-config", ""),
+    ):
+        assert _reviewer_seat_violations(bad, GROK_TO_CLAUDE_GENERAL) != [], bad
+    # The general seat must stay the write-capable one: pinning its mode to
+    # `plan`, or growing an allow-list, is the reviewer swallowing the worker.
+    for general in (
+        GROK_TO_CLAUDE_GENERAL.replace("--permission-mode <mode>", "--permission-mode plan"),
+        GROK_TO_CLAUDE_GENERAL.replace("--strict-mcp-config",
+                                       "--allowedTools Read --strict-mcp-config"),
+    ):
+        assert _reviewer_seat_violations(good, general) != [], general
 
 
 def test_every_write_verified_direction_is_bound_to_a_verified_ledger_row():

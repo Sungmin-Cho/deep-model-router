@@ -24,7 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude bridge boot savings are documented as environment-dependent: the
   strict flag removed about 80% when global MCP connectors actually
   handshook, while an earlier grok-host probe saved about 10% because those
-  schemas were absent.
+  schemas were absent. That earlier ~10% result was not reproduced — the
+  re-probe from a grok host measured the 80% figure instead — and its
+  original cause remains unresolved.
 
 ### Fixed
 
