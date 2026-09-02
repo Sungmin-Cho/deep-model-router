@@ -667,14 +667,26 @@ def _flags_in_order(mech: str, argv: str, where):
     assert positions == sorted(positions), (where, flags, argv)
 
 
-def test_to_claude_recipes_end_with_the_prompt_and_carry_no_variadic_flag():
-    """A variadic claude flag swallows a positional prompt that follows it.
-    The shipped string carries none; `--mcp-config` is a caller variant."""
+def test_no_variadic_flag_can_swallow_a_to_claude_prompt():
+    """A variadic claude flag consumes values until the next option, so one
+    left open before the positional prompt eats the prompt — a hang that looks
+    exactly like a slow model.
+
+    The rule is termination, not absence. Banning variadic flags outright was
+    the first version of this test, and it is stricter than the constraint: a
+    read-only reviewer seat needs `--allowedTools Read,Glob,Grep,LS`, which is
+    perfectly safe when a later option closes the list. `--flag=value` is
+    self-terminating."""
     for host, key, mech in _to_claude_mechanisms():
         toks = mech.split()
         assert toks[-1] == '"<prompt>"', (host, key, toks[-1])
-        bad = [t for t in toks if t.split("=", 1)[0] in CLAUDE_VARIADIC_FLAGS]
-        assert not bad, (host, key, bad)
+        for i, tok in enumerate(toks[:-1]):
+            if "=" in tok or tok not in CLAUDE_VARIADIC_FLAGS:
+                continue
+            assert any(t.startswith("-") for t in toks[i + 1:-1]), (
+                host, key,
+                f"{tok} is variadic and nothing closes its values before the "
+                f"positional prompt")
 
 
 def test_strict_mcp_token_and_direction_ledger_row_come_together():
