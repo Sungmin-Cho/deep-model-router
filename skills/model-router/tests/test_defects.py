@@ -676,16 +676,17 @@ BINDING_SWEEP = [
 # never created any: it varied runtime and bridge_down but never marked a model
 # unavailable, so every collision the code could actually produce lived outside
 # the sweep. Withholding models is the cheapest way to reach that state.
-_MODEL_IDS = sorted(m["id"] for m in CFG["models"].values())
+_ID = lambda key: CFG["models"][key]["id"]                      # noqa: E731
+_DISPATCHABLE = sorted(m["id"] for m in CFG["models"].values() if m.get("dispatchable", True))
 SCARCITY_SWEEP = [
     [],
-    [_MODEL_IDS[0]],
-    _MODEL_IDS[:2],
-    _MODEL_IDS[:3],
-    _MODEL_IDS[1:4],
-    _MODEL_IDS[2:5],
-    sorted(set(_MODEL_IDS) - {"claude-opus-5", "gpt-5.6-sol", "grok-4.6"}),
-    sorted(set(_MODEL_IDS) - {"grok-4.6"}),
+    [_ID("claude_architect")],                                                  # was _MODEL_IDS[0]
+    [_ID("claude_architect"), _ID("claude_worker_fast")],                       # was [:2]
+    [_ID("claude_architect"), _ID("claude_worker_fast"), _ID("claude_senior")], # was [:3]
+    [_ID("claude_worker_fast"), _ID("claude_senior"), _ID("claude_worker_balanced")],  # was [1:4]
+    [_ID("claude_senior"), _ID("claude_worker_balanced")],                      # was [2:5] minus the id-spelling-only row
+    sorted(set(_DISPATCHABLE) - {"claude-opus-5", "gpt-5.6-sol", "grok-4.6"}),
+    sorted(set(_DISPATCHABLE) - {"grok-4.6"}),
 ]
 
 

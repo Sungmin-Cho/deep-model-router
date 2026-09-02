@@ -41,6 +41,8 @@ from route_task import (  # noqa: E402
 
 CFG = load_config()
 MODEL_IDS = sorted(m["id"] for m in CFG["models"].values())
+ID = lambda key: CFG["models"][key]["id"]                       # noqa: E731
+DISPATCHABLE_IDS = sorted(m["id"] for m in CFG["models"].values() if m.get("dispatchable", True))
 FAMILY_OF = {m["id"]: m["family"] for m in CFG["models"].values()}
 LOCAL_FAMILY = {
     rt: FAMILY_OF[CFG["models"][next(iter(CFG["role_bindings"][spec["degraded_binding"]].values()))]["id"]]
@@ -82,18 +84,18 @@ def _all_but(*keep):
     """Withhold everything except `keep`. Index slices went stale the moment a
     model was appended to the registry — the new id sorted last and no slice
     reached it."""
-    return sorted(set(MODEL_IDS) - set(keep))
+    return sorted(set(DISPATCHABLE_IDS) - set(keep))
 
 
 SCARCITY = [
     [],
-    [MODEL_IDS[0]],
-    MODEL_IDS[:2],
-    MODEL_IDS[1:3],
-    MODEL_IDS[2:5],
-    MODEL_IDS[:3],
-    MODEL_IDS[:5],
-    MODEL_IDS[2:7],
+    [ID("claude_architect")],                                                  # was MODEL_IDS[0]
+    [ID("claude_architect"), ID("claude_worker_fast")],                        # was MODEL_IDS[:2]
+    [ID("claude_worker_fast"), ID("claude_senior")],                           # was MODEL_IDS[1:3]
+    [ID("claude_senior"), ID("claude_worker_balanced")],                       # was MODEL_IDS[2:5] minus the id-spelling-only row
+    [ID("claude_architect"), ID("claude_worker_fast"), ID("claude_senior")],   # was MODEL_IDS[:3]
+    [ID("claude_architect"), ID("claude_worker_fast"), ID("claude_senior"), ID("claude_worker_balanced")],  # was MODEL_IDS[:5]
+    [ID("claude_senior"), ID("claude_worker_balanced"), ID("openai_worker_fast"), ID("openai_reasoning")],  # was MODEL_IDS[2:7]
     _all_but("claude-opus-5", "gpt-5.6-sol", "grok-4.6"),
     _all_but("grok-4.6"),
     _all_but("claude-opus-5", "grok-4.6"),
@@ -123,11 +125,11 @@ RUNTIMES = sorted(CFG["runtimes"])
 # populated. `test_the_sweep_reaches_enough_retry_routes` guards the ratio.
 PRIOR_HISTORY = [
     ([], 0),
-    ([MODEL_IDS[2]], 1),
-    ([MODEL_IDS[1], MODEL_IDS[4]], 2),   # two tier-0 failures: headroom above
-    ([MODEL_IDS[3], MODEL_IDS[3]], 2),   # the same model twice, truthfully
-    ([MODEL_IDS[6]], 1),
-    ([MODEL_IDS[0], MODEL_IDS[4]], 2),   # tier-3 failure: exhausts on purpose
+    ([ID("claude_senior")], 1),
+    ([ID("claude_worker_fast"), ID("openai_worker_fast")], 2),   # two tier-0 failures: headroom above
+    ([ID("claude_worker_balanced")] * 2, 2),                      # the same model twice, truthfully
+    ([ID("openai_reasoning")], 1),
+    ([ID("claude_architect"), ID("openai_worker_fast")], 2),      # tier-3 failure: exhausts on purpose
     (["senior_engineer"], 1),            # invalid on purpose: alias
     ([], 2),                             # invalid on purpose: unaccounted failures
 ]
@@ -953,3 +955,14 @@ def test_a_caveat_on_a_non_claude_row_does_not_claim_the_wrong_vendor():
     notes = [n for n in out["notes"] if "may substitute another" in n]
     assert any("openai_reasoning" in n and "openai model" in n for n in notes), notes
     assert not any("openai_reasoning" in n and "claude model" in n for n in notes)
+
+
+def test_sweep_populations_name_only_dispatchable_models():
+    """Sorted-index fixtures move when a registry row is added; named fixtures
+    do not. Non-dispatchable ids (retired, id-spelling-only) are no-ops in a
+    scarcity list and exhaust nothing in a history — keep them out."""
+    for scarce in SCARCITY:
+        assert set(scarce) <= set(DISPATCHABLE_IDS), scarce
+    for prior, failures in PRIOR_HISTORY:
+        if failures and all(m in set(MODEL_IDS) for m in prior):
+            assert set(prior) <= set(DISPATCHABLE_IDS), prior
