@@ -7,6 +7,33 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-09-02 (grok-hosted Claude reviewer seat)
+
+### Added
+
+- `transports.grok.to_claude.mechanism_reviewer`: a separately verified,
+  read-only Claude reviewer recipe using `--permission-mode plan`,
+  `--allowedTools Read,Glob,Grep,LS`, and `--strict-mcp-config`. The general
+  mechanism remains unchanged and write-capable.
+
+### Changed
+
+- The dispatch contract records how a headless grok host can launch the
+  supervisor without mistaking a bare-echo allow path for proof, and why a
+  sandboxed outer host can hide the Claude child's keychain.
+- Claude bridge boot savings are documented as environment-dependent: the
+  strict flag removed about 80% when global MCP connectors actually
+  handshook, while an earlier grok-host probe saved about 10% because those
+  schemas were absent. That earlier ~10% result was not reproduced — the
+  re-probe from a grok host measured the 80% figure instead — and its
+  original cause remains unresolved.
+
+### Fixed
+
+- Claude transport ledger matching and documentation fences are now
+  direction- and seat-specific, so a general mechanism row cannot silently
+  vouch for a reviewer mechanism whose argv differs.
+
 ## [1.11.1] — 2026-09-02 (why the artifact pin stays)
 
 ### Changed

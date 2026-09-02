@@ -1073,6 +1073,7 @@ DOCUMENTED_BUT_UNREAD = {
         "verified and write_verified stay false on this unprobed direction",
     "transports.codex.to_xai.isolation": "see isolation above",
     "transports.grok.to_claude.mechanism": "see mechanism above",
+    "transports.grok.to_claude.mechanism_reviewer": "see mechanism above",
     "transports.grok.to_claude.isolation": "see isolation above",
     "transports.grok.to_openai.mechanism": "see mechanism above",
     "transports.grok.to_openai.isolation": "see isolation above",
