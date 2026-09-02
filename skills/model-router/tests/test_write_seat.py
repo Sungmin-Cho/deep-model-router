@@ -497,8 +497,20 @@ def test_a_real_outage_after_the_policy_skip_is_still_recorded():
     assert out["selected_model"] == "gpt-5.6-terra"
     assert any("claude-sonnet-5 unavailable" in f for f in out["fallbacks_applied"]), \
         out["fallbacks_applied"]
-    # The penalty and its consequence, not just the note.
-    assert out["routing_confidence"] == 0.77
+    # The penalty is applied; a lone fallback no longer promotes on its own (DD-3, 1.9.0).
+    assert out["routing_confidence"] == 0.81
+    assert out["review"]["band"] == "MEDIUM"
+
+
+def test_a_real_outage_plus_a_second_signal_still_promotes_the_review():
+    """The consequence round 1 pinned — promotion — now needs a second signal."""
+    task = Task(task_class="REFACTORING", complexity=0, uncertainty=2,
+                blast_radius=0, reversibility=0, runtime="codex",
+                unavailable_models=["claude-sonnet-5"],
+                prior_failures=1, prior_models=["gpt-5.6-luna"])
+    out = route(task, CFG)
+    assert any("claude-sonnet-5 unavailable" in f for f in out["fallbacks_applied"])
+    assert out["routing_confidence"] == 0.76
     assert out["review"]["band"] == "HIGH"
 
 
