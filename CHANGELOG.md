@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller measuring context or boot cost reads the receipt instead of scraping
   the retained stdout. The grok format leaves that key null.
 
+### Fixed
+
+- A verdict that a headless format ran into the narration in front of it is no
+  longer graded as no verdict at all. When the line-anchored grammar finds
+  nothing, the last unanchored `verdict:` is accepted if it is not the format
+  spec the prompt quotes and `confidence:` follows it. The receipt records
+  `verdict_recovered`, so the recipe that needed the repair still gets fixed.
+
 ## [1.10.1] — 2026-09-02 (registry-id provenance)
 
 ### Changed

@@ -99,6 +99,10 @@ EXIT_BY_STATE = {
 }
 
 VERDICT_RE = re.compile(r"^verdict:\s*(PASS|PASS_WITH_CHANGES|FAIL)\b", re.M)
+# The same grammar unanchored, longest value first. Used ONLY by the recovery
+# below, never as the primary check.
+VERDICT_ANYWHERE_RE = re.compile(r"verdict:\s*(PASS_WITH_CHANGES|PASS|FAIL)\b")
+CONFIDENCE_RE = re.compile(r"confidence:\s*[01](?:\.\d+)?\b")
 
 # Safe identifier grammar for attempt-id: this string is interpolated
 # directly into filesystem paths, so it must never contain a path
@@ -1335,7 +1339,8 @@ def _read_envelope(stdout_path: Path, fmt: str) -> dict:
     """
     envelope = {"parse_ok": False, "stop_reason": None, "session_id": None,
                 "served_models": None, "text": None, "error_type": None,
-                "usage": None, "reported_error": False}
+                "usage": None, "reported_error": False,
+                "verdict_recovered": False}
     data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
     if oversized:
         envelope["error_type"] = "evidence_oversized"
@@ -1373,12 +1378,12 @@ def _read_envelope(stdout_path: Path, fmt: str) -> dict:
 
 
 def _receipt_envelope(envelope: dict) -> dict:
-    """The six keys an envelope contributes to a receipt. `session_id` is
+    """The seven keys an envelope contributes to a receipt. `session_id` is
     here as the audit evidence for what the attempt-binding cross-proof
     (DD-3) actually compared; `text` is deliberately absent."""
     return {k: envelope[k] for k in
             ("parse_ok", "stop_reason", "session_id", "served_models",
-             "error_type", "usage")}
+             "error_type", "usage", "verdict_recovered")}
 
 
 def _grade_envelope(envelope: dict) -> list[str]:
@@ -1394,6 +1399,37 @@ def _grade_envelope(envelope: dict) -> list[str]:
     if stop_reason != ENVELOPE_OK_STOP_REASON:
         return [_reason("envelope_stop_reason", stop_reason)]
     return []
+
+
+def _recovered_verdict(text: str) -> bool:
+    """A verdict a headless format ran into the narration in front of it.
+
+    Measured 2026-09-02: a grok headless document's `text` can join the
+    model's progress notes to its final answer with no newline between them
+    (`...the plan expects.verdict: PASS_WITH_CHANGES\nconfidence: 0.86`), so
+    the line-anchored grammar reports no verdict on a turn that produced one
+    and the seat is re-dispatched over a formatting artifact.
+
+    Recovery is deliberately narrow, because an unanchored search also matches
+    the format spec the review prompt itself quotes:
+
+      * only the LAST occurrence counts -- a spec echo precedes the real
+        answer, it never follows it;
+      * a value followed by `|` IS that spec (`verdict: PASS | ... | FAIL`),
+        not a verdict;
+      * the schema's second required field must follow it, so a document that
+        only ever quoted the format never passes as a review.
+
+    Every recovery is recorded. The seat's output did need repair, and a
+    receipt that hid that would tell the next caller the recipe is fine.
+    """
+    matches = list(VERDICT_ANYWHERE_RE.finditer(text or ""))
+    if not matches:
+        return False
+    tail = text[matches[-1].end():]
+    if tail.lstrip().startswith("|"):
+        return False
+    return bool(CONFIDENCE_RE.search(tail))
 
 
 def _stdout_digest(stdout_path: Path) -> str | None:
@@ -2035,6 +2071,14 @@ def _run_attempt(args, pins: list[dict]) -> int:
                                     args.output_schema != "review"
                                     or bool(VERDICT_RE.search(
                                         envelope["text"] or "")))
+                                if not schema_ok and _recovered_verdict(
+                                        envelope["text"] or ""):
+                                    # Narrow, and disclosed: see
+                                    # `_recovered_verdict`.
+                                    envelope["verdict_recovered"] = True
+                                    receipt["result"]["envelope"] = \
+                                        _receipt_envelope(envelope)
+                                    schema_ok = True
                                 if not schema_ok:
                                     reasons = ["schema_invalid"]
                             else:

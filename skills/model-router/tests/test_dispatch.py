@@ -1536,16 +1536,17 @@ def test_envelope_oversized_stdout_is_invalid_output(tmp_path):
 def test_envelope_text_is_not_serialized_into_receipt(tmp_path):
     """`text` is an internal field of the read: the raw output already lives
     in the stdout file, and a receipt carries abbreviated evidence only. The
-    receipt's envelope is exactly six keys — `usage` joined them when the
-    Claude format arrived, because the alternative was every caller scraping
-    token counts back out of the stdout file."""
+    receipt's envelope is exactly seven keys — `usage` joined them with the
+    Claude format (the alternative was every caller scraping token counts back
+    out of the stdout file) and `verdict_recovered` with the run-in-verdict
+    recovery, which must never be silent."""
     doc = grok_doc(text="verdict: PASS\nSECRET-PROMPT-ECHO-DO-NOT-COPY")
     fake = write_fake(tmp_path, "env_text.py", envelope_fake(doc))
     _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                               extra=ENVELOPE_ARGS)
     assert set(receipt["result"]["envelope"]) == {
         "parse_ok", "stop_reason", "session_id", "served_models", "error_type",
-        "usage"}
+        "usage", "verdict_recovered"}
     assert "SECRET-PROMPT-ECHO-DO-NOT-COPY" not in json.dumps(receipt)
 
 
@@ -3524,3 +3525,61 @@ def test_a_withdrawal_whose_unlink_fails_keeps_the_reservation_identity(
     monkeypatch.undo()
     dispatch_agent._release_artifact_pins(entries)
     assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# D-10 — a verdict the headless format ran into the narration in front of it
+# ---------------------------------------------------------------------------
+
+RUN_IN = ("I'll check the ledger and the tests the plan expects."
+          "verdict: PASS_WITH_CHANGES\nconfidence: 0.86\nfindings:\n- none")
+
+
+def test_a_run_in_verdict_is_recovered_and_the_repair_is_recorded(tmp_path):
+    """The exact shape measured on 2026-09-02: grok joined its progress notes
+    to the final answer with no newline, and a turn that reviewed the document
+    was graded INVALID_OUTPUT over the missing line break."""
+    fake = write_fake(tmp_path, "runin.py", envelope_fake(
+        grok_doc(text=RUN_IN)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert receipt["result"]["schema_valid"] is True
+    assert receipt["result"]["envelope"]["verdict_recovered"] is True
+
+
+def test_a_properly_formatted_verdict_is_not_recorded_as_recovered(tmp_path):
+    fake = write_fake(tmp_path, "clean.py", envelope_fake(grok_doc()))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=ENVELOPE_ARGS)
+    assert receipt["result"]["schema_valid"] is True
+    assert receipt["result"]["envelope"]["verdict_recovered"] is False
+
+
+def test_quoting_the_format_spec_is_not_a_verdict(tmp_path):
+    """The review prompt itself contains `verdict: PASS | PASS_WITH_CHANGES |
+    FAIL`. A seat that echoed the instructions and reviewed nothing must not
+    be graded as having reviewed."""
+    echo = ("Here is the format I was asked for: verdict: PASS | "
+            "PASS_WITH_CHANGES | FAIL, then confidence: 0.9. I could not read "
+            "the diff.")
+    fake = write_fake(tmp_path, "spec.py", envelope_fake(
+        grok_doc(text=echo)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["invalid_reasons"] == ["schema_invalid"]
+    assert receipt["result"]["envelope"]["verdict_recovered"] is False
+
+
+def test_a_run_in_verdict_without_the_second_field_is_not_recovered(tmp_path):
+    """`confidence:` after the match is what separates a real verdict block
+    from the word appearing in prose."""
+    prose = "the reviewer said the verdict: PASS was obvious and stopped there"
+    fake = write_fake(tmp_path, "noconf.py", envelope_fake(
+        grok_doc(text=prose)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["invalid_reasons"] == ["schema_invalid"]

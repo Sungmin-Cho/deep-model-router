@@ -777,6 +777,21 @@ things are specific to it. A document that sets `is_error` is `INVALID_OUTPUT`
 cost reads the receipt instead of scraping the retained stdout; a grok receipt
 leaves that key null, because that format does not carry counts.
 
+**A verdict that ran into the narration in front of it is recovered, and the
+repair is recorded.** Measured 2026-09-02: a grok headless document's `text`
+can join the model's progress notes to its final answer with no newline
+between them, so the line-anchored verdict grammar reports nothing on a turn
+that produced a verdict, and the seat is re-dispatched over a formatting
+artifact. When — and only when — the anchored grammar finds nothing, the
+supervisor accepts the LAST unanchored `verdict:` in the text, provided the
+value is not followed by `|` (that shape is the format spec the review prompt
+itself quotes, not an answer) and `confidence:` follows it. A document that
+only ever echoed the format therefore still fails. Recovery is never silent:
+the receipt's envelope carries `verdict_recovered`, because the seat's output
+did need repair and the recipe that produced it should be fixed. Asking for
+the final answer on a new line remains the right instruction in the prompt;
+this is the net under it.
+
 The cause lands in `result.invalid_reasons`. Reasons naming a cancellation or
 unusable evidence mean the recipe killed the turn, not that the model failed
 — fix the recipe, re-dispatch the same model once, and keep it out of
