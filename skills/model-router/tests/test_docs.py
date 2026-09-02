@@ -697,7 +697,7 @@ def test_strict_mcp_token_and_direction_ledger_row_come_together():
                     _flags_in_order(mech, str(probe["argv"]), (host, probe["attempt_id"]))
 
 
-ADAPTERS_SECTION_OF_HOST = {"codex": "### Codex", "grok": "### grok"}   # P4 success (T6): {"codex": "### Codex", "grok": "### Codex"}
+ADAPTERS_SECTION_OF_HOST = {"codex": "### Codex", "grok": "### Codex"}
 
 
 def _section_fence_tokens(text: str, header: str) -> list[str]:

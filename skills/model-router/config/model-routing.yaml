@@ -754,7 +754,10 @@ transports:
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
     to_claude:
-      mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> \"<prompt>\""
+      # 1.9.0: --strict-mcp-config (design 2026-09-02 DD-1); same argv as
+      # grok.to_claude. Probed 2026-09-02 FROM a Codex host (codex exec
+      # running dispatch_agent.py) — see the transports.codex.to_claude.mechanism row.
+      mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> --strict-mcp-config \"<prompt>\""
       isolation: separate_process
       verified: true
       write_verified: true
@@ -797,11 +800,10 @@ transports:
     to_claude:
       # 1.9.0: carries --strict-mcp-config (design 2026-09-02 DD-1) — the
       # user-global MCP connector schemas were ~80% of a headless claude
-      # seat's boot context. argv now differs from codex.to_claude by that one
-      # token; the Codex direction keeps the pre-1.9.0 string until probed
-      # from a Codex host (D-3). `verified` stays per direction: probed
-      # 2026-08-29 (transport) and 2026-09-02 (this string) FROM a darwin
-      # grok host — see the transports.grok.to_claude.mechanism ledger row.
+      # seat's boot context. same argv as codex.to_claude. `verified` stays
+      # per direction: probed 2026-08-29 (transport) and 2026-09-02 (this
+      # string) FROM a darwin grok host — see the
+      # transports.grok.to_claude.mechanism ledger row.
       mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> --strict-mcp-config \"<prompt>\""
       isolation: separate_process
       verified: true
@@ -932,6 +934,23 @@ verification_ledger:
         placed last swallows the positional prompt) and that call is a
         variant this row does not vouch for. Receipts:
         docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/.
+
+    - item: "transports.codex.to_claude.mechanism (--strict-mcp-config recipe)"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "p4-codex-claude"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --strict-mcp-config --output-format json"
+      probes:
+        - { attempt_id: "p4-codex-claude", argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --strict-mcp-config --output-format json", outcome: SUCCEEDED }
+      evidence: >
+        Probed FROM a Codex host: `codex exec -s workspace-write` (network
+        enabled) ran dispatch_agent.py itself, which spawned the claude
+        child; the receipt's argv equals the instructed child argv token for
+        token and stdout result was "---". Sandbox was workspace-write with
+        network_access=true. The Codex host here was a codex exec turn nested
+        under a grok session — PATH, keychain and sandbox are that turn's,
+        not an interactive Codex session's.
 
     - item: "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
       status: verified

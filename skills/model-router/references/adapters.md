@@ -242,14 +242,12 @@ run both reviewers as separate `codex exec` processes.
 claude -p --model <id> \
     --effort <effort> \
     --permission-mode <mode> \
+    --strict-mcp-config \
     "<prompt>"
 ```
 
 Also a separate process with a fresh session. `--effort` is required: without
 it the band's level does not cross the bridge.
-
-The grok direction carries `--strict-mcp-config` (see the grok section);
-this direction keeps the pre-1.9.0 string until probed from a Codex host.
 
 **To xai models:** the same seat strings as above — argv does not depend on
 the host. Verification does: the seat probes ran from a Claude Code host, so
@@ -417,28 +415,20 @@ adapter can offer.
 semantics have **not** been verified. Until they are, treat a grok-native dual
 review as degraded unless both reviewers run as separate processes.
 
-**To claude models:**
-
-```bash
-claude -p --model <id> \
-    --effort <effort> \
-    --permission-mode <mode> \
-    --strict-mcp-config \
-    "<prompt>"
-```
-
-`--strict-mcp-config` drops every MCP server the user's global config would
-otherwise load into the seat (measured at ~80% of a headless seat's boot
-context); reviewers and workers alike lose user-global MCP servers. A caller
-that needs one adds `--mcp-config <file>` **immediately after `-p`** — it is
-a variadic flag, and placed last it swallows the positional prompt — and that
-call is a variant the ledger does not vouch for. Verified from a darwin grok
-host (2026-08-29 transport; 2026-09-02 this string). A positional prompt
-placed after a variadic `claude` flag (`--allowedTools`, `--add-dir`) is
-swallowed by that flag; deliver via `--prompt-file` or place the prompt after
-only fixed-arity flags. Dispatched under `dispatch_agent.py` with
-`--output-schema review` and a read-only permission mode; separate process
-by construction, and the receipt `attempt_id` is the isolation-evidence id.
+**To claude models:** the `claude -p --effort` command above. `--strict-mcp-config`
+drops every MCP server the user's global config would otherwise load into the
+seat (measured at ~80% of a headless seat's boot context); reviewers and
+workers alike lose user-global MCP servers. A caller that needs one adds
+`--mcp-config <file>` **immediately after `-p`** — it is a variadic flag, and
+placed last it swallows the positional prompt — and that call is a variant
+the ledger does not vouch for. Verified from a darwin grok host (2026-08-29
+transport; 2026-09-02 this string) and from a nested Codex host (2026-09-02).
+A positional prompt placed after a variadic `claude` flag (`--allowedTools`,
+`--add-dir`) is swallowed by that flag; deliver via `--prompt-file` or place
+the prompt after only fixed-arity flags. Dispatched under `dispatch_agent.py`
+with `--output-schema review` and a read-only permission mode; separate
+process by construction, and the receipt `attempt_id` is the
+isolation-evidence id.
 
 **To openai models:**
 
