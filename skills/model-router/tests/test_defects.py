@@ -40,6 +40,7 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 
 
 def _whole_token(needle: str, text: str) -> bool:
@@ -1198,7 +1199,7 @@ def test_d14_every_config_rule_has_a_consumer_or_a_recorded_reason():
                   ["latency_sensitive"])
         for rt in sorted(CFG["runtimes"])
         for pf, pm in ((0, []), (1, ["senior_engineer"]), (2, []), (5, []))
-        for um in ([], ["claude-fable-5"], ["claude-opus-5", "gpt-5.6-sol"])
+        for um in ([], [ARCHITECT_ID], ["claude-opus-5", "gpt-5.6-sol"])
         for iso in (None, True, False)
     ]
     for kw in probes:
@@ -1283,7 +1284,7 @@ _PERTURBATION_PROBES = [
     dict(task_class="MECHANICAL", complexity=2, uncertainty=1, blast_radius=1,
          reversibility=0, prior_failures=1, prior_models=["claude-opus-5"]),
     dict(task_class="MECHANICAL", complexity=2, uncertainty=1, blast_radius=1,
-         reversibility=0, prior_failures=1, prior_models=["claude-fable-5"]),
+         reversibility=0, prior_failures=1, prior_models=[ARCHITECT_ID]),
 ]
 
 
@@ -1438,7 +1439,7 @@ def test_d16_a_retry_needs_one_concrete_model_id_per_failure():
         ("nothing named", dict(prior_failures=1)),
         ("a role alias", dict(prior_failures=1, prior_models=["worker_fast"])),
         ("too few", dict(prior_failures=2, prior_models=[ran])),
-        ("too many", dict(prior_failures=1, prior_models=[ran, "claude-fable-5"])),
+        ("too many", dict(prior_failures=1, prior_models=[ran, ARCHITECT_ID])),
         ("mixed alias and id", dict(prior_failures=2, prior_models=[ran, "worker_fast"])),
     ):
         out = r(task_class="MECHANICAL", **kw)
@@ -1518,7 +1519,7 @@ def test_d15_every_human_control_action_is_validated_and_load_bearing():
         "on_judge_unavailable": dict(task_class="MECHANICAL", complexity=0, uncertainty=3,
                                      blast_radius=0, reversibility=0,
                                      flags=["review_disagreement"],
-                                     unavailable_models=["claude-fable-5", "gpt-5.6-sol"]),
+                                     unavailable_models=[ARCHITECT_ID, "gpt-5.6-sol"]),
         "on_review_depth_reduced": dict(task_class="IMPLEMENTATION", complexity=0,
                                         uncertainty=0, blast_radius=0, reversibility=0,
                                         flags=["auth_sensitive", "bridge_down"],
@@ -1687,7 +1688,7 @@ def test_d18_an_operational_shortage_is_a_terminal_not_invalid_input():
     proc = cli("--class", "IMPLEMENTATION", "--complexity", "1", "--uncertainty", "1",
                "--blast-radius", "1", "--reversibility", "0", "--flags", "bridge_down",
                "--prior-failures", "4", "--prior-models",
-               "claude-haiku-4-5-20251001,claude-sonnet-5,claude-opus-5,claude-fable-5")
+               f"claude-haiku-4-5-20251001,claude-sonnet-5,claude-opus-5,{ARCHITECT_ID}")
     assert proc.returncode == 1, (
         f"an operational shortage exited {proc.returncode}; 2 means the caller's "
         f"input was wrong, and it was not")
@@ -1697,7 +1698,7 @@ def test_d18_an_operational_shortage_is_a_terminal_not_invalid_input():
     out = r(task_class="IMPLEMENTATION", complexity=1, uncertainty=1, blast_radius=1,
             flags=["bridge_down"], prior_failures=4,
             prior_models=["claude-haiku-4-5-20251001", "claude-sonnet-5",
-                          "claude-opus-5", "claude-fable-5"])
+                          "claude-opus-5", ARCHITECT_ID])
     assert out["terminal"] in TERMINAL_STATES
     assert out["selected_model"] is None and out["requires_human_confirmation"]
 
@@ -1808,7 +1809,7 @@ def test_d21_the_promotion_decision_sees_the_confidence_that_ships():
     checked = 0
     for task_class in ("MECHANICAL", "IMPLEMENTATION", "DEBUGGING"):
         for flags in ([], ["review_disagreement"], ["review_disagreement", "unknown_root_cause"]):
-            for scarce in ([], ["claude-fable-5"],
+            for scarce in ([], [ARCHITECT_ID],
                            _leave_only("claude-haiku-4-5-20251001", "gpt-5.6-terra")):
                 o = r(task_class=task_class, flags=list(flags), unavailable_models=list(scarce))
                 if o["terminal"]:
@@ -1833,8 +1834,8 @@ def test_d20_the_emitted_confidence_matches_the_emitted_fallbacks():
     from route_task import routing_confidence
     checked = 0
     for task_class in ("MECHANICAL", "IMPLEMENTATION", "ARCHITECTURE"):
-        for scarce in ([], ["claude-fable-5"], ["claude-fable-5", "claude-opus-5"],
-                       ["claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+        for scarce in ([], [ARCHITECT_ID], [ARCHITECT_ID, "claude-opus-5"],
+                       [ARCHITECT_ID, "claude-opus-5", "claude-sonnet-5",
                         "gpt-5.6-luna", "gpt-5.6-sol"]):
             for flags in ([], ["review_disagreement"], ["auth_sensitive"]):
                 task = _task(task_class=task_class, flags=list(flags),
@@ -1874,7 +1875,7 @@ def test_d19_a_recovered_seat_plan_is_not_reported_as_exhausted():
     several plans; a shortage seen in one it discarded is not a fact about the
     one it emitted."""
     out = r(task_class="MECHANICAL", flags=["review_disagreement"],
-            unavailable_models=["claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+            unavailable_models=[ARCHITECT_ID, "claude-opus-5", "claude-sonnet-5",
                                 "gpt-5.6-luna", "gpt-5.6-sol"])
     assert out["terminal"] is None, (
         f"a complete seat plan was reported as {out['terminal']}: {out['notes']}")
@@ -2167,7 +2168,7 @@ def test_d14_a_bonus_review_that_cannot_be_isolated_does_not_kill_the_task():
     compensation punishing the caller for its own best effort. The terminal
     belongs to the band's own requirement."""
     out = r(task_class="ARCHITECTURE", flags=["long_horizon"],
-            unavailable_models=["claude-fable-5"], isolation_available=False)
+            unavailable_models=[ARCHITECT_ID], isolation_available=False)
     assert out["review"]["band"] == "LOW", "probe drifted"
     assert not CFG["review"]["LOW"].get("independent"), "LOW now asks for independence"
     assert out["fallback_compensations_applied"], "probe no longer reaches the compensation"
@@ -2330,7 +2331,7 @@ def test_d12_judge_reclaims_a_tier_a_reviewer_did_not_need():
     This is the exact route that exhibited it; a stop nobody can act on is as
     unhelpful as a missing one."""
     out = r(task_class="MECHANICAL", flags=["review_disagreement"],
-            unavailable_models=["claude-fable-5"])
+            unavailable_models=[ARCHITECT_ID])
     rv = out["review"]
     assert rv["judge_unavailable"] is False
     assert rv["judge_model"] is not None
@@ -2464,7 +2465,7 @@ def test_d23_native_is_looked_up_from_the_effort_that_ships():
 
     out = route(_task(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
                       blast_radius=3, reversibility=2, flags=["auth_sensitive"],
-                      unavailable_models=["claude-fable-5"]), cfg)
+                      unavailable_models=[ARCHITECT_ID]), cfg)
     assert out["selected_model"] == "claude-opus-5", "probe drifted"
     assert out["selected_effort"] == "MAX", "probe drifted"
     assert out["selected_effort_effective"] == "HIGH", (
@@ -2562,7 +2563,7 @@ def test_d23_a_capped_reviewer_seat_gates_on_a_live_route():
     """
     out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
             blast_radius=3, reversibility=2, flags=["auth_sensitive"],
-            unavailable_models=["claude-fable-5"])
+            unavailable_models=[ARCHITECT_ID])
     assert out["terminal"] is None, f"probe went terminal: {out['terminal']}"
     assert out["review"]["band"] == "CRITICAL"
     assert "grok-4.6" in out["review"]["reviewer_models"], (
@@ -2593,7 +2594,7 @@ def test_d23_a_terminal_route_keeps_the_ceiling_record_without_the_model():
     dispatcher, which emitted the cause before emit ran."""
     out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
             blast_radius=3, reversibility=2, flags=["auth_sensitive"],
-            unavailable_models=["claude-fable-5"], isolation_available=False)
+            unavailable_models=[ARCHITECT_ID], isolation_available=False)
     assert out["terminal"] == "INDEPENDENCE_UNAVAILABLE", "probe drifted"
     assert out["effort_ceiling_applied"], "the disclosure was dropped on terminal"
     assert all(rec["model"] is None for rec in out["effort_ceiling_applied"])

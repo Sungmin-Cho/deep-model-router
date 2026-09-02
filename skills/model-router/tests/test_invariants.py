@@ -22,6 +22,7 @@ Run:  python3 -m pytest skills/model-router/tests/test_invariants.py -q
 import copy
 import itertools
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -40,9 +41,14 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 MODEL_IDS = sorted(m["id"] for m in CFG["models"].values())
 ID = lambda key: CFG["models"][key]["id"]                       # noqa: E731
 DISPATCHABLE_IDS = sorted(m["id"] for m in CFG["models"].values() if m.get("dispatchable", True))
+
+
+def _whole_token(needle: str, text: str) -> bool:
+    return re.search(r"(^|[^A-Za-z0-9._-])" + re.escape(needle) + r"([^A-Za-z0-9._-]|$)", text) is not None
 FAMILY_OF = {m["id"]: m["family"] for m in CFG["models"].values()}
 LOCAL_FAMILY = {
     rt: FAMILY_OF[CFG["models"][next(iter(CFG["role_bindings"][spec["degraded_binding"]].values()))]["id"]]
@@ -481,7 +487,7 @@ def test_a_terminal_route_withholds_every_execution_binding():
         declared = (scrubbed.get("host_seat_advisory") or {}).get("declared")
         if declared:
             declared["model"] = None
-        named = {i for i in ids if i in json.dumps(scrubbed)} - echoed
+        named = {i for i in ids if _whole_token(i, json.dumps(scrubbed))} - echoed
         assert not named, (
             f"terminal route ({out['terminal']}) still names {sorted(named)} — "
             f"a consumer can dispatch it")
@@ -529,7 +535,7 @@ def test_an_unsatisfiable_band_floor_means_no_amount_of_availability_would_help(
     claude_only_recoverable = route(Task(
         task_class="IMPLEMENTATION", complexity=2, uncertainty=2, blast_radius=1,
         reversibility=0, flags=["auth_sensitive", "bridge_down"],
-        runtime="claude_code", unavailable_models=["claude-fable-5"]), CFG)
+        runtime="claude_code", unavailable_models=[ARCHITECT_ID]), CFG)
     assert claude_only_recoverable["review"]["review_depth_reduced"], "probe drifted"
     assert not claude_only_recoverable["review"]["band_floor_unsatisfiable"], (
         "claude_only supplies two tier-2+ models; withholding one is scarcity, "
@@ -927,7 +933,7 @@ def test_served_model_caveat_discloses_exactly_when_flag_and_seat_meet():
     # + round-1 review F3: a caveat on a non-claude row must not produce a note
     # claiming "Claude").
     assert "claude model" in notes[0]
-    assert "claude-fable-5" not in json.dumps(hit["notes"])
+    assert ARCHITECT_ID not in json.dumps(hit["notes"])
     # 같은 좌석, flag 없음 -> 공시 없음
     miss = _route_of(task_class="ARCHITECTURE", complexity=3, uncertainty=3,
                      blast_radius=3, reversibility=1, flags=[])
@@ -966,3 +972,10 @@ def test_sweep_populations_name_only_dispatchable_models():
     for prior, failures in PRIOR_HISTORY:
         if failures and all(m in set(MODEL_IDS) for m in prior):
             assert set(prior) <= set(DISPATCHABLE_IDS), prior
+
+
+def test_a_retired_model_never_sits_in_any_seat():
+    retired = {m["id"] for m in CFG["models"].values() if m.get("dispatchable", True) is False}
+    for out in routes():
+        seated = set(parties(out)) | {out["review"].get("judge_model")}
+        assert not (retired & seated), (out["selected_model"], out["review"]["reviewer_models"], out["review"].get("judge_model"))

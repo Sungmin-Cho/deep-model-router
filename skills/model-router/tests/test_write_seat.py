@@ -33,6 +33,7 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 POLICY = Policy.of(CFG)
 
 
@@ -366,7 +367,7 @@ def test_a_role_holds_one_model_so_the_skip_reaches_that_whole_role():
     """
     task = Task(task_class="MECHANICAL", complexity=2, uncertainty=2,
                 blast_radius=2, reversibility=0, runtime="codex",
-                unavailable_models=["claude-fable-5",
+                unavailable_models=[ARCHITECT_ID,
                                     "claude-haiku-4-5-20251001",
                                     "claude-opus-5"])
     out = route(task, CFG)

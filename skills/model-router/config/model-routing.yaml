@@ -479,17 +479,28 @@ models:
     price_per_mtok: { input: 5.00, output: 25.00, cached_input: 0.50 }
 
   claude_architect:
-    id: claude-fable-5
+    id: claude-fable-5-1
     family: claude
     capability_tier: 3
     verified: true
-    # Provider-side substitution disclosure (see the 2026-08-19 ledger
-    # entry): flags listed here that a task carries produce a per-model
-    # note when this model is seated on an executable route. Values must
-    # be members of the flags vocabulary; biology-class substitution has
-    # no flag in this software-work router on purpose — the ledger owns
-    # that record (an intentional asymmetry, design §4 B5).
+    # Provider-side substitution disclosure (see the Fable 5 / 5.1 ledger
+    # entries): flags listed here that a task carries produce a per-model
+    # note when this model is seated on an executable route. Fable 5.1 keeps
+    # a refusal classifier (stop_reason: refusal + stop_details.category).
     served_model_caveats: [security_sensitive]
+    price_per_mtok: { input: 10.00, output: 50.00, cached_input: 0.25 }
+
+  # Retired 1.9.0 (design 2026-09-02 DD-2). Valid as HISTORY input
+  # (--prior-models, --unavailable-models, --host-model) so a control loop
+  # that crosses the release boundary keeps working; never a candidate for
+  # any seat: dispatchable: false, bound to no role, named in no fallback
+  # list. Same mechanism as gemini_flash.
+  claude_architect_retired:
+    id: claude-fable-5
+    family: claude
+    capability_tier: 3
+    dispatchable: false
+    verified: true
     price_per_mtok: { input: 10.00, output: 50.00, cached_input: 1.00 }
 
   openai_worker_fast:
@@ -861,6 +872,36 @@ verification_ledger:
       status: verified
       probed_on: 2026-08-11
       evidence: "claude -p --model <id> round-trip returned OK for all four"
+
+    - item: "claude-fable-5-1 model id"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "p1-fable51-id"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-fable-5-1 --effort low --permission-mode plan --strict-mcp-config --output-format json"
+      evidence: >
+        Probed FROM a darwin grok host under dispatch_agent.py (transport
+        grok.to_claude): claude -p --model claude-fable-5-1 round-trip
+        SUCCEEDED; stdout modelUsage keys == ["claude-fable-5-1"], result
+        "OK". Model ids are verified provider-wide (G4): id resolution does
+        not depend on the parent process. claude-fable-5 (now
+        claude_architect_retired) still resolves and is NOT auto-upgraded
+        server-side (2026-09-02 Claude Code host probe). Cache-read on 5.1 is
+        $0.25/MTok (Claude Code cost calculator reconciles: 71,822 read x
+        0.25 + 8,748 write x 20 = $0.193).
+
+    - item: "Fable 5.1 provider-side model substitution (refusal classifier)"
+      status: verified
+      probed_on: "2026-09-02"
+      evidence: >
+        Vendor documentation (not an execution probe): Fable 5.1 keeps the
+        safety classifier (HTTP 200, stop_reason "refusal", stop_details
+        category). On the raw API a server-side `fallbacks` parameter can
+        reroute a refused request to another Claude model; whether the
+        `claude -p` harness enables that is not probed here. Implication is
+        unchanged from the Fable 5 entry: under security_sensitive the
+        identity of a claude_architect seat is declared_only, disclosed per
+        route by served_model_caveats.
 
     - item: "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
       status: verified
