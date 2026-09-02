@@ -7,6 +7,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] — 2026-09-02 (why the artifact pin stays)
+
+### Changed
+
+- The dispatch contract records that the artifact identity pin also refuses a
+  second laundering sequence needing no hard link — write outside the root,
+  rename in — and that no pre-spawn audit of the child's tree can stand in for
+  it. The verification ledger carries why a content-certification mode was
+  designed, implemented, reviewed and withdrawn, so the standing guidance is
+  unchanged: certify a Claude seat's output by a caller-side content hash
+  beside the receipt, and do not declare `--require-artifact` for such a seat.
+
 ## [1.11.0] — 2026-09-02 (Claude envelope, stricter verdicts)
 
 ### Added

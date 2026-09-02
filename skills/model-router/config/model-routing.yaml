@@ -976,6 +976,40 @@ verification_ledger:
         reasoning_tokens, total_tokens), which corrects a 1.11.0 draft claim
         that the grok format carried none.
 
+    - item: "Content certification cannot replace the artifact identity pin (won't-do)"
+      status: verified
+      probed_on: 2026-09-02
+      evidence: >
+        Designed, implemented, reviewed by two independent seats and withdrawn.
+        Recorded so the next attempt starts from the measurement rather than
+        the idea. The proposal was --certify-by-content: grade a required
+        artifact by its declared digest instead of the inode pinned pre-spawn,
+        for a seat whose file tools replace the inode (a Claude seat does).
+        WHY IT FAILS. The pin is not only an authenticity control; it is what
+        refuses the laundering sequence in adapters.md "Artifact paths", and
+        that sequence leaves a fresh single-linked file and no trace, so no
+        post-hoc check -- a digest comparison included -- can recover it. The
+        implementation therefore tried to move containment earlier: refuse to
+        start without the path's declared digest, --child-cwd with
+        --require-single-linked-cwd, and --artifact-root inside that tree, on
+        the argument that a child which cannot create a hard link, in a tree
+        that contained none at spawn, has no sequence available. Both halves of
+        that argument are wrong. The first is ASSUMED, not enforced: this
+        supervisor never parses argv by design, so a child with a shell or an
+        MCP tool reaches the weakened path exactly as the documented seat does.
+        The second is bypassed by a variant needing no link at all -- write the
+        expected bytes to an outside path, rename it onto the artifact path;
+        the pre-spawn single-link audit says nothing about it, and under the
+        pin it graded artifact_identity_replaced. The cross-device check that
+        would close both (refuse a --child-cwd on the same st_dev as / or the
+        home directory, so link() and rename() fail EXDEV) is not practical on
+        the measured platform: on Darwin 25.6.0 /, ~, /tmp, /private/tmp, the
+        repo cwd and a fresh mktemp -d all report st_dev 16777229, and a rename
+        from ~ into a mktemp directory succeeds. It would demand a dedicated
+        volume per attempt. STANDING GUIDANCE, unchanged: certify a Claude
+        seat's output by a caller-side content hash recorded beside the
+        receipt, and do not declare --require-artifact for such a seat.
+
     - item: "Claude child write axis (transports.codex.to_claude.write_verified, transports.grok.to_claude.write_verified)"
       status: verified
       probed_on: 2026-09-02

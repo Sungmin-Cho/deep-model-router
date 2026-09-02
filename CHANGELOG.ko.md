@@ -7,6 +7,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.11.1] — 2026-09-02 (산출물 핀을 유지하는 이유)
+
+### Changed
+
+- 산출물 identity 핀이 하드 링크가 필요 없는 두 번째 세탁 시퀀스(루트 밖에 쓰고
+  rename으로 들여오기)도 거부한다는 사실과, 자식 트리에 대한 어떤 사전 감사도
+  그 핀을 대신할 수 없다는 사실을 디스패치 계약에 기록했다. 내용 기반 인증
+  모드를 설계·구현·리뷰까지 하고 철회한 이유는 검증 원장에 남겼다. 따라서 상시
+  지침은 그대로다 — Claude 좌석의 산출물은 receipt 옆에 기록한 호출자 측 내용
+  해시로 인증하고, 그런 좌석에 `--require-artifact`를 선언하지 않는다.
+
 ## [1.11.0] — 2026-09-02 (Claude envelope, 엄격해진 verdict)
 
 ### Added

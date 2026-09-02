@@ -574,7 +574,12 @@ Two caller-visible consequences, both deliberate:
   a required path installs a new inode and is refused — at grading time it is
   indistinguishable from the laundering sequence above, since both end with a
   fresh single-linked file and no way to say what the inode it replaced was
-  also called. Seats that atomically publish elsewhere should keep doing so and
+  also called. The same refusal covers a second sequence that needs no link at
+  all: write the required bytes to a path outside the root and rename it in.
+  Neither is visible afterwards, which is why the identity is pinned rather
+  than the property sampled — and why a pre-spawn audit of the child's tree
+  cannot stand in for the pin, however thorough (verification ledger, "Content
+  certification cannot replace the artifact identity pin"). Seats that atomically publish elsewhere should keep doing so and
   declare the *final* path as the required artifact only if they write it
   directly.
 - **An absent required path is created before the child runs**, holding a short
