@@ -962,7 +962,7 @@ RECEIPT_TIMING_KEYS = {
 }
 RECEIPT_RESULT_KEYS = {
     "state", "exit_status", "stdout_path", "stderr_path", "output_sha256",
-    "schema_valid", "termination_confirmed",
+    "schema_valid", "verdict", "verdict_recovered", "termination_confirmed",
     # 2026-08-25 grok seat integrity — DD-1 (envelope evidence) and DD-5
     # (the shared cause vocabulary). Both are always present and null on
     # the undeclared path, which is what keeps this an equality contract
@@ -1205,6 +1205,9 @@ SESSION_UUID = "11111111-2222-3333-4444-555555555555"
 OTHER_UUID = "99999999-8888-7777-6666-555555555555"
 
 
+_SENTINEL = object()
+
+
 def envelope_fake(doc=None, *, raw=None, exit_code=0):
     """A fake child whose stdout is one grok headless JSON document.
 
@@ -1221,9 +1224,22 @@ def envelope_fake(doc=None, *, raw=None, exit_code=0):
 
 
 def grok_doc(stop_reason="end_turn", text="verdict: PASS\nconfidence: 0.9",
-             session_id=SESSION_UUID, model_usage=("grok-4.6-build",)):
+             session_id=SESSION_UUID, model_usage=("grok-4.6-build",),
+             usage=_SENTINEL):
+    """Shaped like the 44 real grok captures under docs/, `usage` included.
+
+    It was omitted here once, and a test then asserted that grok receipts carry
+    no counts — true of the fixture, false of every document production has
+    ever seen. Pass `usage=None` for the document that genuinely has none.
+    """
     doc = {"stopReason": stop_reason, "text": text, "sessionId": session_id,
            "num_turns": 1, "requestId": "req-1"}
+    if usage is _SENTINEL:
+        usage = {"input_tokens": 11, "cache_read_input_tokens": 0,
+                 "cache_creation_input_tokens": 0, "output_tokens": 7,
+                 "reasoning_tokens": 3, "total_tokens": 21}
+    if usage is not None:
+        doc["usage"] = usage
     if model_usage is not None:
         doc["modelUsage"] = {name: {"modelCalls": 1} for name in model_usage}
     return doc
@@ -1301,18 +1317,49 @@ def test_a_document_that_declares_its_own_error_is_not_a_success(tmp_path):
                                  extra=CLAUDE_ENVELOPE_ARGS)
     assert proc.returncode == 6, proc.stderr
     assert receipt["result"]["state"] == "INVALID_OUTPUT"
-    assert receipt["result"]["invalid_reasons"] == ["envelope_reported_error"]
+    assert receipt["result"]["invalid_reasons"] == [
+        "envelope_subtype:error_during_execution", "envelope_reported_error"]
     assert receipt["result"]["envelope"]["stop_reason"] == "end_turn"
 
 
-def test_grok_documents_have_no_usage_and_say_so(tmp_path):
-    """The key is always present; a format that does not carry counts leaves
-    it null rather than absent, so a consumer never has to ask which format
-    produced the receipt before reading it."""
+def test_grok_counts_reach_the_receipt_too(tmp_path):
+    """Both formats carry `usage`; the key sets differ (grok adds
+    `reasoning_tokens` and `total_tokens`). An earlier version of this test
+    asserted grok carried none — true of the fixture it used, false of all 44
+    real captures in this repo, and therefore unable to catch a regression."""
     fake = write_fake(tmp_path, "gk_usage.py", envelope_fake(grok_doc()))
     _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                               extra=ENVELOPE_ARGS)
+    assert receipt["result"]["envelope"]["usage"] == {
+        "input_tokens": 11, "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0, "output_tokens": 7,
+        "reasoning_tokens": 3, "total_tokens": 21}
+
+
+def test_a_document_without_counts_leaves_usage_null(tmp_path):
+    """Null rather than absent, so a consumer never has to ask which format
+    produced the receipt before reading it."""
+    fake = write_fake(tmp_path, "gk_nousage.py",
+                      envelope_fake(grok_doc(usage=None)))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=ENVELOPE_ARGS)
     assert receipt["result"]["envelope"]["usage"] is None
+
+
+def test_a_count_that_is_not_a_finite_number_is_dropped(tmp_path):
+    """A child's document is untrusted input. Python parses NaN and Infinity
+    happily and json.dumps would then write a receipt no strict JSON reader
+    can parse — deep-loop among them — so a malformed count must not cost the
+    attempt its receipt."""
+    raw = ('{"stopReason": "end_turn", "text": "verdict: PASS\\nconfidence: 0.9",'
+           ' "sessionId": "' + SESSION_UUID + '", "usage": {"input_tokens": NaN,'
+           ' "output_tokens": Infinity, "cache_read_input_tokens": -3,'
+           ' "reasoning_tokens": true, "total_tokens": 5}}')
+    fake = write_fake(tmp_path, "gk_nan.py", envelope_fake(raw=raw))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=ENVELOPE_ARGS)
+    assert receipt["result"]["envelope"]["usage"] == {"total_tokens": 5}
+    json.loads(json.dumps(receipt))            # strict: no NaN reached disk
 
 
 def test_envelope_end_turn_with_verdict_in_text_is_succeeded(tmp_path):
@@ -1536,17 +1583,18 @@ def test_envelope_oversized_stdout_is_invalid_output(tmp_path):
 def test_envelope_text_is_not_serialized_into_receipt(tmp_path):
     """`text` is an internal field of the read: the raw output already lives
     in the stdout file, and a receipt carries abbreviated evidence only. The
-    receipt's envelope is exactly seven keys — `usage` joined them with the
-    Claude format (the alternative was every caller scraping token counts back
-    out of the stdout file) and `verdict_recovered` with the run-in-verdict
-    recovery, which must never be silent."""
+    receipt's envelope is exactly six keys — `usage` joined them with the
+    Claude format, because the alternative was every caller scraping token
+    counts back out of the stdout file. `verdict_recovered` deliberately does
+    NOT live here: it is a property of how the output was graded, not of the
+    document, and the plain-stdout path has no envelope to carry it."""
     doc = grok_doc(text="verdict: PASS\nSECRET-PROMPT-ECHO-DO-NOT-COPY")
     fake = write_fake(tmp_path, "env_text.py", envelope_fake(doc))
     _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                               extra=ENVELOPE_ARGS)
     assert set(receipt["result"]["envelope"]) == {
         "parse_ok", "stop_reason", "session_id", "served_models", "error_type",
-        "usage", "verdict_recovered"}
+        "usage"}
     assert "SECRET-PROMPT-ECHO-DO-NOT-COPY" not in json.dumps(receipt)
 
 
@@ -3546,7 +3594,8 @@ def test_a_run_in_verdict_is_recovered_and_the_repair_is_recorded(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert receipt["result"]["state"] == "SUCCEEDED"
     assert receipt["result"]["schema_valid"] is True
-    assert receipt["result"]["envelope"]["verdict_recovered"] is True
+    assert receipt["result"]["verdict_recovered"] is True
+    assert receipt["result"]["verdict"] == "PASS_WITH_CHANGES"
 
 
 def test_a_properly_formatted_verdict_is_not_recorded_as_recovered(tmp_path):
@@ -3554,7 +3603,8 @@ def test_a_properly_formatted_verdict_is_not_recorded_as_recovered(tmp_path):
     _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                               extra=ENVELOPE_ARGS)
     assert receipt["result"]["schema_valid"] is True
-    assert receipt["result"]["envelope"]["verdict_recovered"] is False
+    assert receipt["result"]["verdict_recovered"] is False
+    assert receipt["result"]["verdict"] == "PASS"
 
 
 def test_quoting_the_format_spec_is_not_a_verdict(tmp_path):
@@ -3570,7 +3620,7 @@ def test_quoting_the_format_spec_is_not_a_verdict(tmp_path):
                                  extra=ENVELOPE_ARGS)
     assert proc.returncode == 6, proc.stderr
     assert receipt["result"]["invalid_reasons"] == ["schema_invalid"]
-    assert receipt["result"]["envelope"]["verdict_recovered"] is False
+    assert receipt["result"]["verdict"] is None
 
 
 def test_a_run_in_verdict_without_the_second_field_is_not_recovered(tmp_path):
@@ -3583,3 +3633,144 @@ def test_a_run_in_verdict_without_the_second_field_is_not_recovered(tmp_path):
                                  extra=ENVELOPE_ARGS)
     assert proc.returncode == 6, proc.stderr
     assert receipt["result"]["invalid_reasons"] == ["schema_invalid"]
+
+
+def test_the_format_spec_at_line_start_is_not_a_verdict(tmp_path):
+    """The primary grammar accepted `verdict: PASS | PASS_WITH_CHANGES | FAIL`
+    for as long as it existed, so a seat that echoed the prompt's format block
+    and reviewed nothing graded as having reviewed. The guard belongs on both
+    paths, not only on the recovery."""
+    echo = ("Here is the required format.\n"
+            "verdict: PASS | PASS_WITH_CHANGES | FAIL\n"
+            "confidence: 0.9\n"
+            "I could not read the diff, so I have nothing to report.")
+    fake = write_fake(tmp_path, "spec_anchored.py", envelope_fake(
+        grok_doc(text=echo)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["invalid_reasons"] == ["schema_invalid"]
+    assert receipt["result"]["verdict"] is None
+
+
+def test_a_quoted_verdict_block_the_seat_never_answered_is_not_recovered(tmp_path):
+    """The recovery's premise is adjacency, not order: a turn cut off after
+    quoting a previous round's verdict leaves that block LAST, so
+    "an echo always precedes the answer" is not something the grader can
+    lean on."""
+    quoted = ("Round 1 concluded:\nverdict: PASS_WITH_CHANGES\n"
+              "confidence: 0.86\nand I was about to say that ")
+    fake = write_fake(tmp_path, "quoted.py", envelope_fake(grok_doc(text=quoted)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    # The quoted block IS line-anchored, so the primary grammar takes it. What
+    # this pins is that the recovery adds nothing here — the value comes from a
+    # real verdict line, and `verdict_recovered` stays false.
+    assert receipt["result"]["verdict"] == "PASS_WITH_CHANGES"
+    assert receipt["result"]["verdict_recovered"] is False
+
+
+def test_a_run_in_verdict_whose_confidence_is_far_away_is_not_recovered(tmp_path):
+    """Adjacency is the whole predicate. Without it, any prose mentioning a
+    verdict and, paragraphs later, a confidence, parses as a review."""
+    loose = ("I read the diff and the verdict: PASS seemed likely at first. "
+             "After more reading I am not sure.\n\nSeparately, my confidence: 0.4 "
+             "in the test suite is low.")
+    fake = write_fake(tmp_path, "far.py", envelope_fake(grok_doc(text=loose)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["verdict"] is None
+
+
+def test_a_confidence_outside_zero_to_one_is_not_a_confidence(tmp_path):
+    run_in = "notes about the change.verdict: FAIL\nconfidence: 1.9\nfindings:"
+    fake = write_fake(tmp_path, "conf19.py", envelope_fake(grok_doc(text=run_in)))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["verdict"] is None
+
+
+def test_the_run_in_recovery_also_covers_the_plain_stdout_path(tmp_path):
+    """The canonical reviewer recipe declares `--output-schema review` with no
+    envelope. Fixing the run-in artifact only under an envelope would leave the
+    recipe most seats actually use exactly as broken as before."""
+    body = ("import sys\n"
+            "sys.stdout.write('checking the tests the plan expects.'\n"
+            "                 'verdict: PASS_WITH_CHANGES\\nconfidence: 0.86\\n')\n")
+    fake = write_fake(tmp_path, "plain_runin.py", body)
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake])
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert receipt["result"]["verdict"] == "PASS_WITH_CHANGES"
+    assert receipt["result"]["verdict_recovered"] is True
+
+
+def test_a_grok_document_read_as_the_claude_format_fails_closed(tmp_path):
+    """A mis-declared format must not pass on null fields: every discriminator
+    the Claude gate reads is absent from a grok document."""
+    fake = write_fake(tmp_path, "xfmt1.py", envelope_fake(grok_doc()))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=CLAUDE_ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert receipt["result"]["invalid_reasons"] == [
+        "envelope_document_type:<absent>", "envelope_subtype:<absent>",
+        "envelope_stop_reason:<absent>"]
+
+
+def test_a_claude_document_read_as_the_grok_format_fails_closed(tmp_path):
+    fake = write_fake(tmp_path, "xfmt2.py", envelope_fake(claude_doc()))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["invalid_reasons"] == ["envelope_stop_reason:<absent>"]
+
+
+def test_a_claude_document_with_a_foreign_type_is_refused(tmp_path):
+    doc = claude_doc()
+    doc["type"] = "stream_event"
+    fake = write_fake(tmp_path, "cl_type.py", envelope_fake(doc))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=CLAUDE_ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert "envelope_document_type:stream_event" in receipt["result"]["invalid_reasons"]
+
+
+def test_a_claude_document_whose_subtype_is_not_success_is_refused(tmp_path):
+    """`error_max_turns` ends `end_turn` and sets no `is_error` in some builds:
+    the subtype is the only thing that says the turn did not finish its work."""
+    fake = write_fake(tmp_path, "cl_sub.py", envelope_fake(
+        claude_doc(subtype="error_max_turns")))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=CLAUDE_ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert "envelope_subtype:error_max_turns" in receipt["result"]["invalid_reasons"]
+
+
+def test_both_the_error_flag_and_the_stop_reason_survive(tmp_path):
+    """Early-returning on the first reason hid the one that tells a recipe
+    defect from a model failure."""
+    fake = write_fake(tmp_path, "cl_both.py", envelope_fake(
+        claude_doc(is_error=True, subtype="error_during_execution",
+                   stop_reason="max_tokens")))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=CLAUDE_ENVELOPE_ARGS)
+    assert receipt["result"]["invalid_reasons"] == [
+        "envelope_subtype:error_during_execution", "envelope_reported_error",
+        "envelope_stop_reason:max_tokens"]
+
+
+def test_an_xai_transport_refuses_another_vendors_envelope(tmp_path):
+    """`.to_xai` requires an envelope because a cancelled grok turn exits 0.
+    A declaration naming another format grades another document shape and
+    would pass that cancellation on null fields."""
+    fake = write_fake(tmp_path, "xai_fmt.py", envelope_fake(grok_doc()))
+    proc, _ = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--transport-id", "claude_code.to_xai",
+               "--session-evidence", "grok-session-v1:" + str(tmp_path),
+               "--session-id", SESSION_UUID, *CLAUDE_ENVELOPE_ARGS))
+    assert proc.returncode == 2, proc.stderr
+    assert "must be 'grok-headless-json-v1'" in proc.stderr

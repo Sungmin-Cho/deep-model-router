@@ -7,25 +7,33 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.11.0] — 2026-09-02 (Claude envelope)
+## [1.11.0] — 2026-09-02 (Claude envelope, stricter verdicts)
 
 ### Added
 
 - `--output-envelope claude-print-json-v1` grades a `claude -p --output-format
   json` document through the same gate as the grok format, reading that
-  format's own key names. A document that sets `is_error` is `INVALID_OUTPUT`
-  whatever its finishing reason says.
+  format's own key names and requiring its `type`, `subtype` and `is_error`
+  discriminators to agree that the turn finished.
 - A receipt's envelope carries `usage`, the child's own token accounting, so a
   caller measuring context or boot cost reads the receipt instead of scraping
-  the retained stdout. The grok format leaves that key null.
+  the retained stdout. Both formats carry counts; only finite non-negative
+  numbers are kept.
+- A receipt records the `verdict` it parsed and whether it was
+  `verdict_recovered`; `verify-evidence` notes a recovered one.
 
 ### Fixed
 
+- `verdict: PASS | PASS_WITH_CHANGES | FAIL` — the format a review prompt
+  quotes — is no longer accepted as a verdict, including at line start where it
+  always was. A seat that echoed the instructions and reviewed nothing no
+  longer grades as having reviewed.
 - A verdict that a headless format ran into the narration in front of it is no
-  longer graded as no verdict at all. When the line-anchored grammar finds
-  nothing, the last unanchored `verdict:` is accepted if it is not the format
-  spec the prompt quotes and `confidence:` follows it. The receipt records
-  `verdict_recovered`, so the recipe that needed the repair still gets fixed.
+  longer graded as no verdict at all, on the envelope and plain-stdout paths
+  alike. The last unanchored verdict counts when the schema's second field is
+  on the next line and in range.
+- A `.to_xai` dispatch may no longer declare another vendor's envelope format,
+  and `verify-evidence` refuses a receipt that did.
 
 ## [1.10.1] — 2026-09-02 (registry-id provenance)
 

@@ -769,28 +769,56 @@ some prose on stdout never did.
 `claude -p --output-format json` document the same way, reading that format's
 own key names: the finishing reason is `stop_reason` (not `stopReason`), the
 answer the verdict grammar applies to is `result` (not `text`), and the failure
-discriminator is `subtype` on a document whose `type` is always `result`. Two
-things are specific to it. A document that sets `is_error` is `INVALID_OUTPUT`
-(`envelope_reported_error`) whatever its finishing reason says — a turn can end
-`end_turn` and still declare it failed. And the receipt's envelope carries
-`usage`, the child's own token accounting, so a caller measuring boot or context
-cost reads the receipt instead of scraping the retained stdout; a grok receipt
-leaves that key null, because that format does not carry counts.
+discriminator is `subtype` on a document whose `type` is always `result`. All
+three are graded, not merely recorded: a document is a finished turn only when
+`type` is `result`, `subtype` is `success`, and `is_error` is false, so a
+mis-declared or foreign object fails closed instead of passing on null fields.
+`is_error` outranks the finishing reason — a turn can end `end_turn` and still
+declare it failed — and every reason that applies is reported, because the stop
+reason is what tells a recipe defect from a model failure.
+
+**Both formats carry `usage`**, and the receipt's envelope carries it too, so a
+caller measuring boot or context cost reads the receipt instead of scraping the
+retained stdout. The key sets differ — grok adds `reasoning_tokens` and
+`total_tokens` — and the receipt's own `output_envelope` says which format
+produced it. Only counts survive: a value that is not a finite non-negative
+number is dropped, because a child's document is untrusted input and `NaN`
+would write a receipt no strict JSON reader can parse. A document that carries
+no counts at all leaves the key null rather than absent.
+
+**To use it**, add `--output-format json` to the child and
+`--output-envelope claude-print-json-v1` to the supervisor; under
+`--output-schema review` the verdict grammar then applies to the document's
+`result` field, exactly as it applies to a grok document's `text`. A
+`.to_xai` dispatch may not declare this format: that direction requires the
+grok envelope, because what it exists to catch is a grok cancellation.
 
 **A verdict that ran into the narration in front of it is recovered, and the
 repair is recorded.** Measured 2026-09-02: a grok headless document's `text`
 can join the model's progress notes to its final answer with no newline
-between them, so the line-anchored verdict grammar reports nothing on a turn
-that produced a verdict, and the seat is re-dispatched over a formatting
-artifact. When — and only when — the anchored grammar finds nothing, the
-supervisor accepts the LAST unanchored `verdict:` in the text, provided the
-value is not followed by `|` (that shape is the format spec the review prompt
-itself quotes, not an answer) and `confidence:` follows it. A document that
-only ever echoed the format therefore still fails. Recovery is never silent:
-the receipt's envelope carries `verdict_recovered`, because the seat's output
-did need repair and the recipe that produced it should be fixed. Asking for
-the final answer on a new line remains the right instruction in the prompt;
-this is the net under it.
+between them, so the line-anchored grammar reports nothing on a turn that
+produced a verdict and the seat is re-dispatched over a formatting artifact.
+
+Two rules, on **both** the envelope and the plain-stdout path — the canonical
+reviewer recipe declares no envelope, so a net that covered only one would
+miss the seat most reviews actually use.
+
+- `verdict: PASS | PASS_WITH_CHANGES | FAIL` is the format this document's own
+  prompt quotes, not an answer, and it is refused wherever it appears —
+  including at line start, where it was accepted for as long as the grammar
+  existed. A seat that echoed the instructions and reviewed nothing does not
+  grade as having reviewed.
+- Failing an anchored verdict, the LAST unanchored one counts, but only if the
+  schema's second field is on the very next line and in range. Adjacency is the
+  predicate: an unbounded search for `confidence:` anywhere later accepts a
+  document that quoted someone else's verdict block and then said nothing of
+  its own, and `confidence: 1.9` is not a confidence.
+
+The receipt records both the `verdict` it parsed and whether it was
+`verdict_recovered`, and `verify-evidence` prints a note for a recovered one.
+The output did need repair, and the recipe that produced it should be fixed —
+asking for the final answer on a new line remains the right instruction. This
+is the net under it.
 
 The cause lands in `result.invalid_reasons`. Reasons naming a cancellation or
 unusable evidence mean the recipe killed the turn, not that the model failed

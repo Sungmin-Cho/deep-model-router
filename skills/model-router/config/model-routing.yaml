@@ -953,6 +953,29 @@ verification_ledger:
         served_model_caveats) is attached to a concrete model, which is the same
         reason a family alias is never registered.
 
+    - item: "claude-print-json-v1 envelope shape (dispatch_agent --output-envelope)"
+      status: verified
+      probed_on: 2026-09-02
+      cli_version: "2.1.258 (Claude Code)"
+      attempt_id: p1-fable51-id
+      argv: "claude -p --model claude-fable-5-1 --effort low --permission-mode plan --strict-mcp-config --output-format json"
+      evidence: >
+        The supervisor's second envelope format hard-codes a document shape, so
+        the shape is recorded where a later build can be checked against it.
+        Observed top-level keys on the retained capture (probes/
+        p1-fable51-id.stdout, and three more in the same directory):
+        type="result", subtype="success", is_error=false,
+        stop_reason="end_turn", result, session_id, num_turns, usage,
+        modelUsage, total_cost_usd, plus timing fields. The grader reads
+        stop_reason / result / subtype and requires type=result,
+        subtype=success and is_error=false; a build that stops emitting
+        stop_reason fails closed as envelope_stop_reason:<absent> rather than
+        passing on a null. grok documents were re-read at the same time: all 44
+        retained captures carry `usage` (input_tokens,
+        cache_read_input_tokens, cache_creation_input_tokens, output_tokens,
+        reasoning_tokens, total_tokens), which corrects a 1.11.0 draft claim
+        that the grok format carried none.
+
     - item: "Claude child write axis (transports.codex.to_claude.write_verified, transports.grok.to_claude.write_verified)"
       status: verified
       probed_on: 2026-09-02

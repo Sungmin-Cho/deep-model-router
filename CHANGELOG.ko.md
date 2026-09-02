@@ -7,24 +7,31 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
-## [1.11.0] — 2026-09-02 (Claude envelope)
+## [1.11.0] — 2026-09-02 (Claude envelope, 엄격해진 verdict)
 
 ### Added
 
 - `--output-envelope claude-print-json-v1`이 `claude -p --output-format json`
-  문서를 grok 포맷과 같은 게이트로 등급 판정한다. 키 이름은 그 포맷 자신의 것을
-  읽는다. `is_error`를 세운 문서는 종료 사유와 무관하게 `INVALID_OUTPUT`이다.
+  문서를 grok 포맷과 같은 게이트로 판정한다. 키 이름은 그 포맷 자신의 것을 읽고,
+  `type`·`subtype`·`is_error` 판별자가 모두 "턴이 끝났다"고 말해야 한다.
 - receipt의 envelope가 자식의 토큰 회계(`usage`)를 싣는다. 컨텍스트·부팅 비용을
-  재는 호출자는 보존된 stdout을 긁는 대신 receipt를 읽으면 된다. grok 포맷은 그
-  키를 null로 둔다.
+  재는 호출자는 보존된 stdout을 긁는 대신 receipt를 읽으면 된다. 두 포맷 모두
+  수치를 싣고, 유한하고 음이 아닌 수만 남긴다.
+- receipt가 파싱한 `verdict`와 그것이 `verdict_recovered`인지를 기록한다.
+  `verify-evidence`는 복구된 receipt에 대해 알림을 낸다.
 
 ### Fixed
 
+- 리뷰 프롬프트가 인용하는 형식 `verdict: PASS | PASS_WITH_CHANGES | FAIL`을 더
+  이상 verdict로 받지 않는다. 행두에 있어도 마찬가지다 — 지금까지는 받아들였다.
+  지시문만 되뇌고 아무것도 리뷰하지 않은 좌석은 이제 리뷰한 것으로 판정되지
+  않는다.
 - 헤드리스 포맷이 앞선 서술과 붙여 버린 verdict를 더 이상 "verdict 없음"으로
-  판정하지 않는다. 행두 문법이 아무것도 찾지 못할 때만, 마지막 비앵커
-  `verdict:`를 받아들인다 — 프롬프트가 인용하는 형식 사양이 아니고 뒤에
-  `confidence:`가 따라올 때에 한한다. receipt가 `verdict_recovered`를 기록하므로
-  수리가 필요했던 레시피는 여전히 고쳐진다.
+  판정하지 않는다. envelope 경로와 일반 stdout 경로 모두에 적용된다. 마지막 비앵커
+  verdict는 스키마의 두 번째 필드가 바로 다음 줄에 범위 안의 값으로 올 때만
+  인정된다.
+- `.to_xai` 디스패치는 다른 벤더의 envelope 포맷을 선언할 수 없으며,
+  `verify-evidence`는 그렇게 만들어진 receipt를 거부한다.
 
 ## [1.10.1] — 2026-09-02 (레지스트리 id 출처 기록)
 
