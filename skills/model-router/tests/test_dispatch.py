@@ -22,6 +22,9 @@ import pytest
 
 SKILL = Path(__file__).resolve().parent.parent
 SCRIPT = SKILL / "scripts" / "dispatch_agent.py"
+sys.path.insert(0, str(SKILL / "scripts"))
+from route_task import default_config as _default_config  # noqa: E402
+ARCHITECT_ID = _default_config()["models"]["claude_architect"]["id"]
 
 HAPPY = """
 print("verdict: PASS")
@@ -1380,7 +1383,7 @@ def test_grok_hosted_reviewer_pair_forms_a_verifiable_evidence_set(tmp_path):
     fake = write_fake(tmp_path, "happy_pair.py", HAPPY)
     receipts = tmp_path / "receipts"
     ids = []
-    models = ("claude-fable-5", "gpt-5.6-sol")
+    models = (ARCHITECT_ID, "gpt-5.6-sol")
     transports = ("grok.to_claude", "grok.to_openai")
     seats = ("reviewer-1", "reviewer-2")
     for model, transport, seat in zip(models, transports, seats):
@@ -1419,7 +1422,7 @@ def test_grok_hosted_reviewer_pair_forms_a_verifiable_evidence_set(tmp_path):
         tmp_path, [sys.executable, fake],
         attempt_id=third,
         extra=("--runtime", "grok", "--transport-id", "grok.to_claude",
-               "--model-id", "claude-fable-5", "--seat", "reviewer-1"))
+               "--model-id", ARCHITECT_ID, "--seat", "reviewer-1"))
     assert proc.returncode == 0, proc.stderr
     seat_clash = subprocess.run(
         [sys.executable, str(SCRIPT), "verify-evidence",

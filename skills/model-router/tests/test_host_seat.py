@@ -10,6 +10,7 @@ Run:  python3 -m pytest skills/model-router/tests/ -q
 
 import copy
 import json as _json
+import re
 import sys
 from pathlib import Path
 
@@ -30,7 +31,12 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 REGISTRY_IDS = {model["id"] for model in CFG["models"].values()}
+
+
+def _whole_token(needle: str, text: str) -> bool:
+    return re.search(r"(^|[^A-Za-z0-9._-])" + re.escape(needle) + r"([^A-Za-z0-9._-]|$)", text) is not None
 
 EXPECTED_ASK_ROWS = [
     f"| default | {CFG['router']['default_orchestrator']} nominal / {CFG['router']['default_orchestrator_effort']} |",
@@ -185,7 +191,7 @@ def test_ask_is_immune_to_bridge_down_and_unavailability():
     base = dict(task_class="ARCHITECTURE", uncertainty=3)
     a = route(_t(**base), CFG)
     b = route(_t(**base, flags=["bridge_down"]), CFG)
-    c = route(_t(**base, unavailable_models=["claude-fable-5"]), CFG)
+    c = route(_t(**base, unavailable_models=[ARCHITECT_ID]), CFG)
     assert (_advisory(a)["policy_ask"] == _advisory(b)["policy_ask"]
             == _advisory(c)["policy_ask"])
 
@@ -226,7 +232,7 @@ def test_model_below_alone_triggers_upgrade():
 
 
 def test_effort_below_alone_triggers_upgrade_by_index_not_string():
-    adv = _advisory(_route_with_host("claude-fable-5", "HIGH",
+    adv = _advisory(_route_with_host(ARCHITECT_ID, "HIGH",
                                      over=dict(blast_radius=2)))
     assert adv["model_comparison"] == "above"
     assert adv["effort_comparison"] == "below"
@@ -234,7 +240,7 @@ def test_effort_below_alone_triggers_upgrade_by_index_not_string():
 
 
 def test_above_on_both_axes_stays_none():
-    adv = _advisory(_route_with_host("claude-fable-5", "MAX"))
+    adv = _advisory(_route_with_host(ARCHITECT_ID, "MAX"))
     assert adv["model_comparison"] == "above"
     assert adv["effort_comparison"] == "above"
     assert adv["advisory"] == "none"
@@ -249,7 +255,7 @@ def test_unrecognized_model_still_compares_effort():
 
 
 def test_effort_undeclared_with_max_ask_stays_none_in_decision_layer():
-    adv = _advisory(_route_with_host("claude-fable-5",
+    adv = _advisory(_route_with_host(ARCHITECT_ID,
                                      over=dict(blast_radius=2)))
     assert adv["effort_comparison"] == "undeclared"
     assert adv["advisory"] == "none"
@@ -275,14 +281,14 @@ def test_empty_model_and_bad_effort_are_loud():
     with pytest.raises(ValidationError):
         _route_with_host("")
     with pytest.raises(ValidationError):
-        _route_with_host("claude-fable-5", "ULTRA")
+        _route_with_host(ARCHITECT_ID, "ULTRA")
 
 
 # --- hash and output contract [IA-1b] ---
 
 def test_declared_host_seat_changes_both_hashes():
     a = route(_t(), CFG)
-    b = _route_with_host("claude-fable-5", "MAX")
+    b = _route_with_host(ARCHITECT_ID, "MAX")
     assert a["request_sha256"] != b["request_sha256"]
     assert a["decision_fingerprint"] != b["decision_fingerprint"]
 
@@ -314,14 +320,14 @@ def test_whitespace_padded_registered_model_cannot_bypass_policy_validation():
 
 def test_model_only_equals_model_with_null_effort():
     t1 = _t()
-    t1._host_seat = {"model": "claude-fable-5", "effort": None}
+    t1._host_seat = {"model": ARCHITECT_ID, "effort": None}
     t2 = _t()
-    t2._host_seat = {"model": "claude-fable-5"}
+    t2._host_seat = {"model": ARCHITECT_ID}
     out1, out2 = route(t1, CFG), route(t2, CFG)
     assert out1["request_sha256"] == out2["request_sha256"]
     assert (out1["host_seat_advisory"]["declared"]
             == out2["host_seat_advisory"]["declared"]
-            == {"model": "claude-fable-5", "effort": None})
+            == {"model": ARCHITECT_ID, "effort": None})
 
 
 # --- Task 4 — id-free advisory surfaces and terminal path precision. ---
@@ -337,7 +343,7 @@ def test_below_note_is_id_free_and_pinned_both_axes():
                            over=dict(uncertainty=3, blast_radius=2))
     note = _below_note(out)
     assert "model tier 0 < 1" in note and "effort HIGH < MAX" in note
-    assert not any(i in note for i in REGISTRY_IDS)
+    assert not any(_whole_token(i, note) for i in REGISTRY_IDS)
 
 
 def test_below_note_clauses_per_axis():
@@ -349,7 +355,7 @@ def test_below_note_clauses_per_axis():
     assert "model tier 0 < 1" in note
     assert "effort" not in note.split("[")[0]
     # Effort only.
-    out2 = _route_with_host("claude-fable-5", "HIGH",
+    out2 = _route_with_host(ARCHITECT_ID, "HIGH",
                             over=dict(blast_radius=2))
     note2 = _below_note(out2)
     assert "effort HIGH < MAX" in note2 and "model tier" not in note2
@@ -362,7 +368,7 @@ def test_below_note_clauses_per_axis():
 
 def test_no_note_when_at_above_or_undeclared():
     for out in (route(_t(), CFG),
-                _route_with_host("claude-fable-5", "MAX")):
+                _route_with_host(ARCHITECT_ID, "MAX")):
         assert _below_note(out) is None
 
 
@@ -398,7 +404,7 @@ def test_terminal_keeps_declared_and_is_path_precise():
     scrubbed["host_seat_advisory"]["declared"]["model"] = None
     dumped = _json.dumps(scrubbed)
     echoed = set(out["unavailable_models"]) | set(out["excluded_prior_failures"])
-    assert not ({i for i in REGISTRY_IDS if i in dumped} - echoed)
+    assert not ({i for i in REGISTRY_IDS if _whole_token(i, dumped)} - echoed)
 
 
 def test_text_advisory_line_is_conditional_and_id_free(capsys):
@@ -412,7 +418,7 @@ def test_text_advisory_line_is_conditional_and_id_free(capsys):
     line = next(l for l in txt.splitlines()
                 if l.startswith("host-seat advisory"))
     assert "upgrade recommended" in line
-    assert not any(i in line for i in REGISTRY_IDS)
+    assert not any(_whole_token(i, line) for i in REGISTRY_IDS)
     rc2 = main(argv)  # Undeclared: no advisory line.
     assert rc2 == 0
     assert "host-seat advisory" not in capsys.readouterr().out
@@ -427,14 +433,14 @@ def _req(**extra):
 
 
 def test_request_v1_accepts_optional_host_seat():
-    task = task_from_request_v1(_req(host_seat={"model": "claude-fable-5",
+    task = task_from_request_v1(_req(host_seat={"model": ARCHITECT_ID,
                                                 "effort": "MAX"}))
-    assert task._host_seat == {"model": "claude-fable-5", "effort": "MAX"}
+    assert task._host_seat == {"model": ARCHITECT_ID, "effort": "MAX"}
 
 
 def test_request_v1_host_seat_type_and_keys_are_strict():
-    for bad in ("claude-fable-5", ["claude-fable-5"],
-                {"model": "claude-fable-5", "mode": "x"}):
+    for bad in (ARCHITECT_ID, [ARCHITECT_ID],
+                {"model": ARCHITECT_ID, "mode": "x"}):
         with pytest.raises(ValidationError):
             task_from_request_v1(_req(host_seat=bad))
     assert task_from_request_v1(_req(host_seat=None))._host_seat is None
@@ -451,7 +457,7 @@ def test_legacy_json_rejects_host_seat():
     payload = dict({"task_class": "IMPLEMENTATION", "complexity": 1,
                     "uncertainty": 1, "blast_radius": 1,
                     "reversibility": 1},
-                   host_seat={"model": "claude-fable-5"})
+                   host_seat={"model": ARCHITECT_ID})
     rc = main(["--json", _json.dumps(payload)])
     assert rc == 2
 
@@ -459,7 +465,7 @@ def test_legacy_json_rejects_host_seat():
 def test_request_json_wins_over_host_flags(tmp_path, capsys):
     p = tmp_path / "req.json"
     p.write_text(_json.dumps(_req()))
-    rc = main(["--request-json", str(p), "--host-model", "claude-fable-5",
+    rc = main(["--request-json", str(p), "--host-model", ARCHITECT_ID,
                "--format", "json"])
     assert rc == 0
     out = _json.loads(capsys.readouterr().out)
@@ -476,3 +482,28 @@ def test_cli_host_flags_declare_on_flags_path(capsys):
     out = _json.loads(capsys.readouterr().out)
     assert out["host_seat_advisory"]["declared"] == {
         "model": "claude-haiku-4-5-20251001", "effort": "HIGH"}
+
+
+UNRECOGNIZED_NOTE = "host seat model is not in the registry"
+
+
+def test_unrecognized_host_model_leaves_a_note_and_changes_nothing_else():
+    out = _route_with_host("claude-nova-6", "HIGH")
+    assert out["host_seat_advisory"]["model_comparison"] == "unrecognized"
+    notes = [n for n in out["notes"] if UNRECOGNIZED_NOTE in n]
+    assert len(notes) == 1 and "model_comparison=unrecognized" in notes[0]
+    assert not any(m["id"] in notes[0] for m in CFG["models"].values())
+    assert "claude-nova-6" not in notes[0]
+    plain = route(_t(), CFG)
+    for key in ("selected_model", "risk_band", "terminal", "requires_human_confirmation"):
+        assert out[key] == plain[key], key
+
+
+def test_registered_host_model_leaves_no_unrecognized_note():
+    out = _route_with_host(ARCHITECT_ID, "HIGH")
+    assert not any(UNRECOGNIZED_NOTE in n for n in out["notes"])
+
+
+def test_architect_host_on_grok_runtime_is_a_family_mismatch():
+    with pytest.raises(ValidationError):
+        _route_with_host(ARCHITECT_ID, "HIGH", over=dict(runtime="grok"))

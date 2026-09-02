@@ -2595,6 +2595,10 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         suffix = f" [{', '.join(ask['raised_by'])}]" if ask["raised_by"] else ""
         all_notes.append("host seat below orchestrator ask: "
                          + "; ".join(clauses) + suffix)
+    if model_cmp == "unrecognized":
+        all_notes.append(
+            "host seat model is not in the registry (model_comparison=unrecognized): "
+            "the registry may be stale - bump the id and re-probe")
     effective_policy = {
         "minimum_capability_tier": lp.get("minimum_capability_tier"),
         "minimum_effort": lp.get("minimum_effort"),
