@@ -7,6 +7,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] — 2026-09-02 (registry-id provenance)
+
+### Changed
+
+- The verification ledger records that `claude-haiku-4-5-20251001` and
+  `claude-haiku-4-5` resolve to different served models, so the registry keeps
+  the dated pin rather than dropping the suffix.
+
 ## [1.10.0] — 2026-09-02 (honest promotion record, bound write seats)
 
 ### Fixed

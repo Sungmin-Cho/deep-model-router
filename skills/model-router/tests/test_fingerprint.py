@@ -16,6 +16,9 @@ from route_task import (  # noqa: E402
 from policy_digest import canonical_policy_sha256  # noqa: E402
 import copy  # noqa: E402
 
+_CFG = default_config()
+ID = lambda key: _CFG["models"][key]["id"]                       # noqa: E731
+
 BASE = dict(task_class="IMPLEMENTATION", complexity=1, uncertainty=1,
             blast_radius=1, reversibility=0)
 
@@ -50,16 +53,16 @@ def test_local_policy_absent_empty_and_all_null():                # (e)
 
 
 def test_unavailable_lists_and_allowed_families_converge():
-    a = _fp(unavailable_models=["grok-4.6", "gpt-5.6-luna"],
+    a = _fp(unavailable_models=[ID("xai_frontier"), ID("openai_worker_fast")],
             _local_policy={"allowed_families": ["openai", "claude", "openai"]})
-    b = _fp(unavailable_models=["gpt-5.6-luna", "grok-4.6", "grok-4.6"],
+    b = _fp(unavailable_models=[ID("openai_worker_fast"), ID("xai_frontier"), ID("xai_frontier")],
             _local_policy={"allowed_families": ["claude", "openai"]})
     assert a == b
 
 
 def test_prior_models_multiplicity_is_preserved():
-    once = _fp(prior_failures=1, prior_models=["gpt-5.6-luna"])
-    twice = _fp(prior_failures=2, prior_models=["gpt-5.6-luna", "gpt-5.6-luna"])
+    once = _fp(prior_failures=1, prior_models=[ID("openai_worker_fast")])
+    twice = _fp(prior_failures=2, prior_models=[ID("openai_worker_fast"), ID("openai_worker_fast")])
     assert once != twice
 
 
@@ -68,7 +71,7 @@ def test_route_emits_both_fields_and_terminal_keeps_them():       # (h)
     assert len(ok["request_sha256"]) == 64
     assert len(ok["decision_fingerprint"]) == 64
     terminal = route(Task(**BASE, prior_failures=4,
-                          prior_models=["gpt-5.6-luna"] * 4))
+                          prior_models=[ID("openai_worker_fast")] * 4))
     assert terminal["terminal"] is not None
     assert len(terminal["request_sha256"]) == 64
     assert len(terminal["decision_fingerprint"]) == 64

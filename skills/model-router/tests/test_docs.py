@@ -9,7 +9,9 @@ one of those contracts.
 Run:  python3 -m pytest skills/model-router/tests/ -q
 """
 
+import io
 import re
+import tokenize
 import sys
 from pathlib import Path
 
@@ -755,3 +757,50 @@ def test_the_claude_artifact_limitation_is_documented_where_a_caller_hits_it():
                    "content hash recorded beside the",
                    "do not seat\na Claude worker", "never that the supervisor can"):
         assert needle in paras[0], needle
+
+
+# Historical ledger `item` text. Those rows record what was probed on a given
+# day, so they do NOT follow a later registry rename — quoting one literally is
+# the identity of the row being asserted, not a copy of a registry id.
+_LEDGER_ITEM_QUOTES = (
+    "worker_fast binding: gpt-5.6-luna over claude-haiku-4-5",
+    "worker_balanced binding: grok-4.6 over claude-sonnet-5",
+)
+
+
+def _code_lines(src):
+    """Line number -> text, for lines that are neither comment nor docstring.
+
+    Prose is exempt on purpose: a comment explaining which model a past defect
+    seated is history, and rewriting history to track the registry would be the
+    opposite of what this guard is for.
+    """
+    prose = set()
+    triple = ('"' * 3, "'" * 3)
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.COMMENT:
+            prose.update(range(tok.start[0], tok.end[0] + 1))
+        elif tok.type == tokenize.STRING and tok.string.lstrip("rbfu").startswith(triple):
+            prose.update(range(tok.start[0], tok.end[0] + 1))
+    return {n: line for n, line in enumerate(src.splitlines(), 1) if n not in prose}
+
+
+def test_tests_never_hardcode_a_registry_model_id_in_code():
+    """`test_d8` keeps ids out of the references; nothing kept them out of the
+    tests. The 1.9.0 id bump therefore meant 39 hand edits across five files,
+    and the real risk was the silent kind — a withheld-model assertion that
+    still parses after a rename and no longer withholds anything. Every code
+    site now derives its id from a registry KEY, which is the stable identity.
+    """
+    ids = {m["id"] for m in CFG["models"].values()}
+    offenders = {}
+    for path in sorted((SKILL / "tests").glob("test_*.py")):
+        for n, line in _code_lines(path.read_text()).items():
+            if any(quote in line for quote in _LEDGER_ITEM_QUOTES):
+                continue
+            hits = sorted(i for i in ids if _whole_token(i, line))
+            if hits:
+                offenders[path.name + ":" + str(n)] = hits
+    assert offenders == {}, (
+        "model ids hardcoded in test code — derive each from a registry key "
+        'with ID("<key>"): ' + repr(offenders))

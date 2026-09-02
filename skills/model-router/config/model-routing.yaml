@@ -935,6 +935,24 @@ verification_ledger:
         variant this row does not vouch for. Receipts:
         docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/.
 
+    - item: "claude-haiku-4-5-20251001 and claude-haiku-4-5 are two identities, not one"
+      status: verified
+      probed_on: 2026-09-02
+      cli_version: "2.1.258 (Claude Code)"
+      evidence: >
+        Both resolve, and they serve different things: claude -p --model
+        claude-haiku-4-5-20251001 reports modelUsage
+        ["claude-haiku-4-5-20251001"], while --model claude-haiku-4-5 reports
+        ["claude-haiku-4-5"]. The dated id is NOT normalised to the undated one,
+        so the two are not interchangeable in a receipt's served_models.
+        Recorded because the 2026-09-02 design carried an item (D-1) proposing
+        to drop the date suffix on the premise that serving already normalised
+        it -- that premise is false, and the item is closed as won't-do. The
+        registry keeps the dated id: it is the more specific pin, and every
+        per-model fact in this file (price, capability_tier, effort ceiling,
+        served_model_caveats) is attached to a concrete model, which is the same
+        reason a family alias is never registered.
+
     - item: "Claude child write axis (transports.codex.to_claude.write_verified, transports.grok.to_claude.write_verified)"
       status: verified
       probed_on: 2026-09-02

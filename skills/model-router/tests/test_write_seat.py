@@ -33,6 +33,7 @@ from route_task import (  # noqa: E402
 )
 
 CFG = load_config()
+ID = lambda key: CFG["models"][key]["id"]                        # noqa: E731
 ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
 POLICY = Policy.of(CFG)
 
@@ -270,13 +271,13 @@ def test_a_write_route_is_staffed_by_the_shipped_claude_code_maker():
     `worker_balanced` binds the xai seat and `claude_code.to_xai` now
     ships a write-capable maker, so the emitted worker has an argv of record."""
     out = route(Task(**WRITE_ROUTE, runtime="claude_code"), CFG)
-    assert out["selected_model"] == "grok-4.6"
+    assert out["selected_model"] == ID("xai_frontier")
     assert POLICY.write_capable("claude_code", "xai")
 
 
 def test_the_same_defect_on_the_codex_host():
     out = route(Task(**WRITE_ROUTE, runtime="codex"), CFG)
-    assert out["selected_model"] != "grok-4.6"
+    assert out["selected_model"] != ID("xai_frontier")
 
 
 def test_the_read_only_reviewer_seat_is_untouched_on_a_write_route():
@@ -284,7 +285,7 @@ def test_the_read_only_reviewer_seat_is_untouched_on_a_write_route():
     This route WRITES and still seats the verified read-only xai reviewer."""
     out = route(Task(**REVIEWED_ROUTE, runtime="claude_code"), CFG)
     assert out["worker_seat"]["kind"] == "write"
-    assert "grok-4.6" in out["review"]["reviewer_models"]
+    assert ID("xai_frontier") in out["review"]["reviewer_models"]
 
 
 def test_the_host_own_family_still_works_natively():
@@ -292,19 +293,19 @@ def test_the_host_own_family_still_works_natively():
     bridge with a missing recipe. Blocking it would be the coupling
     over-reaching into the one seat that needs no transport."""
     out = route(Task(**WRITE_ROUTE, runtime="grok"), CFG)
-    assert out["selected_model"] == "grok-4.6"
+    assert out["selected_model"] == ID("xai_frontier")
 
 
 def test_a_read_only_class_still_seats_the_xai_worker():
     out = route(Task(**READ_ONLY_ROUTE, runtime="claude_code"), CFG)
     assert out["worker_seat"]["kind"] == "read_only"
-    assert out["selected_model"] == "grok-4.6"
+    assert out["selected_model"] == ID("xai_frontier")
 
 
 def test_declaring_read_only_returns_the_seat_to_a_write_class_route():
     out = route(Task(**WRITE_ROUTE, runtime="claude_code",
                      worker_seat="read_only"), CFG)
-    assert out["selected_model"] == "grok-4.6"
+    assert out["selected_model"] == ID("xai_frontier")
 
 
 def test_shipping_a_verified_maker_returns_the_seat_with_no_code_change():
@@ -312,7 +313,7 @@ def test_shipping_a_verified_maker_returns_the_seat_with_no_code_change():
     OTHER half — shipping a maker recipe — needs no routing change at all."""
     out = route(Task(**WRITE_ROUTE, runtime="claude_code"),
                 _cfg_with_maker(verified=True))
-    assert out["selected_model"] == "grok-4.6"
+    assert out["selected_model"] == ID("xai_frontier")
 
 
 def test_the_skip_is_disclosed_as_the_policy_decision_it_is():
@@ -368,16 +369,16 @@ def test_a_role_holds_one_model_so_the_skip_reaches_that_whole_role():
     task = Task(task_class="MECHANICAL", complexity=2, uncertainty=2,
                 blast_radius=2, reversibility=0, runtime="codex",
                 unavailable_models=[ARCHITECT_ID,
-                                    "claude-haiku-4-5-20251001",
-                                    "claude-opus-5"])
+                                    ID("claude_worker_fast"),
+                                    ID("claude_senior")])
     out = route(task, CFG)
     assert out["terminal"] is None
     assert out["selected_role"] == "worker_balanced"
-    assert out["selected_model"] == "claude-sonnet-5"
+    assert out["selected_model"] == ID("claude_worker_balanced")
     # Same capability tier as the seat it replaced, so the route is not
     # weakened — and the reviewers are exactly what they were before.
-    assert POLICY.tier_of["claude-sonnet-5"] == POLICY.tier_of["grok-4.6"]
-    assert "grok-4.6" not in out["review"]["reviewer_models"]
+    assert POLICY.tier_of[ID("claude_worker_balanced")] == POLICY.tier_of[ID("xai_frontier")]
+    assert ID("xai_frontier") not in out["review"]["reviewer_models"]
 
 
 # ---------------------------------------------------------------------------
@@ -433,13 +434,13 @@ def test_the_unprobed_codex_direction_does_not_seat_the_xai_worker_for_write_wor
     """claude_code.to_xai is write-verified; codex.to_xai is not."""
     left = [(t, o) for t, o in _sweep_routes()
             if t.runtime == "codex"
-            and o["selected_model"] == "grok-4.6"]
+            and o["selected_model"] == ID("xai_frontier")]
     assert left, "the xai seat must survive for read-only work"
     assert all(o["worker_seat"]["kind"] == "read_only" for _, o in left)
     claude_write = [(t, o) for t, o in _sweep_routes()
                     if t.runtime == "claude_code"
                     and o["worker_seat"]["kind"] == "write"
-                    and o["selected_model"] == "grok-4.6"]
+                    and o["selected_model"] == ID("xai_frontier")]
     assert claude_write, "the shipped maker must staff Claude Code write work"
 
 
@@ -493,10 +494,10 @@ def test_a_real_outage_after_the_policy_skip_is_still_recorded():
     """
     task = Task(task_class="REFACTORING", complexity=0, uncertainty=2,
                 blast_radius=0, reversibility=0, runtime="codex",
-                unavailable_models=["claude-sonnet-5"])
+                unavailable_models=[ID("claude_worker_balanced")])
     out = route(task, CFG)
-    assert out["selected_model"] == "gpt-5.6-terra"
-    assert any("claude-sonnet-5 unavailable" in f for f in out["fallbacks_applied"]), \
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert any(f"{ID('claude_worker_balanced')} unavailable" in f for f in out["fallbacks_applied"]), \
         out["fallbacks_applied"]
     # The penalty is applied; a lone fallback no longer promotes on its own (DD-3, 1.9.0).
     assert out["routing_confidence"] == 0.81
@@ -507,10 +508,10 @@ def test_a_real_outage_plus_a_second_signal_still_promotes_the_review():
     """The consequence round 1 pinned — promotion — now needs a second signal."""
     task = Task(task_class="REFACTORING", complexity=0, uncertainty=2,
                 blast_radius=0, reversibility=0, runtime="codex",
-                unavailable_models=["claude-sonnet-5"],
-                prior_failures=1, prior_models=["gpt-5.6-luna"])
+                unavailable_models=[ID("claude_worker_balanced")],
+                prior_failures=1, prior_models=[ID("openai_worker_fast")])
     out = route(task, CFG)
-    assert any("claude-sonnet-5 unavailable" in f for f in out["fallbacks_applied"])
+    assert any(f"{ID('claude_worker_balanced')} unavailable" in f for f in out["fallbacks_applied"])
     assert out["routing_confidence"] == 0.76
     assert out["review"]["band"] == "HIGH"
 
@@ -519,7 +520,7 @@ def test_the_policy_skip_alone_still_records_no_fallback():
     """The other side of the same rule, pinned so a fix for the one above
     cannot re-introduce the scarcity report the skip must not make."""
     out = route(Task(**WRITE_ROUTE, runtime="codex"), CFG)
-    assert out["selected_model"] != "grok-4.6"
+    assert out["selected_model"] != ID("xai_frontier")
     assert not [f for f in out["fallbacks_applied"] if "worker_balanced:" in f]
 
 
@@ -637,7 +638,7 @@ def test_a_verified_write_seat_that_agrees_with_the_ledger_is_authorized():
             entry["status"] = "verified"
     policy = Policy(cfg)
     assert policy.write_capable("claude_code", "xai") is True
-    assert route(Task(**WRITE_ROUTE, runtime="claude_code"), cfg)["selected_model"] == "grok-4.6"
+    assert route(Task(**WRITE_ROUTE, runtime="claude_code"), cfg)["selected_model"] == ID("xai_frontier")
 
 
 def test_supply_exhausted_names_the_write_seat_when_that_is_the_cause():
@@ -663,7 +664,7 @@ def test_declaring_a_weaker_seat_than_the_class_default_is_disclosed():
     module discloses loudly everywhere else."""
     out = route(Task(**WRITE_ROUTE, runtime="claude_code",
                      worker_seat="read_only"), CFG)
-    assert out["selected_model"] == "grok-4.6"
+    assert out["selected_model"] == ID("xai_frontier")
     assert out["worker_seat"]["overrode_class_default"] is True
     assert any("declared read_only" in n and "IMPLEMENTATION" in n
                for n in out["notes"]), out["notes"]

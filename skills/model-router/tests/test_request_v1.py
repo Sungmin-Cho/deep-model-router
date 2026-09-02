@@ -18,6 +18,10 @@ from route_task import (  # noqa: E402
     route,
 )
 
+from route_task import load_config as _load_config  # noqa: E402
+_CFG = _load_config()
+ID = lambda key: _CFG["models"][key]["id"]                       # noqa: E731
+
 
 def r(**kw):
     kw.setdefault("complexity", 0)
@@ -136,12 +140,12 @@ def test_nested_unknown_local_policy_field_exits_2(tmp_path):
 
 def test_gemini_is_never_selected():
     out = r(task_class="IMPLEMENTATION", complexity=2, uncertainty=2, blast_radius=2)
-    assert out.get("selected_model") != "gemini-3.6-flash-high"
+    assert out.get("selected_model") != ID("gemini_flash")
     emitted = set()
     if out.get("selected_model"):
         emitted.add(out["selected_model"])
     emitted.update(out.get("review", {}).get("reviewer_models") or [])
-    assert "gemini-3.6-flash-high" not in emitted
+    assert ID("gemini_flash") not in emitted
 
 
 def test_locator_env_hit(tmp_path):
