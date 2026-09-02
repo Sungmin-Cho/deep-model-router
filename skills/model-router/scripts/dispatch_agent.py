@@ -127,7 +127,22 @@ HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 # applying a version-named output contract the caller explicitly declared
 # is the same kind of knowledge `--output-schema review` already encodes
 # about verdict grammar.
-ENVELOPE_FORMATS = ("grok-headless-json-v1",)
+ENVELOPE_FORMATS = ("grok-headless-json-v1", "claude-print-json-v1")
+
+# Which document key carries each envelope field, per format. The shapes are
+# analogous, not identical: grok discriminates a failure with a top-level
+# `type` ("error"), while a Claude `--output-format json` document is always
+# `type: "result"` and discriminates with `subtype` ("success", "error_*").
+# Both name the finishing reason and the served models the same way once
+# mapped, which is why one gate serves both.
+ENVELOPE_FIELDS = {
+    "grok-headless-json-v1": {"stop_reason": "stopReason",
+                              "session_id": "sessionId",
+                              "text": "text", "error_type": "type"},
+    "claude-print-json-v1": {"stop_reason": "stop_reason",
+                             "session_id": "session_id",
+                             "text": "result", "error_type": "subtype"},
+}
 # The envelope is a GATE surface, so its read is bounded: an unbounded
 # JSON parse of a child-controlled file is a denial-of-service surface on
 # the supervisor itself. Over budget is a typed refusal
@@ -219,6 +234,7 @@ INVALID_REASON_FLAGS = (
     "session_evidence_unreadable",  # declared, but summary.json is not there
     "session_evidence_unbound",     # evidence belongs to some other attempt
     "sandbox_event_missing",        # --expect-sandbox-enforced, no ProfileApplied
+    "envelope_reported_error",      # the document says so itself (is_error)
 )
 INVALID_REASON_PREFIXES = (
     "envelope_stop_reason",         # :<the non-end_turn value>
@@ -1298,10 +1314,15 @@ def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
     return data, False
 
 
-def _read_envelope(stdout_path: Path) -> dict:
-    """Read one grok headless JSON document off a finished attempt's stdout.
+def _read_envelope(stdout_path: Path, fmt: str) -> dict:
+    """Read one headless JSON document off a finished attempt's stdout.
 
-    Always returns the same six keys, whatever went wrong. `text` is an
+    `fmt` selects the key names (ENVELOPE_FIELDS); everything below is shape,
+    not vendor. Always returns the same eight keys, whatever went wrong.
+    `usage` is the child's own token accounting where the format carries it
+    (Claude does, grok does not) — recorded because the alternative is
+    scraping it back out of the stdout file, which is what every probe in the
+    2026-09-02 tranche had to do. `text` is an
     INTERNAL field — it feeds the verdict check and nothing else, and is
     dropped by `_receipt_envelope` before the receipt is written: the raw
     output already lives in the stdout file this read came from, and a
@@ -1313,7 +1334,8 @@ def _read_envelope(stdout_path: Path) -> dict:
     tell an over-budget stdout from a merely malformed one.
     """
     envelope = {"parse_ok": False, "stop_reason": None, "session_id": None,
-                "served_models": None, "text": None, "error_type": None}
+                "served_models": None, "text": None, "error_type": None,
+                "usage": None, "reported_error": False}
     data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
     if oversized:
         envelope["error_type"] = "evidence_oversized"
@@ -1329,11 +1351,18 @@ def _read_envelope(stdout_path: Path) -> dict:
         # A bare array or scalar parses as JSON but is not an envelope.
         return envelope
     envelope["parse_ok"] = True
-    for key, field in (("stopReason", "stop_reason"), ("sessionId", "session_id"),
-                       ("text", "text"), ("type", "error_type")):
+    for field, key in ENVELOPE_FIELDS[fmt].items():
         value = doc.get(key)
         if isinstance(value, str):
             envelope[field] = value
+    # A document that declares its own failure is not a success candidate
+    # whatever its finishing reason says; `is_error` is Claude's channel for
+    # that and absent from grok's, where `error_type` already carries it.
+    envelope["reported_error"] = doc.get("is_error") is True
+    counts = doc.get("usage")
+    if isinstance(counts, dict):
+        envelope["usage"] = {k: v for k, v in counts.items()
+                             if isinstance(v, (int, float)) and not isinstance(v, bool)}
     usage = doc.get("modelUsage")
     if isinstance(usage, dict):
         # DD-7: the SERVED model identifiers, recorded as observed and
@@ -1344,12 +1373,12 @@ def _read_envelope(stdout_path: Path) -> dict:
 
 
 def _receipt_envelope(envelope: dict) -> dict:
-    """The five keys an envelope contributes to a receipt. `session_id` is
+    """The six keys an envelope contributes to a receipt. `session_id` is
     here as the audit evidence for what the attempt-binding cross-proof
     (DD-3) actually compared; `text` is deliberately absent."""
     return {k: envelope[k] for k in
             ("parse_ok", "stop_reason", "session_id", "served_models",
-             "error_type")}
+             "error_type", "usage")}
 
 
 def _grade_envelope(envelope: dict) -> list[str]:
@@ -1359,6 +1388,8 @@ def _grade_envelope(envelope: dict) -> list[str]:
         return ["evidence_oversized"]
     if not envelope["parse_ok"]:
         return ["envelope_unparseable"]
+    if envelope.get("reported_error"):
+        return ["envelope_reported_error"]
     stop_reason = envelope["stop_reason"]
     if stop_reason != ENVELOPE_OK_STOP_REASON:
         return [_reason("envelope_stop_reason", stop_reason)]
@@ -1516,7 +1547,7 @@ def _backfill_terminal_evidence(args, receipt: dict,
         # envelope in the receipt as evidence, and none of those states is
         # relabeled by what it says.
         receipt["result"]["envelope"] = _receipt_envelope(
-            _read_envelope(stdout_path))
+            _read_envelope(stdout_path, args.output_envelope))
 
 
 def cmd_run(args) -> int:
@@ -1984,7 +2015,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         timed_out = False
                         envelope = None
                         if args.output_envelope is not None:
-                            envelope = _read_envelope(stdout_path)
+                            envelope = _read_envelope(
+                                stdout_path, args.output_envelope)
                             receipt["result"]["envelope"] = _receipt_envelope(
                                 envelope)
                             receipt["result"]["output_sha256"] = _stdout_digest(

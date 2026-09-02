@@ -7,6 +7,17 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.11.0] — 2026-09-02 (Claude envelope)
+
+### Added
+
+- `--output-envelope claude-print-json-v1`이 `claude -p --output-format json`
+  문서를 grok 포맷과 같은 게이트로 등급 판정한다. 키 이름은 그 포맷 자신의 것을
+  읽는다. `is_error`를 세운 문서는 종료 사유와 무관하게 `INVALID_OUTPUT`이다.
+- receipt의 envelope가 자식의 토큰 회계(`usage`)를 싣는다. 컨텍스트·부팅 비용을
+  재는 호출자는 보존된 stdout을 긁는 대신 receipt를 읽으면 된다. grok 포맷은 그
+  키를 null로 둔다.
+
 ## [1.10.1] — 2026-09-02 (레지스트리 id 출처 기록)
 
 ### Changed

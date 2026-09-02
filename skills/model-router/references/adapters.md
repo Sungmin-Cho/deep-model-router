@@ -765,6 +765,18 @@ the raw JSON carrying it. Under schema `none` an empty `text` is fine:
 `--require-artifact` is what proves such a seat finished, since exit 0 with
 some prose on stdout never did.
 
+**Two formats, one gate.** `--output-envelope claude-print-json-v1` grades a
+`claude -p --output-format json` document the same way, reading that format's
+own key names: the finishing reason is `stop_reason` (not `stopReason`), the
+answer the verdict grammar applies to is `result` (not `text`), and the failure
+discriminator is `subtype` on a document whose `type` is always `result`. Two
+things are specific to it. A document that sets `is_error` is `INVALID_OUTPUT`
+(`envelope_reported_error`) whatever its finishing reason says — a turn can end
+`end_turn` and still declare it failed. And the receipt's envelope carries
+`usage`, the child's own token accounting, so a caller measuring boot or context
+cost reads the receipt instead of scraping the retained stdout; a grok receipt
+leaves that key null, because that format does not carry counts.
+
 The cause lands in `result.invalid_reasons`. Reasons naming a cancellation or
 unusable evidence mean the recipe killed the turn, not that the model failed
 — fix the recipe, re-dispatch the same model once, and keep it out of

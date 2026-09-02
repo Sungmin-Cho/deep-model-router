@@ -1230,6 +1230,89 @@ def grok_doc(stop_reason="end_turn", text="verdict: PASS\nconfidence: 0.9",
 
 
 ENVELOPE_ARGS = ("--output-envelope", "grok-headless-json-v1")
+CLAUDE_ENVELOPE_ARGS = ("--output-envelope", "claude-print-json-v1")
+
+
+def claude_doc(stop_reason="end_turn", result="verdict: PASS\nconfidence: 0.9",
+               session_id=SESSION_UUID, model_usage=None,
+               is_error=False, usage=None, subtype="success"):
+    """A Claude Code `--output-format json` document, key-for-key.
+
+    Shapes taken from a real 2026-09-02 capture: the finishing reason is
+    `stop_reason` (not grok's `stopReason`), the answer is `result` (not
+    `text`), the failure discriminator is `subtype` on a document whose `type`
+    is always "result", and `usage` carries the token counts.
+    """
+    if model_usage is None:
+        model_usage = (ID("claude_senior"),)
+    doc = {"type": "result", "subtype": subtype, "is_error": is_error,
+           "stop_reason": stop_reason, "result": result,
+           "session_id": session_id, "num_turns": 1,
+           "usage": usage if usage is not None else {
+               "input_tokens": 2, "cache_read_input_tokens": 0,
+               "cache_creation_input_tokens": 11695, "output_tokens": 4}}
+    if model_usage is not None:
+        doc["modelUsage"] = {name: {"inputTokens": 2} for name in model_usage}
+    return doc
+
+
+def test_claude_envelope_reads_its_own_key_names(tmp_path):
+    """The two formats are analogous, not identical. Graded through the same
+    gate, a Claude document must yield the same envelope a grok one does —
+    from `stop_reason`/`result`/`subtype` instead of
+    `stopReason`/`text`/`type` — or the shared gate is reading nulls and
+    calling them a pass."""
+    fake = write_fake(tmp_path, "cl_ok.py", envelope_fake(claude_doc()))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=CLAUDE_ENVELOPE_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    env = receipt["result"]["envelope"]
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert env["stop_reason"] == "end_turn"
+    assert env["session_id"] == SESSION_UUID
+    assert env["served_models"] == [ID("claude_senior")]
+    assert env["error_type"] == "success"
+    assert receipt["result"]["schema_valid"] is True
+
+
+def test_claude_envelope_carries_the_token_counts_into_the_receipt(tmp_path):
+    """D-12's measurement had to be scraped out of a stdout file because the
+    receipt carried no usage. It carries it now, and only numbers: a nested
+    object or a string in that map is not a count."""
+    usage = {"input_tokens": 7, "cache_read_input_tokens": 71822,
+             "cache_creation_input_tokens": 8748, "output_tokens": 4,
+             "service_tier": "standard", "server_tool_use": {"web": 0}}
+    fake = write_fake(tmp_path, "cl_usage.py",
+                      envelope_fake(claude_doc(usage=usage)))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=CLAUDE_ENVELOPE_ARGS)
+    got = receipt["result"]["envelope"]["usage"]
+    assert got == {"input_tokens": 7, "cache_read_input_tokens": 71822,
+                   "cache_creation_input_tokens": 8748, "output_tokens": 4}
+
+
+def test_a_document_that_declares_its_own_error_is_not_a_success(tmp_path):
+    """`is_error` outranks the finishing reason: a turn can end `end_turn` and
+    still say it failed, and grading the reason alone would call that a pass."""
+    fake = write_fake(tmp_path, "cl_err.py",
+                      envelope_fake(claude_doc(is_error=True,
+                                               subtype="error_during_execution")))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 extra=CLAUDE_ENVELOPE_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert receipt["result"]["invalid_reasons"] == ["envelope_reported_error"]
+    assert receipt["result"]["envelope"]["stop_reason"] == "end_turn"
+
+
+def test_grok_documents_have_no_usage_and_say_so(tmp_path):
+    """The key is always present; a format that does not carry counts leaves
+    it null rather than absent, so a consumer never has to ask which format
+    produced the receipt before reading it."""
+    fake = write_fake(tmp_path, "gk_usage.py", envelope_fake(grok_doc()))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              extra=ENVELOPE_ARGS)
+    assert receipt["result"]["envelope"]["usage"] is None
 
 
 def test_envelope_end_turn_with_verdict_in_text_is_succeeded(tmp_path):
@@ -1453,13 +1536,16 @@ def test_envelope_oversized_stdout_is_invalid_output(tmp_path):
 def test_envelope_text_is_not_serialized_into_receipt(tmp_path):
     """`text` is an internal field of the read: the raw output already lives
     in the stdout file, and a receipt carries abbreviated evidence only. The
-    receipt's envelope is exactly five keys."""
+    receipt's envelope is exactly six keys — `usage` joined them when the
+    Claude format arrived, because the alternative was every caller scraping
+    token counts back out of the stdout file."""
     doc = grok_doc(text="verdict: PASS\nSECRET-PROMPT-ECHO-DO-NOT-COPY")
     fake = write_fake(tmp_path, "env_text.py", envelope_fake(doc))
     _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                               extra=ENVELOPE_ARGS)
     assert set(receipt["result"]["envelope"]) == {
-        "parse_ok", "stop_reason", "session_id", "served_models", "error_type"}
+        "parse_ok", "stop_reason", "session_id", "served_models", "error_type",
+        "usage"}
     assert "SECRET-PROMPT-ECHO-DO-NOT-COPY" not in json.dumps(receipt)
 
 

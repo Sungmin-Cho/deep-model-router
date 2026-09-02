@@ -7,6 +7,18 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — 2026-09-02 (Claude envelope)
+
+### Added
+
+- `--output-envelope claude-print-json-v1` grades a `claude -p --output-format
+  json` document through the same gate as the grok format, reading that
+  format's own key names. A document that sets `is_error` is `INVALID_OUTPUT`
+  whatever its finishing reason says.
+- A receipt's envelope carries `usage`, the child's own token accounting, so a
+  caller measuring context or boot cost reads the receipt instead of scraping
+  the retained stdout. The grok format leaves that key null.
+
 ## [1.10.1] — 2026-09-02 (registry-id provenance)
 
 ### Changed
