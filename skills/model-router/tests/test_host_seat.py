@@ -482,3 +482,28 @@ def test_cli_host_flags_declare_on_flags_path(capsys):
     out = _json.loads(capsys.readouterr().out)
     assert out["host_seat_advisory"]["declared"] == {
         "model": "claude-haiku-4-5-20251001", "effort": "HIGH"}
+
+
+UNRECOGNIZED_NOTE = "host seat model is not in the registry"
+
+
+def test_unrecognized_host_model_leaves_a_note_and_changes_nothing_else():
+    out = _route_with_host("claude-nova-6", "HIGH")
+    assert out["host_seat_advisory"]["model_comparison"] == "unrecognized"
+    notes = [n for n in out["notes"] if UNRECOGNIZED_NOTE in n]
+    assert len(notes) == 1 and "model_comparison=unrecognized" in notes[0]
+    assert not any(m["id"] in notes[0] for m in CFG["models"].values())
+    assert "claude-nova-6" not in notes[0]
+    plain = route(_t(), CFG)
+    for key in ("selected_model", "risk_band", "terminal", "requires_human_confirmation"):
+        assert out[key] == plain[key], key
+
+
+def test_registered_host_model_leaves_no_unrecognized_note():
+    out = _route_with_host(ARCHITECT_ID, "HIGH")
+    assert not any(UNRECOGNIZED_NOTE in n for n in out["notes"])
+
+
+def test_architect_host_on_grok_runtime_is_a_family_mismatch():
+    with pytest.raises(ValidationError):
+        _route_with_host(ARCHITECT_ID, "HIGH", over=dict(runtime="grok"))
