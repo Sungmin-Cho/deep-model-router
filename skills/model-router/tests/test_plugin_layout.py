@@ -149,3 +149,13 @@ def test_codex_agent_interface_sidecar_is_well_formed():
     manifest = _read_json(root, ".codex-plugin/plugin.json")["interface"]
     assert interface["display_name"] in manifest["longDescription"] or \
         interface["display_name"] in manifest["displayName"]
+
+
+def test_codex_manifest_and_sidecar_name_both_axes():
+    root = _repo_root()
+    manifest = _read_json(root, ".codex-plugin/plugin.json")["interface"]
+    for field in ("shortDescription", "longDescription"):
+        assert "difficulty" in manifest[field] and "risk" in manifest[field], field
+    import yaml
+    spec = yaml.safe_load((root / "skills" / "model-router" / "agents" / "openai.yaml").read_text(encoding="utf-8"))
+    assert "difficulty" in spec["interface"]["short_description"] and "risk" in spec["interface"]["short_description"]

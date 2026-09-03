@@ -924,6 +924,11 @@ def test_d16_skill_md_stays_small_without_being_hollowed_out():
 
     So: bytes, with headroom, plus the contracts that must survive any future
     shave. Deleting the retry rule to fit is now a test failure, not a saving.
+
+    The emitted-key round trip moved to
+    test_docs::test_control_loop_route_inventory_round_trips_every_emitted_key
+    (design 2026-09-03 DD-6): `references/control-loop.md` is the inventory's
+    single owner, and SKILL.md Step 5 now summarises it.
     """
     text = (SKILL / "SKILL.md").read_text()
     size = len(text.encode())
@@ -944,34 +949,6 @@ def test_d16_skill_md_stays_small_without_being_hollowed_out():
     assert not missing, (
         f"SKILL.md no longer states {missing}. These are the load-bearing "
         f"contracts; a size budget must never be met by dropping one")
-
-    # Round 13: the guard checked for content that must be PRESENT and missed a
-    # field the code had deleted — `retry_history_inferred` survived in the
-    # schema for a round, promising a key no route emits. Documentation drifts
-    # in both directions.
-    from route_task import Task, route as _route
-    sample = _route(_task(task_class="MECHANICAL"), CFG)
-    emitted = set(sample)
-    start = text.index("task_class:  complexity:")
-    schema_block = text[start:text.index("```", start)]
-    # Round 14: this read the FIRST key on each line and skipped the whole
-    # nested `review` block, so 16 of 44 declared fields were checked. Several
-    # lines declare three fields; the schema's densest part was invisible.
-    top, nested = set(sample), set(sample["review"])
-    for raw in schema_block.splitlines():
-        indented = raw.startswith(" ")
-        line = raw.split("#")[0]
-        for token in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", line):
-            if token in ("true", "false", "null"):
-                continue
-            pool = nested if indented else top
-            assert token in pool, (
-                f"SKILL.md's output schema names "
-                f"{'review.' if indented else ''}{token!r}, which no route emits")
-    # And the other direction, for the nested block the guard used to skip
-    # entirely: a field a route emits but the schema never mentions is drift too.
-    for key in sorted(emitted):
-        assert key in schema_block, f"the schema never mentions the emitted field {key!r}"
 
     # Terminal states must be enumerated, not summarised.
     from route_task import TERMINAL_STATES

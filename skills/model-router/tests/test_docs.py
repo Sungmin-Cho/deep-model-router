@@ -184,7 +184,7 @@ def test_routing_metrics_block_promises_only_what_the_router_emits():
     emits" with no producer anywhere in route_task.py. Pre-dispatch code
     cannot know either; they belong to the execution receipt."""
     text = (SKILL / "references" / "control-loop.md").read_text()
-    block = re.search(r"routing_metrics:\n(.*?)```", text, re.S).group(1)
+    block = re.search(r"task_class:  complexity:(.*?)```", text, re.S).group(1)
     for field in ("final_success", "review_count"):
         assert field not in block, field
         assert field in text, f"{field} must stay documented — as a receipt field"
@@ -1058,3 +1058,50 @@ def test_tests_never_hardcode_a_registry_model_id_in_code():
     assert offenders == {}, (
         "model ids hardcoded in test code — derive each from a registry key "
         'with ID("<key>"): ' + repr(offenders))
+
+
+CONTROL_LOOP_MD = (SKILL / "references" / "control-loop.md").read_text()
+
+
+def test_routing_policy_execution_worker_table_matches_the_config_cell_by_cell():
+    header, rows = _md_table(ROUTING_POLICY_MD, "### Worker by class and execution band")
+    bands = [c.strip("`") for c in header[1:]]
+    assert bands == list(CFG["execution"]["bands"])
+    actual = {(c, b): v for c, row in CFG["execution_selection"].items() for b, v in row.items()}
+    # Same footnote rule as the SKILL.md worker-table test: ‡ is the by_reasoning_centric cell.
+    documented = {(row[0].strip("`"), b): cell.replace("‡", "by_reasoning_centric").strip("` ")
+                  for row in rows for b, cell in zip(bands, row[1:])}
+    assert documented == actual
+
+
+def test_skill_md_execution_bands_match_the_config():
+    _, rows = _md_table(SKILL_MD, "### Execution score and bands")
+    documented = {row[0].strip("`"): row[1] for row in rows}
+    expected = {b: f"{s['min']} – {s['max']}" for b, s in CFG["execution"]["bands"].items()}
+    assert documented == expected
+
+
+def test_control_loop_route_inventory_round_trips_every_emitted_key():
+    """Successor of test_d16's schema round trip (design DD-6): the inventory
+    moved to control-loop.md, its only owner. Both directions, top-level vs
+    nested by indentation, exactly as the old check read the SKILL.md block."""
+    import sys
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from route_task import Task, route  # noqa: E402
+    sample = route(Task(task_class="MECHANICAL", complexity=0, uncertainty=0, blast_radius=0, reversibility=0), CFG)
+    start = CONTROL_LOOP_MD.index("task_class:  complexity:")
+    block = CONTROL_LOOP_MD[start:CONTROL_LOOP_MD.index("```", start)]
+    top, nested = set(sample), set(sample["review"])
+    documented_top, documented_nested = set(), set()
+    for raw in block.splitlines():
+        indented = raw.startswith(" ")
+        for token in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", raw.split("#")[0]):
+            if token in ("true", "false", "null"):
+                continue
+            assert token in (nested if indented else top), token
+            (documented_nested if indented else documented_top).add(token)
+    # Both directions, per scope [P2-sol-F4]: an emitted `review.*` key the inventory
+    # never lists is drift exactly as a top-level one is.
+    assert top <= documented_top, f"top-level emitted fields missing from the inventory: {sorted(top - documented_top)}"
+    assert nested <= documented_nested, f"review.* emitted fields missing from the inventory: {sorted(nested - documented_nested)}"
+    assert {"execution_score", "execution_band"} <= documented_top
