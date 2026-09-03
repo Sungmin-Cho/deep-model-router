@@ -2069,6 +2069,14 @@ def _contract_violation(policy: Policy, cand: dict, legacy: dict) -> str | None:
        (len(lr["reviewers"]), lr["effort"], lr["required_checks"], lr["independence_required"]):
         return "review.shape"
     ci, li = cr["review_independence"], lr["review_independence"]
+    # The `not_applicable` mismatch disjunct cannot fire on a pair of real plans
+    # today: `independence()` returns `not_applicable` exactly when
+    # `review["independent"]` is false, and the row above already compared
+    # `independence_required` — which IS that flag — and returned. It is kept as
+    # depth against a future band whose `independent` flag stops tracking
+    # `review_independence`, because the ordering below has no answer for
+    # `not_applicable` and would raise a KeyError instead of yielding
+    # [impl-R1-opus-F5].
     if (ci == "not_applicable") != (li == "not_applicable") or (
             ci != "not_applicable" and _INDEPENDENCE_ORDER[ci] < _INDEPENDENCE_ORDER[li]):
         return "review_independence"

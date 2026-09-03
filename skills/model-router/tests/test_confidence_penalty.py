@@ -219,11 +219,15 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
             assert b["review"]["independence_required"] == table["independent"], inp
             assert b["review"]["required_checks"] == table.get("required_checks", []), inp
             # A deconflicted seat is not the table ([P2-sol-F2][P2-grok-F1]), and neither
-            # is the disagreement route, which seats a second reviewer at ANY band. The
-            # latter exclusion was latent until the 2026-09-03 sweep expansion added the
-            # (3, 2, 0, 0) dimension: 1.12.1 emits the same two-reviewer MEDIUM block for
-            # `review_disagreement` there, so this is the table's shape, not the axis's.
-            if not b["review"]["self_review_avoided"] and b["route_path"] != "disagreement":
+            # is a compensated one. `fallback_compensations.principal_architect_to_senior`
+            # is `raise_effort_to_MAX_and_add_second_review`, so when the judge falls back
+            # the plan gains a reviewer the band's table never listed. That path became
+            # reachable when the 2026-09-03 sweep expansion added the (3, 2, 0, 0)
+            # dimension; 1.12.1 emits the same roster for those inputs, so it is the
+            # table's shape, not the execution axis's. Keyed on the compensation itself,
+            # not on `route_path == "disagreement"`: the disagreement route seats a JUDGE,
+            # and excluding all of it skipped 117 class-C rows to cover 24 [impl-R1-opus-F2].
+            if not b["review"]["self_review_avoided"] and not b["review"]["compensating_reviewers"]:
                 if "reviewers" in table:
                     assert b["review"]["reviewers"] == table["reviewers"], inp
                 else:                                          # MEDIUM seats one candidate

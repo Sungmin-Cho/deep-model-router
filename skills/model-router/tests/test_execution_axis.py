@@ -11,7 +11,7 @@ SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / "scripts"))
 
 from route_task import (  # noqa: E402
-    ConfigError, Policy, Task, load_config, route, execution_score,
+    MAX_DIMENSION_SCORE, ConfigError, Policy, Task, load_config, route, execution_score,
 )
 
 CFG = load_config()
@@ -218,9 +218,19 @@ def test_t2_easy_and_low_is_unchanged_from_1_12_1():
 
 
 def test_t2_very_hard_times_low_is_unreachable():
+    """Derived, not typed: the risk weights, the LOW ceiling, the execution
+    weights and the flag total all come from the config, so moving any of them
+    moves this claim instead of leaving it green about a policy that no longer
+    exists ([impl-R1-opus-F7])."""
     policy = Policy.of(CFG)
-    best = max(3 * c + 2 * u + 3 for c in range(4) for u in range(4) if c + 2 * u <= 3)
-    assert policy.execution_band_of(best) == "HARD"
+    rw, xw = CFG["router"]["score_weights"], CFG["execution"]["score_weights"]
+    low_max = CFG["router"]["bands"]["LOW"]["max"]
+    flag_total = sum(CFG["execution"]["flag_weights"].values())
+    dims = range(MAX_DIMENSION_SCORE + 1)
+    reachable = [xw["complexity"] * c + xw["uncertainty"] * u + flag_total
+                 for c in dims for u in dims
+                 if rw["complexity"] * c + rw["uncertainty"] * u <= low_max]
+    assert policy.execution_band_of(max(reachable)) == "HARD"
 
 
 # --- T9: strictly stronger, ties keep legacy --------------------------------
@@ -412,6 +422,10 @@ def test_t18_independence_order_and_not_applicable():                        # [
                                    _plan_like(**{"review.review_independence": lo})) is None
     na = _plan_like(**{"review.review_independence": "not_applicable", "review.independence_required": False})
     assert _contract_violation(POLICY, na, na) is None
+    # `not_applicable` with `independence_required=True` is a state no route emits
+    # (row 4 would have returned first); it exercises the comparator's own guard
+    # directly, which is the only way to reach it — see the note at that branch
+    # in route_task.py ([impl-R1-opus-F5]).
     mixed = _plan_like(**{"review.review_independence": "not_applicable"})   # shape equal, state mismatched
     assert _contract_violation(POLICY, mixed, _plan_like()) == "review_independence"
 
@@ -461,6 +475,14 @@ def test_t5_hard_and_very_hard_floor_the_effort_and_say_so():
     assert very["selected_effort"] == "VERY_HIGH"
     assert sum(n.startswith("execution band VERY_HARD floored effort at VERY_HIGH") for n in very["notes"]) == 1
     assert very["review"]["band"] == "CRITICAL"          # 0.75 < 0.80 promoted the review; note still once
+
+
+def test_t5_the_execution_owned_effort_floors_are_exactly_two():
+    """T3(g) probes `EASY` as the band with no execution floor and T5 pins the
+    two levels. A third execution floor would make both silently wrong, so the
+    key set is the thing that is pinned ([impl-R1-opus-F6])."""
+    assert {k for k in CFG["effort_floors"] if k.startswith("execution_")} == \
+        {"execution_HARD", "execution_VERY_HARD"}
 
 
 def test_t5_the_worker_floor_reporter_sees_the_execution_floor():

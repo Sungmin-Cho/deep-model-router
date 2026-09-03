@@ -1296,6 +1296,13 @@ def test_t15_where_the_cell_won_review_depth_is_the_baseline_s():
             # heavily-scarce rows where 1.12.1 returned INDEPENDENCE_UNAVAILABLE and
             # the stronger worker frees an independent reviewer pair.
             assert new["terminal"] is None, kw
+            # What such a route MAY gain, it must disclose. A terminal route
+            # states no review contract at all, so the unlock can surface
+            # controls the baseline never reported — but never silently
+            # ([impl-R1-opus-F1] and its missing test).
+            if new["review"]["review_depth_reduced"]:
+                assert "review_below_band" in new["human_control_causes"], kw
+                assert new["requires_human_confirmation"] or new["human_confirmation_deferred"], kw
             unlocked += 1
             continue
         assert (new["review"]["band"], new["review"]["effort"], len(new["review"]["reviewers"])) == \
@@ -1420,3 +1427,43 @@ def test_t3_no_route_is_weaker_than_1_12_1_and_notes_match_changes():
             assert new["effort_ceiling_applied"] == old["effort_ceiling_applied"], kw
     assert compared >= T3_COMPARED_MIN and raised >= T3_RAISED_MIN and effort_only >= T3_EFFORT_ONLY_MIN, \
         (compared, raised, yielded, effort_only)
+
+
+def test_t17_plan_purity_holds_across_real_two_plan_routes():
+    """T17 above pins one HIGH x VERY_HARD input. Purity is a property of every
+    route that computes two plans, so it is checked on a spread of real ones
+    drawn from the paired sample ([impl-R1-opus missing test]). Order-swapped
+    calls must agree and the resolver must come back clean each time."""
+    import route_task as rt
+    policy = rt.Policy.of(CFG)
+    checked = 0
+    for kw, out in _paired_population():
+        if not (_raised(out) or _yielded(out)):
+            continue                      # one plan only: nothing to commute
+        task = Task(**kw)
+        task.validate(policy)
+        resolver = rt.Resolver(task, policy)
+        resolver.worker_writes = policy.worker_seat_kind(task.task_class) == "write"
+        band = rt.band_from_score(rt.score(task, CFG), policy)
+        band, ov, red, path = rt.apply_overrides(task, band, policy)
+        exec_score = rt.execution_score(task, CFG)
+        exec_band = policy.execution_band_of(exec_score)
+        cand, legacy = rt.select_worker(task, band, exec_band, policy, resolver)
+        if cand is legacy:
+            continue
+        pre = rt._Prelude(request_sha="x" * 64, policy_hash="y" * 64, lp={}, local_unsat=False,
+                          history_note=None, budget_spent=False,
+                          seat_kind="write" if resolver.worker_writes else "read_only",
+                          seat_source="task_class", seat_downgraded=False,
+                          risk_score=rt.score(task, CFG), band=band, overrides=tuple(ov),
+                          redundant_overrides=tuple(red), route_path=path,
+                          execution_score=exec_score, execution_band=exec_band)
+        a1 = rt._plan(task, policy, CFG, pre, resolver, cand);   assert resolver.write_seat_role is None, kw
+        b1 = rt._plan(task, policy, CFG, pre, resolver, legacy); assert resolver.write_seat_role is None, kw
+        b2 = rt._plan(task, policy, CFG, pre, resolver, legacy)
+        a2 = rt._plan(task, policy, CFG, pre, resolver, cand)
+        assert a1 == a2 and b1 == b2, kw
+        checked += 1
+        if checked >= 40:
+            break
+    assert checked >= 20, checked

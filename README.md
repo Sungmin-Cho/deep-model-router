@@ -8,7 +8,7 @@
 
 Deterministic model / effort / review router for Claude Code, Codex, and Grok.
 
-Classify a delegated software-engineering task, then let the scorer pick the worker from *difficulty*, and the reasoning effort and review depth from *risk* — not from file count, token count, or which model you happen to have open. Review depth is a function of the risk band alone; the worker choice cannot quietly weaken it. A hard but isolated task gets a stronger worker; an easy but sensitive one keeps its deep review.
+Classify a delegated software-engineering task, then let the scorer pick the worker from *difficulty*, and the review depth from *risk* (both axes floor the reasoning effort) — not from file count, token count, or which model you happen to have open. Review depth is a function of the risk band alone; the worker choice cannot quietly weaken it. A hard but isolated task gets a stronger worker; an easy but sensitive one keeps its deep review.
 
 Part of the [deep-suite](https://github.com/Sungmin-Cho/deep-suite) ecosystem. [deep-work](https://github.com/Sungmin-Cho/deep-work) and [deep-loop](https://github.com/Sungmin-Cho/deep-loop) depend on this plugin as the shared decision plane. See the [CHANGELOG](CHANGELOG.md) for release history.
 
@@ -18,7 +18,7 @@ Part of the [deep-suite](https://github.com/Sungmin-Cho/deep-suite) ecosystem. [
 
 deep-model-router is the **decision plane**. Sibling plugins keep execution, durable state, and their own safety floors. This plugin answers two questions and keeps them separate:
 
-1. **Who should do the work** — a role bound to an available model and an effort level, chosen by execution difficulty over the risk-band floor.
+1. **Who should do the work** — a role bound to an available model and an effort level, chosen by execution difficulty over the risk-band floor; both axes floor the effort.
 2. **How hard it must be checked** — a review policy that follows the risk band, including whether independent review is required.
 
 It does not implement the work, and it does not claim a control it did not enforce. `independence_required` is policy; `review_independence` is evidence. A missing router is a local fallback, not a reason to drop a HIGH or CRITICAL floor.
@@ -111,7 +111,8 @@ risk_score = complexity + 2×uncertainty + 2×blast_radius + reversibility     (
 LOW 0–3 · MEDIUM 4–7 · HIGH 8–10 · CRITICAL 11–18
 
 execution_score = 3×complexity + 2×uncertainty + three context flags          (0–18)
-EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → worker only, never the review
+EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → the worker, and an effort floor
+                                                        → never the review band or a human control
 ```
 
 Critical-domain flags (auth, security, financial, data integrity) raise the band after scoring, for every task class. A small, well-understood change in an authorization path still gets a strong worker and independent review.

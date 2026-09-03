@@ -24,13 +24,17 @@
 ### Changed
 
 - 기술적으로 어렵지만 고립된 작업은 리뷰 깊이를 건드리지 않고 워커만 올린다. 리뷰 깊이는
-  여전히 위험 밴드만 따른다. 어떤 라우트도 1.12.1보다 약한 워커를 받지 않고, 없던 terminal이나
-  사람 통제를 새로 얻지 않으며, 호출자의 `local_policy`가 만족 불가였던 라우트는 더 강한
-  워커가 floor를 만족하면 라우팅 가능해진다.
+  여전히 위험 밴드만 따른다. 어떤 라우트도 1.12.1보다 약한 워커를 받지 않으며, **1.12.1이
+  이미 라우팅하던 라우트**는 없던 terminal이나 사람 통제를 새로 얻지 않는다. 1.12.1이 라우팅
+  하지 *못하던* 라우트는 라우팅 가능해질 수 있다 — 더 강한 워커가 `local_policy`의 tier floor를
+  만족하거나, `INDEPENDENCE_UNAVAILABLE`이 막던 독립 리뷰어 쌍을 확보할 때. 그런 라우트는
+  새로 제약된 것이 아니라 새로 실행 가능해진 것이며, terminal 라우트가 아예 보고하지 않던
+  통제를 실을 수 있다.
 - fast tier에서 워커가 올라간 MEDIUM 라우트의 단일 리뷰어는 기존 cross-family 규칙이 그
   강한 워커에 대해 고른다.
-- `unfamiliar_codebase`, `tool_heavy`, `cross_service_change`를 실행 축이 소비한다 — 이전에는
-  받아서 무시했다.
+- `unfamiliar_codebase`와 `tool_heavy`를 실행 축이 소비한다 — 이전에는 받아서 무시했다.
+  `cross_service_change`는 이미 REFACTORING의 `multi_system_refactoring` effort를 골랐고, 이제
+  모든 class에서 실행 난이도에도 기여한다.
 - 주석 달린 라우트 인벤토리가 `SKILL.md`에서 `references/control-loop.md`로 이동해 그 파일이
   유일한 소유자가 됐다. Codex 플러그인 설명이 두 축을 명시한다.
 

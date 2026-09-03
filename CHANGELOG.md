@@ -28,13 +28,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A technically hard but isolated task now escalates its worker without touching
   its review depth: review depth still follows the risk band alone. No route
-  receives a weaker worker than in 1.12.1, no route gains a terminal state or a
-  human control it did not have, and a route the caller's `local_policy` made
-  unsatisfiable can become routable when the stronger worker meets the floor.
+  receives a weaker worker than in 1.12.1, and on any route 1.12.1 could already
+  route, none gains a terminal state or a human control it did not have. A route
+  1.12.1 could *not* route can become routable — when the stronger worker meets a
+  `local_policy` capability floor, or when it frees an independent reviewer pair
+  that `INDEPENDENCE_UNAVAILABLE` had blocked. Such a route is newly executable
+  rather than newly restricted, and it may carry controls the terminal one never
+  reported (a terminal route states no review contract at all).
 - On a MEDIUM route whose worker rose from the fast tier, the single reviewer is
   now chosen for that stronger worker by the existing cross-family rule.
-- `unfamiliar_codebase`, `tool_heavy` and `cross_service_change` are consumed by the
-  execution axis; they were accepted and ignored before.
+- `unfamiliar_codebase` and `tool_heavy` are consumed by the execution axis; they
+  were accepted and ignored before. `cross_service_change`, which already chose the
+  `multi_system_refactoring` effort for REFACTORING, now feeds execution difficulty
+  for every class.
 - The annotated route inventory moved from `SKILL.md` to `references/control-loop.md`,
   which is now its only owner. The Codex plugin description names both axes.
 
