@@ -325,6 +325,21 @@ class Policy:
         self.efforts: list[str] = list(cfg["effort_levels"])
         self.roles: list[str] = list(cfg["role_tiers"])
         self.task_classes: list[str] = list(cfg["worker_selection"])
+        ex_sel = cfg.get("execution_selection")
+        if not isinstance(ex_sel, Mapping):
+            raise ConfigError("execution_selection must be a mapping")            # before any set() [P3-sol-F5]
+        if set(ex_sel) != set(self.task_classes):
+            raise ConfigError(
+                f"execution_selection must name exactly the task classes; "
+                f"missing {sorted(set(self.task_classes) - set(ex_sel))}, "
+                f"unknown {sorted(set(ex_sel) - set(self.task_classes))}")
+        for task_class, row in ex_sel.items():
+            if not isinstance(row, Mapping) or set(row) != set(self.execution_bands):
+                raise ConfigError(f"execution_selection.{task_class} must name exactly the execution bands")
+            for band, cell in row.items():
+                if cell != "by_reasoning_centric" and cell not in cfg["role_tiers"]:
+                    raise ConfigError(f"execution_selection.{task_class}.{band} = {cell!r} is not a role")
+        self.execution_selection: dict = {k: dict(v) for k, v in ex_sel.items()}
         # Which classes need a write-capable worker seat. Completeness is
         # checked here rather than at lookup time: a class the table forgets
         # would otherwise reach `worker_seat_kind` and need a default invented
@@ -1106,18 +1121,19 @@ class WorkerChoice:
     ceiling_exhausted: bool
 
 
-def select_worker(task: Task, band: str, policy: Policy,
-                  resolver: "Resolver") -> "WorkerChoice":
-    """Returns the resolved worker choice."""
-    binding = resolver.binding
+def _resolve_cell(cell: str, task: Task, notes: list[str]) -> str:
+    if cell == "by_reasoning_centric":
+        role = "reasoning_specialist" if task.reasoning_centric else "senior_engineer"
+        notes.append(f"reasoning_centric={task.reasoning_centric} selected {role}")
+        return role
+    return cell
+
+
+def _legacy_pre(task: Task, band: str, policy: Policy) -> tuple[str, list[str]]:
+    """S1: the 1.12.1 table cell plus its class promotions, unchanged."""
     cfg = policy.cfg
     notes: list[str] = []
-    cell = cfg["worker_selection"][task.task_class][band]
-    if cell == "by_reasoning_centric":
-        worker = "reasoning_specialist" if task.reasoning_centric else "senior_engineer"
-        notes.append(f"reasoning_centric={task.reasoning_centric} selected {worker}")
-    else:
-        worker = cell
+    worker = _resolve_cell(cfg["worker_selection"][task.task_class][band], task, notes)
 
     if task.task_class == "ARCHITECTURE" and (task.uncertainty == 3 or task.has("long_horizon")):
         if worker != "principal_architect":
@@ -1135,6 +1151,13 @@ def select_worker(task: Task, band: str, policy: Policy,
             worker = "worker_balanced"
             notes.append("investigation promotion: unknown root cause")
 
+    return worker, notes
+
+
+def _floor_and_ladder(task: Task, worker: str, notes: list[str], policy: Policy,
+                      resolver: "Resolver") -> WorkerChoice:
+    """S4/S5: the critical-domain floor and the retry ladder, unchanged code."""
+    cfg = policy.cfg
     if task.critical_flags(policy):
         # The floor is written in the config as a role, but what it means is a
         # minimum CAPABILITY — "not the cheapest model" — so it is enforced on
@@ -1225,7 +1248,31 @@ def select_worker(task: Task, band: str, policy: Policy,
             notes.append(f"retry ladder exhausted: no usable model is stronger "
                          f"than capability tier {floor}")
 
+
     return WorkerChoice(worker, tuple(notes), ceiling_exhausted)
+
+
+def _tier(policy: Policy, resolver: "Resolver", role: str) -> int:
+    model = resolver.peek(role, write=True)
+    return policy.tier_of[model] if model else -1
+
+
+def select_worker(task: Task, band: str, execution_band: str, policy: Policy,
+                  resolver: "Resolver") -> tuple[WorkerChoice, WorkerChoice]:
+    """Returns (candidate, legacy). `candidate is legacy` when the execution
+    cell did not win (design DD-2 S1-S5)."""
+    legacy_role, legacy_notes = _legacy_pre(task, band, policy)
+    legacy = _floor_and_ladder(task, legacy_role, list(legacy_notes), policy, resolver)
+
+    exec_notes: list[str] = []
+    exec_role = _resolve_cell(policy.execution_selection[task.task_class][execution_band],
+                              task, exec_notes)
+    if _tier(policy, resolver, exec_role) <= _tier(policy, resolver, legacy_role):
+        return legacy, legacy                                   # S3: not strictly stronger
+    candidate = _floor_and_ladder(task, exec_role, exec_notes, policy, resolver)
+    if _tier(policy, resolver, candidate.role) <= _tier(policy, resolver, legacy.role):
+        return legacy, legacy                                   # S5: converged to the same tier
+    return candidate, legacy
 
 
 # --------------------------------------------------------------------------
@@ -1991,6 +2038,62 @@ def _clamp(policy: Policy, effort: str, model: str | None) -> str:
                               policy.efforts.index(ceiling))]
 
 
+_INDEPENDENCE_ORDER = {"unavailable": 0, "degraded": 1, "planned": 2, "enforced": 3}
+
+
+def _seat_effort(policy: Policy, plan: dict, role: str, base: str) -> str:
+    rec = next((x for x in plan["effort_ceiling_applied"] if x["role"] == role), None)
+    return rec["capped_at"] if rec else base
+
+
+def _contract_violation(policy: Policy, cand: dict, legacy: dict) -> str | None:
+    """First row of design DD-2 S6's table that `cand` fails against `legacy`,
+    or None when adopting the candidate leaves the review/control contract no
+    worse. Row order is evaluation order; the name is what the yield note
+    reports. Both arguments are `_plan()` results (or the same shape)."""
+    ei = policy.efforts.index
+    cr, lr = cand["review"], legacy["review"]
+    if legacy["terminal"] and not cand["terminal"]:
+        return None                                              # row 1: unlocking is allowed
+    if cand["terminal"] and cand["terminal"] != legacy["terminal"]:
+        return "terminal"
+    if not set(cand["human_control_causes"]) <= set(legacy["human_control_causes"]):
+        return "human_control_causes"
+    if cr["band"] != lr["band"]:
+        return "review.band"
+    if (len(cr["reviewers"]), cr["effort"], cr["required_checks"], cr["independence_required"]) != \
+       (len(lr["reviewers"]), lr["effort"], lr["required_checks"], lr["independence_required"]):
+        return "review.shape"
+    ci, li = cr["review_independence"], lr["review_independence"]
+    if (ci == "not_applicable") != (li == "not_applicable") or (
+            ci != "not_applicable" and _INDEPENDENCE_ORDER[ci] < _INDEPENDENCE_ORDER[li]):
+        return "review_independence"
+    for flag in ("independence_compromised", "band_floor_unsatisfiable", "judge_unavailable"):
+        if cr[flag] and not lr[flag]:
+            return "review.flags"
+    if cr.get("judge_model") and lr.get("judge_model") and \
+            policy.tier_of[cr["judge_model"]] < policy.tier_of[lr["judge_model"]]:
+        return "judge_tier"
+    if legacy["cross_family_review"] and not cand["cross_family_review"]:
+        return "cross_family_review"
+    ct = sorted((policy.tier_of[m] for m in cr["reviewer_models"] if m), reverse=True)
+    lt = sorted((policy.tier_of[m] for m in lr["reviewer_models"] if m), reverse=True)
+    if len(ct) != len(lt) or any(c < l for c, l in zip(ct, lt)):
+        return "reviewer_tiers"
+    ce = sorted((ei(_seat_effort(policy, cand, role, cr["effort"])) for role in cr["reviewers"]), reverse=True)
+    le = sorted((ei(_seat_effort(policy, legacy, role, lr["effort"])) for role in lr["reviewers"]), reverse=True)
+    if any(c < l for c, l in zip(ce, le)):
+        return "reviewer_efforts"
+    if len(cr["review_depth_reduced"]) > len(lr["review_depth_reduced"]):
+        return "review_depth_reduced"
+    cw = next((x for x in cand["effort_ceiling_applied"] if x["role"] == cand["selected_role"] and x["floor_broken"]), None)
+    if cw:
+        lw = next((x for x in legacy["effort_ceiling_applied"] if x["role"] == legacy["selected_role"] and x["floor_broken"]), None)
+        if lw is None or ei(cw["floor_requires"]) > ei(lw["floor_requires"]) or ei(cw["capped_at"]) < ei(lw["capped_at"]):
+            return "worker_floor_broken"
+    return None
+
+
 @dataclass(frozen=True)
 class _Prelude:
     """Everything `route()` decides before the worker, handed to `_plan()`
@@ -2075,8 +2178,25 @@ def route(task: Task, cfg: dict | None = None) -> dict:
                    risk_score=risk_score, band=band, overrides=tuple(overrides),
                    redundant_overrides=tuple(redundant_overrides), route_path=route_path,
                    execution_score=exec_score, execution_band=exec_band)
-    choice = select_worker(task, band, policy, resolver)
-    result = _plan(task, policy, cfg, pre, resolver, choice)
+    candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
+    if candidate is legacy:
+        result = _plan(task, policy, cfg, pre, resolver, legacy)
+    else:
+        with_cell = _plan(task, policy, cfg, pre, resolver, candidate)
+        without = _plan(task, policy, cfg, pre, resolver, legacy)
+        if with_cell["terminal"] and without["terminal"]:
+            result = without                                      # both terminal: nothing to gain
+        else:
+            row = _contract_violation(policy, with_cell, without)
+            if row is None:
+                result = with_cell
+                capped = (f" at effective effort {result['selected_effort_effective']} (ceiling)"
+                          if result["selected_effort_effective"] != result["selected_effort"] else "")
+                result["notes"].append(
+                    f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
+            else:
+                result = without
+                result["notes"].append(f"execution band {exec_band} yielded {candidate.role}: {row}")
     result["rationale"] = explain(task, result, policy)
     return result
 

@@ -168,3 +168,273 @@ def test_t7_schema_version_and_request_hash_are_untouched():
                                           blast_radius=0, reversibility=0))
     # Same literal `test_host_seat.py::test_undeclared_preserves_legacy_hash_by_key_omission` pins.
     assert a == "c92c316c148058bee7609995a276c8607b5dd0eb822189de0686b5c085b3204e"
+
+
+TIER = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
+CTX = ["unfamiliar_codebase", "tool_heavy", "cross_service_change"]
+ROLES = list(CFG["role_tiers"])
+
+
+def _raised(out):  return [n for n in out["notes"] if n.startswith("execution band") and " raised worker" in n]
+def _yielded(out): return [n for n in out["notes"] if n.startswith("execution band") and " yielded " in n]
+
+
+# --- T1 (selection table) ------------------------------------------------------
+
+def test_t1_execution_selection_matches_classes_and_bands_exactly():
+    _bad(lambda c: c["execution_selection"].pop("REVIEW"))
+    _bad(lambda c: c["execution_selection"].update(PLANNING=dict(c["execution_selection"]["REVIEW"])))
+    _bad(lambda c: c["execution_selection"]["REVIEW"].pop("HARD"))
+    _bad(lambda c: c["execution_selection"]["REVIEW"].update(HARD="grand_wizard"))
+    _bad(lambda c: c.update(execution_selection=None))
+    _bad(lambda c: c.update(execution_selection=[{"REVIEW": {}}]))           # a list of dicts, not a mapping [P3-sol-F5]
+
+
+# --- T2: the reachable cross product ---------------------------------------
+
+def test_t2_hard_but_isolated_raises_the_worker_and_leaves_review_low():
+    out = r(task_class="IMPLEMENTATION", complexity=3, flags=CTX)     # exec 12 HARD, risk 3 LOW
+    assert out["execution_band"] == "HARD" and out["risk_band"] == "LOW"
+    assert TIER[out["selected_model"]] >= 1 and out["review"]["band"] == "LOW"
+    assert _raised(out) == ["execution band HARD raised worker from worker_fast to worker_balanced"]
+
+
+def test_t2_easy_but_sensitive_keeps_high_review_and_a_tier1_worker():
+    out = r(task_class="IMPLEMENTATION", flags=["auth_sensitive"])
+    assert out["execution_band"] == "EASY" and out["review"]["band"] == "HIGH"
+    assert TIER[out["selected_model"]] >= 1
+
+
+def test_t2_hard_and_sensitive_keeps_high_review():
+    out = r(task_class="IMPLEMENTATION", complexity=3, flags=CTX + ["auth_sensitive"])
+    assert out["execution_band"] == "HARD" and out["review"]["band"] == "HIGH"
+    assert TIER[out["selected_model"]] >= 1
+
+
+def test_t2_easy_and_low_is_unchanged_from_1_12_1():
+    out = r(task_class="IMPLEMENTATION", complexity=1, uncertainty=1)
+    assert out["execution_band"] == "EASY" and out["selected_role"] == "worker_fast"
+    assert not _raised(out) and not _yielded(out)
+
+
+def test_t2_very_hard_times_low_is_unreachable():
+    policy = Policy.of(CFG)
+    best = max(3 * c + 2 * u + 3 for c in range(4) for u in range(4) if c + 2 * u <= 3)
+    assert policy.execution_band_of(best) == "HARD"
+
+
+# --- T9: strictly stronger, ties keep legacy --------------------------------
+
+def test_t9_equal_tier_different_role_keeps_the_legacy_cell():
+    # REVIEW c3 u2 b1 r1: risk 3+4+2+1 = 10 HIGH -> senior_engineer (opus, tier 2);
+    # exec 13 HARD -> mutate to reasoning_specialist (sol, tier 2): equal tier -> legacy.
+    cfg = _cfg(lambda c: c["execution_selection"]["REVIEW"].update(HARD="reasoning_specialist"))
+    out = route(Task(task_class="REVIEW", complexity=3, uncertainty=2, blast_radius=1, reversibility=1), cfg)
+    assert out["selected_role"] == "senior_engineer"
+    assert not _raised(out) and not _yielded(out)
+
+
+# --- T11: the by_reasoning_centric note fires once, for the ADOPTED cell -----
+
+@pytest.mark.parametrize("rc", [False, True])
+def test_t11_tie_keeps_the_legacy_note_once(rc):
+    out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, blast_radius=3,
+            reversibility=2, reasoning_centric=rc)              # risk 17 CRITICAL, exec 15: both cells by_rc
+    assert sum(n.startswith("reasoning_centric=") for n in out["notes"]) == 1
+
+
+def test_t11_candidate_wins_note_from_the_execution_cell_only():
+    # risk 9 HIGH -> worker_balanced (not by_rc); exec 15 VERY_HARD -> by_rc.
+    code = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+             flags=["unfamiliar_codebase", "tool_heavy"], reasoning_centric=False)
+    assert code["selected_role"] == "senior_engineer" and len(_raised(code)) == 1
+    assert [n for n in code["notes"] if n.startswith("reasoning_centric=")] == \
+        ["reasoning_centric=False selected senior_engineer"]
+    # rc=True: the candidate is reasoning_specialist (sol); the HIGH pair loses sol and the
+    # substitute is the architect -> two claude reviewers -> cross_family_review false vs
+    # legacy true -> row 8 yields, and the emitted (legacy) plan carries NO rc note.
+    reason = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+               flags=["unfamiliar_codebase", "tool_heavy"], reasoning_centric=True)
+    assert reason["selected_role"] == "worker_balanced"
+    assert _yielded(reason) == ["execution band VERY_HARD yielded reasoning_specialist: cross_family_review"]
+    assert not any(n.startswith("reasoning_centric=") for n in reason["notes"])
+
+
+# --- T6: the retry ladder and the execution cell ----------------------------
+
+def test_t6_i_ladder_reaches_the_same_tier_so_no_raise_note():
+    out = r(task_class="IMPLEMENTATION", complexity=3, prior_failures=1,
+            prior_models=[ID("openai_worker_fast")])
+    assert TIER[out["selected_model"]] == 1
+    assert not _raised(out) and not _yielded(out)
+    assert any("capability tier" in n for n in out["notes"])
+
+
+def test_t6_ii_execution_cell_above_the_ladder_result_raises():
+    # risk 7 MEDIUM (conf 0.95-0.08-0.05 = 0.82, no promotion); exec 9+4+2 = 15 VERY_HARD.
+    # Legacy: worker_fast -> ladder above tier 0 -> worker_balanced (grok, tier 1).
+    # Candidate: senior_engineer (opus, tier 2), already above the failed tier.
+    # Both plans seat reasoning_specialist as the single MEDIUM reviewer -> equal contract.
+    out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, prior_failures=1,
+            prior_models=[ID("openai_worker_fast")], flags=["unfamiliar_codebase", "tool_heavy"])
+    assert TIER[out["selected_model"]] == 2 and out["review"]["band"] == "MEDIUM"
+    assert _raised(out) == ["execution band VERY_HARD raised worker from worker_balanced to senior_engineer"]
+
+
+@pytest.mark.parametrize("rc", [False, True])
+def test_t6_iii_same_final_tier_keeps_the_legacy_model(rc):
+    out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, reasoning_centric=rc,
+            prior_failures=1, prior_models=[ID("xai_frontier")])
+    assert TIER[out["selected_model"]] == 2
+    assert out["selected_model"] == ID("claude_senior")        # 1.12.1's ladder answer, both rc values
+    assert not _raised(out) and not _yielded(out)
+
+
+def test_t6_iv_top_tier_failure_exhausts_both_paths_identically():
+    out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, prior_failures=1,
+            prior_models=[ID("claude_architect")])
+    assert out["terminal"] == "HUMAN_REQUIRED"
+    assert not _raised(out) and not _yielded(out)
+
+
+# --- raised-note ceiling suffix ------------------------------------------------
+
+def test_raised_note_names_the_ceiling_when_the_worker_is_clamped():
+    # DEBUGGING c3 u1 + unknown_root_cause: risk 5 MEDIUM, exec 11 NORMAL -> grok (ceiling VERY_HIGH)
+    # over luna; effort MAX -> effective VERY_HIGH; confidence 0.85 on both plans; MEDIUM reviewer
+    # moves grok -> sol (tier 1 -> 2), cross-family on both -> adopted.
+    out = r(task_class="DEBUGGING", complexity=3, uncertainty=1, flags=["unknown_root_cause"])
+    assert (out["selected_effort"], out["selected_effort_effective"]) == ("MAX", "VERY_HIGH")
+    assert _raised(out) == ["execution band NORMAL raised worker from worker_fast to worker_balanced"
+                            " at effective effort VERY_HIGH (ceiling)"]
+
+
+# --- the second plan is computed only when the cell won ------------------------
+
+def test_second_plan_is_skipped_when_candidate_is_legacy(monkeypatch):
+    import route_task as rt
+    calls = []
+    original = rt._plan
+    monkeypatch.setattr(rt, "_plan", lambda *a, **k: (calls.append(1), original(*a, **k))[1])
+    r(task_class="IMPLEMENTATION", complexity=1, uncertainty=1)
+    assert len(calls) == 1
+    calls.clear()
+    r(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+      flags=["unfamiliar_codebase", "tool_heavy"])
+    assert len(calls) == 2
+
+
+# --- T18: the contract partial order, row by row -----------------------------
+
+from route_task import _contract_violation  # noqa: E402
+
+def _plan_like(**over):
+    base = {
+        "terminal": None, "human_control_causes": [],
+        "review": {"band": "HIGH", "reviewers": ["senior_engineer", "reasoning_specialist"],
+                   "reviewer_models": [ID("claude_senior"), ID("openai_reasoning")],
+                   "effort": "HIGH", "required_checks": [], "independence_required": True,
+                   "review_independence": "degraded", "independence_compromised": False,
+                   "band_floor_unsatisfiable": False, "judge_unavailable": False,
+                   "judge_model": None, "review_depth_reduced": []},
+        "cross_family_review": True, "effort_ceiling_applied": [],
+        "selected_role": "worker_balanced", "selected_model": ID("xai_frontier"),
+    }
+    for k, v in over.items():
+        if k.startswith("review."):
+            base["review"][k[7:]] = v
+        else:
+            base[k] = v
+    return base
+
+POLICY = Policy.of(CFG)
+
+# (row, candidate override, legacy override, symmetric) — symmetric rows are equality rows:
+# the mirror direction is rejected with the same name. Ordered rows allow the mirror.
+ROWS = [
+    ("terminal", {"terminal": "SUPPLY_EXHAUSTED"}, {}, False),
+    ("human_control_causes", {"human_control_causes": ["review_below_band"]}, {}, False),
+    ("review.band", {"review.band": "CRITICAL"}, {}, True),
+    ("review.shape", {"review.effort": "MEDIUM"}, {}, True),
+    ("review_independence", {"review.review_independence": "unavailable"}, {}, False),
+    ("review.flags", {"review.independence_compromised": True}, {}, False),
+    ("judge_tier", {"review.judge_model": ID("claude_senior")}, {"review.judge_model": ID("claude_architect")}, False),
+    ("cross_family_review", {"cross_family_review": False}, {}, False),
+    ("reviewer_tiers", {"review.reviewer_models": [ID("claude_senior"), ID("xai_frontier")]}, {}, False),
+    ("reviewer_efforts", {"effort_ceiling_applied": [{"role": "reasoning_specialist", "model": ID("openai_reasoning"),
+                                                       "requested": "HIGH", "capped_at": "MEDIUM",
+                                                       "floor_broken": None, "floor_requires": None}]}, {}, False),
+    ("review_depth_reduced", {"review.review_depth_reduced": [{"reviewer": "x"}]}, {}, False),
+    ("worker_floor_broken", {"effort_ceiling_applied": [{"role": "worker_balanced", "model": ID("xai_frontier"),
+                                                          "requested": "MAX", "capped_at": "VERY_HIGH",
+                                                          "floor_broken": "effort_floors.band_CRITICAL",
+                                                          "floor_requires": "MAX"}]}, {}, False),
+]
+
+@pytest.mark.parametrize("row,cand,legacy,symmetric", ROWS)
+def test_t18_each_row_rejects_its_worse_direction_and_names_itself(row, cand, legacy, symmetric):
+    assert _contract_violation(POLICY, _plan_like(**cand), _plan_like(**legacy)) == row
+    mirror = _contract_violation(POLICY, _plan_like(**legacy), _plan_like(**cand))
+    if symmetric:
+        assert mirror == row                                   # [P1-sol-F5][P1-opus-F3]
+    elif row == "terminal":
+        assert mirror is None                                  # legacy terminal, candidate not: unlock
+    else:
+        assert mirror is None
+
+
+def test_t18_legacy_terminal_and_candidate_executable_is_allowed():
+    assert _contract_violation(POLICY, _plan_like(), _plan_like(terminal="UNSATISFIABLE_LOCAL_POLICY")) is None
+
+
+@pytest.mark.parametrize("over", [                                  # [P2-sol-missing-4]
+    {"review.reviewers": ["senior_engineer"], "review.reviewer_models": [ID("claude_senior")]},
+    {"review.effort": "MEDIUM"},
+    {"review.required_checks": ["security"]},
+    {"review.independence_required": False},
+])
+def test_t18_every_review_shape_component_is_compared(over):
+    assert _contract_violation(POLICY, _plan_like(**over), _plan_like()) == "review.shape"
+
+
+@pytest.mark.parametrize("flag", ["independence_compromised", "band_floor_unsatisfiable", "judge_unavailable"])
+def test_t18_every_review_flag_is_compared(flag):
+    assert _contract_violation(POLICY, _plan_like(**{f"review.{flag}": True}), _plan_like()) == "review.flags"
+    assert _contract_violation(POLICY, _plan_like(), _plan_like(**{f"review.{flag}": True})) is None
+
+
+def test_t18_independence_order_and_not_applicable():                        # [P3-sol-missing-5]
+    order = ["unavailable", "degraded", "planned", "enforced"]
+    for lo, hi in zip(order, order[1:]):
+        assert _contract_violation(POLICY, _plan_like(**{"review.review_independence": lo}),
+                                   _plan_like(**{"review.review_independence": hi})) == "review_independence"
+        assert _contract_violation(POLICY, _plan_like(**{"review.review_independence": hi}),
+                                   _plan_like(**{"review.review_independence": lo})) is None
+    na = _plan_like(**{"review.review_independence": "not_applicable", "review.independence_required": False})
+    assert _contract_violation(POLICY, na, na) is None
+    mixed = _plan_like(**{"review.review_independence": "not_applicable"})   # shape equal, state mismatched
+    assert _contract_violation(POLICY, mixed, _plan_like()) == "review_independence"
+
+
+def test_t18_both_worker_floors_broken_compares_requires_and_capped():       # [P3-sol-missing-5]
+    def broken(requires, capped):
+        return {"effort_ceiling_applied": [{"role": "worker_balanced", "model": ID("xai_frontier"),
+                                            "requested": requires, "capped_at": capped,
+                                            "floor_broken": "effort_floors.band_CRITICAL", "floor_requires": requires}]}
+    assert _contract_violation(POLICY, _plan_like(**broken("MAX", "VERY_HIGH")), _plan_like(**broken("MAX", "VERY_HIGH"))) is None
+    assert _contract_violation(POLICY, _plan_like(**broken("MAX", "HIGH")), _plan_like(**broken("MAX", "VERY_HIGH"))) == "worker_floor_broken"
+    assert _contract_violation(POLICY, _plan_like(**broken("MAX", "VERY_HIGH")), _plan_like(**broken("VERY_HIGH", "HIGH"))) == "worker_floor_broken"
+
+
+def test_t18_judge_seated_on_one_side_only_is_not_compared():
+    assert _contract_violation(POLICY, _plan_like(**{"review.judge_model": ID("claude_senior")}), _plan_like()) is None
+
+
+def test_t18_a_stronger_substitute_reviewer_passes():
+    cand = _plan_like(**{"review.reviewer_models": [ID("claude_architect"), ID("openai_reasoning")]})
+    assert _contract_violation(POLICY, cand, _plan_like()) is None
+
+
+def test_t18_evaluation_order_is_the_table_order():
+    cand = _plan_like(**{"review.band": "CRITICAL", "cross_family_review": False})
+    assert _contract_violation(POLICY, cand, _plan_like()) == "review.band"

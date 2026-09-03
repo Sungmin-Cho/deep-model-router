@@ -239,6 +239,23 @@ worker_selection:
 # This is a routing input, not a dispatch instruction: `read_only` does not
 # tell anyone to run a read-only seat, it says this route may be staffed by a
 # model that only has one.
+# Worker by task class and EXECUTION band. `worker_selection` above stays the
+# floor: the worker is the stronger of the two cells by resolved capability
+# tier, and the execution cell wins only when strictly stronger AND seating it
+# does not make the review or control contract worse (design DD-2 S3-S6).
+execution_selection:
+  MECHANICAL:     { EASY: worker_fast,     NORMAL: worker_fast,     HARD: worker_balanced,      VERY_HARD: worker_balanced }
+  DOCUMENTATION:  { EASY: worker_fast,     NORMAL: worker_fast,     HARD: worker_balanced,      VERY_HARD: worker_balanced }
+  TESTING:        { EASY: worker_fast,     NORMAL: worker_fast,     HARD: worker_balanced,      VERY_HARD: worker_balanced }
+  IMPLEMENTATION: { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: by_reasoning_centric }
+  REFACTORING:    { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: by_reasoning_centric }
+  DEBUGGING:      { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: by_reasoning_centric }
+  INVESTIGATION:  { EASY: worker_fast,     NORMAL: worker_balanced, HARD: reasoning_specialist, VERY_HARD: reasoning_specialist }
+  MIGRATION:      { EASY: worker_balanced, NORMAL: worker_balanced, HARD: senior_engineer,      VERY_HARD: senior_engineer }
+  ARCHITECTURE:   { EASY: worker_balanced, NORMAL: worker_balanced, HARD: senior_engineer,      VERY_HARD: principal_architect }
+  REVIEW:         { EASY: worker_fast,     NORMAL: worker_balanced, HARD: senior_engineer,      VERY_HARD: senior_engineer }
+  OPERATIONS:     { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: senior_engineer }
+
 task_write_seat:
   MECHANICAL:     write
   DOCUMENTATION:  write
