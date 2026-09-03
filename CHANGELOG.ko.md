@@ -7,6 +7,14 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.12.1] — 2026-09-03 (모호하지 않은 인용)
+
+### Fixed
+
+- D-14 원장 항목이 acceptance receipt가 있는 디렉토리까지 적는다. 같은 attempt id를
+  가진 receipt가 둘이고 결과가 반대인데, 실패본이 더 얕은 경로에 있어 id만 쫓는
+  독자가 그것을 먼저 만났다.
+
 ## [1.12.0] — 2026-09-02 (grok 호스트의 Claude 리뷰어 좌석)
 
 ### Added
