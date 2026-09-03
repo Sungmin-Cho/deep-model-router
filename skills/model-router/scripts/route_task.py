@@ -212,6 +212,52 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 # the config it was given all the way down to input validation.
 # --------------------------------------------------------------------------
 
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_int_map(name: str, node, exact_keys: set[str]) -> None:
+    """Exact key set, non-negative non-bool ints. Type-checks the node itself
+    first so a malformed policy raises ConfigError, never TypeError
+    (design DD-1, [P1-sol-F6])."""
+    if not isinstance(node, Mapping):
+        raise ConfigError(f"{name} must be a mapping, got {type(node).__name__}")
+    keys = set(node)
+    if keys != exact_keys:
+        raise ConfigError(
+            f"{name} must name exactly {sorted(exact_keys)}; "
+            f"missing {sorted(exact_keys - keys)}, unknown {sorted(keys - exact_keys)}")
+    for key, value in node.items():
+        if not _is_int(value) or value < 0:
+            raise ConfigError(f"{name}.{key} must be a non-negative int, got {value!r}")
+
+
+def _validate_bands(name: str, node, ceiling: int) -> list[str]:
+    """Ordered band names. Contiguous over 0..ceiling, unique 0-based ordinals,
+    exact {min, max, ordinal} int keys — checked BEFORE anything sorts by
+    ordinal or sums a weight (design DD-1, [R3-sol-F6])."""
+    if not isinstance(node, Mapping) or not node:
+        raise ConfigError(f"{name} must be a non-empty mapping")
+    for band, spec in node.items():
+        if not isinstance(spec, Mapping) or set(spec) != {"min", "max", "ordinal"}:
+            raise ConfigError(f"{name}.{band} must have exactly min/max/ordinal")
+        if not all(_is_int(spec[k]) for k in ("min", "max", "ordinal")):
+            raise ConfigError(f"{name}.{band} min/max/ordinal must be ints, not bools")
+    ordinals = sorted(spec["ordinal"] for spec in node.values())
+    if ordinals != list(range(len(node))):
+        raise ConfigError(f"{name} ordinals must be 0..{len(node) - 1} without gaps or duplicates; got {ordinals}")
+    ordered = sorted(node, key=lambda b: node[b]["ordinal"])
+    expected = 0
+    for band in ordered:
+        spec = node[band]
+        if spec["min"] != expected or spec["max"] < spec["min"]:
+            raise ConfigError(f"{name}.{band} must start at {expected} (got {spec['min']}..{spec['max']})")
+        expected = spec["max"] + 1
+    if expected != ceiling + 1:
+        raise ConfigError(f"{name} must end exactly at {ceiling}, ends at {expected - 1}")
+    return ordered
+
+
 class Policy:
     """Everything derivable from a config, computed once per config."""
 
@@ -237,7 +283,45 @@ class Policy:
         # Set by `of()`; None for a Policy built directly or from a non-dict
         # Mapping, both of which have no content digest to publish.
         self.content_sha: str | None = None
-        self.bands: list[str] = sorted(cfg["router"]["bands"], key=lambda b: cfg["router"]["bands"][b]["ordinal"])
+        # --- validation preamble: shape before any derivation (DD-1) ---
+        # Parents first, so a malformed policy raises ConfigError and never a
+        # KeyError/TypeError from an index on the way to the check [P2-sol-F3].
+        if not isinstance(cfg, Mapping):
+            raise ConfigError("policy config must be a mapping")
+        router = cfg.get("router")
+        if not isinstance(router, Mapping):
+            raise ConfigError("router must be a mapping")
+        flags_node = cfg.get("flags")
+        if not isinstance(flags_node, Mapping) or not isinstance(flags_node.get("context"), list) \
+                or not all(isinstance(f, str) for f in flags_node["context"]):
+            raise ConfigError("flags.context must be a list of flag names")   # [P3-sol-F5]
+        _validate_int_map("router.score_weights", router.get("score_weights"),
+                          {"complexity", "uncertainty", "blast_radius", "reversibility"})
+        max_risk = MAX_DIMENSION_SCORE * sum(router["score_weights"].values())
+        risk_order = _validate_bands("router.bands", router.get("bands"), max_risk)
+        ex = cfg.get("execution")
+        if not isinstance(ex, Mapping) or set(ex) != {"score_weights", "flag_weights", "bands"}:
+            raise ConfigError("execution must be a mapping with exactly score_weights/flag_weights/bands")
+        _validate_int_map("execution.score_weights", ex["score_weights"], {"complexity", "uncertainty"})
+        exact_flags = {"unfamiliar_codebase", "tool_heavy", "cross_service_change"}
+        if not exact_flags <= set(flags_node["context"]):
+            raise ConfigError("execution.flag_weights names a flag outside flags.context")
+        _validate_int_map("execution.flag_weights", ex["flag_weights"], exact_flags)
+        max_exec = (MAX_DIMENSION_SCORE * sum(ex["score_weights"].values())
+                    + sum(ex["flag_weights"].values()))
+        exec_order = _validate_bands("execution.bands", ex["bands"], max_exec)
+
+        self.bands: list[str] = risk_order
+        self.execution_bands: list[str] = exec_order
+        self.max_execution_score: int = max_exec
+        # Score -> band, fixed at load. Load-time validation covers 0..max
+        # exactly, so both tables are total over the reachable scores.
+        self._risk_band_of: list[str] = [
+            next(b for b in risk_order if router["bands"][b]["min"] <= s <= router["bands"][b]["max"])
+            for s in range(max_risk + 1)]
+        self._exec_band_of: list[str] = [
+            next(b for b in exec_order if ex["bands"][b]["min"] <= s <= ex["bands"][b]["max"])
+            for s in range(max_exec + 1)]
         self.efforts: list[str] = list(cfg["effort_levels"])
         self.roles: list[str] = list(cfg["role_tiers"])
         self.task_classes: list[str] = list(cfg["worker_selection"])
@@ -261,7 +345,7 @@ class Policy:
                     f"expected one of {list(WORKER_SEAT_KINDS)}")
         self.critical_domain_flags: tuple[str, ...] = tuple(cfg["flags"]["critical_domain"])
         # Every dimension at its maximum. The band table is declared over 0..this.
-        self.max_risk_score: int = MAX_DIMENSION_SCORE * sum(cfg["router"]["score_weights"].values())
+        self.max_risk_score: int = max_risk
         self.known_flags: frozenset[str] = frozenset(f for g in cfg["flags"].values() for f in g)
         self.runtimes: frozenset[str] = frozenset(cfg["runtimes"])
         self.model_ids: frozenset[str] = frozenset(m["id"] for m in cfg["models"].values())
@@ -602,6 +686,10 @@ class Policy:
 
     # ordered-enum helpers, bound to this policy's vocabulary
     def band_max(self, a, b): return self.bands[max(self.bands.index(a), self.bands.index(b))]
+
+    def band_of(self, score: int) -> str: return self._risk_band_of[score]
+
+    def execution_band_of(self, score: int) -> str: return self._exec_band_of[score]
     def effort_max(self, a, b): return self.efforts[max(self.efforts.index(a), self.efforts.index(b))]
     def effort_up(self, e, n=1): return self.efforts[min(self.efforts.index(e) + n, len(self.efforts) - 1)]
     def role_max(self, a, b): return self.roles[max(self.roles.index(a), self.roles.index(b))]
@@ -865,11 +953,17 @@ def score(task: Task, cfg: dict) -> int:
 
 
 def band_from_score(value: int, policy: Policy) -> str:
-    for name in policy.bands:
-        b = policy.cfg["router"]["bands"][name]
-        if b["min"] <= value <= b["max"]:
-            return name
-    raise ConfigError(f"score {value} falls outside every band — check score_weights")
+    """Load-time validation covers 0..max_risk_score exactly, so the table is
+    total over the reachable scores; the former lookup-time ConfigError could
+    no longer fire (design DD-1, [R2-opus-F10])."""
+    return policy.band_of(value)
+
+
+def execution_score(task: Task, cfg: dict) -> int:
+    ex = cfg["execution"]
+    w, fw = ex["score_weights"], ex["flag_weights"]
+    return (task.complexity * w["complexity"] + task.uncertainty * w["uncertainty"]
+            + sum(weight for flag, weight in fw.items() if task.has(flag)))
 
 
 # --------------------------------------------------------------------------
