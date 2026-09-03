@@ -20,6 +20,7 @@ the policy. Regenerate rather than edit by hand.
 
 ## Contents
 
+- [Hard but isolated](#hard-but-isolated)
 - [The cheap path](#the-cheap-path)
 - [Small task, critical domain](#small-task-critical-domain) ← regression case
 - [Debugging with an unknown root cause](#debugging-with-an-unknown-root-cause) ← regression case
@@ -41,6 +42,8 @@ $SKILL_DIR/scripts/route_task.py --class DEBUGGING \
     --host-model claude-haiku-4-5-20251001 --host-effort HIGH
 ```
 
+<!-- no-transcript -->
+
 (`--host-model` and the echoed `declared.model` keep the concrete id — the
 registry-key substitution rule above applies to seat bindings only.)
 
@@ -51,6 +54,49 @@ orchestrator_blast_high]}`; `model_comparison below` and
 is `host seat below orchestrator ask: model tier 0 < 1; effort HIGH < MAX [...]`.
 The route itself — worker, reviewers, and exit — is unchanged by the
 declaration.
+
+---
+
+## Hard but isolated
+
+**Task:** implement a new scheduling algorithm behind a feature flag in one
+module. Nobody else calls it yet. `c3 u0 b0 r0` — algorithmically complex,
+fully specified, no blast radius.
+
+```
+$SKILL_DIR/scripts/route_task.py --class IMPLEMENTATION \
+    --complexity 3 --uncertainty 0 --blast-radius 0 --reversibility 0
+```
+
+```
+risk_score:  3
+risk_band:   LOW
+exec_score:  9
+exec_band:   NORMAL
+overrides:   (none)
+worker:      worker_balanced  ->  xai_frontier
+effort:      HIGH  (native: high)
+review:
+  band:            LOW
+  reviewers:       worker_fast
+  models:          openai_worker_fast
+  effort:          MEDIUM
+  required:        independent=False
+  actual:          not_applicable
+cross_family_review: True
+fallbacks:   (none)
+confidence:  0.95
+notes:
+  - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
+  - execution band NORMAL raised worker from worker_fast to worker_balanced
+
+IMPLEMENTATION scored 3/18 (c=3 u=0 b=0 r=0) -> band LOW; execution 9/18 -> NORMAL. Worker worker_balanced at HIGH effort. Review band LOW: worker_fast, independence_required=False, review_independence=not_applicable. No fallbacks applied.
+```
+
+Risk `3` is `LOW`, so the review stays a single light pass. Execution `9` is
+`NORMAL`, so the worker rises from `worker_fast` to `worker_balanced` — the
+route says so in `notes` (`execution band NORMAL raised worker …`). Before
+1.13.0 this task went to the cheapest model and escalated only after failing.
 
 ---
 
@@ -66,6 +112,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class MECHANICAL \
 ```
 risk_score:  0
 risk_band:   LOW
+exec_score:  0
+exec_band:   EASY
 overrides:   (none)
 worker:      worker_fast  ->  openai_worker_fast
 effort:      LOW  (native: low)
@@ -80,7 +128,7 @@ cross_family_review: False
 fallbacks:   (none)
 confidence:  0.95
 
-MECHANICAL scored 0/18 (c=0 u=0 b=0 r=0) -> band LOW. Worker worker_fast at LOW effort. Review band LOW: worker_fast, independence_required=False, review_independence=not_applicable. No fallbacks applied.
+MECHANICAL scored 0/18 (c=0 u=0 b=0 r=0) -> band LOW; execution 0/18 -> EASY. Worker worker_fast at LOW effort. Review band LOW: worker_fast, independence_required=False, review_independence=not_applicable. No fallbacks applied.
 ```
 
 Twelve files sounds like a lot, and it routes to the cheapest model at the
@@ -105,6 +153,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
 ```
 risk_score:  3
 risk_band:   HIGH
+exec_score:  3
+exec_band:   EASY
 overrides:   ['critical_domain']
 worker:      worker_balanced  ->  xai_frontier
 effort:      HIGH  (native: high)
@@ -121,7 +171,7 @@ confidence:  0.95
 notes:
   - band HIGH floored effort at HIGH
 
-IMPLEMENTATION scored 3/18 (c=1 u=0 b=1 r=0) -> band HIGH. Overrides applied: critical_domain. Critical-domain flags: auth_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied.
+IMPLEMENTATION scored 3/18 (c=1 u=0 b=1 r=0) -> band HIGH; execution 3/18 -> EASY. Overrides applied: critical_domain. Critical-domain flags: auth_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied.
 ```
 
 **The raw score is 3, which is `LOW`. The emitted band is `HIGH` with dual
@@ -166,6 +216,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class DEBUGGING \
 ```
 risk_score:  8
 risk_band:   HIGH
+exec_score:  10
+exec_band:   NORMAL
 overrides:   ['critical_domain', 'low_routing_confidence_raised_review_to_CRITICAL']
   already satisfied by another rule: ['critical_domain']
 worker:      worker_balanced  ->  xai_frontier
@@ -186,7 +238,7 @@ human:       CONFIRMATION REQUIRED
 notes:
   - confirm/on_any_critical_review: a CRITICAL review cannot be accepted automatically
 
-DEBUGGING scored 8/18 (c=2 u=2 b=1 r=0) -> band HIGH. Overrides applied: critical_domain, low_routing_confidence_raised_review_to_CRITICAL. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: auth_sensitive. Worker worker_balanced at VERY_HIGH effort (MAX was requested; the model's ceiling is lower). Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. Judge: principal_architect. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Requires human confirmation before proceeding.
+DEBUGGING scored 8/18 (c=2 u=2 b=1 r=0) -> band HIGH; execution 10/18 -> NORMAL. Overrides applied: critical_domain, low_routing_confidence_raised_review_to_CRITICAL. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: auth_sensitive. Worker worker_balanced at VERY_HIGH effort (MAX was requested; the model's ceiling is lower). Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. Judge: principal_architect. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Requires human confirmation before proceeding.
 ```
 
 **The policy asked for `MAX`.** `unknown_root_cause` maps there directly,
@@ -226,6 +278,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class ARCHITECTURE \
 ```
 risk_score:  17
 risk_band:   CRITICAL
+exec_score:  15
+exec_band:   VERY_HARD
 overrides:   ['critical_domain', 'critical_irreversible']
   already satisfied by another rule: ['critical_domain', 'critical_irreversible']
 worker:      principal_architect  ->  claude_architect
@@ -247,7 +301,7 @@ notes:
   - confirm/on_any_critical_review: a CRITICAL review cannot be accepted automatically
   - confirm/on_judge_unavailable: no adjudicator is available
 
-ARCHITECTURE scored 17/18 (c=3 u=3 b=3 r=2) -> band CRITICAL. Overrides applied: critical_domain, critical_irreversible. Overrides that fired but were already satisfied: critical_domain, critical_irreversible. Critical-domain flags: financial_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No independent adjudicator is available at or above every party's tier (the implementer included); a human must resolve any disagreement. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Human control: no adjudicator is available. Requires human confirmation before proceeding.
+ARCHITECTURE scored 17/18 (c=3 u=3 b=3 r=2) -> band CRITICAL; execution 15/18 -> VERY_HARD. Overrides applied: critical_domain, critical_irreversible. Overrides that fired but were already satisfied: critical_domain, critical_irreversible. Critical-domain flags: financial_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No independent adjudicator is available at or above every party's tier (the implementer included); a human must resolve any disagreement. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Human control: no adjudicator is available. Requires human confirmation before proceeding.
 ```
 
 `critical_irreversible` fired because a critical-domain flag met
@@ -278,6 +332,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class MECHANICAL \
 ```
 risk_score:  10
 risk_band:   HIGH
+exec_score:  10
+exec_band:   NORMAL
 overrides:   (none)
 worker:      worker_balanced  ->  xai_frontier
 effort:      HIGH  (native: high)
@@ -292,9 +348,10 @@ cross_family_review: True
 fallbacks:   (none)
 confidence:  0.87
 notes:
+  - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
   - band HIGH floored effort at HIGH
 
-MECHANICAL scored 10/18 (c=2 u=2 b=2 r=0) -> band HIGH. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied.
+MECHANICAL scored 10/18 (c=2 u=2 b=2 r=0) -> band HIGH; execution 10/18 -> NORMAL. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied.
 ```
 
 Workers differ by class, as the table says they must. The band does not:
@@ -327,6 +384,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class INVESTIGATION \
 ```
 risk_score:  10
 risk_band:   HIGH
+exec_score:  10
+exec_band:   NORMAL
 overrides:   (none)
 worker:      reasoning_specialist  ->  openai_reasoning
 effort:      HIGH  (native: high)
@@ -341,7 +400,7 @@ cross_family_review: False
 fallbacks:   (none)
 confidence:  0.87
 
-INVESTIGATION scored 10/18 (c=2 u=2 b=2 r=0) -> band HIGH. Worker reasoning_specialist at HIGH effort. Review band HIGH: senior_engineer, principal_architect, independence_required=True, review_independence=degraded. Reviewer slot substituted: reasoning_specialist -> principal_architect (would have shared a model with the implementer). No fallbacks applied. cross_family_review=false — reviewers share a family; weigh the second verdict accordingly.
+INVESTIGATION scored 10/18 (c=2 u=2 b=2 r=0) -> band HIGH; execution 10/18 -> NORMAL. Worker reasoning_specialist at HIGH effort. Review band HIGH: senior_engineer, principal_architect, independence_required=True, review_independence=degraded. Reviewer slot substituted: reasoning_specialist -> principal_architect (would have shared a model with the implementer). No fallbacks applied. cross_family_review=false — reviewers share a family; weigh the second verdict accordingly.
 ```
 
 Same score as the previous example, different worker. The dimensions do not
@@ -371,6 +430,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class MIGRATION \
 ```
 risk_score:  16
 risk_band:   CRITICAL
+exec_score:  13
+exec_band:   HARD
 overrides:   ['critical_domain', 'critical_irreversible', 'migration_data_integrity']
   already satisfied by another rule: ['critical_domain', 'critical_irreversible', 'migration_data_integrity']
 worker:      principal_architect  ->  claude_architect
@@ -392,7 +453,7 @@ notes:
   - confirm/on_any_critical_review: a CRITICAL review cannot be accepted automatically
   - confirm/on_judge_unavailable: no adjudicator is available
 
-MIGRATION scored 16/18 (c=3 u=2 b=3 r=3) -> band CRITICAL. Overrides applied: critical_domain, critical_irreversible, migration_data_integrity. Overrides that fired but were already satisfied: critical_domain, critical_irreversible, migration_data_integrity. Critical-domain flags: data_integrity_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No independent adjudicator is available at or above every party's tier (the implementer included); a human must resolve any disagreement. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Human control: no adjudicator is available. Requires human confirmation before proceeding.
+MIGRATION scored 16/18 (c=3 u=2 b=3 r=3) -> band CRITICAL; execution 13/18 -> HARD. Overrides applied: critical_domain, critical_irreversible, migration_data_integrity. Overrides that fired but were already satisfied: critical_domain, critical_irreversible, migration_data_integrity. Critical-domain flags: data_integrity_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No independent adjudicator is available at or above every party's tier (the implementer included); a human must resolve any disagreement. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Human control: no adjudicator is available. Requires human confirmation before proceeding.
 ```
 
 Three overrides fire independently and agree. Each encodes a different reason
@@ -423,6 +484,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
 ```
 risk_score:  5
 risk_band:   MEDIUM
+exec_score:  5
+exec_band:   EASY
 overrides:   (none)
 worker:      worker_balanced  ->  xai_frontier
 effort:      MEDIUM  (native: medium)
@@ -439,8 +502,9 @@ excluded:    ['openai_worker_fast'] (already failed)
 confidence:  0.9
 notes:
   - escalated above capability tier 0
+  - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
 
-IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
+IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM; execution 5/18 -> EASY. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
 ```
 
 Without the failure this routes to `worker_fast`. With it, the router refuses
@@ -461,6 +525,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
 ```
 risk_score:  5
 risk_band:   MEDIUM
+exec_score:  5
+exec_band:   EASY
 overrides:   (none)
 TERMINAL:    RETRY_HISTORY_REQUIRED  — no executable bindings emitted
 review (policy only — not dispatchable):
@@ -475,7 +541,7 @@ human:       CONFIRMATION REQUIRED
 notes:
   - retry history required: 1 prior failure(s) but 0 concrete model id(s) supplied — pass --prior-models with one model id per failure
 
-IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM. TERMINAL: RETRY_HISTORY_REQUIRED — no executable bindings emitted; routing confidence 0.9 after 1 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: worker_balanced, independence_required=True, review_independence=degraded. No fallbacks applied. Requires human confirmation before proceeding.
+IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM; execution 5/18 -> EASY. TERMINAL: RETRY_HISTORY_REQUIRED — no executable bindings emitted; routing confidence 0.9 after 1 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: worker_balanced, independence_required=True, review_independence=degraded. No fallbacks applied. Requires human confirmation before proceeding.
 ```
 
 Five rounds of inferring which model a previous attempt ran produced five
@@ -500,6 +566,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
 ```
 risk_score:  9
 risk_band:   HIGH
+exec_score:  8
+exec_band:   EASY
 overrides:   ['critical_domain']
   already satisfied by another rule: ['critical_domain']
 worker:      worker_balanced  ->  xai_frontier
@@ -514,8 +582,11 @@ review:
 cross_family_review: False
 fallbacks:   (none)
 confidence:  0.95
+notes:
+  - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
+  - provider may substitute another claude model for security_sensitive content; the requested identity of claude_architect is declared_only
 
-IMPLEMENTATION scored 9/18 (c=2 u=1 b=2 r=1) -> band HIGH. Overrides applied: critical_domain. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: security_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, principal_architect, independence_required=True, review_independence=degraded. Reviewer slot substituted: reasoning_specialist -> principal_architect (would have duplicated another reviewer). No fallbacks applied. cross_family_review=false — reviewers share a family; weigh the second verdict accordingly.
+IMPLEMENTATION scored 9/18 (c=2 u=1 b=2 r=1) -> band HIGH; execution 8/18 -> EASY. Overrides applied: critical_domain. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: security_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, principal_architect, independence_required=True, review_independence=degraded. Reviewer slot substituted: reasoning_specialist -> principal_architect (would have duplicated another reviewer). No fallbacks applied. cross_family_review=false — reviewers share a family; weigh the second verdict accordingly.
 ```
 
 The route still emits — a missing model degrades the route, never fails it.
@@ -553,6 +624,8 @@ python3 "$SKILL_DIR"/scripts/route_task.py --class IMPLEMENTATION \
 ```
 risk_score:  6
 risk_band:   MEDIUM
+exec_score:  5
+exec_band:   EASY
 overrides:   (none)
 TERMINAL:    HUMAN_REQUIRED  — no executable bindings emitted
 review (policy only — not dispatchable):
@@ -567,9 +640,10 @@ confidence:  0.8
 human:       CONFIRMATION REQUIRED
 notes:
   - escalated above capability tier 0
+  - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
   - retry budget spent: 4 attempt(s) against a cap of 4 — stop retrying and surface what was tried to a human
 
-IMPLEMENTATION scored 6/18 (c=1 u=1 b=1 r=1) -> band MEDIUM. TERMINAL: HUMAN_REQUIRED — no executable bindings emitted; routing confidence 0.8 after 4 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast. Requires human confirmation before proceeding.
+IMPLEMENTATION scored 6/18 (c=1 u=1 b=1 r=1) -> band MEDIUM; execution 5/18 -> EASY. TERMINAL: HUMAN_REQUIRED — no executable bindings emitted; routing confidence 0.8 after 4 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast. Requires human confirmation before proceeding.
 ```
 
 **No executable bindings are emitted at all, and the CLI exits nonzero.**
@@ -592,6 +666,8 @@ re-derive the attempt history.
 ---
 
 ## What these cases are meant to teach
+
+**Hard but isolated** — difficulty moves the worker; it never moves the review.
 
 **Size is not risk.** The rename touches 12 files and routes cheapest. The auth
 scope check touches a handful of lines and routes to dual independent review.
