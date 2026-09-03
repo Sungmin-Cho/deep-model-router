@@ -1,0 +1,1501 @@
+# Model routing policy — the deployment artifact.
+#
+# This file is the single source of truth for every deterministic part of the
+# router: band boundaries, overrides, worker selection, effort floors, and
+# review policy. It intentionally contains NO classification logic — deciding a
+# task's class, its four dimension scores, and its flags is a judgment call that
+# belongs to the model, not to a config file.
+#
+# Concrete model identifiers live here and nowhere else. Routing logic addresses
+# models by role alias only, so a model rename is a one-line change in this file.
+#
+# Verification status of every identifier is recorded in `verification_ledger`
+# at the bottom. Keep it honest: "assumed" and "verified" must not blur.
+
+version: 3
+
+# ---------------------------------------------------------------------------
+# Router defaults
+# ---------------------------------------------------------------------------
+
+router:
+  default_worker: worker_fast
+  default_orchestrator: worker_fast
+  default_orchestrator_effort: HIGH
+
+  # Bands are non-overlapping and exhaustive over 0..18. All downstream policy
+  # is expressed in bands, never in raw scores — a raw-score comparison
+  # anywhere else in the system is a bug.
+  bands:
+    LOW:      { min: 0,  max: 3,  ordinal: 0 }
+    MEDIUM:   { min: 4,  max: 7,  ordinal: 1 }
+    HIGH:     { min: 8,  max: 10, ordinal: 2 }
+    CRITICAL: { min: 11, max: 18, ordinal: 3 }
+
+  # risk_score = complexity + 2*uncertainty + 2*blast_radius + reversibility
+  #
+  # Uncertainty and blast radius are double-weighted because complexity and
+  # reversibility describe what the change *is*, while uncertainty and blast
+  # radius together approximate risk-adjusted expected loss — what the change
+  # might *cost*.
+  score_weights:
+    complexity:    1
+    uncertainty:   2
+    blast_radius:  2
+    reversibility: 1
+
+  confidence:
+    escalate_below:     0.60   # re-classify at higher effort, or ask a human
+    extra_review_below: 0.80   # execute, but raise the review band one level
+    # The value those two thresholds judge. Until the 2026-08-18 audit the
+    # thresholds lived here and the numbers producing the value lived in
+    # `routing_confidence`, so moving a threshold meant guessing at constants in
+    # another file — one policy split across two sources, which this file's
+    # header forbids. Confidence starts at `base` and each condition that holds
+    # subtracts its penalty; the result is clamped to 0..1 and rounded to 2dp.
+    base: 0.95
+    penalties:
+      uncertainty_3:           0.20
+      uncertainty_2:           0.08
+      prior_failures_2_or_more: 0.15
+      prior_failures_1:        0.05
+      any_fallback:            0.06   # 1.9.0: was 0.10. Feasible interval (0.05, 0.07]:
+                                      # keep fb+urc (>0.15) and u3+urc+fb (>0.35)
+                                      # crossing, release u2+fb (<=0.15). 0.07 sits
+                                      # exactly on the `< 0.80` gate; 0.06 leaves
+                                      # 0.01 on every boundary. Design 2026-09-02 DD-3.
+      unknown_root_cause:      0.10
+
+  floors:
+    # Round 9. `critical_domain_review_band: HIGH` and `critical_domain_effort:
+    # HIGH` used to sit here and were read by nothing — the band floor is the
+    # `critical_domain` override below, and the effort floor is
+    # `effort_floors.any_critical_domain`. Two places holding one number is the
+    # drift this file's header forbids, and a floor nobody reads is a promise
+    # nobody keeps. Only the worker floor remains, and it IS read (as a
+    # capability tier); see the note on its redundancy in route_task.py.
+    critical_domain_worker:     worker_balanced
+
+# ---------------------------------------------------------------------------
+# Flags
+# ---------------------------------------------------------------------------
+
+flags:
+  # Force band overrides. Any one of these makes the task at least HIGH.
+  critical_domain:
+    - security_sensitive
+    - auth_sensitive
+    - financial_sensitive
+    - data_integrity_sensitive
+
+  # Raise the band or force a specific path. Every flag listed here MUST have
+  # an observable effect — a rule declared and consumed nowhere is a promise
+  # the system does not keep, and `test_d6_every_declared_flag_has_an_effect`
+  # fails if one goes inert.
+  elevating:
+    - concurrency_sensitive   # band floor MEDIUM (see overrides)
+    - migration               # conditional: with data_integrity_sensitive -> CRITICAL
+    - public_api_change       # band floor MEDIUM
+    - production_hotfix       # band floor HIGH
+    - unknown_root_cause      # effort MAX, worker promotion, confidence penalty
+    - review_disagreement     # routes to the disagreement path
+
+  # Inform decomposition and model choice, but never the band.
+  context:
+    - unfamiliar_codebase
+    - cross_service_change
+    - long_horizon
+    - large_context
+    - latency_sensitive   # B.1 2026-08-20: quality tie 15/18, sonnet p50 lower in every type; binds worker_balanced to alt
+    - tool_heavy
+
+  # Operational state of the runtime, not a property of the task. `bridge_down`
+  # is the only supported way to select a degraded single-provider binding —
+  # it used to be an undocumented string recognised in one place in the code,
+  # which meant the documented route (`--unavailable <role>`) and the working
+  # route were different things.
+  operational:
+    - bridge_down             # the cross-provider transport is unreachable
+    - termination_unconfirmed # a prior write-capable attempt may still be alive
+
+# Flags whose effect is real but only in combination with another flag. Listed
+# explicitly so the "no inert elevating flag" test can tell a deliberate
+# conditional from a rule nobody wired up.
+conditional_flags:
+  migration:
+    requires: [data_integrity_sensitive]
+    effect: band_exactly CRITICAL
+
+# Applied after the band is computed, unconditionally, for every task class.
+# Bands may only be raised by an override, never lowered.
+#
+# `when` is a small structured predicate so the code evaluates the config
+# rather than reimplementing it:
+#   {flag: NAME}                     the task carries NAME
+#   {any_flag_in: GROUP}             the task carries any flag from flags.GROUP
+#   {dimension_at_least: {DIM: N}}   that dimension scores N or higher
+#   {all: [ ... ]}                   every sub-predicate holds
+overrides:
+  - name: critical_domain
+    when: { any_flag_in: critical_domain }
+    effect: { band_at_least: HIGH }
+
+  - name: critical_irreversible
+    when:
+      all:
+        - { any_flag_in: critical_domain }
+        - { dimension_at_least: { reversibility: 2 } }
+    effect: { band_exactly: CRITICAL }
+
+  - name: migration_data_integrity
+    when:
+      all:
+        - { flag: migration }
+        - { flag: data_integrity_sensitive }
+    effect: { band_exactly: CRITICAL }
+
+  - name: production_hotfix
+    when: { flag: production_hotfix }
+    effect: { band_at_least: HIGH }
+
+  - name: public_api_change
+    when: { flag: public_api_change }
+    effect: { band_at_least: MEDIUM }
+
+  # Concurrency defects are subtle, poorly covered by ordinary tests, and their
+  # effects are hard to undo even when the diff is easy to revert. A MEDIUM
+  # floor buys one independent reviewer; it deliberately does not force HIGH,
+  # because merely touching concurrent code is not the same as changing its
+  # invariants — raise blast_radius for that.
+  - name: concurrency_sensitive
+    when: { flag: concurrency_sensitive }
+    effect: { band_at_least: MEDIUM }
+
+  - name: review_disagreement
+    when: { flag: review_disagreement }
+    effect: { route: disagreement }        # see review.disagreement
+
+# ---------------------------------------------------------------------------
+# Worker selection — by task class and band
+# ---------------------------------------------------------------------------
+#
+# `reasoning_centric` picks between the two frontier roles wherever a cell
+# reads `by_reasoning_centric`: true selects reasoning_specialist (the
+# bottleneck is deciding WHAT is correct), false selects senior_engineer (the
+# bottleneck is producing correct CODE). Default false when genuinely
+# ambiguous — code-centric routing is cheaper and recovers more gracefully.
+
+worker_selection:
+  MECHANICAL:    { LOW: worker_fast,     MEDIUM: worker_fast,     HIGH: worker_balanced,       CRITICAL: senior_engineer }
+  DOCUMENTATION: { LOW: worker_fast,     MEDIUM: worker_fast,     HIGH: worker_balanced,       CRITICAL: worker_balanced }
+  TESTING:       { LOW: worker_fast,     MEDIUM: worker_fast,     HIGH: worker_balanced,       CRITICAL: senior_engineer }
+  IMPLEMENTATION: { LOW: worker_fast,    MEDIUM: worker_fast,     HIGH: worker_balanced,       CRITICAL: by_reasoning_centric }
+  REFACTORING:   { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: worker_balanced,       CRITICAL: by_reasoning_centric }
+  DEBUGGING:     { LOW: worker_fast,     MEDIUM: worker_fast,     HIGH: worker_balanced,       CRITICAL: by_reasoning_centric }
+  INVESTIGATION: { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: reasoning_specialist,  CRITICAL: reasoning_specialist }
+  MIGRATION:     { LOW: worker_balanced, MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: principal_architect }
+  ARCHITECTURE:  { LOW: worker_balanced, MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: principal_architect }
+  REVIEW:        { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: senior_engineer }
+  OPERATIONS:    { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: senior_engineer }
+
+# Applied after the table, before effort selection.
+# Does this class's WORKER need a write-capable dispatch recipe?
+#
+# The router names models; the caller dispatches them. But a route that names
+# a model whose transport has no write-capable seat, for work that writes, is
+# not executable as written — and until this table existed the caller had to
+# notice that themselves and re-route with `--unavailable-models`.
+#
+# Fail-closed. `read_only` is reserved for the two classes whose WORKER output
+# is a judgement rather than an artifact; everything else is presumed to need a
+# write-capable recipe. A class generalisation is wrong for some routes in both
+# directions — an INVESTIGATION that files its report as a file, an
+# IMPLEMENTATION spike that only reads — so the caller overrides it per route
+# with `--worker-seat` / RouteRequestV1 `worker_seat`. What the caller must not
+# have to do is discover the gap after dispatch fails.
+#
+# This is a routing input, not a dispatch instruction: `read_only` does not
+# tell anyone to run a read-only seat, it says this route may be staffed by a
+# model that only has one.
+task_write_seat:
+  MECHANICAL:     write
+  DOCUMENTATION:  write
+  TESTING:        write
+  IMPLEMENTATION: write
+  REFACTORING:    write
+  DEBUGGING:      write
+  MIGRATION:      write
+  ARCHITECTURE:   write
+  OPERATIONS:     write
+  INVESTIGATION:  read_only
+  REVIEW:         read_only
+
+worker_promotions:
+  - class: ARCHITECTURE
+    when: uncertainty == 3 OR long_horizon
+    to: principal_architect
+  - class: DEBUGGING
+    when: unknown_root_cause AND prior_failures >= 2
+    to_at_least: by_reasoning_centric
+  - class: INVESTIGATION
+    when: unknown_root_cause
+    to_at_least: worker_balanced
+  - class: MIGRATION
+    when: band == CRITICAL
+    note: >
+      principal_architect applies to the architecture phase only; the
+      implementation phase runs at worker_balanced / senior_engineer.
+  - class: "*"
+    when: prior_failures >= 1
+    to_at_least: one_tier_above_failed_model
+
+# Role ordering, used by every `max(worker, X)` and `one tier above` rule.
+role_tiers:
+  - worker_fast
+  - worker_balanced
+  - senior_engineer
+  - reasoning_specialist
+  - principal_architect
+
+# ---------------------------------------------------------------------------
+# Effort
+# ---------------------------------------------------------------------------
+
+effort_levels: [MINIMAL, LOW, MEDIUM, HIGH, VERY_HIGH, MAX]
+
+# Every entry here is selected by `select_effort`. Round 22 removed three that
+# were not: `normal_feature` (a second spelling of `straightforward_impl`),
+# `difficult_debugging` (unreachable — hard debugging routes through
+# `unknown_root_cause`), and `orchestration` (a second copy of
+# `router.default_orchestrator_effort`). The whole subtree used to be excused as
+# "guidance for the caller", which was false — the router reads it — and the
+# blanket excuse is what let three dead keys sit here unseen.
+effort_by_work:
+  formatting_rename:        LOW
+  boilerplate:              LOW
+  straightforward_impl:     MEDIUM
+  multi_file_feature:       HIGH
+  debugging:                HIGH
+  refactoring:              HIGH
+  multi_system_refactoring: VERY_HIGH
+  architecture:             HIGH
+  complex_architecture:     MAX
+  unknown_root_cause:       MAX
+  standard_review:          HIGH
+  adversarial_review:       MAX
+
+# Floors override the table above — never the other way round.
+effort_floors:
+  band_HIGH:            HIGH
+  band_CRITICAL:        VERY_HIGH
+  any_critical_domain:  HIGH
+
+# ---------------------------------------------------------------------------
+# Review policy — a function of BAND ONLY
+# ---------------------------------------------------------------------------
+#
+# Review depth does not depend on which worker was selected. That independence
+# is what makes the "every task reaches review selection" invariant checkable:
+# no worker-selection branch can weaken the review.
+
+review:
+  LOW:
+    reviewers: [worker_fast]
+    effort: MEDIUM
+    independent: false
+
+  MEDIUM:
+    candidates: [worker_balanced, senior_engineer, reasoning_specialist]
+    effort: HIGH
+    independent: true
+    # Depth is the reviewer LIST in every other band, and MEDIUM is no
+    # exception: exactly one candidate is seated. `reviewer_count: 1` and
+    # `prefer_cross_family: true` sat here until the 2026-08-18 audit measured
+    # them — setting the count to 3 and the preference to false produced
+    # identical routes, because `select_review` seats one reviewer and prefers
+    # a cross-family one unconditionally. They were not forgotten wiring; they
+    # were constants wearing a config file, the shape round 17 removed from
+    # `human_in_the_loop.on_retry_exhaustion`. Neither is worth making real:
+    #   * a second MEDIUM reviewer is HIGH's depth at MEDIUM's price, and the
+    #     way to ask for that is to raise the band — which is what bands are;
+    #   * cross-family-first is the REASON this band names candidates instead
+    #     of a fixed reviewer, so a key offering to turn it off is a safety
+    #     property with a switch on it.
+    # First candidate that is both available and a different family from the
+    # implementer wins.
+    preferred_by_implementer:
+      worker_fast:             worker_balanced
+      worker_balanced:         reasoning_specialist
+      worker_balanced_alt:     senior_engineer
+      senior_engineer:         reasoning_specialist
+      reasoning_specialist:    senior_engineer
+      principal_architect:     reasoning_specialist
+
+  HIGH:
+    reviewers: [senior_engineer, reasoning_specialist]
+    effort: HIGH
+    independent: true
+
+  CRITICAL:
+    reviewers: [senior_engineer, reasoning_specialist]
+    effort: MAX
+    independent: true
+    required_checks:
+      - security
+      - edge_cases
+      - rollback
+      - test_adequacy
+      - specification_compliance
+
+  disagreement:
+    default_judge: principal_architect
+    code_local_dispute_judge: senior_engineer
+    formal_reasoning_dispute_judge: reasoning_specialist
+    formal_reasoning_dispute_effort: MAX
+    resolution:
+      # R1 / R2 -> action
+      PASS+PASS:                             accept_unless_unresolved_finding
+      PASS+PASS_WITH_CHANGES:                apply_then_light_rereview
+      PASS_WITH_CHANGES+PASS_WITH_CHANGES:   apply_union_then_light_rereview
+      PASS+FAIL:                             judge
+      FAIL+PASS:                             judge
+      PASS_WITH_CHANGES+FAIL:                judge_if_high_or_critical_else_reimplement
+      FAIL+FAIL:                             reimplement
+
+# ---------------------------------------------------------------------------
+# Control loop
+# ---------------------------------------------------------------------------
+
+retry:
+  same_model_same_effort:            1
+  same_model_higher_effort:          1
+  stronger_model:                    2
+  max_total_implementation_attempts: 4
+  max_review_rounds:                 3
+  max_judge_invocations:             1
+  require_new_evidence_on_same_tier: true
+
+human_in_the_loop:
+  # Exhausting the retry budget is a normal terminal state, not an error —
+  # but it must surface to a human rather than fail silently.
+  # `on_retry_exhaustion` was here until round 17, which measured all three of
+  # its actions producing the same route: the cap is a safety limit, not a
+  # policy choice, so a key offering to vary it was a constant wearing a config
+  # file. The gate is unconditional in `route()`.
+  # Every CRITICAL review, not only degraded ones: the router cannot verify
+  # where an isolation receipt came from, so it never treats one as proof.
+  on_any_critical_review:       require_human_confirmation
+  on_independence_unachievable: terminal
+  on_judge_unavailable:         require_human_confirmation
+  # Scarcity can leave a band's review staffed below the model tier the band
+  # asks for. The router cannot restore the depth; what it must not do is
+  # emit the route as though the band had been satisfied. Whether a weaker
+  # review is acceptable for this particular change is a judgement about the
+  # change, which is a human's to make and not the router's to assume.
+  # A live incident is the one case where blocking BEFORE dispatch costs more
+  # than it buys. Round 20 measured it: `production_hotfix` raises the band, so
+  # a hotfix got the frontier model, MAX-adjacent effort, dual independent
+  # review AND a pre-dispatch human gate — the slowest, most-blocked path the
+  # policy can produce, for the situation with the least time.
+  #
+  # The review is not the problem and does not change: depth, independence and
+  # reviewer count stay exactly what the band asks. What moves is WHEN the human
+  # is asked. `defer_human_confirmation` lets the fix dispatch now and records
+  # that a confirmation is owed; `require_human_confirmation` blocks first, for
+  # teams that would rather wait. Both are real policies, which is what makes
+  # this a setting rather than a constant.
+  #
+  # Deferral is scoped to the band's own review gate. A route whose reviewers
+  # could not be made independent, or whose review is staffed below its band,
+  # still blocks — those say the review cannot be trusted, and a hotfix does
+  # not make an untrustworthy review acceptable.
+  on_production_hotfix:         defer_human_confirmation
+
+  # Enforced through the CLI exit status (3), not only through a boolean in
+  # the JSON: a caller that reads success as authorisation walks through a gate
+  # it cannot see. Terminal states stay 1; invalid input stays 2.
+  on_review_depth_reduced:      require_human_confirmation
+  # A seat whose model cannot reach the effort a floor required. Same family of
+  # fact as `review_depth_reduced` — the review does not run at the depth the
+  # band asked for — so a hotfix does not defer it either.
+  on_effort_below_floor:        require_human_confirmation
+  # A timed-out writer whose process tree could not be confirmed dead may
+  # still be writing. Retrying behind it risks two concurrent writers on the
+  # same files, so the route holds until a human confirms the workspace.
+  on_termination_unconfirmed:  require_human_confirmation
+  human_gate_exit_status:       3
+  # `on_routing_confidence_below` used to sit here holding 0.60 — the same
+  # number as `router.confidence.escalate_below`, which is the one the router
+  # reads. Two places holding one number is the drift this file's header
+  # forbids, and round 10's instrumented test proved this copy was never read.
+
+# ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+#
+# Every id below was probed in this environment. See verification_ledger.
+
+models:
+  # price_per_mtok is a REFERENCE record of published API rates — not the
+  # marginal cost of a dispatch that rides a subscription (Claude Max /
+  # ChatGPT Codex / SuperGrok). It records the input/output/cache-read axes
+  # only; other billing axes (e.g. OpenAI cache-write at 1.25x uncached
+  # input) are deliberately not recorded until a code consumer needs them.
+  # long_context.boundary vocabulary: `inclusive` — an input AT OR ABOVE the
+  # threshold re-bills the whole request at the second tier; `exclusive` —
+  # strictly above.
+  #
+  # `capability_tier` is the model's strength as a *model*, independent of any
+  # role it happens to be bound to. Every strength comparison in the router —
+  # judge-vs-party, reviewer-vs-band-floor, substitution-vs-replaced — reads
+  # this, never a role's position in `role_tiers`.
+  #
+  # Rounds 3 through 6 of review each found the same defect wearing a new hat:
+  # a decision made on a ROLE LABEL while the RESOLVED MODEL was what mattered.
+  # Under scarcity a role resolves to whatever is left, so `worker_fast` can
+  # hold a frontier model and `worker_balanced` a weaker one — at which point
+  # role ordinals rank the assignment backwards. Peers share a tier: the two
+  # frontier models are interchangeable in strength and differ only in what
+  # they are good at, which `reasoning_centric` decides, not this number.
+  claude_worker_fast:
+    id: claude-haiku-4-5-20251001
+    family: claude
+    capability_tier: 0
+    verified: true
+    price_per_mtok: { input: 1.00, output: 5.00, cached_input: 0.10 }
+
+  claude_worker_balanced:
+    id: claude-sonnet-5
+    family: claude
+    capability_tier: 1
+    verified: true
+    price_per_mtok: { input: 2.00, output: 10.00, cached_input: 0.20 }
+
+  claude_senior:
+    id: claude-opus-5
+    family: claude
+    capability_tier: 2
+    verified: true
+    price_per_mtok: { input: 5.00, output: 25.00, cached_input: 0.50 }
+
+  claude_architect:
+    id: claude-fable-5-1
+    family: claude
+    capability_tier: 3
+    verified: true
+    # Provider-side substitution disclosure (see the Fable 5 / 5.1 ledger
+    # entries): flags listed here that a task carries produce a per-model
+    # note when this model is seated on an executable route. Fable 5.1 keeps
+    # a refusal classifier (stop_reason: refusal + stop_details.category).
+    served_model_caveats: [security_sensitive]
+    price_per_mtok: { input: 10.00, output: 50.00, cached_input: 0.25 }
+
+  # Retired 1.9.0 (design 2026-09-02 DD-2). Valid as HISTORY input
+  # (--prior-models, --unavailable-models, --host-model) so a control loop
+  # that crosses the release boundary keeps working; never a candidate for
+  # any seat: dispatchable: false, bound to no role, named in no fallback
+  # list. Same mechanism as gemini_flash.
+  claude_architect_retired:
+    id: claude-fable-5
+    family: claude
+    capability_tier: 3
+    dispatchable: false
+    verified: true
+    price_per_mtok: { input: 10.00, output: 50.00, cached_input: 1.00 }
+
+  openai_worker_fast:
+    id: gpt-5.6-luna
+    family: openai
+    capability_tier: 0
+    verified: true
+    price_per_mtok:
+      input: 0.20
+      output: 1.20
+      cached_input: 0.02
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      input: 0.40, output: 1.80, cached_input: 0.04 }
+
+  openai_worker_balanced:
+    id: gpt-5.6-terra
+    family: openai
+    capability_tier: 1
+    verified: true
+    price_per_mtok:
+      input: 2.00
+      output: 12.00
+      cached_input: 0.20
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      input: 4.00, output: 18.00, cached_input: 0.40 }
+
+  openai_reasoning:
+    id: gpt-5.6-sol
+    family: openai
+    capability_tier: 2
+    verified: true
+    price_per_mtok:
+      input: 5.00
+      output: 30.00
+      cached_input: 0.50
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      input: 10.00, output: 45.00, cached_input: 1.00 }
+
+  # Balanced-tier price with frontier-tier claims. `capability_tier: 1` is the
+  # honest reading, not a measured one: no head-to-head was run here, and
+  # raising it to 2 would move MEDIUM's reviewer floor — a band change with
+  # nothing to do with adding a model.
+  xai_frontier:
+    id: grok-4.6
+    family: xai
+    capability_tier: 1
+    effort_ceiling: VERY_HIGH   # probed: the CLI rejects `max`
+    verified: true
+    # Tiered, unlike every other row here. Once a prompt reaches
+    # `above_input_tokens`, xAI bills the ENTIRE request at the second tier —
+    # not just the tokens past the line. Recording only the first tier stated
+    # the half of the price that makes this seat look unconditionally cheaper
+    # than the claude balanced seat, which it is not: above the line it costs
+    # more on both axes. `worker_balanced_selection.prefer_alt_when_flags` is
+    # the rule that acts on this; see also `context_window`.
+    price_per_mtok:
+      input: 2.00
+      output: 6.00
+      cached_input: 0.50
+      long_context: { above_input_tokens: 200000, boundary: inclusive,
+                      input: 4.00, output: 12.00, cached_input: 1.00 }
+    context_window: 500000
+
+  # Unbound: suite already names this id, but P0 does not dispatch it.
+  gemini_flash:
+    id: gemini-3.6-flash-high
+    family: gemini
+    capability_tier: 1
+    dispatchable: false
+    verified: false
+    price_per_mtok: { input: 0.00, output: 0.00 }
+
+# ---------------------------------------------------------------------------
+# Role bindings
+# ---------------------------------------------------------------------------
+#
+# One binding, not one per runtime. Roles are filled by whichever model is
+# best for the job regardless of provider. Not every bridge is verified in
+# every direction. Claude Code → openai, Codex → claude, Claude Code → xai,
+# grok → claude, and grok → openai have been probed. Codex → xai uses the
+# same command and is recorded as assumed. The per-provider bindings below
+# are degraded fallbacks for when a bridge is down — not alternate defaults.
+
+role_bindings:
+  default:
+    worker_fast:          openai_worker_fast       # cheapest capable volume worker
+    worker_balanced:      xai_frontier             # first escalation, crosses family
+    worker_balanced_alt:  claude_worker_balanced   # first-escalation fallback
+    senior_engineer:      claude_senior
+    reasoning_specialist: openai_reasoning
+    principal_architect:  claude_architect
+
+  # Degraded: the codex bridge is unreachable from Claude Code.
+  claude_only:
+    worker_fast:          claude_worker_fast
+    worker_balanced:      claude_worker_balanced
+    senior_engineer:      claude_senior
+    reasoning_specialist: claude_senior            # opus at MAX effort
+    principal_architect:  claude_architect
+
+  # Degraded: the claude bridge is unreachable from Codex.
+  openai_only:
+    worker_fast:          openai_worker_fast
+    worker_balanced:      openai_worker_balanced
+    senior_engineer:      openai_reasoning
+    reasoning_specialist: openai_reasoning
+    principal_architect:  openai_reasoning         # MAX effort + second review
+
+  # Degraded: only the xAI CLI is reachable. One model fills every role, so any
+  # band that requires independent review is INDEPENDENCE_UNAVAILABLE here —
+  # terminal, not merely thin. That is the honest answer: there is no way to
+  # run an independent review against a single model.
+  xai_only:
+    worker_fast:          xai_frontier
+    worker_balanced:      xai_frontier
+    senior_engineer:      xai_frontier
+    reasoning_specialist: xai_frontier
+    principal_architect:  xai_frontier
+
+# The alt tier exists to keep an escalation path open when the bridge dies,
+# not to shorten the ladder. Crossing families on the first escalation is the
+# point of the first escalation.
+worker_balanced_selection:
+  prefer: worker_balanced
+  alt:    worker_balanced_alt
+  use_alt_when: worker_balanced_unavailable
+  # Deterministic facts that move this binding to the alt seat. Any flag in
+  # the list is enough; carrying more than one is the same swap, not a
+  # conflict. Below 200K input tokens the primary seat ties on input price
+  # and wins on output; at or above it, xAI re-bills the whole request at
+  # $4.00/$12.00 and the primary loses on BOTH axes while running out of
+  # window 500K earlier than the alt. `large_context` is the caller's
+  # statement about which side of that line this route is on — the router
+  # never sees a token count. `latency_sensitive` is the caller's statement
+  # that first-escalation wall-clock latency outweighs output price; the
+  # 2026-08-20 B.1 repeat eval tied quality 15/18 and recorded a lower
+  # sonnet SUCCEEDED p50 in every task type. Neither is a quality win.
+  #
+  # This is a binding choice, not a fallback: the primary is available and the
+  # resolver must not record it as though scarcity had struck. If the alt is
+  # itself unavailable the primary comes back, and THAT is recorded.
+  prefer_alt_when_flags:
+    - large_context
+    - latency_sensitive
+
+# ---------------------------------------------------------------------------
+# Runtime adapters
+# ---------------------------------------------------------------------------
+
+# Which runtimes this router can be asked to route for, and which
+# single-provider binding survives when that runtime's cross-provider bridge
+# is down. Round 21: the runtime vocabulary used to be derived from
+# `effort_map`'s keys, and the degraded binding was a two-way `if` in three
+# places in the script. Both are policy, so both live here.
+runtimes:
+  claude_code: { degraded_binding: claude_only }
+  codex:       { degraded_binding: openai_only }
+  grok:        { degraded_binding: xai_only }
+
+# Conceptual effort level -> the token that family's CLI accepts.
+#
+# Keyed by model FAMILY, not by host runtime. The value describes what the
+# TARGET model's CLI will accept, and the default binding is shared across
+# runtimes — so a router running under one host routinely dispatches a model
+# of another family. Keying this by host meant the emitted spelling described
+# a CLI that was not going to receive it.
+effort_map:
+  claude:
+    MINIMAL:   low        # no distinct minimal tier exists; collapses to low
+    LOW:       low
+    MEDIUM:    medium
+    HIGH:      high
+    VERY_HIGH: xhigh
+    MAX:       max
+  openai:
+    MINIMAL:   none       # verified: `minimal` is rejected, `none` is accepted
+    LOW:       low
+    MEDIUM:    medium
+    HIGH:      high
+    VERY_HIGH: xhigh
+    MAX:       max
+  xai:
+    MINIMAL:   low        # grok has no minimal/none — reasoning cannot be disabled
+    LOW:       low
+    MEDIUM:    medium
+    HIGH:      high
+    VERY_HIGH: xhigh
+    MAX:       xhigh      # unreachable: the clamp runs before this lookup and
+                          # the only xai model's ceiling is VERY_HIGH
+  gemini:
+    MINIMAL:   low
+    LOW:       low
+    MEDIUM:    medium
+    HIGH:      high
+    VERY_HIGH: high
+    MAX:       high
+
+transports:
+  claude_code:
+    native: { mechanism: agent_tool_subagent, isolation: context_isolation }
+    to_openai:
+      mechanism: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check \"<prompt>\""
+      isolation: separate_process
+      verified: true
+      # Whether this direction may seat WRITE work. Declared, never inferred:
+      # capability used to be read off the mechanism key's spelling, so renaming
+      # a read-only seat's key to `mechanism` silently authorized write dispatch
+      # through it. `verified` above attests the direction; this attests the
+      # write seat, and Policy refuses a `true` here that the verification
+      # ledger contradicts or that no write-capable recipe backs.
+      write_verified: true
+    to_xai:
+      # Seat profiles, not one mechanism: a read-only reviewer and a
+      # write-capable maker need opposite tool surfaces, and a headless
+      # grok turn that meets a permission prompt it cannot show CANCELS
+      # and still exits 0. See references/adapters.md "Grok seat
+      # profiles" and the 2026-08-25 design (DD-4).
+      #
+      # Common to every seat: --output-format json (the supervisor's
+      # --output-envelope grades stopReason), -s <fresh-uuid> (the same
+      # value goes to --session-id, which binds the session evidence to
+      # the attempt), and --prompt-file /dev/stdin. The prompt leaves
+      # argv entirely: --prompt-file alone triggers headless mode
+      # (probe F, [UG-14]), and the supervisor wires the prompt file to
+      # the child's stdin, so there is no quoting hazard left to get
+      # wrong.
+      #
+      # Reviewer: the tool surface IS the control, not the mode. A
+      # --tools whitelist removes the terminal tool outright (g4/P-3),
+      # so there is nothing to cancel the turn over; --deny closes the
+      # MCP meta-tool --tools leaves behind, and a denied call returns
+      # a refusal instead of killing the turn (g5). --sandbox read-only
+      # completed cleanly (P-10) and is shipped as a further reduction
+      # of the prompt-injection read surface.
+      #
+      # Maker argv is not containment by itself. Path-based sandbox still
+      # cannot tell a hard link from the file it names (1.0.5 and 1.0.13).
+      # Shipping this string authorizes write dispatch only when the
+      # supervisor also applies --seat-profile grok-maker-v1: a disposable
+      # single-linked --child-cwd, a per-attempt --grok-home seeded from
+      # --grok-auth-seed, custom profile dmr-maker-v1 (fail-closed), and
+      # --expect-sandbox-enforced. See adapters.md "Grok seat profiles".
+      mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
+      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
+      isolation: separate_process
+      verified: true
+      # Claude Code -> xAI write seat: recipe + this flag + the ledger
+      # entry below. Codex -> xAI stays write_verified: false (unprobed
+      # host direction).
+      write_verified: true
+  codex:
+    native: { mechanism: multi_agent_subagent, isolation: unverified }
+    to_claude:
+      # 1.9.0: --strict-mcp-config (design 2026-09-02 DD-1); same argv as
+      # grok.to_claude. Probed 2026-09-02 FROM a Codex host (codex exec
+      # running dispatch_agent.py) — see the transports.codex.to_claude.mechanism row.
+      mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> --strict-mcp-config \"<prompt>\""
+      isolation: separate_process
+      verified: true
+      write_verified: true
+    to_xai:
+      # Same argv — argv is host-independent — but `verified` stays
+      # per direction: the probes ran from a Claude Code host only.
+      # Seat profiles, not one mechanism: a read-only reviewer and a
+      # write-capable maker need opposite tool surfaces, and a headless
+      # grok turn that meets a permission prompt it cannot show CANCELS
+      # and still exits 0. See references/adapters.md "Grok seat
+      # profiles" and the 2026-08-25 design (DD-4).
+      #
+      # Common to every seat: --output-format json (the supervisor's
+      # --output-envelope grades stopReason), -s <fresh-uuid> (the same
+      # value goes to --session-id, which binds the session evidence to
+      # the attempt), and --prompt-file /dev/stdin. The prompt leaves
+      # argv entirely: --prompt-file alone triggers headless mode
+      # (probe F, [UG-14]), and the supervisor wires the prompt file to
+      # the child's stdin, so there is no quoting hazard left to get
+      # wrong.
+      #
+      # Reviewer: the tool surface IS the control, not the mode. A
+      # --tools whitelist removes the terminal tool outright (g4/P-3),
+      # so there is nothing to cancel the turn over; --deny closes the
+      # MCP meta-tool --tools leaves behind, and a denied call returns
+      # a refusal instead of killing the turn (g5). --sandbox read-only
+      # completed cleanly (P-10) and is shipped as a further reduction
+      # of the prompt-injection read surface.
+      #
+      # Same maker argv as claude_code.to_xai (argv is host-independent).
+      # verified and write_verified stay false: this direction was not
+      # probed from a Codex host. The string is not authorization.
+      mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
+      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
+      isolation: separate_process
+      verified: false
+      write_verified: false
+  grok:
+    native: { mechanism: subagent, isolation: unverified }
+    to_claude:
+      # 1.9.0: carries --strict-mcp-config (design 2026-09-02 DD-1) — the
+      # user-global MCP connector schemas were ~80% of a headless claude
+      # seat's boot context. same argv as codex.to_claude. `verified` stays
+      # per direction: probed 2026-08-29 (transport) and 2026-09-02 (this
+      # string) FROM a darwin grok host — see the
+      # transports.grok.to_claude.mechanism ledger row.
+      mechanism: "claude -p --model <id> --effort <effort> --permission-mode <mode> --strict-mcp-config \"<prompt>\""
+      # Read-only reviewer; --allowedTools is closed by --strict-mcp-config.
+      mechanism_reviewer: "claude -p --model <id> --effort <effort> --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config \"<prompt>\""
+      isolation: separate_process
+      verified: true
+      write_verified: true
+    to_openai:
+      # Same per-direction rule; probed 2026-08-29 from the same darwin
+      # grok host. See the "grok -> OpenAI transport" ledger entry.
+      mechanism: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check \"<prompt>\""
+      isolation: separate_process
+      verified: true
+      write_verified: true
+
+# Ordered replacement candidates, consulted when a role's bound model is
+# unavailable. Entries are registry keys, tried in order; the resolver skips
+# any whose model is itself unavailable or identical to the one that failed,
+# and falls through to the role-tier ladder when the list is exhausted.
+#
+# These lists were previously prose sketches with no code consumer, which is
+# how five of ten (role x runtime) fallbacks became silent no-ops: the resolver
+# substituted the degraded binding for the SAME role, and for those five the
+# degraded binding names the same model as the default one.
+fallbacks:
+  claude_code:
+    worker_fast:          [claude_worker_fast, claude_worker_balanced]
+    worker_balanced:      [claude_worker_balanced, openai_worker_balanced, claude_senior]
+    senior_engineer:      [openai_reasoning, claude_architect]
+    reasoning_specialist: [claude_senior, claude_architect]
+    principal_architect:  [claude_senior, openai_reasoning]
+  codex:
+    worker_fast:          [openai_worker_balanced, claude_worker_fast]
+    worker_balanced:      [claude_worker_balanced, openai_worker_balanced, openai_reasoning]
+    senior_engineer:      [openai_reasoning, claude_senior]
+    reasoning_specialist: [openai_reasoning, claude_senior]
+    principal_architect:  [openai_reasoning, claude_architect]
+  grok:
+    worker_fast:          [claude_worker_fast, openai_worker_balanced]
+    worker_balanced:      [claude_worker_balanced, openai_worker_balanced]
+    senior_engineer:      [claude_senior, openai_reasoning]
+    reasoning_specialist: [openai_reasoning, claude_senior]
+    principal_architect:  [claude_architect, claude_senior]
+
+# Compensations that apply when a fallback lands on a weaker or same-family
+# model. The resolver records these; it does not silently absorb them.
+# Every name here must be one `_compensations()` can actually emit — a
+# compensation the config declares and no branch produces is inert policy that
+# reads as active, and `test_d14_every_declared_compensation_can_actually_be_emitted`
+# fails if one appears.
+#
+# Round 9 removed `cross_family_reviewer_lost: set_cross_family_review_false`.
+# It had no branch and never needed one: `cross_family_review` is computed from
+# the families of the models that were actually resolved, so losing a
+# cross-family reviewer already turns it false without anyone setting it. A
+# compensation for something that happens by itself is a record of a decision
+# that was never made.
+fallback_compensations:
+  reasoning_specialist_to_same_family: raise_effort_one_level
+  principal_architect_to_senior:       raise_effort_to_MAX_and_add_second_review
+
+# ---------------------------------------------------------------------------
+# Verification ledger
+# ---------------------------------------------------------------------------
+#
+# Distinguishing "verified" from "assumed" is what stops the next session from
+# building on sand. Do not promote a row without running the probe.
+
+verification_ledger:
+  probed_on: 2026-08-20
+  entries:
+    - item: "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
+      status: verified
+      probed_on: 2026-08-11
+      evidence: "claude -p --model <id> round-trip returned OK for all four"
+
+    - item: "claude-fable-5-1 model id"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "p1-fable51-id"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-fable-5-1 --effort low --permission-mode plan --strict-mcp-config --output-format json"
+      evidence: >
+        Probed FROM a darwin grok host under dispatch_agent.py (transport
+        grok.to_claude): claude -p --model claude-fable-5-1 round-trip
+        SUCCEEDED; stdout modelUsage keys == ["claude-fable-5-1"], result
+        "OK". Model ids are verified provider-wide (G4): id resolution does
+        not depend on the parent process. claude-fable-5 (now
+        claude_architect_retired) still resolves and is NOT auto-upgraded
+        server-side (2026-09-02 Claude Code host probe). Cache-read on 5.1 is
+        $0.25/MTok (Claude Code cost calculator reconciles: 71,822 read x
+        0.25 + 8,748 write x 20 = $0.193).
+
+    - item: "Fable 5.1 provider-side model substitution (refusal classifier)"
+      status: verified
+      probed_on: "2026-09-02"
+      evidence: >
+        Vendor documentation (not an execution probe): Fable 5.1 keeps the
+        safety classifier (HTTP 200, stop_reason "refusal", stop_details
+        category). On the raw API a server-side `fallbacks` parameter can
+        reroute a refused request to another Claude model; whether the
+        `claude -p` harness enables that is not probed here. Implication is
+        unchanged from the Fable 5 entry: under security_sensitive the
+        identity of a claude_architect seat is declared_only, disclosed per
+        route by served_model_caveats.
+
+    - item: "transports.grok.to_claude.mechanism (--strict-mcp-config recipe)"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "p3-fable51-reviewer"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --strict-mcp-config"
+      probes:
+        - { attempt_id: "p3-fable51-reviewer", argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --strict-mcp-config", outcome: SUCCEEDED }
+        - { attempt_id: "p2a-strict", argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --strict-mcp-config --output-format json", outcome: SUCCEEDED }
+        - { attempt_id: "p2b-baseline", argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --output-format json", outcome: SUCCEEDED, vouches_for_recipe: false }
+        - { attempt_id: "p1-fable51-id", argv: "claude -p --model claude-fable-5-1 --effort low --permission-mode plan --strict-mcp-config --output-format json", outcome: SUCCEEDED }
+        - { attempt_id: "d12-baseline-json", argv: "claude -p --output-format json --model claude-haiku-4-5 --effort low --permission-mode plan --tools \"\"", outcome: SUCCEEDED, vouches_for_recipe: false }
+        - { attempt_id: "d12-strict-json", argv: "claude -p --output-format json --model claude-haiku-4-5 --effort low --permission-mode plan --tools \"\" --strict-mcp-config", outcome: SUCCEEDED }
+      evidence: >
+        Probed FROM a darwin grok host (grok 1.0.13) under dispatch_agent.py,
+        transport grok.to_claude. p2a-strict vs p2b-baseline (haiku, same
+        prompt, same day): context tokens 60106 vs 66727 (cumulative over the
+        turns; gap 6621): no MCP schema in this environment; token ships as
+        harmless (fail-open). p3-fable51-reviewer: read-only reviewer
+        seat (claude-fable-5-1 @ high, --output-schema review) SUCCEEDED,
+        schema_valid true. p1-fable51-id: id round-trip SUCCEEDED. p5-strict-worker
+        (acceptEdits) wrote MADE-19 but via the Write tool's inode replace
+        (artifact_identity_replaced); the retry asked for Bash which
+        acceptEdits does not auto-approve (artifact_missing). Workers lose
+        user-global MCP servers under this recipe; a caller that needs one
+        adds --mcp-config <file> immediately after -p (a variadic flag
+        placed last swallows the positional prompt) and that call is a
+        variant this row does not vouch for.
+        D-12 (2026-09-02, same grok host, unsandboxed, 12 user-global MCP
+        connectors handshaking): d12-baseline-json (no token; listed, not
+        vouching) vs d12-strict-json (token) on one identical prompt --
+        first-turn input 64,012 vs 13,490 tokens, cost $0.1297 vs $0.0289.
+        That is ~80%, the same order as the Claude Code host. The EARLIER
+        ~10% result (p2a/p2b above) WAS NOT REPRODUCED by this pair, and its
+        original cause remains unresolved: the two runs differ in whether the
+        user-global connectors handshook, which is a plausible explanation
+        and not a measured one. Read the flag's saving as host-dependent with
+        one reproduced high number and one unexplained low one. Receipts:
+        docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/ and
+        docs/design/reviews/2026-09-02-grok-host-carryovers/probes/d12/.
+
+    - item: "transports.grok.to_claude.mechanism_reviewer"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "d8-grok-claude-reviewer"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config"
+      probes:
+        - { attempt_id: "d8-grok-claude-reviewer", argv: "claude -p --model claude-fable-5-1 --effort high --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config", outcome: SUCCEEDED }
+      evidence: >
+        Probed FROM a darwin grok host (grok 1.0.13) under dispatch_agent.py,
+        transport grok.to_claude, seat reviewer, --output-schema review.
+        Receipt d8-grok-claude-reviewer: state SUCCEEDED, exit_status 0,
+        schema_valid true, verdict PASS_WITH_CHANGES, verdict_recovered
+        false, termination_confirmed true. Child argv is the shipped
+        reviewer recipe: --permission-mode plan --allowedTools
+        Read,Glob,Grep,LS closed by --strict-mcp-config. The live child took
+        its prompt on STDIN and never executed the shipped string's trailing
+        positional "<prompt>" -- the receipt's argv ends at
+        --strict-mcp-config. So the claim that the closing token keeps the
+        variadic list from swallowing that positional is an inference from
+        claude's CLI argument semantics, documented here as such, and NOT
+        something this receipt proves. cli_version likewise comes from a host
+        preflight, not from the receipt: host_cli_version is null and
+        observed_model_source is "unavailable". Receipts:
+        docs/design/reviews/2026-09-02-grok-host-carryovers/probes/d8/.
+
+    - item: "Headless grok host authorization for the dispatch supervisor (D-14)"
+      status: verified
+      probed_on: "2026-09-02"
+      evidence: >
+        grok 1.0.13 on Darwin 25.6.0, nested headless `grok -p` turns, one
+        variable changed per probe, command fixed at python3 -c 'print("PY-OK")'
+        unless noted. h2 (acceptEdits): permission_resolved decision=cancelled,
+        turn_ended cancellation_category=permission_cancelled. h6 (dontAsk):
+        cancelled the same way -- dontAsk is documented as deny-and-continue
+        but a headless ask it cannot show is a cancel. h3
+        (bypassPermissions): decision=allow, stopReason end_turn, exit 0. h4
+        (auto): decision=allow, end_turn, exit 0. h8 (acceptEdits plus
+        --allow "Bash(python3)"): decision=allow, end_turn, exit 0. So the
+        gate is command shape, not mode alone, and bypassPermissions is one
+        of three modes that clear it, not the only one. Controls: h1 (bare
+        echo, acceptEdits) was allowed, which is why it is not a valid
+        control for python3; h7 (python, acceptEdits) was allowed by the
+        host's Bash(python) allow rule and then exited 127, so the allow-list
+        prefix does not reach python3; h5 (acceptEdits plus --sandbox
+        workspace) never started -- grok refused to run rather than apply a
+        profile it could not register.
+        ACCEPTANCE, attempt acceptance/d14-supervisor-path (the directory is
+        part of the citation: an earlier attempt of the same id sits at
+        probes/d14-supervisor-path.json and is FAILED -- the outer host was
+        sandboxed there and the child could not read the keychain. A reader
+        chasing the bare id meets the failing one first): the full supervisor
+        spawned a
+        claude child (claude-haiku-4-5 @ low, --permission-mode acceptEdits
+        --strict-mcp-config) from a grok turn and graded state SUCCEEDED,
+        exit_status 0, schema_valid true, termination_confirmed true. What
+        that receipt proves is the CHILD's success and nothing about the
+        outer host: the effective permission mode of a grok turn is not
+        observable anywhere the receipt can read, so which mode the
+        controller ran under is declared, not measured. It also proves no
+        containment. child_cwd was /private/tmp/d14-supervisor-made-unsandboxed
+        -- a throwaway directory, not a worktree -- and
+        require_single_linked_cwd was false, so the pre-spawn single-link
+        audit never ran. Wrapping the outer host in the built-in workspace
+        sandbox separately blocked the child's keychain (`Not logged in`,
+        without --bare). This row is a host-launch record; it authorizes no
+        transport and asserts no isolation. Receipts:
+        docs/design/reviews/2026-09-02-grok-host-carryovers/probes/
+        (h1-h8, acceptance/, d14-outer-debug.log; local, gitignored).
+
+    - item: "claude-haiku-4-5-20251001 and claude-haiku-4-5 are two identities, not one"
+      status: verified
+      probed_on: 2026-09-02
+      cli_version: "2.1.258 (Claude Code)"
+      evidence: >
+        Both resolve, and they serve different things: claude -p --model
+        claude-haiku-4-5-20251001 reports modelUsage
+        ["claude-haiku-4-5-20251001"], while --model claude-haiku-4-5 reports
+        ["claude-haiku-4-5"]. The dated id is NOT normalised to the undated one,
+        so the two are not interchangeable in a receipt's served_models.
+        Recorded because the 2026-09-02 design carried an item (D-1) proposing
+        to drop the date suffix on the premise that serving already normalised
+        it -- that premise is false, and the item is closed as won't-do. The
+        registry keeps the dated id: it is the more specific pin, and every
+        per-model fact in this file (price, capability_tier, effort ceiling,
+        served_model_caveats) is attached to a concrete model, which is the same
+        reason a family alias is never registered.
+
+    - item: "claude-print-json-v1 envelope shape (dispatch_agent --output-envelope)"
+      status: verified
+      probed_on: 2026-09-02
+      cli_version: "2.1.258 (Claude Code)"
+      attempt_id: p1-fable51-id
+      argv: "claude -p --model claude-fable-5-1 --effort low --permission-mode plan --strict-mcp-config --output-format json"
+      evidence: >
+        The supervisor's second envelope format hard-codes a document shape, so
+        the shape is recorded where a later build can be checked against it.
+        Observed top-level keys on the retained capture (probes/
+        p1-fable51-id.stdout, and three more in the same directory):
+        type="result", subtype="success", is_error=false,
+        stop_reason="end_turn", result, session_id, num_turns, usage,
+        modelUsage, total_cost_usd, plus timing fields. The grader reads
+        stop_reason / result / subtype and requires type=result,
+        subtype=success and is_error=false; a build that stops emitting
+        stop_reason fails closed as envelope_stop_reason:<absent> rather than
+        passing on a null. grok documents were re-read at the same time: all 44
+        retained captures carry `usage` (input_tokens,
+        cache_read_input_tokens, cache_creation_input_tokens, output_tokens,
+        reasoning_tokens, total_tokens), which corrects a 1.11.0 draft claim
+        that the grok format carried none.
+
+    - item: "Content certification cannot replace the artifact identity pin (won't-do)"
+      status: verified
+      probed_on: 2026-09-02
+      evidence: >
+        Designed, implemented, reviewed by two independent seats and withdrawn.
+        Recorded so the next attempt starts from the measurement rather than
+        the idea. The proposal was --certify-by-content: grade a required
+        artifact by its declared digest instead of the inode pinned pre-spawn,
+        for a seat whose file tools replace the inode (a Claude seat does).
+        WHY IT FAILS. The pin is not only an authenticity control; it is what
+        refuses the laundering sequence in adapters.md "Artifact paths", and
+        that sequence leaves a fresh single-linked file and no trace, so no
+        post-hoc check -- a digest comparison included -- can recover it. The
+        implementation therefore tried to move containment earlier: refuse to
+        start without the path's declared digest, --child-cwd with
+        --require-single-linked-cwd, and --artifact-root inside that tree, on
+        the argument that a child which cannot create a hard link, in a tree
+        that contained none at spawn, has no sequence available. Both halves of
+        that argument are wrong. The first is ASSUMED, not enforced: this
+        supervisor never parses argv by design, so a child with a shell or an
+        MCP tool reaches the weakened path exactly as the documented seat does.
+        The second is bypassed by a variant needing no link at all -- write the
+        expected bytes to an outside path, rename it onto the artifact path;
+        the pre-spawn single-link audit says nothing about it, and under the
+        pin it graded artifact_identity_replaced. The cross-device check that
+        would close both (refuse a --child-cwd on the same st_dev as / or the
+        home directory, so link() and rename() fail EXDEV) is not practical on
+        the measured platform: on Darwin 25.6.0 /, ~, /tmp, /private/tmp, the
+        repo cwd and a fresh mktemp -d all report st_dev 16777229, and a rename
+        from ~ into a mktemp directory succeeds. It would demand a dedicated
+        volume per attempt. STANDING GUIDANCE, unchanged: certify a Claude
+        seat's output by a caller-side content hash recorded beside the
+        receipt, and do not declare --require-artifact for such a seat.
+
+    - item: "Claude child write axis (transports.codex.to_claude.write_verified, transports.grok.to_claude.write_verified)"
+      status: verified
+      probed_on: 2026-09-02
+      host: "Claude Code 2.1.258 on Darwin 25.6.0 arm64 (argv-level; the child is
+        what was measured, and a child's file tools do not depend on which host
+        spawned it)"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode acceptEdits --strict-mcp-config"
+      receipts: "docs/design/reviews/2026-09-02-fable51-bridge-cost/probes/ (local, gitignored)"
+      probes:
+        - { attempt_id: "p5-strict-worker", outcome: INVALID_OUTPUT, note: "artifact_identity_replaced; no digest recorded" }
+        - { attempt_id: "p5-strict-worker-2", outcome: INVALID_OUTPUT, note: "retry asked for the terminal tool; acceptEdits does not auto-approve it; artifact_missing" }
+      evidence: >
+        WRITE AXIS -- verified, by content, without a receipt. Two direct runs
+        of the argv above against a pre-existing single-linked file (one with
+        --strict-mcp-config, one without) each left the file containing exactly
+        MADE-19. No dispatch receipt carries that: both runs were plain shell
+        invocations, and the two supervised attempts listed under `probes`
+        graded INVALID_OUTPUT for the reason below. Two attempts to rerun the
+        supervised probe FROM a grok host on 2026-09-02 both ended
+        stopReason: cancelled before the supervisor was spawned (a headless
+        grok turn cancels on a permission prompt it cannot show), so no
+        grok-host write receipt exists. What this row attests is therefore the
+        CHILD's write axis, which is what write_verified asks about: whether
+        this direction may seat write work.
+        CERTIFICATION -- the same two runs installed that content on a NEW
+        inode (299749070 -> 299749158 with the token; 299749197 -> 299749738
+        without), so the Claude file-writing path replaces rather than
+        truncates in place, and that is not a property of --strict-mcp-config.
+        Only the tool that prompt drove was exercised. dispatch_agent pins one
+        inode before spawn, so such an attempt grades INVALID_OUTPUT
+        artifact_identity_replaced with NO digest recorded -- the receipt
+        proves nothing about the content either way. The contrast is measured,
+        not assumed: the same prompt through codex exec -s workspace-write kept
+        its inode (see the OpenAI row), so the artifact contract is not broken
+        in general and write_verified is not withdrawn here. Callers certify a
+        Claude seat's output by a content hash recorded beside the receipt, and
+        a workflow that needs supervisor-certified artifacts does not seat a
+        Claude worker (references/adapters.md, "Dispatch contract").
+
+    - item: "OpenAI child write axis (transports.claude_code.to_openai.write_verified, transports.grok.to_openai.write_verified)"
+      status: verified
+      probed_on: 2026-09-02
+      host: "Claude Code 2.1.258 on Darwin 25.6.0 arm64 (argv-level, as above)"
+      cli_version: "codex-cli 0.152.0"
+      argv: "codex exec -m gpt-5.6-luna -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check \"<prompt>\""
+      evidence: >
+        A codex exec seat under -s workspace-write, asked to overwrite a
+        pre-existing single-linked file, left it containing exactly MADE-19 and
+        kept the SAME inode (299853529 before and after) -- it truncates in
+        place. So this child both writes and can be certified by
+        --require-artifact, which is the control that shows the Claude row's
+        limitation is a property of that child's tools rather than of the
+        artifact contract. A plain shell run, no receipt; recorded for the
+        write_verified rule in Policy._validate_write_seats.
+
+    - item: "transports.codex.to_claude.mechanism (--strict-mcp-config recipe)"
+      status: verified
+      probed_on: "2026-09-02"
+      attempt_id: "p4-codex-claude"
+      cli_version: "2.1.258 (Claude Code)"
+      argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --strict-mcp-config --output-format json"
+      probes:
+        - { attempt_id: "p4-codex-claude", argv: "claude -p --model claude-haiku-4-5 --effort low --permission-mode plan --strict-mcp-config --output-format json", outcome: SUCCEEDED }
+      evidence: >
+        Probed FROM a Codex host: `codex exec -s workspace-write` (network
+        enabled) ran dispatch_agent.py itself, which spawned the claude
+        child; the receipt's argv equals the instructed child argv token for
+        token and stdout result was "---". Sandbox was workspace-write with
+        network_access=true. The Codex host here was a codex exec turn nested
+        under a grok session — PATH, keychain and sandbox are that turn's,
+        not an interactive Codex session's.
+
+    - item: "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
+      status: verified
+      probed_on: 2026-08-11
+      evidence: "codex exec -m <id> round-trip returned OK for all three"
+
+    - item: "Codex reasoning-effort values"
+      status: verified
+      probed_on: 2026-08-11
+      evidence: >
+        none/low/medium/high/xhigh/max accepted; `minimal` rejected with an
+        API error. Probed via codex exec -c model_reasoning_effort=<v>.
+
+    - item: "Claude Code effort values"
+      status: verified
+      probed_on: 2026-08-11
+      evidence: "low/medium/high/xhigh/max accepted by the subagent interface"
+
+    - item: "Claude Code -> OpenAI transport (codex exec)"
+      status: verified
+      probed_on: 2026-08-11
+      evidence: "trivial round-trip succeeded; runs as a separate process"
+
+    - item: "Codex -> Claude transport (claude -p)"
+      status: verified
+      probed_on: 2026-08-11
+      evidence: "trivial round-trip succeeded; runs as a separate process"
+
+    - item: "Codex native subagent isolation"
+      status: flag_verified_semantics_unverified
+      probed_on: 2026-08-11
+      evidence: >
+        `codex features list` reports multi_agent as stable/true. Whether its
+        context isolation matches the Claude Agent tool's has NOT been tested.
+        Until it is, treat the first dual review on Codex as degraded unless
+        both reviewers run as separate processes.
+
+    - item: "Claude Code subagent context isolation"
+      status: assumed
+      probed_on: 2026-08-11
+      evidence: >
+        Documented behaviour of the Agent tool; not empirically probed here.
+        Confirm before claiming independent review.
+
+    - item: "worker_fast binding: gpt-5.6-luna over claude-haiku-4-5"
+      status: price_verified_quality_probed
+      probed_on: 2026-08-18
+      evidence: >
+        PRICE: verified from published rates — luna $0.20/$1.20 per MTok vs
+        haiku $1.00/$5.00, i.e. 5x cheaper input and 4.2x cheaper output.
+        Cached input $0.02 vs $0.10.
+        QUALITY: probed 2026-08-18 on a discriminating 446-node suite (see
+        the head-to-head entry below): haiku 442/446 vs luna 436/446 —
+        haiku marginally ahead (+1.3pp), one attempt per model, each
+        model's failures tracing to two spec-edge root causes. The gap is
+        small, recoverable by the escalation ladder, and does not overturn
+        the 5x price advantage for the volume seat; latency favours luna
+        (mean 19.6s vs 91.2s per task in the same harness). The binding
+        continues to rest on price, now with the measured quality cost on
+        record. The 2026-08-11 5-task probe (100% for both, no
+        discrimination) is superseded by this one.
+
+    - item: "grok-4.6 model id"
+      status: verified
+      probed_on: 2026-08-14
+      evidence: "grok -p -m grok-4.6 round-trip returned OK"
+
+    - item: "Grok reasoning-effort values"
+      status: verified
+      probed_on: 2026-08-14
+      evidence: >
+        low/medium/high/xhigh accepted; minimal/none/max rejected. grok-4.5
+        also rejects xhigh, which contradicts the published docs (those say
+        xhigh is treated as high). This ledger follows the CLI.
+
+    - item: "Claude Code -> xAI transport (grok -p)"
+      status: verified
+      probed_on: 2026-08-14
+      evidence: "trivial round-trip succeeded; runs as a separate process"
+
+    - item: "Grok reviewer seat recipe (transports.*.to_xai.mechanism_reviewer)"
+      status: verified
+      probed_on: 2026-08-25
+      evidence: >
+        grok 1.0.5 (5115b46bc909) on darwin, Claude Code host. P-3: the
+        --tools read_file,list_dir,grep whitelist is sufficient for a review
+        prompt (list + read + verdict, no missing-tool complaint). P-4: the
+        official spelling --disallowed-tools run_terminal_cmd DOES remove the
+        terminal tool (the 2026-08-25 design's probe D failure was a
+        misspelling, not an ineffective denylist) — the whitelist stays the
+        primary recipe and the denylist an alternative. P-5: the full recipe
+        including --deny MCPTool and --disable-web-search completes with a
+        verdict. P-10: adding --sandbox read-only still completes, and the
+        session summary reports sandbox_profile: read-only, so it ships.
+        All four turns ended stopReason: end_turn.
+
+    - item: "Grok maker seat recipe (transports.claude_code.to_xai.mechanism_maker)"
+      status: verified
+      probed_on: 2026-09-01
+      evidence: >
+        grok 1.0.13 (5e9a58528b76) on Darwin 25.6.0 arm64, 2026-09-01.
+        Argv-level escape-denial still FAILS: a hard link inside cwd
+        overwrites the outside inode under a custom profile that denies
+        the outside path (S6: same inode, digest changed, 0 FsViolation,
+        end_turn). Built-in workspace and strict failed the same way on
+        1.0.5 and 1.0.13. Supervisor-side prevention is what ships:
+        (A) pre-spawn tree walk of --child-cwd refuses any regular file
+        with st_nlink > 1 (S9 would have refused S6); --tools whitelist
+        without run_terminal_cmd cannot create a new hard link (S8:
+        Write/StrReplace create a regular file only; victim unchanged).
+        (C) per-attempt GROK_HOME: workspace write grants follow
+        $GROK_HOME, not ~/.grok (S4: FsViolation + EPERM on a real-home
+        canary even with an explicit Write allow; ProfileApplied
+        read_write_paths named the attempt home). Empty GROK_HOME does
+        not log in (S1); copying auth.json onto a new inode logs in
+        (S2 mode 0444 rewritten by grok to 0600 on the copy, S3 mode
+        0600; source inode untouched). summary.grok_home equals the
+        attempt home. (D) unknown custom --sandbox refuses to start
+        (S0 fail-closed). ProfileApplied.enforced=true is in the
+        attempt-home sandbox-events.jsonl. --deny Write/Edit of that
+        events file blocks model forgery while the grok logger still
+        appends the genuine ProfileApplied (S11: BLOCKED Denied by
+        permission policy; same inode; no forged bytes). Write axis
+        still holds under the shipped argv (S7: made.txt MADE-I19,
+        end_turn, tools whitelist + custom profile + GROK_HOME).
+        Dispatch of this seat MUST use --seat-profile grok-maker-v1
+        (child-cwd audit, grok-home, auth seed, expect-sandbox-enforced,
+        envelope, session evidence). claude_code.to_xai write_verified
+        is true; codex.to_xai stays false (direction unprobed from a
+        Codex host). Machine- and platform-specific (darwin/arm64).
+
+    - item: "Grok headless prompt delivery through the supervisor"
+      status: verified
+      probed_on: 2026-08-25
+      evidence: >
+        P-8, two passes, grok 1.0.5. dispatch_agent.py run --prompt-file
+        <regular file> -- grok ... --prompt-file /dev/stdin delivered the
+        prompt and returned stopReason: end_turn. This closes the gap left by
+        probe F, which used a PIPE stdin while the production path is a
+        regular-file fd ([UG-14] states a piped stdin is not read as a
+        prompt). The second pass, with --output-envelope and
+        --session-evidence declared, was graded SUCCEEDED with
+        served_models: ["grok-4.6-build"] and the session id cross-proved
+        between stdout and summary.json.
+
+    - item: "claude -p --effort flag"
+      status: verified
+      probed_on: 2026-08-14
+      evidence: "claude --help lists --effort <low|medium|high|xhigh|max>"
+
+    - item: "Codex -> xAI transport"
+      status: assumed
+      probed_on: 2026-08-14
+      evidence: "same grok -p mechanism as the verified Claude Code -> xAI edge; not probed from Codex"
+
+    - item: "grok -> Claude transport"
+      status: verified
+      probed_on: 2026-08-29
+      evidence: >
+        Probed FROM a grok host: grok 1.0.13 (5e9a58528b76) on darwin,
+        claude CLI 2.1.251 (Claude Code), 2026-08-29 (issue #16). Trivial
+        round-trip via supervisor stdin (haiku at low, --permission-mode
+        plan; attempt g16-r01-rt-claude) SUCCEEDED. Positional "<prompt>"
+        slot (g16-r01-rt-claude-pos) also SUCCEEDED. HIGH-band read-only
+        reviewer seat (claude-fable-5, the post-self-review-deconflict
+        seat from the archived route.json, at high, --output-schema
+        review, --permission-mode plan, no --bare; attempt
+        g16-r01-rev-claude) SUCCEEDED with a schema-valid verdict. Ran
+        concurrently with the grok -> OpenAI reviewer (attempt
+        g16-r01-rev-openai); both receipts observed RUNNING with distinct
+        pids; the pair passed verify-evidence --expect-count 2 with
+        distinct attempt ids and seats, fingerprint- and model-bound.
+        attempt_id is the isolation-evidence id: codex exec exposes no
+        caller-visible session id, so attempt_id is the identifier both
+        legs can carry. Separate process by construction. Host- and
+        platform-specific (darwin) — re-probe from any other grok host
+        platform. Receipts: docs/design/reviews/
+        2026-08-29-issue-16-grok-host-verification/ (gitignored local
+        archive).
+
+    - item: "grok -> OpenAI transport"
+      status: verified
+      probed_on: 2026-08-29
+      evidence: >
+        Probed FROM a grok host: grok 1.0.13 (5e9a58528b76) on darwin,
+        codex-cli 0.150.1, 2026-08-29 (issue #16). Trivial round-trip
+        (luna at low, -s read-only, prompt via stdin `-`; attempt
+        g16-r01-rt-openai) SUCCEEDED. HIGH-band read-only reviewer seat
+        (gpt-5.6-sol at high, --output-schema review, -s read-only;
+        attempt g16-r01-rev-openai) SUCCEEDED with a schema-valid
+        verdict. Ran concurrently with the grok -> Claude reviewer
+        (attempt g16-r01-rev-claude); both receipts observed RUNNING with
+        distinct pids; the pair passed verify-evidence --expect-count 2
+        with distinct attempt ids and seats, fingerprint- and
+        model-bound. attempt_id is the isolation-evidence id. Separate
+        process by construction. Host- and platform-specific (darwin) —
+        re-probe from any other grok host platform. Receipts:
+        docs/design/reviews/2026-08-29-issue-16-grok-host-verification/
+        (gitignored local archive).
+
+    - item: "grok native subagent isolation"
+      status: flag_verified_semantics_unverified
+      probed_on: 2026-08-14
+      evidence: >
+        grok exposes --agents / --no-subagents. Whether those isolate context
+        the way independent review requires has NOT been tested. Until it is,
+        treat a grok-native dual review as degraded unless both reviewers run
+        as separate processes.
+
+    - item: "grok-4.6 long-context pricing tier"
+      status: verified
+      probed_on: 2026-08-18
+      evidence: >
+        Published rates: at or above 200K input tokens xAI bills the WHOLE
+        request at $4.00/$12.00 per MTok (cached $1.00), double the standard
+        tier, and grok-4.6's window ends at 500K. Claude 4.6+ models bill their
+        full 1M window at flat standard rates. Sourced from published pricing
+        summaries, not from a probe of a >200K request — the tier boundary
+        itself was not exercised here.
+
+    - item: "worker_balanced binding: grok-4.6 over claude-sonnet-5"
+      status: price_verified_quality_probed
+      probed_on: 2026-08-20
+      evidence: >
+        PRICE: verified from published rates — grok-4.6 $2.00/$6.00 per MTok
+        vs sonnet-5 $2.00/$10.00. Anthropic made Sonnet 5's $2/$10
+        introductory rate permanent on 2026-08-10; the previous $3.00/$15.00
+        figure was the scheduled post-intro price and is now wrong. Input is
+        now equal; output remains cheaper on grok-4.6. QUALITY: probed
+        2026-08-18 (see the head-to-head entry below): grok-4.6 446/446 vs
+        sonnet-5 445/446 — tied at the suite's ceiling, one attempt per
+        model. Repeated 2026-08-20 (6 tasks × 3 reps; see the
+        worker_balanced repeat eval entry): grok 15/18 vs sonnet 15/18
+        clean-pass, tied; cfggraph 0/3 both on the same
+        test_absolute_entry miss; sonnet SUCCEEDED p50 lower in all
+        three types. At probe time the latency-sensitive routing
+        rule was a design-session candidate, not shipped; 1.3.0
+        ships it as `prefer_alt_when_flags`. No quality regression
+        detected against the claimed frontier tier; a single suite at
+        ceiling is not grounds to raise capability_tier, which stays 1
+        (raising it to 2 would move MEDIUM's reviewer floor — a band
+        change). The output-price advantage holds BELOW 200K input tokens
+        only; see the long-context tier entry above, which is why
+        `worker_balanced_selection.prefer_alt_when_flags` exists.
+
+    - item: "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
+      status: verified
+      probed_on: 2026-08-18
+      evidence: >
+        8 spec-dense stdlib tasks (glob, jsonptr, semver, intervals,
+        csvmini, wrap, debugfix, tokenbucket), each graded solely by a
+        hidden pytest suite validated 100% against an independently written
+        reference; 446 nodes total, one attempt per model, dispatched over
+        the same CLI transports the router uses (tier-0 pair at effort
+        medium, tier-1 pair at high). Scores: grok-4.6 446/446, sonnet-5
+        445/446, haiku-4-5 442/446, luna 436/446. Unlike the superseded
+        2026-08-11 set, 3 of 8 tasks discriminated, and the tier-1 pair
+        outscored the tier-0 pair — consistent with the registry's
+        capability_tier ordering. Failure modes: luna missed the long-word
+        hard-break rule (wrap, 7 nodes) and trailing-comma empty fields
+        (csvmini, 3); haiku accepted a trailing newline and a non-ASCII
+        digit in semver (2) and split on tab in wrap (2); sonnet-5 accepted
+        a non-ASCII digit in semver (1). Mean per-task wall time: luna
+        19.6s, sonnet-5 38.6s, haiku 91.2s, grok-4.6 103.2s. Bindings and
+        every capability_tier are unchanged by this probe.
+
+    - item: "worker_balanced repeat eval"
+      status: verified
+      probed_on: 2026-08-20
+      evidence: >
+        Repeat head-to-head of the worker_balanced pair (grok-4.6 @ high vs
+        claude-sonnet-5 @ high), 6 spec-dense multi-file tasks × 3 reps = 36
+        dispatches under dispatch_agent.py (deadline 540s, grace 15s). Task
+        types: multi-file implementation (kvtxn, cfggraph), debugging
+        (journal, jobsched), tool-heavy refactor (splitpkg, ports). Grading:
+        hidden pytest, task-level clean pass, suites admitted only after
+        reference 100%. Quality: both models 15/18 (kvtxn/journal/jobsched/
+        splitpkg/ports 3/3 each; cfggraph 0/3 each — all six attempts failed
+        the same test, test_extends.py::test_absolute_entry). SUCCEEDED wall
+        p50 (TERMINATION_UNCONFIRMED excluded): sonnet 122s (n=17) vs grok
+        150s (n=13). Per type sonnet p50 < grok p50 (multi-file 223 vs 368,
+        debugging 102 vs 143, refactor 104 vs 139). Timeout rate 3/36 (all
+        grok cfggraph). Three TERMINATION_UNCONFIRMED receipts from the host
+        bash 10-minute cap killing the supervisor; workdirs still graded.
+        Bindings and capability_tier unchanged. Latency-rule verdict
+        at probe time: 도입 제안 (design session for latency_sensitive
+        → sonnet; not implemented in this probe). Shipped in 1.3.0 as
+        `prefer_alt_when_flags`. Full writeup is the local research note
+        docs/research/2026-08-20-b1-balanced-seat-repeat-eval.md.
+
+        User-approved long-context follow-up (same transports, 540s
+        deadline, high effort; haystack generated at prepare; needle not
+        in SPEC): kvtxn180 TOKEN_ESTIMATE 180098 and journal230
+        TOKEN_ESTIMATE 230154, 1 rep × 2 models. All four SUCCEEDED
+        clean-pass — kvtxn180 sonnet 74/0 wall 343s, grok 74/0 wall 359s;
+        journal230 sonnet 71/0 wall 168s, grok 71/0 wall 195s. Quality
+        tied 2/2; sonnet faster on both walls. journal230 sits above the
+        xAI 200K whole-request price boundary; both models still
+        clean-passed. n=1 per cell; not mixed into the latency-rule
+        boolean. Verdict remains 도입 제안.
+
+    - item: "OpenAI GPT-5.6 long-context pricing tier (272K, exclusive)"
+      status: verified
+      probed_on: 2026-08-19
+      evidence: >
+        Published rates: an input STRICTLY ABOVE 272K tokens re-bills the
+        WHOLE request at 2x input / 1.5x output / 2x cache-read for luna,
+        terra and sol (absolute rates recorded per model). Verified against
+        the official OpenAI model pages on 2026-08-19; the boundary itself
+        was not exercised by a probe. Distinct fact, same number: the codex
+        CLI's DEFAULT context window is also 272,000 (x95% = 258,400
+        effective), but that is a per-user harness setting
+        (~/.codex/config.toml model_context_window — this environment runs
+        1,000,000 -> clamped min(1M, 872K) x95% = 828,400), NOT the billing
+        boundary. A default-config Codex session cannot even reach the
+        billing tier. Effective windows are deployment-arm properties and
+        are deliberately NOT recorded in this registry.
+
+    - item: "Fable 5 provider-side model substitution (security/biology)"
+      status: verified
+      probed_on: 2026-08-19
+      evidence: >
+        Vendor documentation (not an execution probe): Fable 5 requests can
+        be substituted to another Claude model via the refusal-fallback
+        mechanism — cybersecurity to Opus 4.8, biology to Opus 5. The
+        substitution is conditional on the calling surface: default on
+        claude.ai, opt-in fallback configuration on the raw API (without it
+        a refused request stops), and harness-dependent for this router's
+        `claude -p` transport. Implication: under security_sensitive the
+        identity of a claude_architect seat is declared_only, and the
+        substitute (Opus 4.8) may not be in this registry.
+        `served_model_caveats` on claude_architect discloses this per route.
