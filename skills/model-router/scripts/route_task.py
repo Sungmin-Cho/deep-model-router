@@ -1279,7 +1279,7 @@ def select_worker(task: Task, band: str, execution_band: str, policy: Policy,
 # Stage 5 — effort
 # --------------------------------------------------------------------------
 
-def select_effort(task: Task, band: str, policy: Policy) -> tuple[str, list[str]]:
+def select_effort(task: Task, band: str, execution_band: str, policy: Policy) -> tuple[str, list[str]]:
     cfg = policy.cfg
     notes: list[str] = []
     table = cfg["effort_by_work"]
@@ -1304,6 +1304,8 @@ def select_effort(task: Task, band: str, policy: Policy) -> tuple[str, list[str]
         (band == "HIGH", floors["band_HIGH"], "band HIGH"),
         (band == "CRITICAL", floors["band_CRITICAL"], "band CRITICAL"),
         (bool(task.critical_flags(policy)), floors["any_critical_domain"], "critical-domain flag"),
+        (execution_band == "HARD", floors["execution_HARD"], "execution band HARD"),
+        (execution_band == "VERY_HARD", floors["execution_VERY_HARD"], "execution band VERY_HARD"),
     ):
         if condition:
             raised = policy.effort_max(effort, floor)
@@ -1945,7 +1947,7 @@ def host_seat_comparisons(declared: dict | None, ask: dict,
 # Stage 8 — emit
 # --------------------------------------------------------------------------
 
-def _worker_effort_floor(task: Task, band: str, policy: Policy) -> tuple[str, str] | None:
+def _worker_effort_floor(task: Task, band: str, execution_band: str, policy: Policy) -> tuple[str, str] | None:
     """The strongest floor `select_effort` applied to the worker, as
     (rule name, level), or None when no floor applied.
 
@@ -1959,6 +1961,8 @@ def _worker_effort_floor(task: Task, band: str, policy: Policy) -> tuple[str, st
         (band == "HIGH", "band_HIGH"),
         (band == "CRITICAL", "band_CRITICAL"),
         (bool(task.critical_flags(policy)), "any_critical_domain"),
+        (execution_band == "HARD", "execution_HARD"),
+        (execution_band == "VERY_HARD", "execution_VERY_HARD"),
     ) if condition]
     return max(applied, key=lambda pair: policy.efforts.index(pair[1]), default=None)
 
@@ -2253,7 +2257,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         resolver.write_seat_role = worker
         if history_note:
             worker_notes.append(history_note)
-        effort, effort_notes = select_effort(task, band, policy)
+        effort, effort_notes = select_effort(task, band, pre.execution_band, policy)
         if lp.get("minimum_effort") is not None:
             asked = lp["minimum_effort"]
             if policy.efforts.index(asked) > policy.efforts.index(effort):
@@ -2380,7 +2384,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             worker_model = resolver.peek(worker, write=True)
             worker_effective = _clamp(policy, effort, worker_model)
             if worker_effective != effort:
-                floor = _worker_effort_floor(task, band, policy)
+                floor = _worker_effort_floor(task, band, pre.execution_band, policy)
                 broken = floor and policy.efforts.index(worker_effective) < policy.efforts.index(floor[1])
                 ceiling_records.append({
                     "role": worker, "model": worker_model,

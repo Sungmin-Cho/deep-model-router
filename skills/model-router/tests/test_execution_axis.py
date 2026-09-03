@@ -438,3 +438,56 @@ def test_t18_a_stronger_substitute_reviewer_passes():
 def test_t18_evaluation_order_is_the_table_order():
     cand = _plan_like(**{"review.band": "CRITICAL", "cross_family_review": False})
     assert _contract_violation(POLICY, cand, _plan_like()) == "review.band"
+
+
+# --- T4: each context flag moves the worker at the EASY/NORMAL boundary -------
+
+@pytest.mark.parametrize("flag", CTX)
+def test_t4_each_flag_crosses_the_boundary_and_moves_the_worker(flag):
+    base = r(task_class="IMPLEMENTATION", complexity=2, uncertainty=1)          # exec 8 EASY, risk 4 MEDIUM
+    with_flag = r(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, flags=[flag])
+    assert (base["execution_band"], base["selected_role"]) == ("EASY", "worker_fast")
+    assert (with_flag["execution_band"], with_flag["selected_role"]) == ("NORMAL", "worker_balanced")
+    assert (with_flag["risk_band"], with_flag["review"]["band"]) == (base["risk_band"], base["review"]["band"])
+
+
+# --- T5: execution effort floors --------------------------------------------
+
+def test_t5_hard_and_very_hard_floor_the_effort_and_say_so():
+    hard = r(task_class="MECHANICAL", complexity=3, uncertainty=2)               # exec 13 HARD, risk 7 MEDIUM
+    very = r(task_class="MECHANICAL", complexity=3, uncertainty=3)               # exec 15 VERY_HARD, risk 9 HIGH
+    assert hard["selected_effort"] == "HIGH"
+    assert [n for n in hard["notes"] if n.startswith("execution band HARD floored effort at HIGH")]
+    assert very["selected_effort"] == "VERY_HIGH"
+    assert sum(n.startswith("execution band VERY_HARD floored effort at VERY_HIGH") for n in very["notes"]) == 1
+    assert very["review"]["band"] == "CRITICAL"          # 0.75 < 0.80 promoted the review; note still once
+
+
+def test_t5_the_worker_floor_reporter_sees_the_execution_floor():
+    import route_task as rt
+    t = Task(task_class="MECHANICAL", complexity=3, uncertainty=3, blast_radius=0, reversibility=0)
+    assert rt._worker_effort_floor(t, "HIGH", "VERY_HARD", Policy.of(CFG)) == \
+        ("effort_floors.execution_VERY_HARD", "VERY_HIGH")
+    # The stronger floor wins when the band's is stronger [P2-opus-missing-3]; on a tie the
+    # first-listed rule (the band's) is reported, as `max` keeps the first maximum.
+    assert rt._worker_effort_floor(t, "CRITICAL", "HARD", Policy.of(CFG)) == \
+        ("effort_floors.band_CRITICAL", "VERY_HIGH")
+    assert rt._worker_effort_floor(t, "CRITICAL", "VERY_HARD", Policy.of(CFG)) == \
+        ("effort_floors.band_CRITICAL", "VERY_HIGH")
+
+
+def test_s3_treats_an_unresolvable_cell_as_tier_minus_one(monkeypatch):     # [P2-opus-missing-2]
+    import route_task as rt
+    policy = rt.Policy.of(CFG)
+    task = Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=0, blast_radius=0, reversibility=0)
+    task.validate(policy)
+    resolver = rt.Resolver(task, policy); resolver.worker_writes = True
+    real_peek = resolver.peek
+    # Execution cell unresolvable, legacy fine -> legacy kept (no candidate).
+    monkeypatch.setattr(resolver, "peek", lambda role, *, write=False: None if role == "worker_balanced" else real_peek(role, write=write))
+    cand, legacy = rt.select_worker(task, "LOW", "NORMAL", policy, resolver)
+    assert cand is legacy and legacy.role == "worker_fast"
+    # Both unresolvable -> legacy kept, and the existing SUPPLY_EXHAUSTED path owns the outcome.
+    monkeypatch.setattr(resolver, "peek", lambda role, *, write=False: None)
+    cand, legacy = rt.select_worker(task, "LOW", "NORMAL", policy, resolver)
+    assert cand is legacy

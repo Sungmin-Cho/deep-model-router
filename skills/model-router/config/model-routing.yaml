@@ -328,6 +328,8 @@ effort_floors:
   band_HIGH:            HIGH
   band_CRITICAL:        VERY_HIGH
   any_critical_domain:  HIGH
+  execution_HARD:       HIGH        # design 2026-09-03 DD-3: worker-independent, see T3(f)
+  execution_VERY_HARD:  VERY_HIGH
 
 # ---------------------------------------------------------------------------
 # Review policy — a function of BAND ONLY

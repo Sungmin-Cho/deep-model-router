@@ -530,6 +530,28 @@ def test_d6_every_declared_flag_has_an_effect_or_a_documented_role():
     assert inert == [], f"elevating flags with no observable effect: {inert}"
 
 
+def test_d6_every_context_flag_has_a_declared_observable_effect():
+    """Design 2026-09-03 §1.3: `unfamiliar_codebase` and `tool_heavy` were declared
+    context flags with no consumer and this file never looked at the group.
+    Each context flag now names the probe that shows its effect — on the
+    WORKER for the three execution-axis flags, not on a score the formula
+    moves by construction ([R3-opus-F13])."""
+    def balanced_model(flags):
+        return r(task_class="IMPLEMENTATION", complexity=2, uncertainty=2, blast_radius=1,
+                 flags=flags)["selected_model"]
+    probes = {
+        "large_context": lambda: balanced_model(["large_context"]) != balanced_model([]),
+        "latency_sensitive": lambda: balanced_model(["latency_sensitive"]) != balanced_model([]),
+        "long_horizon": lambda: r(task_class="ARCHITECTURE", flags=["long_horizon"])["selected_role"] == "principal_architect",
+    }
+    for flag in ("unfamiliar_codebase", "tool_heavy", "cross_service_change"):
+        probes[flag] = (lambda f=flag: r(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, flags=[f])["selected_role"]
+                        != r(task_class="IMPLEMENTATION", complexity=2, uncertainty=1)["selected_role"])
+    assert set(probes) == set(CFG["flags"]["context"]), "a context flag has no declared probe"
+    inert = [flag for flag, probe in probes.items() if not probe()]
+    assert inert == [], f"context flags with no observable effect: {inert}"
+
+
 def test_d6_conditional_flags_actually_fire_in_combination():
     for flag, spec in CFG.get("conditional_flags", {}).items():
         alone = r(task_class="MECHANICAL", flags=[flag])
