@@ -1003,9 +1003,18 @@ def _promote_above(floor: int, policy: Policy, resolver: "Resolver",
     return min(stronger, key=lambda r: (tier(r), policy.roles.index(r)), default=None)
 
 
+@dataclass(frozen=True)
+class WorkerChoice:
+    """One resolved worker selection: the role, the notes that selected it,
+    and whether the retry ladder ran out on the way (design DD-2, S4/S5)."""
+    role: str
+    notes: tuple[str, ...]
+    ceiling_exhausted: bool
+
+
 def select_worker(task: Task, band: str, policy: Policy,
-                  resolver: "Resolver") -> tuple[str, list[str], bool]:
-    """Returns (worker, notes, ceiling_exhausted)."""
+                  resolver: "Resolver") -> "WorkerChoice":
+    """Returns the resolved worker choice."""
     binding = resolver.binding
     cfg = policy.cfg
     notes: list[str] = []
@@ -1122,7 +1131,7 @@ def select_worker(task: Task, band: str, policy: Policy,
             notes.append(f"retry ladder exhausted: no usable model is stronger "
                          f"than capability tier {floor}")
 
-    return worker, notes, ceiling_exhausted
+    return WorkerChoice(worker, tuple(notes), ceiling_exhausted)
 
 
 # --------------------------------------------------------------------------
@@ -1888,6 +1897,27 @@ def _clamp(policy: Policy, effort: str, model: str | None) -> str:
                               policy.efforts.index(ceiling))]
 
 
+@dataclass(frozen=True)
+class _Prelude:
+    """Everything `route()` decides before the worker, handed to `_plan()`
+    read-only. Tuples, not lists: `_plan` may be called twice per route
+    (design DD-2 S6) and a shared list would be appended to twice."""
+    request_sha: str
+    policy_hash: str
+    lp: dict
+    local_unsat: bool
+    history_note: str | None
+    budget_spent: bool
+    seat_kind: str
+    seat_source: str
+    seat_downgraded: bool
+    risk_score: int
+    band: str
+    overrides: tuple[str, ...]
+    redundant_overrides: tuple[str, ...]
+    route_path: str | None
+
+
 def route(task: Task, cfg: dict | None = None) -> dict:
     cfg = cfg if cfg is not None else default_config()
     policy = Policy.of(cfg)
@@ -1940,834 +1970,867 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     band = band_from_score(risk_score, policy)
     band, overrides, redundant_overrides, route_path = apply_overrides(task, band, policy)
 
-    worker, worker_notes, ceiling_exhausted = select_worker(task, band, policy, resolver)
-    # Disclosed as a policy decision, in `notes`, not as scarcity in
-    # `fallbacks_applied` — and computed here, while `write_seat_role` is still
-    # unset, so the unfiltered peek still answers what the role BINDS to.
-    if seat_downgraded:
-        # Id-free, like the skip note: a terminal route withholds bindings.
-        worker_notes.append(
-            f"worker seat declared read_only against the {task.task_class} default; "
-            f"a seat with no write-capable recipe on {task.runtime} may be named")
-    if seat_kind == "write":
-        nominal, seated = resolver.peek(worker), resolver.peek(worker, write=True)
-        if nominal is not None and nominal != seated:
-            # Families, not model ids. A terminal route must withhold every
-            # execution binding, and a note is part of the route — the
-            # host-seat advisory's id-free note is the same rule. The id of
-            # what WAS seated is `selected_model`, which a terminal route
-            # already nulls.
-            got = (f"seated the {policy.family_of[seated]} one"
-                   if seated else "no seat left")
-            worker_notes.append(
-                f"{worker}: no write-capable {policy.family_of[nominal]} seat "
-                f"on {task.runtime}; {got}")
-        elif seated and policy.family_of.get(seated) == "xai" \
-                and policy.local_family.get(task.runtime) != "xai":
-            worker_notes.append(
-                f"{worker}: xai write seat on {task.runtime} requires "
-                "dispatch_agent --seat-profile grok-maker-v1")
-    # From here on every reader of the worker's role — review seating, judge
-    # seating, the final resolve — must see the seat the worker actually got.
-    resolver.write_seat_role = worker
-    if history_note:
-        worker_notes.append(history_note)
-    effort, effort_notes = select_effort(task, band, policy)
-    if lp.get("minimum_effort") is not None:
-        asked = lp["minimum_effort"]
-        if policy.efforts.index(asked) > policy.efforts.index(effort):
-            effort_notes.append(f"local_policy raised effort to {asked}")
-            effort = asked
-    disagreement = cfg["review"]["disagreement"]
-
-    def roles_for(rev):
-        needed = [worker] + list(rev["reviewers"])
-        # The judge follows the REVIEW band, not the risk band — a review
-        # promoted by low confidence needs adjudication just as much.
-        if rev["band"] == "CRITICAL" or route_path == "disagreement":
-            needed.append(disagreement["default_judge"])
-        return list(dict.fromkeys(needed))
-
-    # Bounded fixed point. Confidence depends on the fallbacks, the fallbacks
-    # depend on which roles are needed, and which roles are needed depends on
-    # the review band — which confidence can raise. Computing confidence once
-    # from a preliminary role set let a route whose *final* fallbacks pushed it
-    # below the escalation floor still emit as executable.
-    review_band = band
-    promoted_once = False
-    promotion_confidence = None
-    supply_exhausted: str | None = None
-    # Everything the loop body mutates has to be restored at the top of each
-    # pass, or the body is not idempotent and the "fixed point" is a fold.
-    # Round 19: moving the plan inside the loop (round 18's fix) broke the
-    # inherited assumption that a compensation runs at most once per route.
-    # `review`, `applied_compensations`, `judge_role` and `supply_exhausted`
-    # were already rebuilt per pass; `effort` and its notes were not, so a
-    # promoted route raised effort TWICE for one compensation — 16,268 routes
-    # shipped with the notes, the record and the effort all disagreeing, one of
-    # them reporting no compensation at all.
-    base_effort, base_effort_notes = effort, list(effort_notes)
-    ceiling_records: list[dict] = []
-    for _ in range(MAX_PROMOTION_PASSES):
-        effort, effort_notes = base_effort, list(base_effort_notes)
-        # Rebuilt with everything else the body mutates. A fixed point whose
-        # body is not idempotent is a fold, and a ceiling record accumulated
-        # across passes would report a cap the emitted plan never applied.
-        ceiling_records = []
-        review = select_review(review_band, worker, policy, resolver)
-        try:
-            resolved, fallbacks, compensations = resolver.resolve(roles_for(review), write_role=worker)
-        except SupplyExhausted as exc:
-            resolved, fallbacks, compensations = {}, [], []
-            supply_exhausted = str(exc)
-        applied_compensations: list[str] = []
-        for note in compensations:
-            if note == "raise_effort_one_level":
-                effort = policy.effort_up(effort)
-                effort_notes.append("compensation: fallback lost family diversity, effort +1")
-                applied_compensations.append(note)
-            elif note == "raise_effort_to_MAX_and_add_second_review":
-                effort = policy.efforts[-1]
-                # The note is written after the outcome is known. Round 19: it
-                # was written here, before, so a compensation that could not be
-                # completed still had "effort raised to MAX" in the notes while
-                # `fallback_compensations_applied` stayed empty — the notes
-                # claiming a compensation the record denied.
-                # The name promises two things. Recording it while doing one is the
-                # same false report this module exists to avoid, so the extra
-                # reviewer is actually added — and if none can be resolved, the
-                # compensation is not claimed.
-                extra = _extra_reviewer(review, worker, policy, resolver)
-                if extra:
-                    review = dict(review)
-                    review["reviewers"] = list(review["reviewers"]) + [extra]
-                    # `independent` stays the BAND's answer. Round 4 added the flip
-                    # so the extra seat would be de-conflicted; round 10 showed what
-                    # it actually bought — a bonus reviewer upgrading the band's own
-                    # requirement, so that a LOW route whose *compensating* review
-                    # could not be isolated terminated the whole task, and the
-                    # independence invariants started applying to a band that never
-                    # asked. Seat allocation at the emit boundary is unconditional
-                    # and works on resolved models, so the extra seat is checked
-                    # either way; that is what makes this safe to drop.
-                    # A count, not a name. Recording the role invited exactly the
-                    # staleness `self_review_avoided` had to be rescued from: seat
-                    # allocation can re-seat that role afterwards, and then the
-                    # record names a reviewer who is not there. What the
-                    # compensation promises is a SEAT, so the seat count is what it
-                    # records.
-                    review["compensating_reviewers"] = review.get("compensating_reviewers", 0) + 1
-                    effort_notes.append(
-                        "compensation: architect downgraded, effort raised to MAX")
-                    # No re-resolve here. Round 19: this block read as "reflect
-                    # the extra seat in the plan" and was a dead store — every
-                    # one of its outputs is overwritten unconditionally by the
-                    # final resolve at the end of this pass, and nothing between
-                    # reads them (`_deconflict` and `_seat_judge` work through
-                    # `resolver.peek`). Eleventh instance of the class, and a
-                    # fossil besides: its `supply_exhausted or str(exc)` was the
-                    # sticky-shortage policy round 15 removed, preserved here
-                    # where it could not be seen.
-                    applied_compensations.append(note)
-                    effort_notes.append(f"compensation: added a second independent review ({extra})")
-                else:
-                    effort_notes.append(
-                        "compensation NOT fully applied: no additional reviewer could be resolved"
-                    )
-            else:
-                raise UnknownCompensationError(
-                    f"fallback_compensations declares the effect {note!r}, which no branch "
-                    f"implements; it would be reported as applied while doing nothing"
-                )
-        compensations = applied_compensations
-
-        # The worker's effective effort, capped to what its model can receive.
-        # Here rather than after the loop because the compensation above is what
-        # raises the requested value, and here rather than before it for the
-        # same reason. The requested value and its notes are untouched: the
-        # compensation really did raise what was asked for, and `selected_effort`
-        # is what was asked for.
-        #
-        # `peek`, not the provisional `resolved` map. `resolve()` is
-        # all-or-nothing: a shortage on any role empties the map for the whole
-        # pass. `_seat_judge` can then drop the judge so the FINAL resolve
-        # succeeds, and a clamp that already ran against `{}` ships the
-        # uncapped effort. `peek` is pure, depends on no other role, and
-        # equals the final `resolved[worker]` whenever resolution succeeds.
-        # Reviewer seating still moves below, so a reviewer clamp here would
-        # still read a roster that does not ship.
-        worker_model = resolver.peek(worker, write=True)
-        worker_effective = _clamp(policy, effort, worker_model)
-        if worker_effective != effort:
-            floor = _worker_effort_floor(task, band, policy)
-            broken = floor and policy.efforts.index(worker_effective) < policy.efforts.index(floor[1])
-            ceiling_records.append({
-                "role": worker, "model": worker_model,
-                "requested": effort, "capped_at": worker_effective,
-                "floor_broken": floor[0] if broken else None,
-                "floor_requires": floor[1] if broken else None,
-            })
-
-        # Final de-confliction, at the emit boundary rather than mid-pipeline.
-        #
-        # This invariant has now been broken four times, each in a different place,
-        # because it was being enforced at one point that later code could route
-        # around: the compensation path above appends a reviewer and flips
-        # `independent` to true, so a LOW-band review that never went through
-        # de-confliction was promoted to "independent" with the worker's own model
-        # sitting in a reviewer slot. Checking in the middle protects only the
-        # paths that existed when the check was written. Checking here protects
-        # every path, including ones added later, because nothing runs after it.
-        judge_role = disagreement["default_judge"] if (
-            review["band"] == "CRITICAL" or route_path == "disagreement") else None
-
-        # Seat allocation. This block is unconditional on purpose.
-        #
-        # The previous version wrapped it in `if review["independent"]:`, which is
-        # how the same defect survived a fifth round: a check moved to the boundary
-        # but placed behind a condition is not a boundary, it is a mid-pipeline
-        # check in a new location. The disagreement path sets a judge at ANY band,
-        # and LOW declares `independent: false`, so LOW + disagreement skipped seat
-        # allocation entirely and the implementer adjudicated its own work.
-        #
-        # Reviewer de-confliction is still gated on `independent` — LOW's
-        # worker-reviews-itself is documented design. The judge is not covered by
-        # that exemption: an adjudicator brought in to settle a dispute must not be
-        # one of the parties, whatever the band.
-        if review["independent"]:
-            review = _deconflict(review, worker, policy, resolver)
-
-        if judge_role:
-            review, judge_role = _seat_judge(review, worker, judge_role, policy, resolver)
-
-        try:
-            resolved, fallbacks, _ = resolver.resolve(
-                list(dict.fromkeys([worker] + list(review["reviewers"])
-                                   + ([judge_role] if judge_role else []))),
-                write_role=worker)
-            # The final seat plan resolved, so any shortage seen while exploring a
-            # preliminary one is not a fact about this route. Round 15: it was
-            # sticky, and a LOW disagreement route whose provisional
-            # `principal_architect` could not resolve stayed terminal even though
-            # `_seat_judge` had found a complete assignment.
-            supply_exhausted = None
-        except SupplyExhausted as exc:
-            resolved, fallbacks = {}, []
-            supply_exhausted = str(exc)
-        # From the FINAL fallbacks: the plan above is the one that ships, so
-        # the number the promotion decision reads is the number the route
-        # reports. Rounds 16-18 each moved this and each moved it wrong — into
-        # the loop reading a preliminary resolve, then after the loop where the
-        # post-conditions could not see the promotion. The plan and the decision
-        # belong in the same iteration.
-        confidence = routing_confidence(task, fallbacks, cfg)
-        threshold = cfg["router"]["confidence"]["extra_review_below"]
-        # The policy is "raise the review band ONE level" — the loop exists so
-        # the terminal decision sees the final confidence, not to change how
-        # far the promotion goes. Confidence is very nearly invariant in the
-        # review band, so a loop that re-promotes on every pass walks to
-        # CRITICAL every time; that regression put a CRITICAL human gate on
-        # routine documentation work, and a gate that fires on everything
-        # trains people to wave it through.
-        #
-        # Round 18: this settles the BAND only. Round 17 re-ran the promotion
-        # after the emit-boundary post-conditions had already passed, so a
-        # promoted route shipped without the depth, family and de-confliction
-        # checks — a change placed where the checks could not see it, which is
-        # the same shape as a check placed where later code routes around it.
-        # Everything the post-conditions inspect is now built after this loop,
-        # from the band it settled on.
-        if confidence < threshold and review_band != "CRITICAL" and not promoted_once:
-            promoted = policy.bands[policy.bands.index(review_band) + 1]
-            overrides.append(f"low_routing_confidence_raised_review_to_{promoted}")
-            review_band = promoted
-            promoted_once = True
-            # The number the DECISION read. The one the route reports is the
-            # promoted plan's, and the two can differ (see the note below).
-            promotion_confidence = confidence
-            continue
-        break
-    else:  # pragma: no cover - the band ladder is shorter than the pass budget
-        raise ConfigError("review band promotion failed to reach a fixed point")
-
-
-    # Post-condition, asserted rather than assumed. Reviewer duplication is
-    # only a defect where independence was requested; a judge sharing any seat
-    # is a defect always.
-    seat_models = {
-        "worker": resolved.get(worker),
-        **{f"reviewer_{i}": resolved.get(x) for i, x in enumerate(review["reviewers"])},
-    }
-    if review["independent"]:
-        filled = [m for m in seat_models.values() if m]
-        if len(filled) != len(set(filled)):
-            review = dict(review)
-            review["independence_compromised"] = True
-    if judge_role:
-        judge_model = resolved.get(judge_role)
-        parties = [m for m in seat_models.values() if m]
-        outranked = judge_model and parties and (
-            policy.tier_of[judge_model] < max(policy.tier_of[m] for m in parties))
-        if judge_model and (judge_model in parties or outranked):
-            review = dict(review)
-            review["judge_unavailable"] = True
-            judge_role = None
-
-    # Post-conditions on the emitted review, both unconditional.
-    #
-    # The first asks whether the reviewers who ended up in the seats still meet
-    # the depth the band asked for. Fallbacks and de-confliction both re-seat
-    # reviewers under scarcity, and neither consults the band while doing it,
-    # so a HIGH review can be staffed at tier 0. That may be the best available
-    # assignment — it is not one to emit as if the band were satisfied.
-    #
-    # The second asks whether every recorded substitution still describes the
-    # final roster. A record that names a reviewer who is not there is worse
-    # than no record: it is the rationale asserting a fact about the route that
-    # the route contradicts.
-    floor = policy.band_reviewer_floor[review["band"]]
-    shortfall = [
-        {"reviewer": role, "model": resolved[role],
-         "capability_tier": policy.tier_of[resolved[role]], "band_requires": floor}
-        for role in review["reviewers"] if resolved.get(role)
-        and policy.tier_of[resolved[role]] < floor
-    ]
-    stale = [s for s in (review.get("self_review_avoided") or [])
-             if s.get("with") not in review["reviewers"]]
-    if stale:
-        # Silently dropping the record would satisfy every downstream check
-        # while destroying a disclosure the human was owed — and round 7 found
-        # that a corrective boundary also makes the assertions guarding it
-        # incapable of failing, because the emitted value then satisfies them
-        # by construction. Nothing upstream may produce this state; if one
-        # does, that is a defect in the pipeline and it says so out loud.
-        raise RouterInvariantError(
-            f"substitution record outlived the seat it describes: {stale}; "
-            f"seats hold {review['reviewers']}"
-        )
-    # Scarcity and binding capacity produce the same shortfall and need
-    # different answers. Scarcity is recoverable: the human can wait for the
-    # model to come back. A binding that structurally cannot supply the tier is
-    # not — `openai_only` holds exactly one model at tier 2, so every HIGH
-    # route under a downed bridge on that side gates, permanently, and "proceed"
-    # is the only possible answer. This module's own reasoning is that a gate
-    # firing on everything trains people to wave it through, so the two are
-    # told apart in the output rather than presented identically.
-    # The implementer occupies a distinct model only where independence is
-    # required, and it counts against the floor-tier supply only if it is
-    # itself at or above the floor — a `worker_balanced` implementer does not
-    # consume a tier-2 model. Counting it unconditionally over-stated the
-    # requirement by one and reported an ordinary, recoverable shortage as
-    # permanent, pushing the operator toward "proceed at reduced depth" on a
-    # gate that restoring one model would have cleared.
-    worker_model = resolved.get(worker)
-    seats = len(review["reviewers"]) + (
-        1 if review["independent"] and worker_model
-        and policy.tier_of[worker_model] >= floor else 0)
-    # Every id the binding can reach, including roles outside `role_tiers`
-    # (`worker_balanced_alt`) that the fallback ladder can still seat.
-    supply = {cfg["models"][key]["id"] for key in resolver.binding.values()}
-    unsatisfiable = bool(shortfall) and sum(
-        1 for m in supply if policy.tier_of[m] >= floor) < seats
-    if shortfall:
-        review = dict(review)
-        review["review_depth_reduced"] = shortfall
-        review["band_floor_unsatisfiable"] = unsatisfiable
-
-    fams = {r: policy.family_of[m] for r, m in resolved.items()}
-    reviewer_families = {fams[r] for r in review["reviewers"] if r in fams}
-    cross_family = len(reviewer_families) > 1 or (
-        len(review["reviewers"]) == 1 and review["reviewers"][0] in fams and worker in fams
-        and fams[review["reviewers"][0]] != fams[worker]
-    )
-
-    if resolver.allowed_families is not None and len(resolver.allowed_families) == 0:
-        local_unsat = True
-    if not local_unsat and lp:
-        if lp.get("minimum_capability_tier") is not None and resolved.get(worker):
-            if policy.tier_of[resolved[worker]] < int(lp["minimum_capability_tier"]):
-                local_unsat = True
-        if lp.get("minimum_reviewers") is not None:
-            if len(review.get("reviewers") or []) < int(lp["minimum_reviewers"]):
-                local_unsat = True
-        if lp.get("minimum_provider_families") is not None:
-            seated = {policy.family_of[m] for m in resolved.values()}
-            if len(seated) < int(lp["minimum_provider_families"]):
-                local_unsat = True
-        if lp.get("minimum_effort") is not None and resolved.get(worker):
-            ceiling = policy.ceiling_of.get(resolved[worker])
-            if ceiling is not None and policy.efforts.index(ceiling) < policy.efforts.index(lp["minimum_effort"]):
-                local_unsat = True
-
-    # The band is settled and the plan above was built from it, so the
-    # confidence that ships is the confidence of what ships. Round 16 found the
-    # two disagreeing; round 17's fix put the correction after the
-    # post-conditions and round 18 moved the whole plan below the loop instead.
-    confidence = routing_confidence(task, fallbacks, cfg)
-    ask = orchestrator_ask(task, policy, cfg, band, confidence)
-    declared = task._host_seat
-    model_cmp, effort_cmp, advisory = host_seat_comparisons(declared, ask, policy)
-    host_seat_advisory = {
-        "declared": dict(declared) if declared else None,
-        "policy_ask": ask,
-        "model_comparison": model_cmp,
-        "effort_comparison": effort_cmp,
-        "advisory": advisory,
-    }
-
-    review_independence = independence(review, task)
-    supplied = len({e.strip() for e in task.isolation_evidence if e.strip()})
-    if supplied and review["independent"] and supplied != len(review["reviewers"]):
-        # The caller typed evidence and it was NOT counted — say so, or the
-        # refusal is invisible and the next caller pads the list further.
-        effort_notes.append(
-            f"isolation evidence not counted: {supplied} id(s) for "
-            f"{len(review['reviewers'])} reviewer seat(s); independence stays "
-            f"{review_independence!r}")
-    judge = judge_role
-
-    band_requires_independence = bool(
-        cfg["review"][review["band"]].get("independent", False))
-
-    # One dispatcher over the configured actions, instead of five hand-written
-    # comparisons. Round 12 found those comparisons validated against a UNION of
-    # the vocabulary while each consumer implemented one word of it, so the
-    # strictest-sounding value silently removed the control — and a key with
-    # exactly one implemented value is not configuration at all, it is a
-    # constant with a config file in front of it. Every action is implemented
-    # here, so every key genuinely selects behaviour and a test can prove it.
-    #
-    # `band_requires_independence` is the BAND's spec, not `review`'s flag: the
-    # architect compensation sets that flag at any band, and keying off it let a
-    # *bonus* reviewer's isolation gap terminate a LOW route.
-    # Each control carries a machine-readable CAUSE alongside its prose reason,
-    # and the cause is emitted. Round 15's reviewers converged on this after the
-    # seventh instance of the class that has cost this loop six rounds: an edit
-    # whose comment claims one thing while the predicate does another. A comment
-    # cannot be checked; a cause code can, and
-    # `test_d19_every_control_fires_exactly_on_its_declared_cause` asserts that
-    # each control's predicate partitions the sweep exactly as its cause says.
-    # Reviewer and judge seats, now that the roster is final. Their floor is
-    # the review band's own effort — the promoted band, because that is the
-    # review that will run. Unlike the worker there is no table/floor split
-    # here: what the band names IS the requirement.
-    review_floor = cfg["review"][review["band"]]["effort"]
-    for role in list(review["reviewers"]) + ([judge] if judge else []):
-        model = resolved.get(role)
-        capped = _clamp(policy, review_floor, model)
-        if capped != review_floor:
-            record = {
-                "role": role, "model": model,
-                "requested": review_floor, "capped_at": capped,
-                "floor_broken": f"review.{review['band']}.effort",
-                "floor_requires": review_floor,
-            }
-            # Same seat, once. One role can hold two seats two different ways:
-            # `_deconflict` may fail to substitute and leave the worker among
-            # the reviewers (terminal, since that also compromises
-            # independence), and LOW seats `worker_fast` as its own reviewer by
-            # design (`independent: false`, so `_deconflict` never runs and the
-            # route stays executable). Both reach here.
-            existing = next((r for r in ceiling_records if r["role"] == role), None)
-            if existing is None:
-                ceiling_records.append(record)
-                continue
-            # One row, and it must read coherently. The seat was asked for two
-            # different levels — its own and the review band's — so the row
-            # reports the HIGHER ask, which is the one any named floor is
-            # measured against. Keeping the worker's lower `requested` beside a
-            # review floor produced rows saying "requested LOW" next to
-            # "requires MEDIUM", which is not a fact about anything.
-            if policy.efforts.index(record["requested"]) > policy.efforts.index(existing["requested"]):
-                existing["requested"] = record["requested"]
-            # A floor that broke is never erased, and when BOTH broke the
-            # stricter one is what the human has to satisfy — reporting the
-            # weaker would understate what the seat owes.
-            if record["floor_broken"] and (
-                    not existing["floor_broken"]
-                    or policy.efforts.index(record["floor_requires"])
-                    > policy.efforts.index(existing["floor_requires"])):
-                existing["floor_broken"] = record["floor_broken"]
-                existing["floor_requires"] = record["floor_requires"]
-
-    hitl = cfg["human_in_the_loop"]
-    controls = [
-        Control("on_independence_unachievable", "caller_declared_isolation_gap",
-                band_requires_independence and task.isolation_available is False,
-                "INDEPENDENCE_UNAVAILABLE"),
-        Control("on_any_critical_review", "critical_review_band",
-                review["band"] == "CRITICAL",
-                "HUMAN_REQUIRED"),
-        Control("on_judge_unavailable", "no_adjudicator",
-                bool(review.get("judge_unavailable")),
-                "HUMAN_REQUIRED"),
-        Control("on_review_depth_reduced", "review_below_band",
-                bool(review.get("review_depth_reduced")),
-                "HUMAN_REQUIRED"),
-        Control("on_effort_below_floor", "effort_below_floor",
-                any(r["floor_broken"] for r in ceiling_records),
-                "HUMAN_REQUIRED"),
-        Control("on_termination_unconfirmed", "unconfirmed_prior_termination",
-                task.has("termination_unconfirmed"),
-                "HUMAN_REQUIRED"),
-    ]
-
-    terminal = None
-    requires_human = False
-    notified: list[tuple[str, str]] = []
-    fired_causes: list[str] = []
-    # First, and outside the configurable set: a route whose history cannot be
-    # used is not a policy choice, and it must not be masked by a control that
-    # happens to fire on the same input. Round 13 found `prior_failures=4` with
-    # no models reported as `HUMAN_REQUIRED`, and a missing history alongside an
-    # isolation gap reported as `INDEPENDENCE_UNAVAILABLE` — both true, neither
-    # the reason the caller has to act on.
-    if history_note:
-        # Unconditional, and that matters twice over. Round 14 suppressed this
-        # branch when the budget was spent — to stop sending the caller after a
-        # history it could not use — and round 15 found that had moved an
-        # unconditional gate under a configurable control, so
-        # `on_retry_exhaustion: notify_human` routed a task with no history at
-        # all, at exit 0. The gate stays; what changes is which terminal it
-        # names, because with the budget gone the actionable fact is the budget.
-        terminal = "HUMAN_REQUIRED" if budget_spent else "RETRY_HISTORY_REQUIRED"
-
-    # Likewise not configurable: a review whose seats could not be given
-    # distinct models is the implementer reviewing itself. It was an
-    # unconditional gate before this dispatcher existed, and round 13 caught the
-    # move making it optional — `notify_human` emitted a route with two
-    # identical reviewers, `independence_required: true`, at exit 0. Making a
-    # key a real choice must not include the choice to delete a protection that
-    # was never optional.
-    # Before the derived gates. When nothing resolves, the seats cannot be given
-    # distinct models either — so `independence_compromised` is true, and round
-    # 15 found it claiming the terminal while the actual cause sat in a note.
-    # A report that names a symptom sends the operator to the wrong problem.
-    if budget_spent:
-        # Ahead of the shortage, for the reason the shortage was put ahead of
-        # the seat collision: name the fact the caller has to act on. Round 17
-        # found the mirror of the case round 16 fixed — a spent budget with a
-        # complete history reported as `SUPPLY_EXHAUSTED`, which is true and is
-        # not what stops the next attempt.
-        #
-        # Unconditional, with no `on_retry_exhaustion` key above it: round 17
-        # measured all three of that key's actions producing the same route, so
-        # a key offering to vary a safety cap was a constant wearing a config
-        # file. No config value may dispatch an attempt past the cap.
-        #
-        # And it says so. Round 18: deleting the control left this terminal
-        # ANONYMOUS — `HUMAN_REQUIRED` with no cause, no note and nothing in the
-        # rationale, so the one fact the caller had to act on was the one thing
-        # the route did not state. Removing a control must not remove its
-        # disclosure.
-        terminal = terminal or "HUMAN_REQUIRED"
-        requires_human = True
-        worker_notes.append(
-            f"retry budget spent: {task.prior_failures} attempt(s) against a cap of "
-            f"{cfg['retry']['max_total_implementation_attempts']} — stop retrying and "
-            f"surface what was tried to a human")
-
-    if local_unsat:
-        worker_notes.append("local_policy cannot be satisfied")
-        terminal = terminal or "UNSATISFIABLE_LOCAL_POLICY"
-
-    if supply_exhausted:
-        worker_notes.append(f"supply exhausted: {supply_exhausted}")
-        # `terminal or`, not `=`. The stated design is that this outranks the
-        # states it PRODUCES — `independence_compromised` is one, because with
-        # nothing resolved the seats cannot be given distinct models. A missing
-        # retry history and a spent budget are not produced by it, and round 16
-        # found the plain assignment burying "pass --prior-models with one model
-        # id per failure" under a shortage the caller cannot fix. Placing this
-        # ahead of the `terminal or` gate below is all the precedence the
-        # reasoning ever asked for.
-        terminal = terminal or "SUPPLY_EXHAUSTED"
-
-    if review.get("independence_compromised"):
-        # No inner `if band_requires_independence`: it cannot be false here.
-        # `independence_compromised` is only ever set behind `review["independent"]`,
-        # which since round 13 is the band's own spec — so the flag implies the
-        # band asked. A condition that cannot be false reads as a safeguard and
-        # guards nothing, which is the shape this artifact keeps removing.
-        requires_human = True
-        terminal = terminal or "INDEPENDENCE_UNAVAILABLE"
-
-    for control in controls:
-        if not control.fired:
-            continue
-        key, action = control.key, hitl[control.key]
-        terminal_name, why = control.terminal, control.reason
-        fired_causes.append(control.cause)
-        if action == "terminal":
-            terminal = terminal or terminal_name
-            effort_notes.append(f"terminal/{key}: {why}")
-        elif action == "require_human_confirmation":
-            requires_human = True
-            effort_notes.append(f"confirm/{key}: {why}")
-        elif action == "notify_human":
-            # Deferred: whether the route proceeds is not known until every
-            # control and every non-configurable terminal has been evaluated,
-            # and round 14 found this note asserting "proceeding without a
-            # gate" on a route that was terminal at exit 1.
-            notified.append((key, why))
-        else:
-            # No `else: treat it as the weakest action`. `Policy` validates
-            # this vocabulary at build time, and since 1.2.0 a dict config
-            # edited between routes is rebuilt (the content digest moved), so
-            # that path now raises in `Policy.__init__` and never reaches
-            # here. This stays as depth: the remaining way in is a non-dict
-            # Mapping, whose Policy is still cached on identity alone — and
-            # defaulting an unknown word to "notify" is a control failing
-            # OPEN, which is the one direction it must never fail.
-            raise ConfigError(
-                f"human_in_the_loop.{key} = {action!r} is not an implemented action")
-
-    # Outcomes the config does not govern: these are properties of the route,
-    # not policy choices.
-    if terminal is None:
-        if ceiling_exhausted:
-            terminal = "HUMAN_REQUIRED"
-        elif confidence < cfg["router"]["confidence"]["escalate_below"]:
-            terminal = "ESCALATE_ROUTING"
-
-    # A terminal outcome always needs a person, whatever the controls above
-    # decided — including the ones the config set to `notify_human`.
-    requires_human = bool(terminal) or requires_human
-
-    # Deferral, decided last so it can see every gate that fired. Round 20:
-    # what moves is WHEN the human is asked, and only where the review itself
-    # can be trusted. `independence_compromised` and `review_depth_reduced` say
-    # it cannot be — the reviewers are the implementer under another label, or
-    # there are fewer of them than the band requires — and an incident does not
-    # make an untrustworthy review acceptable. Those keep blocking, as does any
-    # terminal.
-    #
-    # `judge_unavailable` deliberately does NOT block deferral. An adjudicator
-    # is needed only if the two reviewers disagree, which is an event AFTER the
-    # review runs, and the deferred confirmation is where that lands anyway.
-    # Excluding it looked prudent and was measured to be wrong: the canonical
-    # incident — a CRITICAL hotfix whose frontier models are all sitting in
-    # reviewer seats — has no free adjudicator almost by construction, so the
-    # exclusion turned the deferral off exactly where it was written for.
-    deferred = False
-    if (task.has("production_hotfix") and requires_human and not terminal
-            and hitl["on_production_hotfix"] == "defer_human_confirmation"
-            and not review.get("independence_compromised")
-            and not review.get("review_depth_reduced")
-            and not any(r["floor_broken"] for r in ceiling_records)
-            # A prior write-capable attempt whose process tree could not be
-            # confirmed dead is not made acceptable by an incident — it is
-            # made MORE dangerous: hotfix pressure is exactly when a second
-            # writer racing the first is likeliest. This gate is a hold,
-            # not a disclosure a later confirmation can absorb, so
-            # production_hotfix's deferral does not reach it either.
-            and not task.has("termination_unconfirmed")):
-        deferred = True
-        requires_human = False
-        effort_notes.append(
-            "production hotfix: the review runs at full depth and the human "
-            "confirmation is owed AFTER the fix ships, not before it")
-
-    for key, why in notified:
-        if terminal:
-            outcome = "recorded; the route is terminal for another reason"
-        elif requires_human:
-            # Round 15: this said "proceeding without a gate" whenever the route
-            # was not terminal, which is false when a DIFFERENT control gated it.
-            outcome = "recorded; another control requires confirmation"
-        else:
-            outcome = "proceeding without a gate, per policy"
-        effort_notes.append(f"notify_human/{key}: {why} — {outcome}")
-
-    # The router cannot verify where an isolation receipt came from: it is a
-    # caller-supplied string bound to no dispatch, so `enforced` reports what
-    # the caller claims and unlocks nothing. That is why the CRITICAL control
-    # above keys on the band and never on the receipt — making the strongest
-    # gate in the policy openable by typing is the failure this skill is about.
-
-    # A terminal route emits no execution bindings at all. Nulling only the
-    # worker left a consumer able to dispatch the reviewers from a route the
-    # rationale said must not be executed.
-    executable = terminal is None
-    if executable:
-        # Served-model caveat disclosure (design §4 B5): per MODEL once,
-        # registry key not model id (terminal withholding scans ids), the
-        # matched flags joined so multiple caveats stay one line.
-        disclosed: set[str] = set()
-        for role in dict.fromkeys([worker] + list(review["reviewers"])
-                                  + ([judge] if judge else [])):
-            model = resolved.get(role)
-            if not model or model in disclosed:
-                continue
-            disclosed.add(model)
-            key = policy.id_to_key[model]
-            caveats = cfg["models"][key].get("served_model_caveats") or []
-            matched = sorted(set(caveats) & set(task.flags))
-            if matched:
-                # The vendor comes from the SEATED model's family, never a
-                # literal: `served_model_caveats` is accepted on any registry
-                # row, so hard-coding one vendor is a false disclosure one
-                # config edit away (round-1 review F3). The registry key still
-                # does the identifying — model ids stay out of notes.
-                worker_notes.append(
-                    f"provider may substitute another {policy.family_of[model]} "
-                    f"model for {', '.join(matched)} content; the requested "
-                    f"identity of {key} is declared_only")
-    all_notes = worker_notes + effort_notes
-    # A promotion is decided on the plan that existed BEFORE it, and the plan it
-    # produces is what ships: promoting the review band reseats reviewers, which
-    # can retire the very fallback whose penalty triggered the promotion. The
-    # emitted confidence is the promoted plan's, so a route could carry
-    # `low_routing_confidence_raised_review_to_X` beside a confidence at or above
-    # the threshold — a recorded reason the same route disproves. Un-promoting
-    # would oscillate (the un-promoted plan is low again), so the conservative
-    # band stands and the recovery is disclosed instead of hidden.
-    extra_review_below = cfg["router"]["confidence"]["extra_review_below"]
-    if promoted_once and confidence >= extra_review_below:
-        all_notes.append(
-            f"review band promoted at pre-promotion confidence "
-            f"{promotion_confidence:.2f}; the promoted plan resolves at "
-            f"{confidence:.2f} (>= {extra_review_below:.2f}) — the promotion "
-            f"stands and the reported confidence is the promoted plan's")
-    if advisory == "upgrade_recommended":
-        clauses = []
-        if model_cmp == "below":
-            clauses.append(
-                f"model tier {policy.tier_of[declared['model']]} < {ask['tier']}")
-        if effort_cmp == "below":
-            clauses.append(f"effort {declared['effort']} < {ask['effort']}")
-        suffix = f" [{', '.join(ask['raised_by'])}]" if ask["raised_by"] else ""
-        all_notes.append("host seat below orchestrator ask: "
-                         + "; ".join(clauses) + suffix)
-    if model_cmp == "unrecognized":
-        all_notes.append(
-            "host seat model is not in the registry (model_comparison=unrecognized): "
-            "the registry may be stale - bump the id and re-probe")
-    effective_policy = {
-        "minimum_capability_tier": lp.get("minimum_capability_tier"),
-        "minimum_effort": lp.get("minimum_effort"),
-        "minimum_reviewers": lp.get("minimum_reviewers"),
-        "minimum_provider_families": lp.get("minimum_provider_families"),
-        "allowed_families": lp.get("allowed_families"),
-    }
-    worker_model = resolved.get(worker) if executable else None
-    result = {
-        "route_schema_version": ROUTE_SCHEMA_VERSION,
-        "router_plugin_version": plugin_manifest_version(),
-        "policy_sha256": policy_hash,
-        "request_sha256": request_sha,
-        "decision_fingerprint": decision_fingerprint_of(
-            request_sha, policy_hash, plugin_manifest_version()),
-        "effective_policy": effective_policy,
-        "host_seat_advisory": host_seat_advisory,
-        "worker_seat": {
-            "kind": seat_kind,
-            "source": seat_source,
-            "overrode_class_default": seat_downgraded,
-            # What this host can dispatch write work to, as the transport
-            # table stands. Recorded on every route, including `read_only`
-            # ones where it filtered nothing: the point of the metrics is to
-            # let someone reconstruct what was AVAILABLE at decision time, and
-            # a field that appears only when it bit cannot do that.
-            "write_capable_families": sorted(
-                f for f in set(policy.family_of.values())
-                if policy.write_capable(task.runtime, f)),
-        },
-        "selected_capability_tier": (
-            policy.tier_of[worker_model] if worker_model else None),
-        "selected_families": sorted({
-            policy.family_of[m] for m in resolved.values()
-        }) if executable else [],
-        "local_policy_applied": bool(lp),
-        "task_class": task.task_class,
-        "complexity": task.complexity,
-        "uncertainty": task.uncertainty,
-        "blast_radius": task.blast_radius,
-        "reversibility": task.reversibility,
-        "reasoning_centric": task.reasoning_centric,
-        "risk_score": risk_score,
-        "risk_band": band,
-        "band_overrides_applied": overrides,
-        "band_overrides_redundant": redundant_overrides,
-        "critical_flags": task.critical_flags(policy),
-        "route_path": route_path,
-        "terminal": terminal,
-        "selected_role": worker if executable else None,
-        "selected_model": resolved.get(worker) if executable else None,
-        "selected_effort": effort if executable else None,
-        # What the worker's model will actually receive. Equal to
-        # `selected_effort` when it has no ceiling. The pair is deliberately not
-        # collapsed: the first is what the policy asked for, the second is what
-        # runs, and reporting the ask as the outcome is how a control becomes a
-        # false assurance.
-        "selected_effort_effective": worker_effective if executable else None,
-        "selected_effort_native": (
-            cfg["effort_map"][policy.family_of[resolved[worker]]][worker_effective]
-            if executable else None),
-        "review": {
-            "band": review["band"],
-            "reviewers": review["reviewers"],
-            "reviewer_models": [resolved.get(r) for r in review["reviewers"]] if executable else [],
-            "effort": review["effort"] if executable else None,
-            "independence_required": review["independent"],
-            "review_independence": review_independence,
-            "required_checks": review.get("required_checks", []),
-            "judge": judge,
-            "judge_model": (resolved.get(judge) if judge else None) if executable else None,
-            "self_review_avoided": review.get("self_review_avoided") or [],
-            "independence_compromised": bool(review.get("independence_compromised")),
-            "judge_unavailable": bool(review.get("judge_unavailable")),
-            # A terminal route emits no concrete model anywhere, this field
-            # included. The shortfall is still reported — the human needs to
-            # know the review was thin — but with the binding withheld, the
-            # same way `fallbacks_applied` scrubs ids two fields below.
-            "review_depth_reduced": [
-                s if executable else {**s, "model": None}
-                for s in (review.get("review_depth_reduced") or [])
-            ],
-            "band_floor_unsatisfiable": bool(review.get("band_floor_unsatisfiable")),
-            # Not gated on `executable`: that rule exists to withhold concrete
-            # MODELS from a terminal route, and a count is not a model. Zeroing
-            # it produced a terminal route reporting the compensation applied,
-            # two reviewers seated, and zero compensating reviewers.
-            "compensating_reviewers": review.get("compensating_reviewers", 0),
-        },
-        "cross_family_review": cross_family,
-        "fallbacks_applied": (
-            fallbacks if executable
-            else [f.split(":")[0] + ": binding withheld (terminal route)"
-                  if ":" in f and "->" in f else f for f in fallbacks]
-        ),
-        # Scrubbed the way `review_depth_reduced` is: the cap is still
-        # disclosed on a terminal route — a human deciding what went wrong
-        # needs it — but with the binding withheld.
-        "effort_ceiling_applied": [
-            r if executable else {**r, "model": None} for r in ceiling_records
-        ],
-        "fallback_compensations_applied": compensations,
-        "unavailable_models": sorted(resolver.blocked),
-        "excluded_prior_failures": sorted(resolver.failed),
-        "escalation_count": task.prior_failures,
-        "retry_count": task.prior_failures,
-        "routing_confidence": confidence,
-        # A heuristic gate score (base minus penalties), NOT a calibrated
-        # success probability. The kind is emitted so no consumer has to
-        # guess which one it is reading.
-        "routing_confidence_kind": "heuristic_policy_score",
-        "requires_human_confirmation": requires_human,
-        # Which configurable controls fired, by cause rather than by prose. The
-        # reason strings are for people; these are what a test can hold the
-        # predicate to.
-        "human_control_causes": sorted(fired_causes),
-        # Dispatchable now, and a confirmation is owed once it has shipped. Not
-        # folded into `requires_human_confirmation`: a caller that blocks on
-        # that boolean would block on this too, which is the whole thing the
-        # deferral exists to avoid.
-        "human_confirmation_deferred": deferred,
-        "notes": all_notes,
-    }
+    pre = _Prelude(request_sha=request_sha, policy_hash=policy_hash, lp=lp,
+                   local_unsat=local_unsat, history_note=history_note,
+                   budget_spent=budget_spent, seat_kind=seat_kind,
+                   seat_source=seat_source, seat_downgraded=seat_downgraded,
+                   risk_score=risk_score, band=band, overrides=tuple(overrides),
+                   redundant_overrides=tuple(redundant_overrides), route_path=route_path)
+    choice = select_worker(task, band, policy, resolver)
+    result = _plan(task, policy, cfg, pre, resolver, choice)
     result["rationale"] = explain(task, result, policy)
     return result
+
+
+def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
+          resolver: "Resolver", choice: WorkerChoice) -> dict:
+    """Everything after the worker is chosen, as a pure function of its inputs.
+
+    Pure means: every value the old body mutated is rebuilt here from `pre`
+    and `choice`; `resolver.write_seat_role` is set on entry and cleared on
+    exit so a second call sees the resolver exactly as the first did
+    (design DD-2 S6, [R3-opus-F3]). Nothing else on the resolver is written.
+    """
+    worker = choice.role
+    worker_notes = list(choice.notes)
+    ceiling_exhausted = choice.ceiling_exhausted
+    overrides = list(pre.overrides)
+    redundant_overrides = list(pre.redundant_overrides)
+    lp, local_unsat = pre.lp, pre.local_unsat
+    history_note, budget_spent = pre.history_note, pre.budget_spent
+    seat_kind, seat_source, seat_downgraded = pre.seat_kind, pre.seat_source, pre.seat_downgraded
+    risk_score, band, route_path = pre.risk_score, pre.band, pre.route_path
+    request_sha, policy_hash = pre.request_sha, pre.policy_hash
+    resolver.write_seat_role = None
+    try:
+        # Disclosed as a policy decision, in `notes`, not as scarcity in
+        # `fallbacks_applied` — and computed here, while `write_seat_role` is still
+        # unset, so the unfiltered peek still answers what the role BINDS to.
+        if seat_downgraded:
+            # Id-free, like the skip note: a terminal route withholds bindings.
+            worker_notes.append(
+                f"worker seat declared read_only against the {task.task_class} default; "
+                f"a seat with no write-capable recipe on {task.runtime} may be named")
+        if seat_kind == "write":
+            nominal, seated = resolver.peek(worker), resolver.peek(worker, write=True)
+            if nominal is not None and nominal != seated:
+                # Families, not model ids. A terminal route must withhold every
+                # execution binding, and a note is part of the route — the
+                # host-seat advisory's id-free note is the same rule. The id of
+                # what WAS seated is `selected_model`, which a terminal route
+                # already nulls.
+                got = (f"seated the {policy.family_of[seated]} one"
+                       if seated else "no seat left")
+                worker_notes.append(
+                    f"{worker}: no write-capable {policy.family_of[nominal]} seat "
+                    f"on {task.runtime}; {got}")
+            elif seated and policy.family_of.get(seated) == "xai" \
+                    and policy.local_family.get(task.runtime) != "xai":
+                worker_notes.append(
+                    f"{worker}: xai write seat on {task.runtime} requires "
+                    "dispatch_agent --seat-profile grok-maker-v1")
+        # From here on every reader of the worker's role — review seating, judge
+        # seating, the final resolve — must see the seat the worker actually got.
+        resolver.write_seat_role = worker
+        if history_note:
+            worker_notes.append(history_note)
+        effort, effort_notes = select_effort(task, band, policy)
+        if lp.get("minimum_effort") is not None:
+            asked = lp["minimum_effort"]
+            if policy.efforts.index(asked) > policy.efforts.index(effort):
+                effort_notes.append(f"local_policy raised effort to {asked}")
+                effort = asked
+        disagreement = cfg["review"]["disagreement"]
+
+        def roles_for(rev):
+            needed = [worker] + list(rev["reviewers"])
+            # The judge follows the REVIEW band, not the risk band — a review
+            # promoted by low confidence needs adjudication just as much.
+            if rev["band"] == "CRITICAL" or route_path == "disagreement":
+                needed.append(disagreement["default_judge"])
+            return list(dict.fromkeys(needed))
+
+        # Bounded fixed point. Confidence depends on the fallbacks, the fallbacks
+        # depend on which roles are needed, and which roles are needed depends on
+        # the review band — which confidence can raise. Computing confidence once
+        # from a preliminary role set let a route whose *final* fallbacks pushed it
+        # below the escalation floor still emit as executable.
+        review_band = band
+        promoted_once = False
+        promotion_confidence = None
+        supply_exhausted: str | None = None
+        # Everything the loop body mutates has to be restored at the top of each
+        # pass, or the body is not idempotent and the "fixed point" is a fold.
+        # Round 19: moving the plan inside the loop (round 18's fix) broke the
+        # inherited assumption that a compensation runs at most once per route.
+        # `review`, `applied_compensations`, `judge_role` and `supply_exhausted`
+        # were already rebuilt per pass; `effort` and its notes were not, so a
+        # promoted route raised effort TWICE for one compensation — 16,268 routes
+        # shipped with the notes, the record and the effort all disagreeing, one of
+        # them reporting no compensation at all.
+        base_effort, base_effort_notes = effort, list(effort_notes)
+        ceiling_records: list[dict] = []
+        for _ in range(MAX_PROMOTION_PASSES):
+            effort, effort_notes = base_effort, list(base_effort_notes)
+            # Rebuilt with everything else the body mutates. A fixed point whose
+            # body is not idempotent is a fold, and a ceiling record accumulated
+            # across passes would report a cap the emitted plan never applied.
+            ceiling_records = []
+            review = select_review(review_band, worker, policy, resolver)
+            try:
+                resolved, fallbacks, compensations = resolver.resolve(roles_for(review), write_role=worker)
+            except SupplyExhausted as exc:
+                resolved, fallbacks, compensations = {}, [], []
+                supply_exhausted = str(exc)
+            applied_compensations: list[str] = []
+            for note in compensations:
+                if note == "raise_effort_one_level":
+                    effort = policy.effort_up(effort)
+                    effort_notes.append("compensation: fallback lost family diversity, effort +1")
+                    applied_compensations.append(note)
+                elif note == "raise_effort_to_MAX_and_add_second_review":
+                    effort = policy.efforts[-1]
+                    # The note is written after the outcome is known. Round 19: it
+                    # was written here, before, so a compensation that could not be
+                    # completed still had "effort raised to MAX" in the notes while
+                    # `fallback_compensations_applied` stayed empty — the notes
+                    # claiming a compensation the record denied.
+                    # The name promises two things. Recording it while doing one is the
+                    # same false report this module exists to avoid, so the extra
+                    # reviewer is actually added — and if none can be resolved, the
+                    # compensation is not claimed.
+                    extra = _extra_reviewer(review, worker, policy, resolver)
+                    if extra:
+                        review = dict(review)
+                        review["reviewers"] = list(review["reviewers"]) + [extra]
+                        # `independent` stays the BAND's answer. Round 4 added the flip
+                        # so the extra seat would be de-conflicted; round 10 showed what
+                        # it actually bought — a bonus reviewer upgrading the band's own
+                        # requirement, so that a LOW route whose *compensating* review
+                        # could not be isolated terminated the whole task, and the
+                        # independence invariants started applying to a band that never
+                        # asked. Seat allocation at the emit boundary is unconditional
+                        # and works on resolved models, so the extra seat is checked
+                        # either way; that is what makes this safe to drop.
+                        # A count, not a name. Recording the role invited exactly the
+                        # staleness `self_review_avoided` had to be rescued from: seat
+                        # allocation can re-seat that role afterwards, and then the
+                        # record names a reviewer who is not there. What the
+                        # compensation promises is a SEAT, so the seat count is what it
+                        # records.
+                        review["compensating_reviewers"] = review.get("compensating_reviewers", 0) + 1
+                        effort_notes.append(
+                            "compensation: architect downgraded, effort raised to MAX")
+                        # No re-resolve here. Round 19: this block read as "reflect
+                        # the extra seat in the plan" and was a dead store — every
+                        # one of its outputs is overwritten unconditionally by the
+                        # final resolve at the end of this pass, and nothing between
+                        # reads them (`_deconflict` and `_seat_judge` work through
+                        # `resolver.peek`). Eleventh instance of the class, and a
+                        # fossil besides: its `supply_exhausted or str(exc)` was the
+                        # sticky-shortage policy round 15 removed, preserved here
+                        # where it could not be seen.
+                        applied_compensations.append(note)
+                        effort_notes.append(f"compensation: added a second independent review ({extra})")
+                    else:
+                        effort_notes.append(
+                            "compensation NOT fully applied: no additional reviewer could be resolved"
+                        )
+                else:
+                    raise UnknownCompensationError(
+                        f"fallback_compensations declares the effect {note!r}, which no branch "
+                        f"implements; it would be reported as applied while doing nothing"
+                    )
+            compensations = applied_compensations
+
+            # The worker's effective effort, capped to what its model can receive.
+            # Here rather than after the loop because the compensation above is what
+            # raises the requested value, and here rather than before it for the
+            # same reason. The requested value and its notes are untouched: the
+            # compensation really did raise what was asked for, and `selected_effort`
+            # is what was asked for.
+            #
+            # `peek`, not the provisional `resolved` map. `resolve()` is
+            # all-or-nothing: a shortage on any role empties the map for the whole
+            # pass. `_seat_judge` can then drop the judge so the FINAL resolve
+            # succeeds, and a clamp that already ran against `{}` ships the
+            # uncapped effort. `peek` is pure, depends on no other role, and
+            # equals the final `resolved[worker]` whenever resolution succeeds.
+            # Reviewer seating still moves below, so a reviewer clamp here would
+            # still read a roster that does not ship.
+            worker_model = resolver.peek(worker, write=True)
+            worker_effective = _clamp(policy, effort, worker_model)
+            if worker_effective != effort:
+                floor = _worker_effort_floor(task, band, policy)
+                broken = floor and policy.efforts.index(worker_effective) < policy.efforts.index(floor[1])
+                ceiling_records.append({
+                    "role": worker, "model": worker_model,
+                    "requested": effort, "capped_at": worker_effective,
+                    "floor_broken": floor[0] if broken else None,
+                    "floor_requires": floor[1] if broken else None,
+                })
+
+            # Final de-confliction, at the emit boundary rather than mid-pipeline.
+            #
+            # This invariant has now been broken four times, each in a different place,
+            # because it was being enforced at one point that later code could route
+            # around: the compensation path above appends a reviewer and flips
+            # `independent` to true, so a LOW-band review that never went through
+            # de-confliction was promoted to "independent" with the worker's own model
+            # sitting in a reviewer slot. Checking in the middle protects only the
+            # paths that existed when the check was written. Checking here protects
+            # every path, including ones added later, because nothing runs after it.
+            judge_role = disagreement["default_judge"] if (
+                review["band"] == "CRITICAL" or route_path == "disagreement") else None
+
+            # Seat allocation. This block is unconditional on purpose.
+            #
+            # The previous version wrapped it in `if review["independent"]:`, which is
+            # how the same defect survived a fifth round: a check moved to the boundary
+            # but placed behind a condition is not a boundary, it is a mid-pipeline
+            # check in a new location. The disagreement path sets a judge at ANY band,
+            # and LOW declares `independent: false`, so LOW + disagreement skipped seat
+            # allocation entirely and the implementer adjudicated its own work.
+            #
+            # Reviewer de-confliction is still gated on `independent` — LOW's
+            # worker-reviews-itself is documented design. The judge is not covered by
+            # that exemption: an adjudicator brought in to settle a dispute must not be
+            # one of the parties, whatever the band.
+            if review["independent"]:
+                review = _deconflict(review, worker, policy, resolver)
+
+            if judge_role:
+                review, judge_role = _seat_judge(review, worker, judge_role, policy, resolver)
+
+            try:
+                resolved, fallbacks, _ = resolver.resolve(
+                    list(dict.fromkeys([worker] + list(review["reviewers"])
+                                       + ([judge_role] if judge_role else []))),
+                    write_role=worker)
+                # The final seat plan resolved, so any shortage seen while exploring a
+                # preliminary one is not a fact about this route. Round 15: it was
+                # sticky, and a LOW disagreement route whose provisional
+                # `principal_architect` could not resolve stayed terminal even though
+                # `_seat_judge` had found a complete assignment.
+                supply_exhausted = None
+            except SupplyExhausted as exc:
+                resolved, fallbacks = {}, []
+                supply_exhausted = str(exc)
+            # From the FINAL fallbacks: the plan above is the one that ships, so
+            # the number the promotion decision reads is the number the route
+            # reports. Rounds 16-18 each moved this and each moved it wrong — into
+            # the loop reading a preliminary resolve, then after the loop where the
+            # post-conditions could not see the promotion. The plan and the decision
+            # belong in the same iteration.
+            confidence = routing_confidence(task, fallbacks, cfg)
+            threshold = cfg["router"]["confidence"]["extra_review_below"]
+            # The policy is "raise the review band ONE level" — the loop exists so
+            # the terminal decision sees the final confidence, not to change how
+            # far the promotion goes. Confidence is very nearly invariant in the
+            # review band, so a loop that re-promotes on every pass walks to
+            # CRITICAL every time; that regression put a CRITICAL human gate on
+            # routine documentation work, and a gate that fires on everything
+            # trains people to wave it through.
+            #
+            # Round 18: this settles the BAND only. Round 17 re-ran the promotion
+            # after the emit-boundary post-conditions had already passed, so a
+            # promoted route shipped without the depth, family and de-confliction
+            # checks — a change placed where the checks could not see it, which is
+            # the same shape as a check placed where later code routes around it.
+            # Everything the post-conditions inspect is now built after this loop,
+            # from the band it settled on.
+            if confidence < threshold and review_band != "CRITICAL" and not promoted_once:
+                promoted = policy.bands[policy.bands.index(review_band) + 1]
+                overrides.append(f"low_routing_confidence_raised_review_to_{promoted}")
+                review_band = promoted
+                promoted_once = True
+                # The number the DECISION read. The one the route reports is the
+                # promoted plan's, and the two can differ (see the note below).
+                promotion_confidence = confidence
+                continue
+            break
+        else:  # pragma: no cover - the band ladder is shorter than the pass budget
+            raise ConfigError("review band promotion failed to reach a fixed point")
+
+
+        # Post-condition, asserted rather than assumed. Reviewer duplication is
+        # only a defect where independence was requested; a judge sharing any seat
+        # is a defect always.
+        seat_models = {
+            "worker": resolved.get(worker),
+            **{f"reviewer_{i}": resolved.get(x) for i, x in enumerate(review["reviewers"])},
+        }
+        if review["independent"]:
+            filled = [m for m in seat_models.values() if m]
+            if len(filled) != len(set(filled)):
+                review = dict(review)
+                review["independence_compromised"] = True
+        if judge_role:
+            judge_model = resolved.get(judge_role)
+            parties = [m for m in seat_models.values() if m]
+            outranked = judge_model and parties and (
+                policy.tier_of[judge_model] < max(policy.tier_of[m] for m in parties))
+            if judge_model and (judge_model in parties or outranked):
+                review = dict(review)
+                review["judge_unavailable"] = True
+                judge_role = None
+
+        # Post-conditions on the emitted review, both unconditional.
+        #
+        # The first asks whether the reviewers who ended up in the seats still meet
+        # the depth the band asked for. Fallbacks and de-confliction both re-seat
+        # reviewers under scarcity, and neither consults the band while doing it,
+        # so a HIGH review can be staffed at tier 0. That may be the best available
+        # assignment — it is not one to emit as if the band were satisfied.
+        #
+        # The second asks whether every recorded substitution still describes the
+        # final roster. A record that names a reviewer who is not there is worse
+        # than no record: it is the rationale asserting a fact about the route that
+        # the route contradicts.
+        floor = policy.band_reviewer_floor[review["band"]]
+        shortfall = [
+            {"reviewer": role, "model": resolved[role],
+             "capability_tier": policy.tier_of[resolved[role]], "band_requires": floor}
+            for role in review["reviewers"] if resolved.get(role)
+            and policy.tier_of[resolved[role]] < floor
+        ]
+        stale = [s for s in (review.get("self_review_avoided") or [])
+                 if s.get("with") not in review["reviewers"]]
+        if stale:
+            # Silently dropping the record would satisfy every downstream check
+            # while destroying a disclosure the human was owed — and round 7 found
+            # that a corrective boundary also makes the assertions guarding it
+            # incapable of failing, because the emitted value then satisfies them
+            # by construction. Nothing upstream may produce this state; if one
+            # does, that is a defect in the pipeline and it says so out loud.
+            raise RouterInvariantError(
+                f"substitution record outlived the seat it describes: {stale}; "
+                f"seats hold {review['reviewers']}"
+            )
+        # Scarcity and binding capacity produce the same shortfall and need
+        # different answers. Scarcity is recoverable: the human can wait for the
+        # model to come back. A binding that structurally cannot supply the tier is
+        # not — `openai_only` holds exactly one model at tier 2, so every HIGH
+        # route under a downed bridge on that side gates, permanently, and "proceed"
+        # is the only possible answer. This module's own reasoning is that a gate
+        # firing on everything trains people to wave it through, so the two are
+        # told apart in the output rather than presented identically.
+        # The implementer occupies a distinct model only where independence is
+        # required, and it counts against the floor-tier supply only if it is
+        # itself at or above the floor — a `worker_balanced` implementer does not
+        # consume a tier-2 model. Counting it unconditionally over-stated the
+        # requirement by one and reported an ordinary, recoverable shortage as
+        # permanent, pushing the operator toward "proceed at reduced depth" on a
+        # gate that restoring one model would have cleared.
+        worker_model = resolved.get(worker)
+        seats = len(review["reviewers"]) + (
+            1 if review["independent"] and worker_model
+            and policy.tier_of[worker_model] >= floor else 0)
+        # Every id the binding can reach, including roles outside `role_tiers`
+        # (`worker_balanced_alt`) that the fallback ladder can still seat.
+        supply = {cfg["models"][key]["id"] for key in resolver.binding.values()}
+        unsatisfiable = bool(shortfall) and sum(
+            1 for m in supply if policy.tier_of[m] >= floor) < seats
+        if shortfall:
+            review = dict(review)
+            review["review_depth_reduced"] = shortfall
+            review["band_floor_unsatisfiable"] = unsatisfiable
+
+        fams = {r: policy.family_of[m] for r, m in resolved.items()}
+        reviewer_families = {fams[r] for r in review["reviewers"] if r in fams}
+        cross_family = len(reviewer_families) > 1 or (
+            len(review["reviewers"]) == 1 and review["reviewers"][0] in fams and worker in fams
+            and fams[review["reviewers"][0]] != fams[worker]
+        )
+
+        if resolver.allowed_families is not None and len(resolver.allowed_families) == 0:
+            local_unsat = True
+        if not local_unsat and lp:
+            if lp.get("minimum_capability_tier") is not None and resolved.get(worker):
+                if policy.tier_of[resolved[worker]] < int(lp["minimum_capability_tier"]):
+                    local_unsat = True
+            if lp.get("minimum_reviewers") is not None:
+                if len(review.get("reviewers") or []) < int(lp["minimum_reviewers"]):
+                    local_unsat = True
+            if lp.get("minimum_provider_families") is not None:
+                seated = {policy.family_of[m] for m in resolved.values()}
+                if len(seated) < int(lp["minimum_provider_families"]):
+                    local_unsat = True
+            if lp.get("minimum_effort") is not None and resolved.get(worker):
+                ceiling = policy.ceiling_of.get(resolved[worker])
+                if ceiling is not None and policy.efforts.index(ceiling) < policy.efforts.index(lp["minimum_effort"]):
+                    local_unsat = True
+
+        # The band is settled and the plan above was built from it, so the
+        # confidence that ships is the confidence of what ships. Round 16 found the
+        # two disagreeing; round 17's fix put the correction after the
+        # post-conditions and round 18 moved the whole plan below the loop instead.
+        confidence = routing_confidence(task, fallbacks, cfg)
+        ask = orchestrator_ask(task, policy, cfg, band, confidence)
+        declared = task._host_seat
+        model_cmp, effort_cmp, advisory = host_seat_comparisons(declared, ask, policy)
+        host_seat_advisory = {
+            "declared": dict(declared) if declared else None,
+            "policy_ask": ask,
+            "model_comparison": model_cmp,
+            "effort_comparison": effort_cmp,
+            "advisory": advisory,
+        }
+
+        review_independence = independence(review, task)
+        supplied = len({e.strip() for e in task.isolation_evidence if e.strip()})
+        if supplied and review["independent"] and supplied != len(review["reviewers"]):
+            # The caller typed evidence and it was NOT counted — say so, or the
+            # refusal is invisible and the next caller pads the list further.
+            effort_notes.append(
+                f"isolation evidence not counted: {supplied} id(s) for "
+                f"{len(review['reviewers'])} reviewer seat(s); independence stays "
+                f"{review_independence!r}")
+        judge = judge_role
+
+        band_requires_independence = bool(
+            cfg["review"][review["band"]].get("independent", False))
+
+        # One dispatcher over the configured actions, instead of five hand-written
+        # comparisons. Round 12 found those comparisons validated against a UNION of
+        # the vocabulary while each consumer implemented one word of it, so the
+        # strictest-sounding value silently removed the control — and a key with
+        # exactly one implemented value is not configuration at all, it is a
+        # constant with a config file in front of it. Every action is implemented
+        # here, so every key genuinely selects behaviour and a test can prove it.
+        #
+        # `band_requires_independence` is the BAND's spec, not `review`'s flag: the
+        # architect compensation sets that flag at any band, and keying off it let a
+        # *bonus* reviewer's isolation gap terminate a LOW route.
+        # Each control carries a machine-readable CAUSE alongside its prose reason,
+        # and the cause is emitted. Round 15's reviewers converged on this after the
+        # seventh instance of the class that has cost this loop six rounds: an edit
+        # whose comment claims one thing while the predicate does another. A comment
+        # cannot be checked; a cause code can, and
+        # `test_d19_every_control_fires_exactly_on_its_declared_cause` asserts that
+        # each control's predicate partitions the sweep exactly as its cause says.
+        # Reviewer and judge seats, now that the roster is final. Their floor is
+        # the review band's own effort — the promoted band, because that is the
+        # review that will run. Unlike the worker there is no table/floor split
+        # here: what the band names IS the requirement.
+        review_floor = cfg["review"][review["band"]]["effort"]
+        for role in list(review["reviewers"]) + ([judge] if judge else []):
+            model = resolved.get(role)
+            capped = _clamp(policy, review_floor, model)
+            if capped != review_floor:
+                record = {
+                    "role": role, "model": model,
+                    "requested": review_floor, "capped_at": capped,
+                    "floor_broken": f"review.{review['band']}.effort",
+                    "floor_requires": review_floor,
+                }
+                # Same seat, once. One role can hold two seats two different ways:
+                # `_deconflict` may fail to substitute and leave the worker among
+                # the reviewers (terminal, since that also compromises
+                # independence), and LOW seats `worker_fast` as its own reviewer by
+                # design (`independent: false`, so `_deconflict` never runs and the
+                # route stays executable). Both reach here.
+                existing = next((r for r in ceiling_records if r["role"] == role), None)
+                if existing is None:
+                    ceiling_records.append(record)
+                    continue
+                # One row, and it must read coherently. The seat was asked for two
+                # different levels — its own and the review band's — so the row
+                # reports the HIGHER ask, which is the one any named floor is
+                # measured against. Keeping the worker's lower `requested` beside a
+                # review floor produced rows saying "requested LOW" next to
+                # "requires MEDIUM", which is not a fact about anything.
+                if policy.efforts.index(record["requested"]) > policy.efforts.index(existing["requested"]):
+                    existing["requested"] = record["requested"]
+                # A floor that broke is never erased, and when BOTH broke the
+                # stricter one is what the human has to satisfy — reporting the
+                # weaker would understate what the seat owes.
+                if record["floor_broken"] and (
+                        not existing["floor_broken"]
+                        or policy.efforts.index(record["floor_requires"])
+                        > policy.efforts.index(existing["floor_requires"])):
+                    existing["floor_broken"] = record["floor_broken"]
+                    existing["floor_requires"] = record["floor_requires"]
+
+        hitl = cfg["human_in_the_loop"]
+        controls = [
+            Control("on_independence_unachievable", "caller_declared_isolation_gap",
+                    band_requires_independence and task.isolation_available is False,
+                    "INDEPENDENCE_UNAVAILABLE"),
+            Control("on_any_critical_review", "critical_review_band",
+                    review["band"] == "CRITICAL",
+                    "HUMAN_REQUIRED"),
+            Control("on_judge_unavailable", "no_adjudicator",
+                    bool(review.get("judge_unavailable")),
+                    "HUMAN_REQUIRED"),
+            Control("on_review_depth_reduced", "review_below_band",
+                    bool(review.get("review_depth_reduced")),
+                    "HUMAN_REQUIRED"),
+            Control("on_effort_below_floor", "effort_below_floor",
+                    any(r["floor_broken"] for r in ceiling_records),
+                    "HUMAN_REQUIRED"),
+            Control("on_termination_unconfirmed", "unconfirmed_prior_termination",
+                    task.has("termination_unconfirmed"),
+                    "HUMAN_REQUIRED"),
+        ]
+
+        terminal = None
+        requires_human = False
+        notified: list[tuple[str, str]] = []
+        fired_causes: list[str] = []
+        # First, and outside the configurable set: a route whose history cannot be
+        # used is not a policy choice, and it must not be masked by a control that
+        # happens to fire on the same input. Round 13 found `prior_failures=4` with
+        # no models reported as `HUMAN_REQUIRED`, and a missing history alongside an
+        # isolation gap reported as `INDEPENDENCE_UNAVAILABLE` — both true, neither
+        # the reason the caller has to act on.
+        if history_note:
+            # Unconditional, and that matters twice over. Round 14 suppressed this
+            # branch when the budget was spent — to stop sending the caller after a
+            # history it could not use — and round 15 found that had moved an
+            # unconditional gate under a configurable control, so
+            # `on_retry_exhaustion: notify_human` routed a task with no history at
+            # all, at exit 0. The gate stays; what changes is which terminal it
+            # names, because with the budget gone the actionable fact is the budget.
+            terminal = "HUMAN_REQUIRED" if budget_spent else "RETRY_HISTORY_REQUIRED"
+
+        # Likewise not configurable: a review whose seats could not be given
+        # distinct models is the implementer reviewing itself. It was an
+        # unconditional gate before this dispatcher existed, and round 13 caught the
+        # move making it optional — `notify_human` emitted a route with two
+        # identical reviewers, `independence_required: true`, at exit 0. Making a
+        # key a real choice must not include the choice to delete a protection that
+        # was never optional.
+        # Before the derived gates. When nothing resolves, the seats cannot be given
+        # distinct models either — so `independence_compromised` is true, and round
+        # 15 found it claiming the terminal while the actual cause sat in a note.
+        # A report that names a symptom sends the operator to the wrong problem.
+        if budget_spent:
+            # Ahead of the shortage, for the reason the shortage was put ahead of
+            # the seat collision: name the fact the caller has to act on. Round 17
+            # found the mirror of the case round 16 fixed — a spent budget with a
+            # complete history reported as `SUPPLY_EXHAUSTED`, which is true and is
+            # not what stops the next attempt.
+            #
+            # Unconditional, with no `on_retry_exhaustion` key above it: round 17
+            # measured all three of that key's actions producing the same route, so
+            # a key offering to vary a safety cap was a constant wearing a config
+            # file. No config value may dispatch an attempt past the cap.
+            #
+            # And it says so. Round 18: deleting the control left this terminal
+            # ANONYMOUS — `HUMAN_REQUIRED` with no cause, no note and nothing in the
+            # rationale, so the one fact the caller had to act on was the one thing
+            # the route did not state. Removing a control must not remove its
+            # disclosure.
+            terminal = terminal or "HUMAN_REQUIRED"
+            requires_human = True
+            worker_notes.append(
+                f"retry budget spent: {task.prior_failures} attempt(s) against a cap of "
+                f"{cfg['retry']['max_total_implementation_attempts']} — stop retrying and "
+                f"surface what was tried to a human")
+
+        if local_unsat:
+            worker_notes.append("local_policy cannot be satisfied")
+            terminal = terminal or "UNSATISFIABLE_LOCAL_POLICY"
+
+        if supply_exhausted:
+            worker_notes.append(f"supply exhausted: {supply_exhausted}")
+            # `terminal or`, not `=`. The stated design is that this outranks the
+            # states it PRODUCES — `independence_compromised` is one, because with
+            # nothing resolved the seats cannot be given distinct models. A missing
+            # retry history and a spent budget are not produced by it, and round 16
+            # found the plain assignment burying "pass --prior-models with one model
+            # id per failure" under a shortage the caller cannot fix. Placing this
+            # ahead of the `terminal or` gate below is all the precedence the
+            # reasoning ever asked for.
+            terminal = terminal or "SUPPLY_EXHAUSTED"
+
+        if review.get("independence_compromised"):
+            # No inner `if band_requires_independence`: it cannot be false here.
+            # `independence_compromised` is only ever set behind `review["independent"]`,
+            # which since round 13 is the band's own spec — so the flag implies the
+            # band asked. A condition that cannot be false reads as a safeguard and
+            # guards nothing, which is the shape this artifact keeps removing.
+            requires_human = True
+            terminal = terminal or "INDEPENDENCE_UNAVAILABLE"
+
+        for control in controls:
+            if not control.fired:
+                continue
+            key, action = control.key, hitl[control.key]
+            terminal_name, why = control.terminal, control.reason
+            fired_causes.append(control.cause)
+            if action == "terminal":
+                terminal = terminal or terminal_name
+                effort_notes.append(f"terminal/{key}: {why}")
+            elif action == "require_human_confirmation":
+                requires_human = True
+                effort_notes.append(f"confirm/{key}: {why}")
+            elif action == "notify_human":
+                # Deferred: whether the route proceeds is not known until every
+                # control and every non-configurable terminal has been evaluated,
+                # and round 14 found this note asserting "proceeding without a
+                # gate" on a route that was terminal at exit 1.
+                notified.append((key, why))
+            else:
+                # No `else: treat it as the weakest action`. `Policy` validates
+                # this vocabulary at build time, and since 1.2.0 a dict config
+                # edited between routes is rebuilt (the content digest moved), so
+                # that path now raises in `Policy.__init__` and never reaches
+                # here. This stays as depth: the remaining way in is a non-dict
+                # Mapping, whose Policy is still cached on identity alone — and
+                # defaulting an unknown word to "notify" is a control failing
+                # OPEN, which is the one direction it must never fail.
+                raise ConfigError(
+                    f"human_in_the_loop.{key} = {action!r} is not an implemented action")
+
+        # Outcomes the config does not govern: these are properties of the route,
+        # not policy choices.
+        if terminal is None:
+            if ceiling_exhausted:
+                terminal = "HUMAN_REQUIRED"
+            elif confidence < cfg["router"]["confidence"]["escalate_below"]:
+                terminal = "ESCALATE_ROUTING"
+
+        # A terminal outcome always needs a person, whatever the controls above
+        # decided — including the ones the config set to `notify_human`.
+        requires_human = bool(terminal) or requires_human
+
+        # Deferral, decided last so it can see every gate that fired. Round 20:
+        # what moves is WHEN the human is asked, and only where the review itself
+        # can be trusted. `independence_compromised` and `review_depth_reduced` say
+        # it cannot be — the reviewers are the implementer under another label, or
+        # there are fewer of them than the band requires — and an incident does not
+        # make an untrustworthy review acceptable. Those keep blocking, as does any
+        # terminal.
+        #
+        # `judge_unavailable` deliberately does NOT block deferral. An adjudicator
+        # is needed only if the two reviewers disagree, which is an event AFTER the
+        # review runs, and the deferred confirmation is where that lands anyway.
+        # Excluding it looked prudent and was measured to be wrong: the canonical
+        # incident — a CRITICAL hotfix whose frontier models are all sitting in
+        # reviewer seats — has no free adjudicator almost by construction, so the
+        # exclusion turned the deferral off exactly where it was written for.
+        deferred = False
+        if (task.has("production_hotfix") and requires_human and not terminal
+                and hitl["on_production_hotfix"] == "defer_human_confirmation"
+                and not review.get("independence_compromised")
+                and not review.get("review_depth_reduced")
+                and not any(r["floor_broken"] for r in ceiling_records)
+                # A prior write-capable attempt whose process tree could not be
+                # confirmed dead is not made acceptable by an incident — it is
+                # made MORE dangerous: hotfix pressure is exactly when a second
+                # writer racing the first is likeliest. This gate is a hold,
+                # not a disclosure a later confirmation can absorb, so
+                # production_hotfix's deferral does not reach it either.
+                and not task.has("termination_unconfirmed")):
+            deferred = True
+            requires_human = False
+            effort_notes.append(
+                "production hotfix: the review runs at full depth and the human "
+                "confirmation is owed AFTER the fix ships, not before it")
+
+        for key, why in notified:
+            if terminal:
+                outcome = "recorded; the route is terminal for another reason"
+            elif requires_human:
+                # Round 15: this said "proceeding without a gate" whenever the route
+                # was not terminal, which is false when a DIFFERENT control gated it.
+                outcome = "recorded; another control requires confirmation"
+            else:
+                outcome = "proceeding without a gate, per policy"
+            effort_notes.append(f"notify_human/{key}: {why} — {outcome}")
+
+        # The router cannot verify where an isolation receipt came from: it is a
+        # caller-supplied string bound to no dispatch, so `enforced` reports what
+        # the caller claims and unlocks nothing. That is why the CRITICAL control
+        # above keys on the band and never on the receipt — making the strongest
+        # gate in the policy openable by typing is the failure this skill is about.
+
+        # A terminal route emits no execution bindings at all. Nulling only the
+        # worker left a consumer able to dispatch the reviewers from a route the
+        # rationale said must not be executed.
+        executable = terminal is None
+        if executable:
+            # Served-model caveat disclosure (design §4 B5): per MODEL once,
+            # registry key not model id (terminal withholding scans ids), the
+            # matched flags joined so multiple caveats stay one line.
+            disclosed: set[str] = set()
+            for role in dict.fromkeys([worker] + list(review["reviewers"])
+                                      + ([judge] if judge else [])):
+                model = resolved.get(role)
+                if not model or model in disclosed:
+                    continue
+                disclosed.add(model)
+                key = policy.id_to_key[model]
+                caveats = cfg["models"][key].get("served_model_caveats") or []
+                matched = sorted(set(caveats) & set(task.flags))
+                if matched:
+                    # The vendor comes from the SEATED model's family, never a
+                    # literal: `served_model_caveats` is accepted on any registry
+                    # row, so hard-coding one vendor is a false disclosure one
+                    # config edit away (round-1 review F3). The registry key still
+                    # does the identifying — model ids stay out of notes.
+                    worker_notes.append(
+                        f"provider may substitute another {policy.family_of[model]} "
+                        f"model for {', '.join(matched)} content; the requested "
+                        f"identity of {key} is declared_only")
+        all_notes = worker_notes + effort_notes
+        # A promotion is decided on the plan that existed BEFORE it, and the plan it
+        # produces is what ships: promoting the review band reseats reviewers, which
+        # can retire the very fallback whose penalty triggered the promotion. The
+        # emitted confidence is the promoted plan's, so a route could carry
+        # `low_routing_confidence_raised_review_to_X` beside a confidence at or above
+        # the threshold — a recorded reason the same route disproves. Un-promoting
+        # would oscillate (the un-promoted plan is low again), so the conservative
+        # band stands and the recovery is disclosed instead of hidden.
+        extra_review_below = cfg["router"]["confidence"]["extra_review_below"]
+        if promoted_once and confidence >= extra_review_below:
+            all_notes.append(
+                f"review band promoted at pre-promotion confidence "
+                f"{promotion_confidence:.2f}; the promoted plan resolves at "
+                f"{confidence:.2f} (>= {extra_review_below:.2f}) — the promotion "
+                f"stands and the reported confidence is the promoted plan's")
+        if advisory == "upgrade_recommended":
+            clauses = []
+            if model_cmp == "below":
+                clauses.append(
+                    f"model tier {policy.tier_of[declared['model']]} < {ask['tier']}")
+            if effort_cmp == "below":
+                clauses.append(f"effort {declared['effort']} < {ask['effort']}")
+            suffix = f" [{', '.join(ask['raised_by'])}]" if ask["raised_by"] else ""
+            all_notes.append("host seat below orchestrator ask: "
+                             + "; ".join(clauses) + suffix)
+        if model_cmp == "unrecognized":
+            all_notes.append(
+                "host seat model is not in the registry (model_comparison=unrecognized): "
+                "the registry may be stale - bump the id and re-probe")
+        effective_policy = {
+            "minimum_capability_tier": lp.get("minimum_capability_tier"),
+            "minimum_effort": lp.get("minimum_effort"),
+            "minimum_reviewers": lp.get("minimum_reviewers"),
+            "minimum_provider_families": lp.get("minimum_provider_families"),
+            "allowed_families": lp.get("allowed_families"),
+        }
+        worker_model = resolved.get(worker) if executable else None
+        result = {
+            "route_schema_version": ROUTE_SCHEMA_VERSION,
+            "router_plugin_version": plugin_manifest_version(),
+            "policy_sha256": policy_hash,
+            "request_sha256": request_sha,
+            "decision_fingerprint": decision_fingerprint_of(
+                request_sha, policy_hash, plugin_manifest_version()),
+            "effective_policy": effective_policy,
+            "host_seat_advisory": host_seat_advisory,
+            "worker_seat": {
+                "kind": seat_kind,
+                "source": seat_source,
+                "overrode_class_default": seat_downgraded,
+                # What this host can dispatch write work to, as the transport
+                # table stands. Recorded on every route, including `read_only`
+                # ones where it filtered nothing: the point of the metrics is to
+                # let someone reconstruct what was AVAILABLE at decision time, and
+                # a field that appears only when it bit cannot do that.
+                "write_capable_families": sorted(
+                    f for f in set(policy.family_of.values())
+                    if policy.write_capable(task.runtime, f)),
+            },
+            "selected_capability_tier": (
+                policy.tier_of[worker_model] if worker_model else None),
+            "selected_families": sorted({
+                policy.family_of[m] for m in resolved.values()
+            }) if executable else [],
+            "local_policy_applied": bool(lp),
+            "task_class": task.task_class,
+            "complexity": task.complexity,
+            "uncertainty": task.uncertainty,
+            "blast_radius": task.blast_radius,
+            "reversibility": task.reversibility,
+            "reasoning_centric": task.reasoning_centric,
+            "risk_score": risk_score,
+            "risk_band": band,
+            "band_overrides_applied": overrides,
+            "band_overrides_redundant": redundant_overrides,
+            "critical_flags": task.critical_flags(policy),
+            "route_path": route_path,
+            "terminal": terminal,
+            "selected_role": worker if executable else None,
+            "selected_model": resolved.get(worker) if executable else None,
+            "selected_effort": effort if executable else None,
+            # What the worker's model will actually receive. Equal to
+            # `selected_effort` when it has no ceiling. The pair is deliberately not
+            # collapsed: the first is what the policy asked for, the second is what
+            # runs, and reporting the ask as the outcome is how a control becomes a
+            # false assurance.
+            "selected_effort_effective": worker_effective if executable else None,
+            "selected_effort_native": (
+                cfg["effort_map"][policy.family_of[resolved[worker]]][worker_effective]
+                if executable else None),
+            "review": {
+                "band": review["band"],
+                "reviewers": review["reviewers"],
+                "reviewer_models": [resolved.get(r) for r in review["reviewers"]] if executable else [],
+                "effort": review["effort"] if executable else None,
+                "independence_required": review["independent"],
+                "review_independence": review_independence,
+                "required_checks": review.get("required_checks", []),
+                "judge": judge,
+                "judge_model": (resolved.get(judge) if judge else None) if executable else None,
+                "self_review_avoided": review.get("self_review_avoided") or [],
+                "independence_compromised": bool(review.get("independence_compromised")),
+                "judge_unavailable": bool(review.get("judge_unavailable")),
+                # A terminal route emits no concrete model anywhere, this field
+                # included. The shortfall is still reported — the human needs to
+                # know the review was thin — but with the binding withheld, the
+                # same way `fallbacks_applied` scrubs ids two fields below.
+                "review_depth_reduced": [
+                    s if executable else {**s, "model": None}
+                    for s in (review.get("review_depth_reduced") or [])
+                ],
+                "band_floor_unsatisfiable": bool(review.get("band_floor_unsatisfiable")),
+                # Not gated on `executable`: that rule exists to withhold concrete
+                # MODELS from a terminal route, and a count is not a model. Zeroing
+                # it produced a terminal route reporting the compensation applied,
+                # two reviewers seated, and zero compensating reviewers.
+                "compensating_reviewers": review.get("compensating_reviewers", 0),
+            },
+            "cross_family_review": cross_family,
+            "fallbacks_applied": (
+                fallbacks if executable
+                else [f.split(":")[0] + ": binding withheld (terminal route)"
+                      if ":" in f and "->" in f else f for f in fallbacks]
+            ),
+            # Scrubbed the way `review_depth_reduced` is: the cap is still
+            # disclosed on a terminal route — a human deciding what went wrong
+            # needs it — but with the binding withheld.
+            "effort_ceiling_applied": [
+                r if executable else {**r, "model": None} for r in ceiling_records
+            ],
+            "fallback_compensations_applied": compensations,
+            "unavailable_models": sorted(resolver.blocked),
+            "excluded_prior_failures": sorted(resolver.failed),
+            "escalation_count": task.prior_failures,
+            "retry_count": task.prior_failures,
+            "routing_confidence": confidence,
+            # A heuristic gate score (base minus penalties), NOT a calibrated
+            # success probability. The kind is emitted so no consumer has to
+            # guess which one it is reading.
+            "routing_confidence_kind": "heuristic_policy_score",
+            "requires_human_confirmation": requires_human,
+            # Which configurable controls fired, by cause rather than by prose. The
+            # reason strings are for people; these are what a test can hold the
+            # predicate to.
+            "human_control_causes": sorted(fired_causes),
+            # Dispatchable now, and a confirmation is owed once it has shipped. Not
+            # folded into `requires_human_confirmation`: a caller that blocks on
+            # that boolean would block on this too, which is the whole thing the
+            # deferral exists to avoid.
+            "human_confirmation_deferred": deferred,
+            "notes": all_notes,
+        }
+        return result
+    finally:
+        resolver.write_seat_role = None
 
 
 def explain(task: Task, r: dict, policy: Policy) -> str:
