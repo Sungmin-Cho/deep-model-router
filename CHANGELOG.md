@@ -7,6 +7,37 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] — 2026-09-03 (two-axis routing)
+
+### Added
+
+- An execution-difficulty axis: `execution_score` (3×complexity + 2×uncertainty +
+  `unfamiliar_codebase` + `tool_heavy` + `cross_service_change`) and `execution_band`
+  (EASY / NORMAL / HARD / VERY_HARD) are computed alongside the risk score and
+  emitted on every route, terminal ones included.
+- `execution_selection`, a class × execution-band worker table. The worker is the
+  stronger of that cell and what the class × risk-band table would have selected,
+  compared on the resolved model's capability tier; the risk-band selection remains
+  a floor, and the execution cell yields whenever adopting it would change the
+  review or control contract for the worse.
+- Effort floors `execution_HARD: HIGH` and `execution_VERY_HARD: VERY_HIGH`.
+- `router.bands`, `router.score_weights`, `execution.bands` and `execution.score_weights`
+  are validated for shape and contiguity at load.
+
+### Changed
+
+- A technically hard but isolated task now escalates its worker without touching
+  its review depth: review depth still follows the risk band alone. No route
+  receives a weaker worker than in 1.12.1, no route gains a terminal state or a
+  human control it did not have, and a route the caller's `local_policy` made
+  unsatisfiable can become routable when the stronger worker meets the floor.
+- On a MEDIUM route whose worker rose from the fast tier, the single reviewer is
+  now chosen for that stronger worker by the existing cross-family rule.
+- `unfamiliar_codebase`, `tool_heavy` and `cross_service_change` are consumed by the
+  execution axis; they were accepted and ignored before.
+- The annotated route inventory moved from `SKILL.md` to `references/control-loop.md`,
+  which is now its only owner. The Codex plugin description names both axes.
+
 ## [1.12.1] — 2026-09-03 (an unambiguous citation)
 
 ### Fixed

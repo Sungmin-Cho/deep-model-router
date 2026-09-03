@@ -7,6 +7,33 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [1.13.0] — 2026-09-03 (2축 라우팅)
+
+### Added
+
+- 실행 난이도 축: `execution_score`(3×complexity + 2×uncertainty + `unfamiliar_codebase` +
+  `tool_heavy` + `cross_service_change`)와 `execution_band`(EASY / NORMAL / HARD / VERY_HARD)를
+  위험 점수와 함께 계산해 terminal 라우트를 포함한 모든 라우트에 낸다.
+- `execution_selection` — class × 실행 밴드 워커 표. 워커는 그 셀과 class × 위험 밴드 표가
+  골랐을 워커 중 resolved capability tier가 강한 쪽이며, 위험 밴드 선택은 floor로 남고, 실행
+  셀을 앉히면 리뷰·통제 계약이 나빠지는 경우 실행 셀이 양보한다.
+- effort floor `execution_HARD: HIGH`, `execution_VERY_HARD: VERY_HIGH`.
+- `router.bands`, `router.score_weights`, `execution.bands`, `execution.score_weights`를 로드 시
+  형태·연속성 검증.
+
+### Changed
+
+- 기술적으로 어렵지만 고립된 작업은 리뷰 깊이를 건드리지 않고 워커만 올린다. 리뷰 깊이는
+  여전히 위험 밴드만 따른다. 어떤 라우트도 1.12.1보다 약한 워커를 받지 않고, 없던 terminal이나
+  사람 통제를 새로 얻지 않으며, 호출자의 `local_policy`가 만족 불가였던 라우트는 더 강한
+  워커가 floor를 만족하면 라우팅 가능해진다.
+- fast tier에서 워커가 올라간 MEDIUM 라우트의 단일 리뷰어는 기존 cross-family 규칙이 그
+  강한 워커에 대해 고른다.
+- `unfamiliar_codebase`, `tool_heavy`, `cross_service_change`를 실행 축이 소비한다 — 이전에는
+  받아서 무시했다.
+- 주석 달린 라우트 인벤토리가 `SKILL.md`에서 `references/control-loop.md`로 이동해 그 파일이
+  유일한 소유자가 됐다. Codex 플러그인 설명이 두 축을 명시한다.
+
 ## [1.12.1] — 2026-09-03 (모호하지 않은 인용)
 
 ### Fixed
