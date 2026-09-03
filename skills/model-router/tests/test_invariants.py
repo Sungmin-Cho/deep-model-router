@@ -1291,9 +1291,10 @@ def test_t15_where_the_cell_won_review_depth_is_the_baseline_s():
             # the stronger worker makes it routable. A terminal route nulls its
             # review fields, so there is no depth to preserve — what must hold is
             # that the unlock went that way and not the other, which row 1 of the
-            # S6 comparator and T3(b) both enforce. Measured on the paired sample:
-            # exactly one route, a codex-runtime MIGRATION with every Claude model
-            # withheld, where 1.12.1 returned INDEPENDENCE_UNAVAILABLE.
+            # S6 comparator and T3(b) both enforce. Measured 2026-09-03: 1 of 79
+            # raised routes on the 1/8 sample, 21 under DMR_FULL_BASELINE=1 — all
+            # heavily-scarce rows where 1.12.1 returned INDEPENDENCE_UNAVAILABLE and
+            # the stronger worker frees an independent reviewer pair.
             assert new["terminal"] is None, kw
             unlocked += 1
             continue
@@ -1301,7 +1302,9 @@ def test_t15_where_the_cell_won_review_depth_is_the_baseline_s():
                (old["review"]["band"], old["review"]["effort"], len(old["review"]["reviewers"])), kw
         seen += 1
     assert seen >= T15_SEEN_MIN, seen
-    assert unlocked <= 1, unlocked
+    # Unlocking is the exception, not the mechanism: most raised routes were already
+    # routable in 1.12.1 and had their review depth preserved above.
+    assert unlocked < seen, (unlocked, seen)
 
 
 def test_t15_a_fallback_that_would_promote_the_band_makes_the_cell_yield():
@@ -1344,3 +1347,76 @@ def test_t17_plan_is_order_independent_and_leaves_the_resolver_clean():
     # C's role (senior_engineer) is a reviewer seat in plan(L): it resolves the same
     # whether or not plan(C) ran first — write_seat_role did not leak.
     assert b1["review"]["reviewer_models"] == b2["review"]["reviewer_models"]
+
+
+# --- T3: the previous release is the oracle ---------------------------------
+
+# Pinned at half the values count_paired.py measured on 2026-09-03 (design §5(c)):
+T3_COMPARED_MIN = 15248     # measured 30,496 paired routes
+T3_RAISED_MIN = 39          # measured 79 raised
+T3_EFFORT_ONLY_MIN = 77     # measured 154 effort-only deltas (0 before the Task 6 floors)
+
+
+def test_t3_no_route_is_weaker_than_1_12_1_and_notes_match_changes():
+    import route_task as rt
+    base = load_baseline(); bcfg = _bcfg(base)
+    policy = rt.Policy.of(CFG)
+    EXCLUDED = {"execution_score", "execution_band", "rationale", "policy_sha256", "decision_fingerprint",
+                "router_plugin_version", "selected_effort", "selected_effort_effective",
+                "selected_effort_native", "effort_ceiling_applied", "notes"}
+    compared = raised = yielded = effort_only = 0
+    for kw, new in _paired_population():
+        old = base.route(base.Task(**kw), bcfg)
+        compared += 1
+        _assert_not_weaker(new, old)                                         # (a)(b)(c)
+        rn, yn = _raised(new), _yielded(new)
+        assert len(rn) <= 1 and len(yn) <= 1 and not (rn and yn)
+        assert not (rn and new["terminal"]), kw                              # a terminal route never "raised" [P2-opus-missing-4]
+        assert bool(rn) == (new["selected_model"] != old["selected_model"]), kw   # (d)
+        if yn:
+            assert new["selected_model"] == old["selected_model"], kw             # (e)
+            yielded += 1
+        if rn:
+            raised += 1
+            continue
+        # (f) no execution note: identical save the excluded fields; (g) effort-only delta accounted for
+        floor_notes = [n for n in new["notes"] if n.startswith("execution band") and "floored effort" in n]
+        assert {k: v for k, v in new.items() if k not in EXCLUDED} == {k: v for k, v in old.items() if k not in EXCLUDED}, kw
+        assert [n for n in new["notes"] if not n.startswith("execution band")] == old["notes"], kw
+        if new["terminal"]:
+            assert new["selected_effort"] is None, kw
+            continue
+        # (g) exact, not merely "went up" [P3-sol-F4]. The execution floor is applied
+        # INSIDE `select_effort`, i.e. before the relative rules that run later in the
+        # plan (`raise_effort_one_level`, and the MAX compensation that raises the
+        # effort before it knows whether a second reviewer resolves and so does not
+        # always record itself). It therefore COMPOSES with them instead of capping the
+        # result: a route the compensation took HIGH -> VERY_HIGH in 1.12.1 goes
+        # VERY_HIGH -> MAX here. So measure what the floor added at its own stage and
+        # require the final request to be the baseline's shifted by exactly that, clamped
+        # at the top of the scale; effective = that clamped by the SAME model's ceiling;
+        # native = effort_map under the model's family.
+        floors = CFG["effort_floors"]
+        floor = {"HARD": floors["execution_HARD"], "VERY_HARD": floors["execution_VERY_HARD"]}.get(new["execution_band"])
+        probe = Task(**kw)
+        base_floored, _ = rt.select_effort(probe, new["risk_band"], new["execution_band"], policy)
+        base_plain, _ = rt.select_effort(probe, new["risk_band"], "EASY", policy)   # no band has a floor at EASY
+        delta = policy.efforts.index(base_floored) - policy.efforts.index(base_plain)
+        assert delta >= 0 and (delta == 0 or floor is not None), kw
+        expected_req = policy.efforts[min(policy.efforts.index(old["selected_effort"]) + delta,
+                                          len(policy.efforts) - 1)]
+        assert new["selected_effort"] == expected_req, kw
+        assert new["selected_effort_effective"] == rt._clamp(policy, expected_req, new["selected_model"]), kw
+        family = policy.family_of[new["selected_model"]]
+        assert new["selected_effort_native"] == CFG["effort_map"][family][new["selected_effort_effective"]], kw
+        if delta:
+            assert len(floor_notes) == 1 and floor_notes[0].endswith(f"floored effort at {floor}"), kw
+            if new["selected_effort"] != old["selected_effort"]:
+                effort_only += 1
+        else:
+            assert floor_notes == [], kw
+        if new["selected_effort"] == old["selected_effort"]:
+            # Same request, same model: the ceiling record cannot have moved.
+            assert new["effort_ceiling_applied"] == old["effort_ceiling_applied"], kw
+    assert compared >= T3_COMPARED_MIN and raised >= T3_RAISED_MIN and effort_only >= T3_EFFORT_ONLY_MIN, \
+        (compared, raised, yielded, effort_only)

@@ -491,3 +491,13 @@ def test_s3_treats_an_unresolvable_cell_as_tier_minus_one(monkeypatch):     # [P
     monkeypatch.setattr(resolver, "peek", lambda role, *, write=False: None)
     cand, legacy = rt.select_worker(task, "LOW", "NORMAL", policy, resolver)
     assert cand is legacy
+
+
+# --- T10: the MEDIUM reviewer follows the stronger worker (intended) ---------
+
+def test_t10_medium_reviewer_identity_follows_the_raised_worker():
+    out = r(task_class="IMPLEMENTATION", complexity=3, blast_radius=1)     # risk 5 MEDIUM, exec 9 NORMAL
+    assert out["selected_role"] == "worker_balanced"
+    assert out["review"]["band"] == "MEDIUM" and out["review"]["effort"] == "HIGH"
+    assert out["review"]["reviewers"] == ["reasoning_specialist"]
+    assert out["review"]["reviewer_models"] == [ID("openai_reasoning")]
