@@ -997,7 +997,12 @@ verification_ledger:
         prefix does not reach python3; h5 (acceptEdits plus --sandbox
         workspace) never started -- grok refused to run rather than apply a
         profile it could not register.
-        ACCEPTANCE, attempt d14-supervisor-path: the full supervisor spawned a
+        ACCEPTANCE, attempt acceptance/d14-supervisor-path (the directory is
+        part of the citation: an earlier attempt of the same id sits at
+        probes/d14-supervisor-path.json and is FAILED -- the outer host was
+        sandboxed there and the child could not read the keychain. A reader
+        chasing the bare id meets the failing one first): the full supervisor
+        spawned a
         claude child (claude-haiku-4-5 @ low, --permission-mode acceptEdits
         --strict-mcp-config) from a grok turn and graded state SUCCEEDED,
         exit_status 0, schema_valid true, termination_confirmed true. What
