@@ -2010,6 +2010,8 @@ class _Prelude:
     overrides: tuple[str, ...]
     redundant_overrides: tuple[str, ...]
     route_path: str | None
+    execution_score: int
+    execution_band: str
 
 
 def route(task: Task, cfg: dict | None = None) -> dict:
@@ -2063,13 +2065,16 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     risk_score = score(task, cfg)
     band = band_from_score(risk_score, policy)
     band, overrides, redundant_overrides, route_path = apply_overrides(task, band, policy)
+    exec_score = execution_score(task, cfg)
+    exec_band = policy.execution_band_of(exec_score)
 
     pre = _Prelude(request_sha=request_sha, policy_hash=policy_hash, lp=lp,
                    local_unsat=local_unsat, history_note=history_note,
                    budget_spent=budget_spent, seat_kind=seat_kind,
                    seat_source=seat_source, seat_downgraded=seat_downgraded,
                    risk_score=risk_score, band=band, overrides=tuple(overrides),
-                   redundant_overrides=tuple(redundant_overrides), route_path=route_path)
+                   redundant_overrides=tuple(redundant_overrides), route_path=route_path,
+                   execution_score=exec_score, execution_band=exec_band)
     choice = select_worker(task, band, policy, resolver)
     result = _plan(task, policy, cfg, pre, resolver, choice)
     result["rationale"] = explain(task, result, policy)
@@ -2843,6 +2848,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             "reasoning_centric": task.reasoning_centric,
             "risk_score": risk_score,
             "risk_band": band,
+            "execution_score": pre.execution_score,
+            "execution_band": pre.execution_band,
             "band_overrides_applied": overrides,
             "band_overrides_redundant": redundant_overrides,
             "critical_flags": task.critical_flags(policy),
@@ -2933,7 +2940,8 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
     # denominator the scorer could no longer reach.
     parts = [f"{task.task_class} scored {r['risk_score']}/{policy.max_risk_score} "
              f"(c={task.complexity} u={task.uncertainty} b={task.blast_radius} r={task.reversibility}) "
-             f"-> band {r['risk_band']}."]
+             f"-> band {r['risk_band']}; execution {r['execution_score']}/{policy.max_execution_score} "
+             f"-> {r['execution_band']}."]
     if r["band_overrides_applied"]:
         parts.append(f"Overrides applied: {', '.join(r['band_overrides_applied'])}.")
     if r["band_overrides_redundant"]:
@@ -3222,6 +3230,8 @@ def main(argv: list[str] | None = None) -> int:
 def _print_text(r: dict) -> None:
     print(f"risk_score:  {r['risk_score']}")
     print(f"risk_band:   {r['risk_band']}")
+    print(f"exec_score:  {r['execution_score']}")
+    print(f"exec_band:   {r['execution_band']}")
     print(f"overrides:   {r['band_overrides_applied'] or '(none)'}")
     if r["band_overrides_redundant"]:
         print(f"  already satisfied by another rule: {r['band_overrides_redundant']}")

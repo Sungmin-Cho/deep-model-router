@@ -123,3 +123,48 @@ def test_t20_execution_score_formula():
              reversibility=0, flags=["tool_heavy"])
     assert execution_score(t, CFG) == 3 * 3 + 2 * 1 + 1
     assert Policy.of(CFG).execution_band_of(12) == "HARD"
+
+
+# --- T7: output contract ----------------------------------------------------
+
+def test_t7_two_fields_next_to_risk_and_on_terminal_routes():
+    out = r(task_class="IMPLEMENTATION", complexity=3)
+    keys = list(out)
+    assert keys.index("execution_score") == keys.index("risk_band") + 1
+    assert keys.index("execution_band") == keys.index("execution_score") + 1
+    assert (out["execution_score"], out["execution_band"]) == (9, "NORMAL")
+    term = r(task_class="IMPLEMENTATION", complexity=3, prior_failures=1)   # RETRY_HISTORY_REQUIRED
+    assert term["terminal"] == "RETRY_HISTORY_REQUIRED"
+    assert (term["execution_score"], term["execution_band"]) == (9, "NORMAL")
+
+
+def test_t7_rationale_names_both_axes_with_derived_denominators():
+    out = r(task_class="IMPLEMENTATION", complexity=3)
+    assert out["rationale"].startswith(
+        "IMPLEMENTATION scored 3/18 (c=3 u=0 b=0 r=0) -> band LOW; execution 9/18 -> NORMAL.")
+
+
+def test_t7_rationale_denominator_follows_a_mutated_policy():                # moved from T20 [P3-opus-F1]
+    cfg = _cfg(lambda c: (c["execution"]["flag_weights"].update(tool_heavy=2),
+                         c["execution"]["bands"]["VERY_HARD"].update(max=19)))
+    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=0, blast_radius=0,
+                     reversibility=0, flags=["tool_heavy"]), cfg)
+    assert "execution 11/19 -> NORMAL." in out["rationale"]
+
+
+def test_t7_text_output_prints_the_execution_lines(capsys):
+    import route_task
+    route_task._print_text(r(task_class="IMPLEMENTATION", complexity=3))
+    lines = capsys.readouterr().out.splitlines()
+    i = next(i for i, l in enumerate(lines) if l.startswith("risk_band:"))
+    assert lines[i + 1].startswith("exec_score:  9")
+    assert lines[i + 2].startswith("exec_band:   NORMAL")
+
+
+def test_t7_schema_version_and_request_hash_are_untouched():
+    import route_task
+    assert route_task.ROUTE_SCHEMA_VERSION == 1
+    a = route_task.request_sha256_of(Task(task_class="MECHANICAL", complexity=0, uncertainty=0,
+                                          blast_radius=0, reversibility=0))
+    # Same literal `test_host_seat.py::test_undeclared_preserves_legacy_hash_by_key_omission` pins.
+    assert a == "c92c316c148058bee7609995a276c8607b5dd0eb822189de0686b5c085b3204e"

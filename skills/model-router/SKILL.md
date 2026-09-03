@@ -452,6 +452,7 @@ effective_policy:  selected_capability_tier:  selected_families: []
 local_policy_applied:
 reasoning_centric:
 risk_score:  risk_band:   band_overrides_applied: []   critical_flags: []
+execution_score:  execution_band:
 band_overrides_redundant: []   # fired, but another rule had already got there
 route_path:                    # null, or "disagreement"
 terminal:                      # null, or one of the terminal states in the
