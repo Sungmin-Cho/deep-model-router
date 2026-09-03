@@ -11,6 +11,11 @@ import pytest
 from route_task import Task, default_config, route
 
 CFG = default_config()
+TIER_OF = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
+
+
+def _raised(out):  return [n for n in out["notes"] if n.startswith("execution band") and " raised worker" in n]
+def _yielded(out): return [n for n in out["notes"] if n.startswith("execution band") and " yielded " in n]
 ID = lambda key: CFG["models"][key]["id"]          # noqa: E731
 ARCHITECT_ID = ID("claude_architect")
 CONF = CFG["router"]["confidence"]
@@ -173,13 +178,26 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
             assert a["human_control_causes"] == b["human_control_causes"], inp
             assert a["requires_human_confirmation"] == b["requires_human_confirmation"], inp
             continue
-        # Worker is chosen from the risk band, not the review band. When both
-        # sides stay executable the seat is therefore unchanged; a HIGH review
-        # that cannot independently staff two reviewers can terminalise the
-        # 0.10 side and seat a worker only on 0.06.
+        # The worker is chosen from the RISK band and the EXECUTION band, never
+        # from the review band — but since 1.13.0 the execution cell is adopted
+        # only if the settled review contract does not get worse, and the
+        # confidence penalty moves exactly that contract. So inside class C the
+        # two sides can seat different workers: the side whose review the
+        # penalty promoted yields to the risk-band worker, the other adopts the
+        # execution cell. That is the guard working, and it only ever moves the
+        # seat UP relative to the yielding side (design 2026-09-03 DD-2 S6).
+        # A HIGH review that cannot independently staff two reviewers can also
+        # terminalise the 0.10 side and seat a worker only on 0.06.
         if a["terminal"] is None and b["terminal"] is None:
-            for key in ("selected_role", "selected_model", "worker_seat"):
-                assert a[key] == b[key], (inp, key, a[key], b[key])
+            if a["selected_role"] != b["selected_role"]:
+                yielder, adopter = (a, b) if _yielded(a) else (b, a)
+                assert _yielded(yielder) and _raised(adopter), (inp, a["notes"], b["notes"])
+                # The yielding side is the one whose review the penalty promoted.
+                assert yielder["review"]["band"] != adopter["review"]["band"], inp
+                assert TIER_OF[adopter["selected_model"]] > TIER_OF[yielder["selected_model"]], inp
+            else:
+                for key in ("selected_role", "selected_model", "worker_seat"):
+                    assert a[key] == b[key], (inp, key, a[key], b[key])
         if a["selected_effort"] not in (None, b["selected_effort"]) and b["selected_effort"] is not None:
             assert EFFORT_ORDER.index(b["selected_effort"]) < EFFORT_ORDER.index(a["selected_effort"]), (
                 inp, a["selected_effort"], b["selected_effort"])
@@ -200,7 +218,16 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
             assert b["review"]["effort"] == table["effort"], inp
             assert b["review"]["independence_required"] == table["independent"], inp
             assert b["review"]["required_checks"] == table.get("required_checks", []), inp
-            if not b["review"]["self_review_avoided"]:        # [P2-sol-F2][P2-grok-F1] a deconflicted seat is not the table
+            # A deconflicted seat is not the table ([P2-sol-F2][P2-grok-F1]), and neither
+            # is a compensated one. `fallback_compensations.principal_architect_to_senior`
+            # is `raise_effort_to_MAX_and_add_second_review`, so when the judge falls back
+            # the plan gains a reviewer the band's table never listed. That path became
+            # reachable when the 2026-09-03 sweep expansion added the (3, 2, 0, 0)
+            # dimension; 1.12.1 emits the same roster for those inputs, so it is the
+            # table's shape, not the execution axis's. Keyed on the compensation itself,
+            # not on `route_path == "disagreement"`: the disagreement route seats a JUDGE,
+            # and excluding all of it skipped 117 class-C rows to cover 24 [impl-R1-opus-F2].
+            if not b["review"]["self_review_avoided"] and not b["review"]["compensating_reviewers"]:
                 if "reviewers" in table:
                     assert b["review"]["reviewers"] == table["reviewers"], inp
                 else:                                          # MEDIUM seats one candidate

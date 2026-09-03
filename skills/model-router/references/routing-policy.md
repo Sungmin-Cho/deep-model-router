@@ -140,6 +140,9 @@ the alt faster on wall-clock p50 in every probed task type. Same band, same
 review, different model — which is exactly what a context flag is allowed
 to move. Carrying both flags is the same swap, not a conflict.
 
+`unfamiliar_codebase`, `tool_heavy` and `cross_service_change` are the
+execution axis's inputs (below): they move the worker, never the band.
+
 The distinction matters. Context flags describe the working conditions; letting
 them move the band would inflate risk assessments for tasks that are merely
 awkward rather than dangerous.
@@ -177,17 +180,72 @@ review_disagreement                           → disagreement path, any band
 Bands may only be raised. An override that could lower a band would let a
 convenient reclassification erase a safety control.
 
+## Execution difficulty
+
+The second axis. It answers *how hard is this to implement*, and selects the
+worker; the risk band keeps answering *how much could a mistake cost*, and
+selects the review.
+
+```
+execution_score = 3×complexity + 2×uncertainty
+                + unfamiliar_codebase + tool_heavy + cross_service_change      (0–18)
+EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18
+```
+
+Complexity leads this axis (weight 3) the way uncertainty and blast radius
+lead the risk axis. Uncertainty is shared on purpose: an unclear task is both
+hard to do and easy to get wrong. Uncertainty alone cannot leave `EASY`;
+debugging escalates through the retry ladder and `unknown_root_cause`, not
+through this score.
+
+### Worker by class and execution band
+
+| Class | EASY | NORMAL | HARD | VERY_HARD |
+|---|---|---|---|---|
+| `MECHANICAL` | worker_fast | worker_fast | worker_balanced | worker_balanced |
+| `DOCUMENTATION` | worker_fast | worker_fast | worker_balanced | worker_balanced |
+| `TESTING` | worker_fast | worker_fast | worker_balanced | worker_balanced |
+| `IMPLEMENTATION` | worker_fast | worker_balanced | worker_balanced | ‡ |
+| `REFACTORING` | worker_fast | worker_balanced | worker_balanced | ‡ |
+| `DEBUGGING` | worker_fast | worker_balanced | worker_balanced | ‡ |
+| `INVESTIGATION` | worker_fast | worker_balanced | reasoning_specialist | reasoning_specialist |
+| `MIGRATION` | worker_balanced | worker_balanced | senior_engineer | senior_engineer |
+| `ARCHITECTURE` | worker_balanced | worker_balanced | senior_engineer | principal_architect |
+| `REVIEW` | worker_fast | worker_balanced | senior_engineer | senior_engineer |
+| `OPERATIONS` | worker_fast | worker_balanced | worker_balanced | senior_engineer |
+
+**‡** `reasoning_specialist` if `reasoning_centric`, else `senior_engineer`.
+
+### How the two tables combine
+
+1. Finish the risk chain exactly as before: class × risk-band cell, the class
+   promotions, the critical-domain floor, the retry ladder. This is the
+   **legacy** worker and the floor.
+2. Resolve the execution cell. It becomes the **candidate** only if its
+   resolved model is strictly stronger by `capability_tier` than the legacy
+   worker — before and after the floor and ladder run on it.
+3. Settle the whole plan for both workers and compare the review / control
+   contract: terminal state, human controls, review band, reviewer count and
+   effort, independence, judge, cross-family, reviewer tiers and effective
+   efforts, depth shortfalls, effort-floor breaks. Adopt the candidate only if
+   no row is worse; otherwise yield to the legacy worker. Either outcome is a
+   `notes` entry (`execution band … raised worker …` / `… yielded …: <row>`).
+
+Reviewer *identity* still follows the worker by the existing rules
+(`preferred_by_implementer`, de-confliction), so a MEDIUM route whose worker
+rose from the fast tier gets its reviewer chosen for the stronger worker.
+
 ## Implementation tiers
 
 The band table gives the answer; these tiers explain the shape of it.
 
-| Tier | Trigger | Worker | Effort |
-|---|---|---|---|
-| **0 — Mechanical** | Rename, formatting, boilerplate, generated tests, DTO/schema mapping, repetitive edits | `worker_fast` | `LOW`–`MEDIUM` |
-| **1 — Standard** | Ordinary feature, known pattern, clear acceptance criteria, band `LOW`/`MEDIUM` | `worker_fast` | `MEDIUM` (`HIGH` if multi-file) |
-| **2 — Advanced** | Multi-module behaviour, moderately unfamiliar code, tricky state flow, non-trivial refactor, or `worker_fast` produced something incomplete | `worker_balanced` | `MEDIUM`–`HIGH` |
-| **3 — Difficult** | Hard debugging, concurrency, complicated state, difficult tool orchestration, significant architecture interaction | `worker_balanced` / `senior_engineer` / `reasoning_specialist` | `HIGH`–`MAX` |
-| **4 — Frontier** | Unresolved root cause, critical architecture, catastrophic blast radius, failed prior escalations, reviewer disagreement on critical work | `senior_engineer` / `reasoning_specialist` / `principal_architect` | `MAX` |
+| Tier | Trigger | Worker | Effort | Execution band |
+|---|---|---|---|---|
+| **0 — Mechanical** | Rename, formatting, boilerplate, generated tests, DTO/schema mapping, repetitive edits | `worker_fast` | `LOW`–`MEDIUM` | `EASY` |
+| **1 — Standard** | Ordinary feature, known pattern, clear acceptance criteria, band `LOW`/`MEDIUM` | `worker_fast` | `MEDIUM` (`HIGH` if multi-file) | `EASY` |
+| **2 — Advanced** | Multi-module behaviour, moderately unfamiliar code, tricky state flow, non-trivial refactor, or `worker_fast` produced something incomplete | `worker_balanced` | `MEDIUM`–`HIGH` | `NORMAL` |
+| **3 — Difficult** | Hard debugging, concurrency, complicated state, difficult tool orchestration, significant architecture interaction | `worker_balanced` / `senior_engineer` / `reasoning_specialist` | `HIGH`–`MAX` | `HARD` |
+| **4 — Frontier** | Unresolved root cause, critical architecture, catastrophic blast radius, failed prior escalations, reviewer disagreement on critical work | `senior_engineer` / `reasoning_specialist` / `principal_architect` | `MAX` | `VERY_HARD` |
 
 At Tier 3, `reasoning_centric` picks the lane: `false` → `worker_balanced` or
 `senior_engineer`; `true` → `reasoning_specialist`.
@@ -305,7 +363,7 @@ on task class before checking flags.
 
 | Class | Notes |
 |---|---|
-| `REFACTORING` | Route by band. Multi-system refactoring implies `HIGH`+ effort. Behaviour-preservation review is mandatory at band `HIGH`+. |
+| `REFACTORING` | Worker by execution band over the risk-band floor; review by band. Multi-system refactoring implies `HIGH`+ effort. Behaviour-preservation review is mandatory at band `HIGH`+. |
 | `INVESTIGATION` | Frequently `reasoning_centric`. The output is a written finding, not a diff — review checks evidence quality, not code. |
 | `MIGRATION` | Never routes below `worker_balanced`. Rollback review and migration tests are mandatory at band `HIGH`+. |
 | `TESTING` | Generation is cheap (`worker_fast`). *Adequacy review* of generated tests is not — it belongs to the reviewer of the code under test, who knows what should have been covered. |

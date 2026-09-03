@@ -30,6 +30,7 @@ import pytest
 
 SKILL = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from route_task import (  # noqa: E402
     ROLES,
@@ -39,6 +40,8 @@ from route_task import (  # noqa: E402
     load_config,
     route,
 )
+
+from _baseline import baseline_cfg, load_baseline, pair_tasks  # noqa: E402
 
 CFG = load_config()
 ARCHITECT_ID = CFG["models"]["claude_architect"]["id"]
@@ -65,7 +68,11 @@ BAND_FLOOR = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}
 
 # Dimension corners plus a midpoint. Bands are determined by the weighted sum,
 # so the corners cover every band and the midpoint catches boundary handling.
-DIMENSIONS = [(0, 0, 0, 0), (1, 1, 1, 1), (2, 2, 2, 0), (3, 3, 3, 3), (0, 3, 0, 0), (3, 0, 3, 2)]
+DIMENSIONS = [(0, 0, 0, 0), (1, 1, 1, 1), (2, 2, 2, 0), (3, 3, 3, 3), (0, 3, 0, 0), (3, 0, 3, 2),
+              # execution 13 HARD x risk 7 MEDIUM: the quadrant design §5 puts 179 of
+              # the raised routes in, and unreachable from the six points above
+              # (their execution scores are 0/5/10/15/6/9).
+              (3, 2, 0, 0)]
 
 # Flag sets chosen to reach every distinct code path: none, each override
 # family, the disagreement route (which binds a judge at ANY band — the blind
@@ -82,6 +89,7 @@ FLAG_SETS = [
     ["bridge_down"],
     ["auth_sensitive", "bridge_down"],
     ["production_hotfix", "concurrency_sensitive"],
+    ["unfamiliar_codebase", "tool_heavy", "cross_service_change"],   # the execution axis's own inputs
 ]
 
 # Scarcity is what forces roles onto shared models. Without it the degenerate
@@ -231,6 +239,10 @@ def test_the_sweep_is_large_and_reaches_the_interesting_states():
         "depth_reduced": sum(1 for o in all_routes if o["review"]["review_depth_reduced"]),
         "fallback_note": sum(1 for o in all_routes
                              if any("->" in n for n in o["fallbacks_applied"])),
+        # Every execution band is reachable, or the second axis is measuring
+        # a constant (design §4, sweep-population expansion).
+        **{f"execution_{b}": sum(1 for o in all_routes if o["execution_band"] == b)
+           for b in CFG["execution"]["bands"]},
     }
     missing = [k for k, v in reached.items() if v == 0]
     assert not missing, f"the sweep never reached: {missing}"
@@ -1019,3 +1031,439 @@ def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
             assert not note, (out["routing_confidence"], note)
     assert recovered, "the sweep no longer reaches a promotion whose confidence recovered"
     assert still_low, "the sweep no longer reaches an ordinary low-confidence promotion"
+
+
+# --- helpers for the paired (new vs 1.12.1) checks ----------------------------
+
+def _bcfg(base):
+    return baseline_cfg(base)
+
+
+_PAIRED = None
+
+
+def _paired_population():
+    """[(kwargs, live route)] for every 8th sweep task (design §4 T3 sample), or
+    every task under DMR_FULL_BASELINE=1. Memoised so T3 and T15 share one pass
+    ([P1-opus-F10]); builds its own list and never touches TASKS ([R3-opus-F9])."""
+    global _PAIRED
+    if _PAIRED is not None:
+        return _PAIRED
+    import os
+    step = 1 if os.environ.get("DMR_FULL_BASELINE") == "1" else 8
+    rows = []
+    # Stratified on the OUTER combination: PRIOR_HISTORY is the innermost axis
+    # and has exactly 8 entries, so `i % 8` would select the same history every
+    # time ([P2-sol-F2]). Taking every 8th outer combination with ALL its
+    # histories keeps ~1/8 of the population and every history class.
+    outer = len(PRIOR_HISTORY)
+    for i, (task_class, dims, flags, runtime, scarce, (prior, failures)) in enumerate(itertools.product(
+            TASK_CLASSES, DIMENSIONS, FLAG_SETS, RUNTIMES, SCARCITY, PRIOR_HISTORY)):
+        if (i // outer) % step:
+            continue
+        c, u, b, rev = dims
+        kw = dict(task_class=task_class, complexity=c, uncertainty=u, blast_radius=b,
+                  reversibility=rev, flags=list(flags), runtime=runtime,
+                  unavailable_models=list(scarce), prior_models=list(prior), prior_failures=failures)
+        try:
+            rows.append((kw, route(Task(**kw), CFG)))
+        except ValidationError:
+            continue
+    _PAIRED = rows
+    return rows
+
+
+def _assert_not_weaker(new: dict, old: dict) -> None:
+    """Design DD-2 S6 rows 1-12, new vs the 1.12.1 route (design §4 T3(c))."""
+    import route_task as rt
+    if old["terminal"]:
+        assert new["terminal"] in (None, old["terminal"])
+        return
+    assert new["terminal"] is None
+    assert rt._contract_violation(rt.Policy.of(CFG), new, old) is None
+    assert TIER_OF[new["selected_model"]] >= TIER_OF[old["selected_model"]]
+
+
+def _raised(out):  return [n for n in out["notes"] if n.startswith("execution band") and " raised worker" in n]
+def _yielded(out): return [n for n in out["notes"] if n.startswith("execution band") and " yielded " in n]
+CTX = ["unfamiliar_codebase", "tool_heavy", "cross_service_change"]        # [P3-opus-F2]
+
+
+# --- T3b: the guard yields when the review would suffer ---------------------
+
+def test_t3b_claude_only_frontier_worker_yields_and_matches_plan_legacy():
+    import route_task as rt
+    # risk 3+4+2 = 9 HIGH; exec 9+4+2 = 15 VERY_HARD. Confidence 0.95-0.08-0.06 = 0.81
+    # (the degraded-binding note counts as a fallback) — no promotion. u3 would score
+    # 0.75 and promote both plans to CRITICAL, hiding the guard.
+    kw = dict(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+              reversibility=0, flags=["bridge_down", "unfamiliar_codebase", "tool_heavy"])
+    out = route(Task(**kw), CFG)
+    assert out["selected_model"] == ID("claude_worker_balanced")
+    # Row 2 (human_control_causes: `review_below_band`) precedes row 11, so it is the one named.
+    assert _yielded(out) == ["execution band VERY_HARD yielded senior_engineer: human_control_causes"]
+    assert out["review"]["review_depth_reduced"] == [] and not out["requires_human_confirmation"]
+    # Byte-identical to plan(legacy) under 1.13.0, save for the yield note.
+    policy = rt.Policy.of(CFG)
+    task = Task(**kw); task.validate(policy)
+    resolver = rt.Resolver(task, policy); resolver.worker_writes = True
+    band = rt.band_from_score(rt.score(task, CFG), policy)
+    band, ov, red, path = rt.apply_overrides(task, band, policy)
+    cand, legacy = rt.select_worker(task, band, "VERY_HARD", policy, resolver)
+    assert cand is not legacy
+    pre = rt._Prelude(request_sha=out["request_sha256"], policy_hash=out["policy_sha256"], lp={},
+                      local_unsat=False, history_note=None, budget_spent=False, seat_kind="write",
+                      seat_source="task_class", seat_downgraded=False, risk_score=9, band=band,
+                      overrides=tuple(ov), redundant_overrides=tuple(red), route_path=path,
+                      execution_score=15, execution_band="VERY_HARD")
+    expected = rt._plan(task, policy, CFG, pre, resolver, legacy)
+    expected["notes"] = expected["notes"] + _yielded(out)
+    expected["rationale"] = rt.explain(task, expected, policy)
+    assert out == expected
+
+
+def test_t3b_default_binding_adopts_the_frontier_worker_with_a_fable_substitute():
+    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+                     reversibility=0, flags=["unfamiliar_codebase", "tool_heavy"]), CFG)   # conf 0.87
+    assert out["selected_model"] == ID("claude_senior")
+    assert ID("claude_architect") in out["review"]["reviewer_models"]
+    assert out["review"]["review_depth_reduced"] == [] and len(_raised(out)) == 1
+
+
+# --- T3c: two plans never double-append the promotion override -------------
+
+def test_t3c_two_plans_do_not_duplicate_band_overrides():
+    # risk 9 HIGH with u3 -> confidence 0.75 -> promoted to CRITICAL in BOTH plans;
+    # exec 15 VERY_HARD -> candidate senior_engineer vs legacy worker_balanced, so two
+    # plans are computed (the guard then yields on the CRITICAL judge, which is fine here).
+    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, blast_radius=0,
+                     reversibility=0), CFG)
+    promo = [o for o in out["band_overrides_applied"] if o.startswith("low_routing_confidence")]
+    assert len(promo) == 1 and out["review"]["band"] == "CRITICAL"
+
+
+# --- T12: degraded bindings and scarcity never weaken worker or contract ------
+
+_T12 = {"candidate": 0, "raised": 0, "yielded": 0, "terminal": 0,
+        # per-axis: did this axis change the outcome of at least one row? [P3-sol-missing-7]
+        "axis_bridge": 0, "axis_roles": 0, "axis_models": 0, "axis_alt": 0}
+
+@pytest.mark.parametrize("runtime", sorted(CFG["runtimes"]))
+@pytest.mark.parametrize("rc", [False, True])
+def test_t12_degraded_bindings_and_scarcity_never_weaken(runtime, rc):
+    import route_task as rt
+    base = load_baseline(); bcfg = _bcfg(base)
+    cell = {"candidate": 0}
+    # Two shapes: (a) risk 9 HIGH x exec 15 VERY_HARD -> frontier candidate (adopts under the
+    # default binding for rc=False, yields for rc=True on cross_family_review, yields under
+    # claude_only on depth); (b) risk 5 MEDIUM x exec 14 HARD -> worker_fast -> worker_balanced,
+    # which adopts for both rc values on every runtime where a tier-1 seat resolves [P2-opus-F1].
+    shapes = [dict(complexity=3, uncertainty=2, blast_radius=1, extra=["unfamiliar_codebase", "tool_heavy"]),
+              dict(complexity=3, uncertainty=1, blast_radius=0, extra=CTX)]
+    for shape in shapes:
+        for bridge in ([], ["bridge_down"]):
+            for scarce, roles in ((([], []), ([ID("xai_frontier")], []),
+                                   ([ID("claude_senior"), ID("openai_reasoning")], []),
+                                   ([ID("claude_architect"), ID("claude_worker_balanced")], []),   # grok-runtime yield [P2-opus-F2]
+                                   ([], ["worker_balanced"]), ([], ["senior_engineer", "reasoning_specialist"]))):
+                for ctx in ([], ["large_context"], ["latency_sensitive"]):
+                    kw = dict(task_class="IMPLEMENTATION", complexity=shape["complexity"],
+                              uncertainty=shape["uncertainty"], blast_radius=shape["blast_radius"],
+                              reversibility=0, runtime=runtime, reasoning_centric=rc,
+                              flags=bridge + ctx + shape["extra"],
+                              unavailable_models=scarce, unavailable_roles=roles)
+                    live_t, base_t = pair_tasks(rt, base, **kw)
+                    new, old = route(live_t, CFG), base.route(base_t, bcfg)
+                    _assert_not_weaker(new, old)
+                    for k, v in (("raised", bool(_raised(new))), ("yielded", bool(_yielded(new))),
+                                 ("terminal", bool(new["terminal"])),
+                                 ("candidate", bool(_raised(new) or _yielded(new)))):
+                        _T12[k] += v
+                    cell["candidate"] += bool(_raised(new) or _yielded(new))
+                    # Axis effect: compare against the same row with that axis removed.
+                    plain = route(Task(**{**kw, "flags": [f for f in kw["flags"] if f != "bridge_down"]}), CFG)
+                    _T12["axis_bridge"] += bool(bridge) and (plain["selected_model"], plain["review"]["reviewer_models"]) != (new["selected_model"], new["review"]["reviewer_models"])
+                    if roles:
+                        _T12["axis_roles"] += route(Task(**{**kw, "unavailable_roles": []}), CFG)["selected_model"] != new["selected_model"]
+                    if scarce:
+                        _T12["axis_models"] += route(Task(**{**kw, "unavailable_models": []}), CFG)["selected_model"] != new["selected_model"]
+                    if ctx:
+                        _T12["axis_alt"] += route(Task(**{**kw, "flags": [f for f in kw["flags"] if f not in ctx]}), CFG)["selected_model"] != new["selected_model"]
+    assert cell["candidate"] > 0, (runtime, rc)          # every cell reaches a two-plan comparison
+
+
+def test_t12_outcomes_are_reached_somewhere_in_the_grid():
+    """Runs after the parametrised cells (definition order). Raised and yielded are
+    not reachable in every cell — rc=True cannot raise under the default binding,
+    grok/rc=False cannot yield — so they are asserted over the whole grid
+    ([P2-sol-F1][P2-opus-F1][P2-opus-F2])."""
+    assert _T12["candidate"] > 0 and _T12["raised"] > 0 and _T12["yielded"] > 0, _T12
+    assert all(_T12[k] > 0 for k in ("axis_bridge", "axis_roles", "axis_models", "axis_alt")), _T12
+
+
+def test_t12_both_plans_terminal_keeps_legacy_and_emits_no_note():
+    # HIGH risk (independence required) with isolation declared unavailable: both the
+    # candidate (senior_engineer, exec 15) and the legacy (worker_balanced) plans are
+    # INDEPENDENCE_UNAVAILABLE -> legacy, no execution-axis note.
+    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+                     reversibility=0, flags=["unfamiliar_codebase", "tool_heavy"],
+                     isolation_available=False), CFG)
+    assert out["terminal"] == "INDEPENDENCE_UNAVAILABLE"
+    assert not _raised(out) and not _yielded(out)
+
+
+# --- T13: class promotions run on the legacy path and are actually exercised ----
+
+@pytest.mark.parametrize("rc", [False, True])
+@pytest.mark.parametrize("scarce", [[], [ID("openai_reasoning")], [ID("openai_reasoning"), ID("claude_senior")]])
+@pytest.mark.parametrize("task_class,flags,extra,note", [
+    ("ARCHITECTURE", ["long_horizon"], {"uncertainty": 2}, "architecture promotion"),
+    ("ARCHITECTURE", [], {"uncertainty": 3}, "architecture promotion"),
+    ("DEBUGGING", ["unknown_root_cause"], {"uncertainty": 2, "prior_failures": 2,
+                                           "prior_models": [ID("openai_worker_fast"), ID("openai_worker_fast")]},
+     "debugging promotion"),
+    ("INVESTIGATION", ["unknown_root_cause"], {"uncertainty": 0}, "investigation promotion"),
+])
+def test_t13_class_promotions_are_exercised_and_never_lose_tier(task_class, flags, extra, note, scarce, rc):
+    import route_task as rt
+    base = load_baseline(); bcfg = _bcfg(base)
+    kw = dict(task_class=task_class, complexity=3, uncertainty=extra["uncertainty"], blast_radius=0,
+              reversibility=0, flags=flags + ["tool_heavy"], reasoning_centric=rc,
+              unavailable_models=scarce, prior_failures=extra.get("prior_failures", 0),
+              prior_models=extra.get("prior_models", []))
+    live_t, base_t = pair_tasks(rt, base, **kw)
+    new, old = route(live_t, CFG), base.route(base_t, bcfg)
+    assert any(n.startswith(note) for n in old["notes"]), "the 1.12.1 route did not take this promotion"
+    if new["terminal"] or old["terminal"]:
+        assert new["terminal"] in (None, old["terminal"])
+        return
+    assert TIER_OF[new["selected_model"]] >= TIER_OF[old["selected_model"]], kw
+
+
+# --- T14: local_policy only ever unlocks ---------------------------------------
+
+@pytest.mark.parametrize("lp,outcome", [
+    ({"minimum_capability_tier": 1}, "unlock"),   # tier-0 legacy unsatisfiable, tier-1 candidate fine
+    ({"minimum_effort": "MAX"}, "yield"),         # grok's VERY_HIGH ceiling fails MAX; luna has none -> candidate terminal, legacy not -> row 1
+    ({"minimum_reviewers": 2}, "same"),           # LOW seats one reviewer either way -> both terminal -> legacy
+    ({"minimum_provider_families": 2}, "unlock"), # luna+luna is one family; grok+luna is two
+    ({"allowed_families": ["openai"]}, "adopt"),  # the balanced ladder reaches terra (openai, tier 1) -> adopted, nothing terminal [P1-sol-F1][P1-opus-F5]
+])
+def test_t14_local_policy_only_ever_unlocks(lp, outcome):
+    import route_task as rt
+    base = load_baseline(); bcfg = _bcfg(base)
+    live_t, base_t = pair_tasks(rt, base, task_class="IMPLEMENTATION", complexity=3, uncertainty=0,
+                                blast_radius=0, reversibility=0)
+    live_t._local_policy = dict(lp); base_t._local_policy = dict(lp)
+    new, old = route(live_t, CFG), base.route(base_t, bcfg)
+    assert new["terminal"] in (None, old["terminal"])
+    assert set(new["human_control_causes"]) <= set(old["human_control_causes"])
+    if outcome == "unlock":
+        assert old["terminal"] == "UNSATISFIABLE_LOCAL_POLICY" and new["terminal"] is None and _raised(new)
+    elif outcome == "yield":
+        assert old["terminal"] is None and new["terminal"] is None
+        assert _yielded(new) == ["execution band NORMAL yielded worker_balanced: terminal"]
+    elif outcome == "adopt":
+        assert old["terminal"] is None and new["terminal"] is None and _raised(new)
+        assert new["selected_model"] == ID("openai_worker_balanced")
+    else:
+        assert new["terminal"] == old["terminal"] and not _raised(new) and not _yielded(new)
+
+
+# --- T15: the confidence channel ------------------------------------------------
+
+# Pinned at half the value measured on the paired sample by
+# docs/design/reviews/2026-09-03-two-axis-routing/scripts/count_paired.py (Task 5 Step 7a);
+# the measured numbers are recorded in design §5(c). Update both together.
+T15_SEEN_MIN = 39          # measured 2026-09-03: 79 raised over 30,496 paired routes, one of
+                           # which is the terminal unlock counted separately (78 // 2 = 39).
+
+
+def test_t15_where_the_cell_won_review_depth_is_the_baseline_s():
+    base = load_baseline(); bcfg = _bcfg(base)
+    seen = unlocked = 0
+    for kw, new in _paired_population():
+        if not _raised(new):
+            continue
+        old = base.route(base.Task(**kw), bcfg)
+        if old["terminal"]:
+            # The one direction G9 allows: 1.12.1 could not route this at all and
+            # the stronger worker makes it routable. A terminal route nulls its
+            # review fields, so there is no depth to preserve — what must hold is
+            # that the unlock went that way and not the other, which row 1 of the
+            # S6 comparator and T3(b) both enforce. Measured 2026-09-03: 1 of 79
+            # raised routes on the 1/8 sample, 21 under DMR_FULL_BASELINE=1 — all
+            # heavily-scarce rows where 1.12.1 returned INDEPENDENCE_UNAVAILABLE and
+            # the stronger worker frees an independent reviewer pair.
+            assert new["terminal"] is None, kw
+            # What such a route MAY gain, it must disclose. A terminal route
+            # states no review contract at all, so the unlock can surface
+            # controls the baseline never reported — but never silently
+            # ([impl-R1-opus-F1] and its missing test).
+            if new["review"]["review_depth_reduced"]:
+                assert "review_below_band" in new["human_control_causes"], kw
+                assert new["requires_human_confirmation"] or new["human_confirmation_deferred"], kw
+            unlocked += 1
+            continue
+        assert (new["review"]["band"], new["review"]["effort"], len(new["review"]["reviewers"])) == \
+               (old["review"]["band"], old["review"]["effort"], len(old["review"]["reviewers"])), kw
+        seen += 1
+    assert seen >= T15_SEEN_MIN, seen
+    # Unlocking is the exception, not the mechanism: most raised routes were already
+    # routable in 1.12.1 and had their review depth preserved above.
+    assert unlocked < seen, (unlocked, seen)
+
+
+def test_t15_a_fallback_that_would_promote_the_band_makes_the_cell_yield():
+    # DEBUGGING c3 u0 + unknown_root_cause: risk 3 LOW, exec 9 NORMAL -> candidate worker_balanced
+    # vs legacy worker_fast (luna). At LOW the reviewer is worker_fast on both plans, so only the
+    # candidate's seat needs the withheld grok's alt (sonnet): a scarcity fallback, -0.06.
+    # Legacy confidence 0.95 - 0.10 = 0.85 (LOW stays); candidate 0.79 < 0.80 -> its plan
+    # promotes the review to MEDIUM -> row 3 (`review.band`) differs -> the cell yields.
+    out = route(Task(task_class="DEBUGGING", complexity=3, uncertainty=0, blast_radius=0,
+                     reversibility=0, flags=["unknown_root_cause"],
+                     unavailable_models=[ID("xai_frontier")]), CFG)
+    assert out["review"]["band"] == "LOW" and out["selected_role"] == "worker_fast"
+    assert _yielded(out) == ["execution band NORMAL yielded worker_balanced: review.band"]
+    assert not any(o.startswith("low_routing_confidence") for o in out["band_overrides_applied"])
+
+
+# --- T17: plan() purity -----------------------------------------------------------
+
+def test_t17_plan_is_order_independent_and_leaves_the_resolver_clean():
+    import route_task as rt
+    kw = dict(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+              reversibility=0, flags=["unfamiliar_codebase", "tool_heavy"])   # HIGH x VERY_HARD: C != L
+    policy = rt.Policy.of(CFG)
+    task = Task(**kw); task.validate(policy)
+    resolver = rt.Resolver(task, policy); resolver.worker_writes = True
+    band = rt.band_from_score(rt.score(task, CFG), policy)
+    band, ov, red, path = rt.apply_overrides(task, band, policy)
+    cand, legacy = rt.select_worker(task, band, "VERY_HARD", policy, resolver)
+    assert cand is not legacy and cand.role == "senior_engineer" and legacy.role == "worker_balanced"
+    pre = rt._Prelude(request_sha="x" * 64, policy_hash="y" * 64, lp={}, local_unsat=False,
+                      history_note=None, budget_spent=False, seat_kind="write", seat_source="task_class",
+                      seat_downgraded=False, risk_score=9, band=band, overrides=tuple(ov),
+                      redundant_overrides=tuple(red), route_path=path, execution_score=15,
+                      execution_band="VERY_HARD")
+    a1 = rt._plan(task, policy, CFG, pre, resolver, cand);   assert resolver.write_seat_role is None
+    b1 = rt._plan(task, policy, CFG, pre, resolver, legacy); assert resolver.write_seat_role is None
+    b2 = rt._plan(task, policy, CFG, pre, resolver, legacy)
+    a2 = rt._plan(task, policy, CFG, pre, resolver, cand)
+    assert a1 == a2 and b1 == b2
+    # C's role (senior_engineer) is a reviewer seat in plan(L): it resolves the same
+    # whether or not plan(C) ran first — write_seat_role did not leak.
+    assert b1["review"]["reviewer_models"] == b2["review"]["reviewer_models"]
+
+
+# --- T3: the previous release is the oracle ---------------------------------
+
+# Pinned at half the values count_paired.py measured on 2026-09-03 (design §5(c)):
+T3_COMPARED_MIN = 15248     # measured 30,496 paired routes
+T3_RAISED_MIN = 39          # measured 79 raised
+T3_EFFORT_ONLY_MIN = 77     # measured 154 effort-only deltas (0 before the Task 6 floors)
+
+
+def test_t3_no_route_is_weaker_than_1_12_1_and_notes_match_changes():
+    import route_task as rt
+    base = load_baseline(); bcfg = _bcfg(base)
+    policy = rt.Policy.of(CFG)
+    EXCLUDED = {"execution_score", "execution_band", "rationale", "policy_sha256", "decision_fingerprint",
+                "router_plugin_version", "selected_effort", "selected_effort_effective",
+                "selected_effort_native", "effort_ceiling_applied", "notes"}
+    compared = raised = yielded = effort_only = 0
+    for kw, new in _paired_population():
+        old = base.route(base.Task(**kw), bcfg)
+        compared += 1
+        _assert_not_weaker(new, old)                                         # (a)(b)(c)
+        rn, yn = _raised(new), _yielded(new)
+        assert len(rn) <= 1 and len(yn) <= 1 and not (rn and yn)
+        assert not (rn and new["terminal"]), kw                              # a terminal route never "raised" [P2-opus-missing-4]
+        assert bool(rn) == (new["selected_model"] != old["selected_model"]), kw   # (d)
+        if yn:
+            assert new["selected_model"] == old["selected_model"], kw             # (e)
+            yielded += 1
+        if rn:
+            raised += 1
+            continue
+        # (f) no execution note: identical save the excluded fields; (g) effort-only delta accounted for
+        floor_notes = [n for n in new["notes"] if n.startswith("execution band") and "floored effort" in n]
+        assert {k: v for k, v in new.items() if k not in EXCLUDED} == {k: v for k, v in old.items() if k not in EXCLUDED}, kw
+        assert [n for n in new["notes"] if not n.startswith("execution band")] == old["notes"], kw
+        if new["terminal"]:
+            assert new["selected_effort"] is None, kw
+            continue
+        # (g) exact, not merely "went up" [P3-sol-F4]. The execution floor is applied
+        # INSIDE `select_effort`, i.e. before the relative rules that run later in the
+        # plan (`raise_effort_one_level`, and the MAX compensation that raises the
+        # effort before it knows whether a second reviewer resolves and so does not
+        # always record itself). It therefore COMPOSES with them instead of capping the
+        # result: a route the compensation took HIGH -> VERY_HIGH in 1.12.1 goes
+        # VERY_HIGH -> MAX here. So measure what the floor added at its own stage and
+        # require the final request to be the baseline's shifted by exactly that, clamped
+        # at the top of the scale; effective = that clamped by the SAME model's ceiling;
+        # native = effort_map under the model's family.
+        floors = CFG["effort_floors"]
+        floor = {"HARD": floors["execution_HARD"], "VERY_HARD": floors["execution_VERY_HARD"]}.get(new["execution_band"])
+        probe = Task(**kw)
+        base_floored, _ = rt.select_effort(probe, new["risk_band"], new["execution_band"], policy)
+        base_plain, _ = rt.select_effort(probe, new["risk_band"], "EASY", policy)   # no band has a floor at EASY
+        delta = policy.efforts.index(base_floored) - policy.efforts.index(base_plain)
+        assert delta >= 0 and (delta == 0 or floor is not None), kw
+        expected_req = policy.efforts[min(policy.efforts.index(old["selected_effort"]) + delta,
+                                          len(policy.efforts) - 1)]
+        assert new["selected_effort"] == expected_req, kw
+        assert new["selected_effort_effective"] == rt._clamp(policy, expected_req, new["selected_model"]), kw
+        family = policy.family_of[new["selected_model"]]
+        assert new["selected_effort_native"] == CFG["effort_map"][family][new["selected_effort_effective"]], kw
+        if delta:
+            assert len(floor_notes) == 1 and floor_notes[0].endswith(f"floored effort at {floor}"), kw
+            if new["selected_effort"] != old["selected_effort"]:
+                effort_only += 1
+        else:
+            assert floor_notes == [], kw
+        if new["selected_effort"] == old["selected_effort"]:
+            # Same request, same model: the ceiling record cannot have moved.
+            assert new["effort_ceiling_applied"] == old["effort_ceiling_applied"], kw
+    assert compared >= T3_COMPARED_MIN and raised >= T3_RAISED_MIN and effort_only >= T3_EFFORT_ONLY_MIN, \
+        (compared, raised, yielded, effort_only)
+
+
+def test_t17_plan_purity_holds_across_real_two_plan_routes():
+    """T17 above pins one HIGH x VERY_HARD input. Purity is a property of every
+    route that computes two plans, so it is checked on a spread of real ones
+    drawn from the paired sample ([impl-R1-opus missing test]). Order-swapped
+    calls must agree and the resolver must come back clean each time."""
+    import route_task as rt
+    policy = rt.Policy.of(CFG)
+    checked = 0
+    for kw, out in _paired_population():
+        if not (_raised(out) or _yielded(out)):
+            continue                      # one plan only: nothing to commute
+        task = Task(**kw)
+        task.validate(policy)
+        resolver = rt.Resolver(task, policy)
+        resolver.worker_writes = policy.worker_seat_kind(task.task_class) == "write"
+        band = rt.band_from_score(rt.score(task, CFG), policy)
+        band, ov, red, path = rt.apply_overrides(task, band, policy)
+        exec_score = rt.execution_score(task, CFG)
+        exec_band = policy.execution_band_of(exec_score)
+        cand, legacy = rt.select_worker(task, band, exec_band, policy, resolver)
+        if cand is legacy:
+            continue
+        pre = rt._Prelude(request_sha="x" * 64, policy_hash="y" * 64, lp={}, local_unsat=False,
+                          history_note=None, budget_spent=False,
+                          seat_kind="write" if resolver.worker_writes else "read_only",
+                          seat_source="task_class", seat_downgraded=False,
+                          risk_score=rt.score(task, CFG), band=band, overrides=tuple(ov),
+                          redundant_overrides=tuple(red), route_path=path,
+                          execution_score=exec_score, execution_band=exec_band)
+        a1 = rt._plan(task, policy, CFG, pre, resolver, cand);   assert resolver.write_seat_role is None, kw
+        b1 = rt._plan(task, policy, CFG, pre, resolver, legacy); assert resolver.write_seat_role is None, kw
+        b2 = rt._plan(task, policy, CFG, pre, resolver, legacy)
+        a2 = rt._plan(task, policy, CFG, pre, resolver, cand)
+        assert a1 == a2 and b1 == b2, kw
+        checked += 1
+        if checked >= 40:
+            break
+    assert checked >= 20, checked

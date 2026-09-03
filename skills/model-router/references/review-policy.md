@@ -160,6 +160,14 @@ implementation — asking one conversation for two reviews in sequence — leaks
 the first review into the second's context. Independence has to be a property
 of the mechanism, not an instruction.
 
+The execution axis makes the substitution above more common: a `VERY_HARD`
+task can seat `senior_engineer` or `reasoning_specialist` as the worker, so the
+HIGH / CRITICAL pair loses that model and de-confliction substitutes. Under
+the default binding the substitute is the architect tier and depth does not
+move. Where it would — a degraded binding, scarcity — the execution cell
+yields to the risk-band worker instead (`routing-policy.md`, "How the two
+tables combine").
+
 ## Enforcing isolation per runtime
 
 Each runtime has a native subagent for a same-family reviewer and CLI bridges

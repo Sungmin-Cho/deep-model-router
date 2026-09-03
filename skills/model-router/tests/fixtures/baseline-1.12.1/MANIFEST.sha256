@@ -1,0 +1,4 @@
+# source commit 754c017 (deep-model-router 1.12.1). No nested plugin manifest on purpose: the loader seeds the version cache (design §4, [P1-opus-F16]). Regenerate only when the oracle release changes (design E-10).
+fb97d59e6c8574ad1c498e1a6a97ece86cc8c1df139a9d26a5cb0ecfc72226c1  scripts/route_task.py
+4836b98ae0094fccfae2c0ade2f5dc3b40627ceb4bab21142362060788c78978  scripts/policy_digest.py
+c976af8613be0e749ab87b212c64935cc1a103aa7389d9b82729d64866c4579c  config/model-routing.yaml

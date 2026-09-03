@@ -181,37 +181,62 @@ These situations stop or gate rather than proceeding:
 
 ## Observability
 
-Every route emits:
+Every route emits (this file is the only inventory; `SKILL.md` Step 5
+summarises it):
 
 ```yaml
-routing_metrics:
-  task_class:
-  complexity:
-  uncertainty:
-  blast_radius:
-  reversibility:
-  risk_score:
-  risk_band:
-  band_overrides_applied: []
-  critical_flags: []
-  selected_role:
-  selected_model:
-  selected_effort:
-  selected_effort_effective:   # what the worker's model actually receives
-  effort_ceiling_applied: []   # seats whose model could not take the ask
-  review_band:
-  reviewers: []
-  review_independence: enforced | planned | degraded | unavailable | not_applicable
-  independence_compromised: true | false
-  judge_unavailable: true | false
-  review_depth_reduced: []   # reviewers seated below the tier their band asks for
-  band_floor_unsatisfiable:  # that tier is unreachable under the binding in force
-  cross_family_review: true | false
-  fallbacks_applied: []
-  escalation_count:
-  retry_count:
-  routing_confidence:
-  rationale:            # names band + flags + fallbacks, in prose
+task_class:  complexity:  uncertainty:  blast_radius:  reversibility:
+route_schema_version:  router_plugin_version:  policy_sha256:
+request_sha256:  decision_fingerprint:   # same request x policy x router
+                               # version -> same fingerprint; carried into
+                               # dispatch receipts and checked by
+                               # verify-evidence --expect-fingerprint
+effective_policy:  selected_capability_tier:  selected_families: []
+local_policy_applied:
+reasoning_centric:
+risk_score:  risk_band:   band_overrides_applied: []   critical_flags: []
+execution_score:  execution_band:   # the second axis (DD-1); selects the
+                               # worker, never the review
+band_overrides_redundant: []   # fired, but another rule had already got there
+route_path:                    # null, or "disagreement"
+terminal:                      # null, or one of the terminal states in the
+                               # table above
+selected_role:  selected_model:  selected_effort:  selected_effort_effective:
+selected_effort_native:
+review:
+  band:  reviewers: []  reviewer_models: []  effort:
+  independence_required:       # what the band asks for
+  review_independence:         # what was actually established
+  independence_compromised:    # no distinct model was available for a seat
+  judge_unavailable:           # no adjudicator at or above every party's tier
+  review_depth_reduced: []     # [{reviewer, model, capability_tier, band_requires}]
+  band_floor_unsatisfiable:    # the binding itself cannot supply that tier
+  compensating_reviewers:      # extra seats added by a compensation
+  self_review_avoided: []      # [{replaced, with, reason}]; `with` is always a
+                               # role in `reviewers` above
+  required_checks: []
+  judge:  judge_model:         # null when judge_unavailable — a human adjudicates
+cross_family_review: true | false
+fallbacks_applied: []          # only recorded when the model actually changed
+effort_ceiling_applied: []     # [{role, model, requested, capped_at,
+                               # floor_broken, floor_requires}]; a seat whose
+                               # model cannot receive the effort asked for
+fallback_compensations_applied: []
+unavailable_models: []
+excluded_prior_failures: []    # models withheld because they already failed
+escalation_count:  retry_count:
+routing_confidence:  routing_confidence_kind:   # a heuristic gate score,
+                               # not a calibrated success probability
+worker_seat:                   # kind + source + write_capable_families
+host_seat_advisory:            # declared + policy_ask{tier,effort,raised_by} + comparisons + advisory
+requires_human_confirmation:
+human_confirmation_deferred:   # a production hotfix: dispatch now, confirm after
+human_control_causes: []       # which human_in_the_loop controls fired, by
+                               # cause code — the machine-checkable half of the
+                               # reason strings in the rationale
+notes: []                      # every promotion, floor, compensation and
+                               # policy decision the route actually made
+rationale:   # names the band, the triggering flags, and every fallback
 ```
 
 ### Fields the router cannot know

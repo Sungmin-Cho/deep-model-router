@@ -8,7 +8,7 @@
 
 Claude Code, Codex, Grok를 위한 결정적 모델 / effort / 리뷰 라우터.
 
-위임할 소프트웨어 엔지니어링 작업을 분류하면, 채점기가 파일 수·토큰 수·지금 열려 있는 모델이 아니라 리스크에 따라 워커, reasoning effort, 리뷰 깊이를 고릅니다. 리뷰 깊이는 리스크 밴드만의 함수이며, 워커 선택이 몰래 약화시킬 수 없습니다.
+위임할 소프트웨어 엔지니어링 작업을 분류하면, 채점기가 파일 수·토큰 수·지금 열려 있는 모델이 아니라 워커는 *난이도*로, 리뷰 깊이는 *리스크*로 고릅니다(reasoning effort의 하한은 두 축이 함께 정합니다). 리뷰 깊이는 리스크 밴드만의 함수이며, 워커 선택이 몰래 약화시킬 수 없습니다. 어렵지만 고립된 작업은 더 강한 워커를 받고, 쉽지만 민감한 작업은 깊은 리뷰를 유지합니다.
 
 [deep-suite](https://github.com/Sungmin-Cho/deep-suite) 에코시스템의 일원입니다. [deep-work](https://github.com/Sungmin-Cho/deep-work)와 [deep-loop](https://github.com/Sungmin-Cho/deep-loop)가 공유 결정 평면으로 이 플러그인에 의존합니다. 릴리스 이력은 [CHANGELOG](CHANGELOG.md)를 참고하세요.
 
@@ -18,7 +18,7 @@ Claude Code, Codex, Grok를 위한 결정적 모델 / effort / 리뷰 라우터.
 
 deep-model-router는 **결정 평면**입니다. 형제 플러그인은 집행, durable state, 각자의 안전 하한을 유지합니다. 이 플러그인은 두 질문을 분리해서 답합니다.
 
-1. **누가 하는가** — 사용 가능한 모델과 effort에 묶인 역할.
+1. **누가 하는가** — 사용 가능한 모델과 effort에 묶인 역할. 리스크 밴드를 하한으로 두고 실행 난이도가 고릅니다. effort 하한은 두 축이 함께 정합니다.
 2. **얼마나 엄하게 검사하는가** — 리스크 밴드를 따르는 리뷰 정책(독립 리뷰가 필요한지 포함).
 
 작업을 대신 구현하지 않으며, 실제로 집행하지 않은 통제를 주장하지 않습니다. `independence_required`는 정책이고 `review_independence`는 증거입니다. 라우터가 없으면 로컬 폴백이지, HIGH/CRITICAL 하한을 내릴 이유가 아닙니다.
@@ -109,6 +109,10 @@ python3 "$SKILL_DIR"/scripts/route_task.py --request-json ./route-request.json -
 ```
 risk_score = complexity + 2×uncertainty + 2×blast_radius + reversibility     (0–18)
 LOW 0–3 · MEDIUM 4–7 · HIGH 8–10 · CRITICAL 11–18
+
+execution_score = 3×complexity + 2×uncertainty + context 플래그 셋            (0–18)
+EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → 워커와 effort 하한
+                                                        → 리뷰 밴드·사람 통제는 아님
 ```
 
 critical-domain 플래그(auth, security, financial, data integrity)는 채점 후 모든 작업 클래스에서 밴드를 올립니다. 잘 이해된 작은 인가 경로 수정도 강한 워커와 독립 리뷰를 받습니다.

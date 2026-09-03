@@ -77,28 +77,6 @@ router:
     critical_domain_worker:     worker_balanced
 
 # ---------------------------------------------------------------------------
-# Execution difficulty — the second axis (design 2026-09-03 DD-1)
-# ---------------------------------------------------------------------------
-#
-# execution_score = 3*complexity + 2*uncertainty + sum(flag_weights for flags carried)
-# It selects the WORKER (with `execution_selection`, below `worker_selection`)
-# and floors the worker's effort. It never touches the risk band, the review,
-# or the human controls: those stay a function of `router.bands` alone.
-execution:
-  score_weights:
-    complexity:   3
-    uncertainty:  2
-  flag_weights:                 # EXACTLY these three context flags. Dropping one
-    unfamiliar_codebase:  1     # silently restores the 1.12.1 defect (a declared
-    tool_heavy:           1     # flag nobody reads), so the key set is checked
-    cross_service_change: 1     # exactly, not as a subset.
-  bands:
-    EASY:      { min: 0,  max: 8,  ordinal: 0 }
-    NORMAL:    { min: 9,  max: 11, ordinal: 1 }
-    HARD:      { min: 12, max: 14, ordinal: 2 }
-    VERY_HARD: { min: 15, max: 18, ordinal: 3 }
-
-# ---------------------------------------------------------------------------
 # Flags
 # ---------------------------------------------------------------------------
 
@@ -220,23 +198,6 @@ worker_selection:
   REVIEW:        { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: senior_engineer }
   OPERATIONS:    { LOW: worker_fast,     MEDIUM: worker_balanced, HIGH: senior_engineer,       CRITICAL: senior_engineer }
 
-# Worker by task class and EXECUTION band. `worker_selection` above stays the
-# floor: the worker is the stronger of the two cells by resolved capability
-# tier, and the execution cell wins only when strictly stronger AND seating it
-# does not make the review or control contract worse (design DD-2 S3-S6).
-execution_selection:
-  MECHANICAL:     { EASY: worker_fast,     NORMAL: worker_fast,     HARD: worker_balanced,      VERY_HARD: worker_balanced }
-  DOCUMENTATION:  { EASY: worker_fast,     NORMAL: worker_fast,     HARD: worker_balanced,      VERY_HARD: worker_balanced }
-  TESTING:        { EASY: worker_fast,     NORMAL: worker_fast,     HARD: worker_balanced,      VERY_HARD: worker_balanced }
-  IMPLEMENTATION: { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: by_reasoning_centric }
-  REFACTORING:    { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: by_reasoning_centric }
-  DEBUGGING:      { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: by_reasoning_centric }
-  INVESTIGATION:  { EASY: worker_fast,     NORMAL: worker_balanced, HARD: reasoning_specialist, VERY_HARD: reasoning_specialist }
-  MIGRATION:      { EASY: worker_balanced, NORMAL: worker_balanced, HARD: senior_engineer,      VERY_HARD: senior_engineer }
-  ARCHITECTURE:   { EASY: worker_balanced, NORMAL: worker_balanced, HARD: senior_engineer,      VERY_HARD: principal_architect }
-  REVIEW:         { EASY: worker_fast,     NORMAL: worker_balanced, HARD: senior_engineer,      VERY_HARD: senior_engineer }
-  OPERATIONS:     { EASY: worker_fast,     NORMAL: worker_balanced, HARD: worker_balanced,      VERY_HARD: senior_engineer }
-
 # Applied after the table, before effort selection.
 # Does this class's WORKER need a write-capable dispatch recipe?
 #
@@ -328,8 +289,6 @@ effort_floors:
   band_HIGH:            HIGH
   band_CRITICAL:        VERY_HIGH
   any_critical_domain:  HIGH
-  execution_HARD:       HIGH        # design 2026-09-03 DD-3: worker-independent, see T3(f)
-  execution_VERY_HARD:  VERY_HIGH
 
 # ---------------------------------------------------------------------------
 # Review policy — a function of BAND ONLY

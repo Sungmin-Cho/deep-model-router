@@ -45,6 +45,9 @@ review, complex refactoring that does not justify the frontier tier.
 This is the **first code-centric escalation target**. If `worker_fast` is
 unavailable in the active runtime, this becomes the default worker.
 
+Since 1.13.0 `unfamiliar_codebase` and `tool_heavy` are routing inputs — they
+raise the execution score — rather than advice the caller applies by hand.
+
 ### `senior_engineer` — senior engineering and code review
 
 Use for: complex debugging, difficult code semantics, maintainability review,

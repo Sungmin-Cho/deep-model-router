@@ -1,4 +1,4 @@
 interface:
   display_name: "Model Router"
-  short_description: "Pick the model, effort, and review depth for a task"
-  default_prompt: "Route this task: choose the worker model, reasoning effort, and review policy based on its risk."
+  short_description: "Pick the worker from difficulty and the review depth from risk; both floor the effort"
+  default_prompt: "Route this task: choose the worker model from execution difficulty and the review policy from its risk; both axes floor the reasoning effort."
