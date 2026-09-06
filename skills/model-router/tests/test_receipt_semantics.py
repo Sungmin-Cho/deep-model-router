@@ -144,3 +144,13 @@ def test_grok_success_requires_native_null_error_type(tmp_path, error_type):
     path, root = materialize(tmp_path, rec, observed)
     with pytest.raises(obs.ValidateError):
         check(path, root)
+
+
+@pytest.mark.parametrize("state", ["SUCCEEDED", "FAILED", "CANCELLED", "START_FAILED", "TERMINATION_UNCONFIRMED"])
+def test_unpublished_terminal_receipt_is_not_observation_evidence(tmp_path, state):
+    rec = receipt()
+    rec["result"]["state"] = state
+    path, root = materialize(tmp_path, rec, lambda a: a.update(state=obs.DISPATCH_STATE_MAP[state]))
+    (root / "receipts/att-1.claim").touch()
+    with pytest.raises(obs.ValidateError, match="published"):
+        check(path, root)

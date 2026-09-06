@@ -1061,3 +1061,29 @@ The rule underneath all of this: the metrics should let someone reconstruct not
 just what was decided, but what was *available* when it was decided. A route
 that looks weak in hindsight is a very different problem depending on whether
 the strong option existed at the time.
+
+
+### Terminal publication and cancellation
+
+`dispatch_agent` serializes each attempt's terminal read/reconcile/write/claim
+release with a stable `.lock` inode. Lock acquisition is bounded; lock files
+remain after completion and must not be removed while supervisors or cancelers
+may still be active. This coordinates cooperating tools, not hostile same-UID
+processes.
+
+Cancellation intent is persisted before signaling. The supervising run polls
+for it, so requester death cannot turn an accepted cancellation into success.
+Unconfirmed termination dominates both writers. Signals and process waits occur
+outside the publication lock.
+
+Exit **8** means receipt publication failed, including an identity mismatch,
+unreadable current receipt, lock timeout, failed atomic write, or failed claim
+release. Known unconfirmed termination takes precedence and still returns
+exit5 with the publication error on stderr. The claim is retained; a terminal receipt with a claim is unpublished
+and cannot be used by status, cancel, or observation evidence checks. Recover
+storage/authority before retrying; classify this as the operational
+`attempt_outcomes` kind `publication_failure`, never `capability_failure`.
+A post-spawn crash still cleans up the group and exits9 unless termination
+is unconfirmed, which always retains exit5; if RUNNING was never
+published, only the supervisor's privately retained exact STARTING snapshot
+can authorize publishing that launch's cleanup result.

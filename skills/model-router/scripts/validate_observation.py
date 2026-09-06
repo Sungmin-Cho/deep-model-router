@@ -876,6 +876,8 @@ def _check_receipt_semantics(attempt, receipt, receipts_dir):
     state = result.get("state")
     if not isinstance(state, str) or state not in DISPATCH_STATE_MAP:
         raise ValidateError("I-RECEIPTS: unknown or missing native state")
+    if state not in ("STARTING", "RUNNING") and os.path.lexists(Path(receipts_dir) / f"{attempt['attempt_id']}.claim"):
+        raise ValidateError("I-RECEIPTS: terminal receipt is not published yet")
     if attempt["state"] != DISPATCH_STATE_MAP[state]:
         raise ValidateError("I-RECEIPTS: observation state does not match receipt")
     seat = receipt.get("seat")
@@ -907,8 +909,6 @@ def _check_receipt_semantics(attempt, receipt, receipts_dir):
     if state in ("SUCCEEDED", "INVALID_OUTPUT") and exit_status != 0:
         raise ValidateError("I-RECEIPTS: output-graded state requires exit zero")
     if state == "SUCCEEDED":
-        if os.path.lexists(Path(receipts_dir) / f"{attempt['attempt_id']}.claim"):
-            raise ValidateError("I-RECEIPTS: success is not published yet")
         if result.get("schema_valid") is not True or result.get("invalid_reasons"):
             raise ValidateError("I-RECEIPTS: success contradicts output validation")
         _hex64(result.get("output_sha256"), "receipt.output_sha256")

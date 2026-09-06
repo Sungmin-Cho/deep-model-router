@@ -72,7 +72,7 @@ HOST_SEAT_KEYS = frozenset({"model", "effort"})
 REVIEW_CONTEXT_KEYS = frozenset({"target_sha256", "author_model_ids", "author_families"})
 OPERATIONAL_OUTCOMES = frozenset({"transport_failure", "launch_failure", "resolution_failure",
     "timeout", "max_turns_partial", "no_artifact", "invalid_output", "authentication_failure",
-    "quota_exhausted", "cancelled", "unknown"})
+    "quota_exhausted", "publication_failure", "cancelled", "unknown"})
 ATTEMPT_OUTCOME_KINDS = OPERATIONAL_OUTCOMES | {"capability_failure", "termination_unconfirmed"}
 # Whether a route's WORKER needs a write-capable dispatch recipe. Two values,
 # not a boolean: the route records which one it applied, and `read_only` has to

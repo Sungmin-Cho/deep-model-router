@@ -300,11 +300,11 @@ def test_output_open_failure_is_start_failed_with_no_leaked_fd_or_claim(tmp_path
     assert outside_target.read_text() == "do not touch"
 
 
-def test_terminal_receipt_write_failure_is_best_effort_and_observable(
+def test_terminal_receipt_write_failure_is_nonzero_and_retains_claim(
         tmp_path, monkeypatch, capsys):
-    """DEFER-2: a failed terminal receipt write still leaves group cleanup
-    and the attempt outcome intact. Persistence is best-effort: print
-    `receipt write failed` on supervisor stderr, release the claim, do not
+    """Publication failure closes DEFER-2: a failed terminal receipt write still leaves group cleanup
+    and the attempt outcome intact. Print
+    `receipt publication failed` on stderr, retain the claim, do not
     turn the failure into crash exit 9, and leave any leftover tmp gone."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("dispatch_agent", SCRIPT)
@@ -328,11 +328,11 @@ def test_terminal_receipt_write_failure_is_best_effort_and_observable(
         "--seat", "reviewer-1", "--output-schema", "review",
         "--", sys.executable, str(fake)])
     captured = capsys.readouterr()
-    assert "receipt write failed" in captured.err
+    assert "receipt publication failed" in captured.err
     leftovers = list(receipt_dir.glob("*.tmp")) if receipt_dir.exists() else []
     assert leftovers == []
-    assert not (receipt_dir / "t1.claim").exists()
-    assert rc == 0
+    assert (receipt_dir / "t1.claim").exists()
+    assert rc == 8
 
 
 def test_deadline_expiry_is_timed_out_and_confirmed(tmp_path):
@@ -640,13 +640,14 @@ def test_cancel_of_a_stale_starting_receipt_is_terminal_with_no_signal(tmp_path)
         "attempt_id": "stale-starting", "seat": "worker",
         "process": {"pid": None, "process_group_id": None,
                     "supervisor_pid": dead_pid},
-        "timing": {"started_at": None, "deadline_at": None, "finished_at": None},
+        "timing": {"launch_anchor_at": None, "started_at": None, "deadline_at": None, "finished_at": None},
         "result": {"state": "STARTING", "exit_status": None,
                   "stdout_path": None, "stderr_path": None,
                   "output_sha256": None, "schema_valid": None,
                   "termination_confirmed": None},
     }
     (receipts / "stale-starting.json").write_text(json.dumps(starting))
+    (receipts / "stale-starting.claim").touch()  # every STARTING producer owns a claim
     proc = _agent(["cancel", "--attempt-id", "stale-starting"], tmp_path)
     assert proc.returncode == 5, proc.stderr
     final = json.loads((receipts / "stale-starting.json").read_text())
@@ -772,7 +773,7 @@ def test_a_post_spawn_crash_never_relabels_an_already_terminal_receipt(
         "--deadline-seconds", "30", "--grace-seconds", "1",
         "--seat", "worker", "--output-schema", "review",
         "--", sys.executable, str(fake)])
-    assert rc == 9
+    assert rc == 5  # known unconfirmed termination takes precedence over the crash
     receipt = json.loads((receipt_dir / "crash3.json").read_text())
     # The crash handler's own conclusion would have been CANCELLED (the
     # group WAS confirmed dead — the child had already exited 0 before

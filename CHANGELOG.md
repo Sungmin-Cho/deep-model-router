@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Serialize terminal receipt publication, persist cancellation intent before signals, and return exit8 with retained claims when evidence publication fails; classify publication failure as operational.
+
 - Jointly assign eligible fallback models when a slate lacks depth, distinctness, or a judge; explicit source reviews count the lead once and provide canonical `dispatch_seats`.
 
 ### Added
