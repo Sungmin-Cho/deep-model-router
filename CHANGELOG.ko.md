@@ -7,6 +7,13 @@
 형식은 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)를 따르며,
 이 프로젝트는 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)을 준수합니다.
 
+## [Unreleased]
+
+### Added
+
+- GPT-6 Astra를 최상위 추론·OpenAI 전용 상위 역할·아키텍트 대체 후보에 추가하고, Sol은 시니어 작업과 대체 후보로 유지한다.
+- 추론을 끌 수 없는 모델이 `MINIMAL` 요청에 `low`를 받도록 모델별 네이티브 effort 매핑을 지원한다.
+
 ## [1.13.0] — 2026-09-03 (2축 라우팅)
 
 ### Added

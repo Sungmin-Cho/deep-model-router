@@ -55,11 +55,13 @@ def test_snapshot_policy_cache_is_separate_from_the_live_one():
 
 def test_the_floor_tables_did_not_move():
     """T21 [P2-opus-missing-1]: the plan's strongest constraint — the risk-band
-    worker table, the review policy, the registry, the bindings and the effort
-    table are byte-for-byte what 1.12.1 shipped — checked against the snapshot."""
+    worker table, review policy and effort table remain what 1.12.1 shipped.
+    Model generations and their binding/fallback inventory evolve separately."""
     import route_task as live
     mod = load_baseline()
     old, new = baseline_cfg(mod), live.load_config()
-    for key in ("worker_selection", "review", "models", "role_bindings", "effort_by_work",
-                "role_tiers", "effort_map", "worker_balanced_selection", "fallbacks"):
+    for key in ("worker_selection", "review", "effort_by_work",
+                "role_tiers", "effort_map", "worker_balanced_selection"):
         assert new[key] == old[key], key
+    # The frontier addition must preserve the older models and their history ids.
+    assert {k: new["models"][k] for k in old["models"]} == old["models"]

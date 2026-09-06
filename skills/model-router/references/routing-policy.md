@@ -400,7 +400,8 @@ ARCHITECTURE×CRITICAL (uncertainty < 3) cap.
 
 #### Native effort to conceptual effort
 
-Convert a declared native effort through the host-local family's `effort_map`:
+Convert a declared native effort through the host model's family `effort_map`
+overlaid with its per-model `effort_map`, when present:
 the map is historical and ordered; if native spellings overlap, choose the
 lower conceptual level. Claude has no distinct native MINIMAL tier, so the
 documented `MINIMAL -> low` pair is an upward-collapse approximation: inversion

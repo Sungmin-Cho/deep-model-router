@@ -135,6 +135,30 @@ it by default would skip the xai step the ladder was just given.
 
 Degraded bindings for when a bridge is down are in `adapters.md`.
 
+### The OpenAI frontier seat
+
+`openai_frontier` fills the upper OpenAI-only roles and is the next reasoning
+candidate when the default `openai_reasoning` seat is unavailable or has
+failed. It is also an architect fallback. `openai_reasoning` remains the
+default reasoning model, the tier-2 OpenAI-only senior, and the fallback when
+the frontier is unavailable. A failed tier-2 OpenAI attempt can now escalate
+to a stronger OpenAI model while the default role bindings remain intact.
+
+The frontier is tier 3, alongside `claude_architect`. This is a policy
+assignment informed by the provider's model positioning, not a measured
+cross-provider ranking. It does not raise the configured HIGH/CRITICAL
+reviewer floor, whose minimum remains the tier-2 senior role. Replacing the
+default reasoning model would also upgrade MEDIUM reviewer seats; the
+execution guard can then reject a stronger worker to preserve that reviewer
+tier. Keeping the default binding avoids that regression. Measure complete
+task cost and latency before adopting a broader default replacement.
+
+The verification ledger separates the successful low-effort CLI probe from
+documented effort support and reference API prices. This model's MINIMAL
+request maps upward to native `low`; its per-model `effort_map` overlays the
+family map. A model missing from a stale local catalog must be checked in the
+actual runtime; hosts without access must report it in `unavailable_models`.
+
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
 Worth recording, because it is the one binding decision that rests on

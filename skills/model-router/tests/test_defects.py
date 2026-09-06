@@ -1521,9 +1521,9 @@ def test_d15_every_human_control_action_is_validated_and_load_bearing():
                                      blast_radius=0, reversibility=0,
                                      flags=["review_disagreement"],
                                      unavailable_models=[ARCHITECT_ID, ID("openai_reasoning")]),
-        "on_review_depth_reduced": dict(task_class="IMPLEMENTATION", complexity=0,
-                                        uncertainty=0, blast_radius=0, reversibility=0,
-                                        flags=["auth_sensitive", "bridge_down"],
+        "on_review_depth_reduced": dict(task_class="INVESTIGATION", complexity=2,
+                                        uncertainty=2, blast_radius=1, reversibility=0,
+                                        flags=["bridge_down"],
                                         runtime="codex"),
         "on_independence_unachievable": dict(task_class="IMPLEMENTATION", complexity=2,
                                              uncertainty=2, blast_radius=2,
@@ -2222,9 +2222,9 @@ def test_d13_the_human_gate_exit_status_comes_from_the_config():
     import tempfile, yaml, os
     cfg = load_config()
     assert cfg["human_in_the_loop"]["human_gate_exit_status"] == 3
-    probe = ["--class", "IMPLEMENTATION", "--complexity", "0", "--uncertainty", "0",
-             "--blast-radius", "0", "--reversibility", "0",
-             "--flags", "auth_sensitive,bridge_down", "--runtime", "codex"]
+    probe = ["--class", "INVESTIGATION", "--complexity", "2", "--uncertainty", "2",
+             "--blast-radius", "1", "--reversibility", "0",
+             "--flags", "bridge_down", "--runtime", "codex"]
     assert cli(*probe).returncode == 3
     # Change the policy and the CLI must follow it, or the key is decoration.
     altered = dict(cfg)

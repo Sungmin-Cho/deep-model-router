@@ -580,6 +580,25 @@ models:
       long_context: { above_input_tokens: 272000, boundary: exclusive,
                       input: 10.00, output: 45.00, cached_input: 1.00 }
 
+  # Highest OpenAI tier; peer to the architect tier, not a measured claim
+  # of superiority over another provider. Sol remains the senior/fallback
+  # seat; routine volume continues through Luna and the balanced workers.
+  openai_frontier:
+    id: gpt-6-astra
+    family: openai
+    capability_tier: 3
+    verified: true
+    # Unlike the older OpenAI seats, this model cannot disable reasoning.
+    # Overlay the family map for this model only (including fallback seats).
+    effort_map: { MINIMAL: low }
+    price_per_mtok:
+      input: 10.00
+      output: 50.00
+      cached_input: 1.00
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      input: 20.00, output: 75.00, cached_input: 2.00 }
+    context_window: 1050000
+
   # Balanced-tier price with frontier-tier claims. `capability_tier: 1` is the
   # honest reading, not a measured one: no head-to-head was run here, and
   # raising it to 2 would move MEDIUM's reviewer floor — a band change with
@@ -631,7 +650,7 @@ role_bindings:
     worker_balanced:      xai_frontier             # first escalation, crosses family
     worker_balanced_alt:  claude_worker_balanced   # first-escalation fallback
     senior_engineer:      claude_senior
-    reasoning_specialist: openai_reasoning
+    reasoning_specialist: openai_reasoning         # preserve the default; frontier is the next candidate
     principal_architect:  claude_architect
 
   # Degraded: the codex bridge is unreachable from Claude Code.
@@ -647,8 +666,8 @@ role_bindings:
     worker_fast:          openai_worker_fast
     worker_balanced:      openai_worker_balanced
     senior_engineer:      openai_reasoning
-    reasoning_specialist: openai_reasoning
-    principal_architect:  openai_reasoning         # MAX effort + second review
+    reasoning_specialist: openai_frontier
+    principal_architect:  openai_frontier          # distinct from the Sol senior seat
 
   # Degraded: only the xAI CLI is reachable. One model fills every role, so any
   # band that requires independent review is INDEPENDENCE_UNAVAILABLE here —
@@ -704,7 +723,8 @@ runtimes:
 # Conceptual effort level -> the token that family's CLI accepts.
 #
 # Keyed by model FAMILY, not by host runtime. The value describes what the
-# TARGET model's CLI will accept, and the default binding is shared across
+# TARGET model's CLI will accept; a model's own effort_map overlays its family
+# map when the family has a model-specific exception. The default binding is shared across
 # runtimes — so a router running under one host routinely dispatches a model
 # of another family. Keying this by host meant the emitted spelling described
 # a CLI that was not going to receive it.
@@ -872,21 +892,21 @@ fallbacks:
   claude_code:
     worker_fast:          [claude_worker_fast, claude_worker_balanced]
     worker_balanced:      [claude_worker_balanced, openai_worker_balanced, claude_senior]
-    senior_engineer:      [openai_reasoning, claude_architect]
-    reasoning_specialist: [claude_senior, claude_architect]
-    principal_architect:  [claude_senior, openai_reasoning]
+    senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
+    reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
+    principal_architect:  [openai_frontier, claude_senior, openai_reasoning]
   codex:
     worker_fast:          [openai_worker_balanced, claude_worker_fast]
     worker_balanced:      [claude_worker_balanced, openai_worker_balanced, openai_reasoning]
-    senior_engineer:      [openai_reasoning, claude_senior]
-    reasoning_specialist: [openai_reasoning, claude_senior]
-    principal_architect:  [openai_reasoning, claude_architect]
+    senior_engineer:      [openai_reasoning, claude_senior, openai_frontier]
+    reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior]
+    principal_architect:  [openai_frontier, openai_reasoning, claude_architect]
   grok:
     worker_fast:          [claude_worker_fast, openai_worker_balanced]
     worker_balanced:      [claude_worker_balanced, openai_worker_balanced]
-    senior_engineer:      [claude_senior, openai_reasoning]
-    reasoning_specialist: [openai_reasoning, claude_senior]
-    principal_architect:  [claude_architect, claude_senior]
+    senior_engineer:      [claude_senior, openai_reasoning, openai_frontier]
+    reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior]
+    principal_architect:  [openai_frontier, claude_architect, claude_senior]
 
 # Compensations that apply when a fallback lands on a weaker or same-family
 # model. The resolver records these; it does not silently absorb them.
@@ -915,6 +935,35 @@ fallback_compensations:
 verification_ledger:
   probed_on: 2026-08-20
   entries:
+    - item: "gpt-6-astra model id"
+      status: verified
+      probed_on: "2026-09-05"
+      attempt_id: "astra-low"
+      cli_version: "codex-cli 0.153.4"
+      argv: 'codex exec --ignore-user-config --ephemeral -m gpt-6-astra -c model_reasoning_effort="low" -s read-only --skip-git-repo-check -o <result-file> -'
+      evidence: >
+        Codex-hosted dispatch_agent.py round-trip: result ASTRA_OK, exit 0,
+        SUCCEEDED with termination_confirmed true. CLI header reported
+        gpt-6-astra and low. This verifies id acceptance and low-effort
+        execution, not served-model attestation (observed_model_id is null).
+        The local 0.152.1 models_cache lacked this id; its absence did not
+        establish runtime unavailability. Other effort levels are documented,
+        not live-probed here. No cross-provider quality or cost-per-task
+        comparison has been run for this model.
+
+    - item: "gpt-6-astra capabilities and API reference prices"
+      status: documented
+      probed_on: "2026-09-05"
+      source: "https://developers.openai.com/api/docs/models/gpt-6-astra"
+      evidence: >
+        Official model documentation lists low/medium/high/xhigh/max, a
+        1,050,000-token context window and $10/$50/$1 input/output/cache-read
+        per MTok. Above 272K input tokens, whole-request input/cache rates
+        double and output is 1.5x. The model guide explicitly excludes none;
+        MINIMAL therefore collapses upward to low for this model only.
+        Tier 3 is a routing policy assignment; it is not a measured comparison
+        against the Claude architect or a dispatch subscription price.
+
     - item: "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
       status: verified
       probed_on: 2026-08-11

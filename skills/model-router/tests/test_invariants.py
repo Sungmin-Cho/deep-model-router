@@ -512,9 +512,9 @@ def test_a_reduced_depth_route_is_not_dispatchable_without_a_human():
     that needs a human and exits 0 is a gate any caller treating success as
     authorisation walks straight through."""
     import subprocess
-    probe = ["--class", "IMPLEMENTATION", "--complexity", "0", "--uncertainty", "0",
-             "--blast-radius", "0", "--reversibility", "0",
-             "--flags", "auth_sensitive,bridge_down", "--runtime", "codex"]
+    probe = ["--class", "INVESTIGATION", "--complexity", "2", "--uncertainty", "2",
+             "--blast-radius", "1", "--reversibility", "0",
+             "--flags", "bridge_down", "--runtime", "codex"]
     proc = subprocess.run([sys.executable, str(SKILL / "scripts" / "route_task.py"), *probe],
                           capture_output=True, text=True)
     out = json.loads(subprocess.run(
@@ -560,12 +560,12 @@ def test_an_unsatisfiable_band_floor_means_no_amount_of_availability_would_help(
         "the shortfall did not in fact clear — the probe is wrong, not the flag")
 
     openai_only_structural = route(Task(
-        task_class="IMPLEMENTATION", complexity=2, uncertainty=2, blast_radius=1,
-        reversibility=0, flags=["auth_sensitive", "bridge_down"], runtime="codex"), CFG)
+        task_class="INVESTIGATION", complexity=2, uncertainty=2, blast_radius=1,
+        reversibility=0, flags=["bridge_down"], runtime="codex"), CFG)
     assert openai_only_structural["review"]["review_depth_reduced"], "probe drifted"
     assert openai_only_structural["review"]["band_floor_unsatisfiable"], (
-        "openai_only holds one tier-2 model against two reviewer seats and "
-        "nothing is withheld — no retry can clear this")
+        "openai_only holds two tier-2+ models, one occupied by the frontier worker, "
+        "against two independent reviewer seats; nothing is withheld")
 
     # Round 9: the two probes above both survive DELETING the implementer from
     # the seat count, so they pinned only one direction. This one needs it: a
@@ -1035,8 +1035,19 @@ def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
 
 # --- helpers for the paired (new vs 1.12.1) checks ----------------------------
 
+_COMPARISON_CFG = None
+
+
 def _bcfg(base):
-    return baseline_cfg(base)
+    # Compare the two routing engines with the SAME current model supply.
+    # The immutable snapshot and its digest are checked in test_baseline_snapshot;
+    # model releases must not masquerade as execution-axis regressions here.
+    global _COMPARISON_CFG
+    if _COMPARISON_CFG is None:
+        _COMPARISON_CFG = copy.deepcopy(baseline_cfg(base))
+        for key in ("models", "role_bindings", "fallbacks"):
+            _COMPARISON_CFG[key] = copy.deepcopy(CFG[key])
+    return _COMPARISON_CFG
 
 
 _PAIRED = None

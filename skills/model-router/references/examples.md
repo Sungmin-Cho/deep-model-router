@@ -574,32 +574,27 @@ worker:      worker_balanced  ->  xai_frontier
 effort:      HIGH  (native: high)
 review:
   band:            HIGH
-  reviewers:       senior_engineer, principal_architect
-  models:          claude_senior, claude_architect
+  reviewers:       senior_engineer, reasoning_specialist
+  models:          claude_senior, openai_frontier
   effort:          HIGH
   required:        independent=True
   actual:          degraded
-cross_family_review: False
-fallbacks:   (none)
-confidence:  0.95
+cross_family_review: True
+fallbacks:   ['reasoning_specialist: openai_reasoning unavailable -> openai_frontier']
+confidence:  0.89
 notes:
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
-  - provider may substitute another claude model for security_sensitive content; the requested identity of claude_architect is declared_only
 
-IMPLEMENTATION scored 9/18 (c=2 u=1 b=2 r=1) -> band HIGH; execution 8/18 -> EASY. Overrides applied: critical_domain. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: security_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, principal_architect, independence_required=True, review_independence=degraded. Reviewer slot substituted: reasoning_specialist -> principal_architect (would have duplicated another reviewer). No fallbacks applied. cross_family_review=false — reviewers share a family; weigh the second verdict accordingly.
+IMPLEMENTATION scored 9/18 (c=2 u=1 b=2 r=1) -> band HIGH; execution 8/18 -> EASY. Overrides applied: critical_domain. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: security_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. Fallbacks: reasoning_specialist: openai_reasoning unavailable -> openai_frontier.
 ```
 
-The route still emits — a missing model degrades the route, never fails it.
+The route still emits because a usable fallback remains.
 
-`--unavailable reasoning_specialist` withholds that role's bound model.
-De-confliction then substitutes the reviewer seat (`reasoning_specialist` →
-`principal_architect`) so the two reviewers are not the same model. No
-fallback is recorded: a fallback is written only when a role that actually
-ships resolved to a different model than its binding, and the shipped roles
-here never needed that. The two seated reviewers are both claude, so
-`cross_family_review` is false. The review still catches things; it catches
-considerably less than the count suggests. The flag exists so nobody reads
-this route later and believes a cross-family review happened.
+`--unavailable reasoning_specialist` withholds that role's default reasoning
+model. The role falls back to `openai_frontier`, and the route records that
+substitution. The senior reviewer remains Claude and the reasoning reviewer
+remains OpenAI, so `cross_family_review` is true. Isolation is still degraded
+until the caller supplies evidence; distinct families alone do not prove it.
 
 There are three runtimes and fifteen (role × runtime) fallback paths. A
 fallback is recorded only when the emitted model differs. The rule exists

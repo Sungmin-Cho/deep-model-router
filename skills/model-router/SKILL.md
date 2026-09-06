@@ -135,7 +135,7 @@ Other inputs worth knowing:
 | Flag | Use |
 |---|---|
 | `--format json` | machine-readable route |
-| `--runtime claude_code\|codex\|grok` | the host, and the degraded binding that survives when that host's cross-provider bridge is down. Effort spelling comes from the selected model's family, not from this flag |
+| `--runtime claude_code\|codex\|grok` | the host and its degraded binding. Effort spelling uses the selected model's family map plus any per-model override |
 | `--worker-seat write\|read_only` | override the class default for whether this route's worker needs a write-capable dispatch recipe |
 | `--prior-failures N` | after a failed attempt; `--prior-models` must then name **one concrete model id per failure** |
 | `--unavailable <role>` / `--unavailable-models <id>` | a specific role or model does not resolve |
