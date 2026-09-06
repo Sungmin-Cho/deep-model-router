@@ -460,10 +460,8 @@ human_in_the_loop:
   # fact as `review_depth_reduced` — the review does not run at the depth the
   # band asked for — so a hotfix does not defer it either.
   on_effort_below_floor:        require_human_confirmation
-  # A timed-out writer whose process tree could not be confirmed dead may
-  # still be writing. Retrying behind it risks two concurrent writers on the
-  # same files, so the route holds until a human confirms the workspace.
-  on_termination_unconfirmed:  require_human_confirmation
+  # Unconfirmed termination is an unconditional terminal safety invariant,
+  # not a configurable human action. Clear it only after termination proof.
   human_gate_exit_status:       3
   # `on_routing_confidence_below` used to sit here holding 0.60 — the same
   # number as `router.confidence.escalate_below`, which is the one the router

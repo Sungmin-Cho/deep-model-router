@@ -198,6 +198,46 @@ array. Repeated prior model IDs represent repeated attempts and are retained.
 An empty `allowed_families` remains an unsatisfiable policy; an empty declared
 host seat remains invalid. Valid inputs keep the same policy and fingerprints.
 
+## Typed attempt history
+
+V1 optionally accepts `attempt_outcomes`, an ordered array for the executor
+lineage being routed (not sibling reviewer/judge attempts). Each record has a
+unique safe `attempt_id`, concrete registry/history `model_id`, `kind`, and
+hex64 `evidence_sha256`; `recovery_sha256` is optional/null or a different hex64.
+Do not combine it with nonempty legacy `prior_failures`.
+
+Only `capability_failure` feeds the existing model exclusion, tier escalation,
+and failure-confidence penalty. Operational kinds are `transport_failure`,
+`launch_failure`, `resolution_failure`, `timeout`, `max_turns_partial`,
+`no_artifact`, `invalid_output`, `authentication_failure`, `quota_exhausted`,
+`cancelled`, and `unknown`. They require recovery evidence before an ordinary
+policy retry; unresolved records produce `OPERATIONAL_RECOVERY_REQUIRED` with
+no executable bindings. A timeout here means termination was confirmed.
+Never classify a live but buffered/silent process as a completed failure.
+
+`termination_unconfirmed`, whether a legacy flag or typed record, always
+prevents execution, including hotfixes and old notify-only settings. The old
+`on_termination_unconfirmed` setting is removed; unconfirmed termination now
+returns terminal exit 1 rather than an executable-after-confirmation exit 3.
+A generic recovery hash cannot clear it. After
+actual termination proof, the caller must update that attempt's observed
+classification/evidence; duplicate IDs are refused.
+
+Every record consumes the existing total attempt budget. `retry_count` reports
+that total; `escalation_count` retains the capability-history count, not a count
+of actually executed escalations. Typed history and a count summary are echoed
+as declared input, including on terminal routes, and bound to request identity
+before projection onto the legacy capability ladder. Omitted/null history keeps
+legacy request identity at a fixed policy; the deliberate unconfirmed-termination
+hardening changes that path and the updated policy digest changes fingerprints.
+
+Classification and evidence hashes are caller declarations, not authenticated
+receipt imports. Recovered operational failures use the current task/availability
+policy; they do not pin the previously used model or add a capability floor.
+Per-effort, review-round, continuation execution and backoff remain controller
+responsibilities. Retained partial artifacts belong in the recovery evidence.
+
+
 ## Observability
 
 An explicitly declared `review_context` binds an existing artifact's target hash

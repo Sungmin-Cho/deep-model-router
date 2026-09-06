@@ -2762,7 +2762,7 @@ def test_d27_the_gate_reaches_the_shell():
     proc = cli("--class", "IMPLEMENTATION", "--complexity", "0",
                "--uncertainty", "0", "--blast-radius", "0",
                "--reversibility", "0", "--flags", "termination_unconfirmed")
-    assert proc.returncode == 3
+    assert proc.returncode == 1
 
 
 def test_d27_production_hotfix_does_not_defer_an_unconfirmed_termination():
@@ -2778,12 +2778,12 @@ def test_d27_production_hotfix_does_not_defer_an_unconfirmed_termination():
     assert out["human_confirmation_deferred"] is False
 
 
-def test_d27_production_hotfix_combined_with_termination_unconfirmed_exits_3():
+def test_d27_production_hotfix_combined_with_termination_unconfirmed_is_terminal():
     proc = cli("--class", "IMPLEMENTATION", "--complexity", "0",
                "--uncertainty", "0", "--blast-radius", "0",
                "--reversibility", "0",
                "--flags", "production_hotfix,termination_unconfirmed")
-    assert proc.returncode == 3
+    assert proc.returncode == 1
 
 
 
