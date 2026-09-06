@@ -1,0 +1,647 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-09-06",
+  "host_cli_version": "codex-cli 0.153.4",
+  "effort": "LOW",
+  "scope": "requested-model CLI configurations on fixed diagnostic tasks; not model-only latency or repository implementation quality",
+  "latency_basis": "collector monotonic supervisor wall time including launch, guard, CLI and publication; excludes grading; all attempts included",
+  "identity_basis": "requested_model; served identity unavailable",
+  "cases_sha256": "6e39c8c4ae0b52eb211491df8966c0364daf380be2bed143afc0d3030439f8c6",
+  "collector_sha256": "71b3a8054bbf84bcc11dcece90ba8e87c067a658b6ec659bd0edefaa5dfebcba",
+  "verification_sha256": "7d7051f153df830d0e1ba29c0e8536ae5dd7797f3f576dce688a93994dd29149",
+  "collection_note": "Collected before final flat-store and measurement-completeness control fixes; original collector snapshot retained and every protected raw result independently replayed. Final collector controls were separately tested with a guarded local fixture.",
+  "model_ids": {
+    "openai_worker_fast": "gpt-5.6-luna",
+    "openai_worker_balanced": "gpt-5.6-terra",
+    "openai_reasoning": "gpt-5.6-sol",
+    "openai_frontier": "gpt-6-astra"
+  },
+  "pricing_snapshot": {
+    "openai_worker_fast": {
+      "verified_on": "2026-09-06",
+      "max_age_days": 30,
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+      "cache_write": 0.25,
+      "input": 0.2,
+      "output": 1.2,
+      "cached_input": 0.02,
+      "long_context": {
+        "above_input_tokens": 272000,
+        "boundary": "exclusive",
+        "cache_write": 0.5,
+        "input": 0.4,
+        "output": 1.8,
+        "cached_input": 0.04
+      }
+    },
+    "openai_worker_balanced": {
+      "verified_on": "2026-09-06",
+      "max_age_days": 30,
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "cache_write": 2.5,
+      "input": 2.0,
+      "output": 12.0,
+      "cached_input": 0.2,
+      "long_context": {
+        "above_input_tokens": 272000,
+        "boundary": "exclusive",
+        "cache_write": 5.0,
+        "input": 4.0,
+        "output": 18.0,
+        "cached_input": 0.4
+      }
+    },
+    "openai_reasoning": {
+      "verified_on": "2026-09-06",
+      "max_age_days": 30,
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "cache_write": 5.0,
+      "promotional_through": "2026-11-21",
+      "input": 4.0,
+      "output": 20.0,
+      "cached_input": 0.4,
+      "long_context": {
+        "above_input_tokens": 272000,
+        "boundary": "exclusive",
+        "cache_write": 10.0,
+        "input": 8.0,
+        "output": 30.0,
+        "cached_input": 0.8
+      }
+    },
+    "openai_frontier": {
+      "verified_on": "2026-09-06",
+      "max_age_days": 30,
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "cache_write": 12.5,
+      "input": 10.0,
+      "output": 50.0,
+      "cached_input": 1.0,
+      "long_context": {
+        "above_input_tokens": 272000,
+        "boundary": "exclusive",
+        "cache_write": 25.0,
+        "input": 20.0,
+        "output": 75.0,
+        "cached_input": 2.0
+      }
+    }
+  },
+  "summary": {
+    "models": {
+      "openai_worker_fast": {
+        "attempts": 6,
+        "task_successes": 4,
+        "ungraded": 0,
+        "correct_cases": 50,
+        "graded_cases": 52,
+        "median_elapsed_ms": 10156.336,
+        "standard_api_equivalent_usd": 0.0208048,
+        "known_partial_api_equivalent_usd": 0.0208048,
+        "quoted_attempts": 6
+      },
+      "openai_worker_balanced": {
+        "attempts": 6,
+        "task_successes": 5,
+        "ungraded": 0,
+        "correct_cases": 51,
+        "graded_cases": 52,
+        "median_elapsed_ms": 7593.049999999999,
+        "standard_api_equivalent_usd": 0.1795512,
+        "known_partial_api_equivalent_usd": 0.1795512,
+        "quoted_attempts": 6
+      },
+      "openai_reasoning": {
+        "attempts": 6,
+        "task_successes": 6,
+        "ungraded": 0,
+        "correct_cases": 52,
+        "graded_cases": 52,
+        "median_elapsed_ms": 7583.573,
+        "standard_api_equivalent_usd": 0.429044,
+        "known_partial_api_equivalent_usd": 0.429044,
+        "quoted_attempts": 6
+      },
+      "openai_frontier": {
+        "attempts": 6,
+        "task_successes": 6,
+        "ungraded": 0,
+        "correct_cases": 52,
+        "graded_cases": 52,
+        "median_elapsed_ms": 9591.822,
+        "standard_api_equivalent_usd": 0.9931099999999999,
+        "known_partial_api_equivalent_usd": 0.9931099999999999,
+        "quoted_attempts": 6
+      }
+    },
+    "policy_change_admissible": false,
+    "scope": "fixed diagnostic reasoning/review tasks; repeated cases are not independent generalization evidence",
+    "calibration_decision": "retain routing defaults; representative repository tasks and broader independent quality evidence are required before policy changes"
+  },
+  "trials": [
+    {
+      "attempt_id": "eval-0-outcome_boundaries-openai_worker_fast",
+      "model_key": "openai_worker_fast",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 8463.328,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 15253,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 267,
+        "reasoning_output_tokens": 110
+      },
+      "receipt_sha256": "aa9e6b131ade48d55b2684a1e12cb7af1d784774c79b8d819c129cf4cb841f84",
+      "stdout_sha256": "3c5f082fd0ba6e7f49eae73c8a34d47ee853fe11ac16446ee1bf43feedd411d6",
+      "standard_api_equivalent_usd": 0.003371
+    },
+    {
+      "attempt_id": "eval-0-outcome_boundaries-openai_worker_balanced",
+      "model_key": "openai_worker_balanced",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 6734.913,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 16822,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 155,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "03cdb3bb7db84d479ad45cec4274f4c254abaf3dff9310072924105ce7ad3e75",
+      "stdout_sha256": "e2575a255cf1a9fa3416b93131f563a999634ba31e6cc450639503a172d96d32",
+      "standard_api_equivalent_usd": 0.035504
+    },
+    {
+      "attempt_id": "eval-0-outcome_boundaries-openai_reasoning",
+      "model_key": "openai_reasoning",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 6796.604,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 16610,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 155,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "8aa8bd1250ce11a63c7fb8d9356ffd13f2722d6a840b4e53d26427ab026cb74a",
+      "stdout_sha256": "129738ac68c6d573fc661487337b60c6e23a83215198da89c11c4ac20edfaf03",
+      "standard_api_equivalent_usd": 0.06954
+    },
+    {
+      "attempt_id": "eval-0-outcome_boundaries-openai_frontier",
+      "model_key": "openai_frontier",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 9741.332,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 17713,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 155,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "bd6cbf5aeb6bb2c1fe570a3176816cc3935dcb199dc9608e262882fb79226e7f",
+      "stdout_sha256": "cd9bd9e5f2785625c50a49c1ba632dbf2bc5482f99bd93caaaff5cf5a9faf330",
+      "standard_api_equivalent_usd": 0.18488
+    },
+    {
+      "attempt_id": "eval-0-code_review-openai_worker_balanced",
+      "model_key": "openai_worker_balanced",
+      "task_id": "code_review",
+      "elapsed_ms": 5791.852,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 16564,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 91,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "649c51cd9967e52937997585152e15c2fd8e5a629cd07e9e17c5690ff32b51c9",
+      "stdout_sha256": "1f1f2913039aa2879a1cdcc82d18d14c225f317f293afb68baa653b067f6d8ae",
+      "standard_api_equivalent_usd": 0.0144056
+    },
+    {
+      "attempt_id": "eval-0-code_review-openai_reasoning",
+      "model_key": "openai_reasoning",
+      "task_id": "code_review",
+      "elapsed_ms": 6218.517,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 16772,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 91,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "8f86c9886fd984a22c04cb743ea733e13d1689f41f112e664c62956256770e21",
+      "stdout_sha256": "d184463a48b7e425639c00c3b3b8dda8db4e1922aafa1ceedfb44d87fb5fd384",
+      "standard_api_equivalent_usd": 0.068908
+    },
+    {
+      "attempt_id": "eval-0-code_review-openai_frontier",
+      "model_key": "openai_frontier",
+      "task_id": "code_review",
+      "elapsed_ms": 8454.609,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 17667,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 91,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "148e16385ab6ed577ce0f586a7a7512561a1b85ba78a40b24ee989fc8f967923",
+      "stdout_sha256": "9c223c3dc6f7d5999ea7a21862bd0c7039fc34c11b0f5bbf41101b104dac9d13",
+      "standard_api_equivalent_usd": 0.18122
+    },
+    {
+      "attempt_id": "eval-0-code_review-openai_worker_fast",
+      "model_key": "openai_worker_fast",
+      "task_id": "code_review",
+      "elapsed_ms": 11710.324,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 15205,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 303,
+        "reasoning_output_tokens": 210
+      },
+      "receipt_sha256": "3891c29218545d18e3c7182e0b400f20d8f8641622e8b38312dee8af2e4c91f5",
+      "stdout_sha256": "b3a8a3d36291ee7129e0ca16d99fcdd4f25d1e125d8596e8440d12ee0e3190ce",
+      "standard_api_equivalent_usd": 0.0034046
+    },
+    {
+      "attempt_id": "eval-0-joint_assignment-openai_reasoning",
+      "model_key": "openai_reasoning",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 14849.103,
+      "quality": {
+        "passed": true,
+        "correct": 8,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 16896,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 415,
+        "reasoning_output_tokens": 285
+      },
+      "receipt_sha256": "9963b36c14c4226c3652b3326c2565e08505cb1381927bfeff627bcffc8d20d5",
+      "stdout_sha256": "904e93ea58d797a16669af7f61bb24bfce80e079c22d491a2631f073e31f148a",
+      "standard_api_equivalent_usd": 0.075884
+    },
+    {
+      "attempt_id": "eval-0-joint_assignment-openai_frontier",
+      "model_key": "openai_frontier",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 9163.7,
+      "quality": {
+        "passed": true,
+        "correct": 8,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 17785,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 128,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "6e85ba8b341425627f021fb2c1eddd9b8a438df49940c3af66e956efe03bc893",
+      "stdout_sha256": "bdde53468089a1351925f0e505ce8a5f168b1a82dbdb4d2386a593e86c9a670f",
+      "standard_api_equivalent_usd": 0.18425
+    },
+    {
+      "attempt_id": "eval-0-joint_assignment-openai_worker_fast",
+      "model_key": "openai_worker_fast",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 13037.258,
+      "quality": {
+        "passed": false,
+        "correct": 7,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 15333,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 539,
+        "reasoning_output_tokens": 406
+      },
+      "receipt_sha256": "8202d9402af155a20a3f542e4f89c3a96805da8489e1df022aef8a43b8870c0f",
+      "stdout_sha256": "9064486c84aba6e83d008138f5e06c6b10d57b3a771082b230d57eef9f06f902",
+      "standard_api_equivalent_usd": 0.0037134
+    },
+    {
+      "attempt_id": "eval-0-joint_assignment-openai_worker_balanced",
+      "model_key": "openai_worker_balanced",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 11045.99,
+      "quality": {
+        "passed": true,
+        "correct": 8,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 16896,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 400,
+        "reasoning_output_tokens": 270
+      },
+      "receipt_sha256": "682317dfe115a746603a758938f9f194c1f698e74a7d0e0da7724a03fe5c5072",
+      "stdout_sha256": "5d4df1ee2c767cbc053539c92536951b6452bde2c84806fb9b4ff8dac3ef3516",
+      "standard_api_equivalent_usd": 0.038592
+    },
+    {
+      "attempt_id": "eval-1-outcome_boundaries-openai_worker_balanced",
+      "model_key": "openai_worker_balanced",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 8451.187,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 16822,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 241,
+        "reasoning_output_tokens": 84
+      },
+      "receipt_sha256": "c2220e999a6867b309d7e4ac48af83423f62ef7107643d668929c3c5aae36797",
+      "stdout_sha256": "9d365a9dbf7155abc5b6c0fcbb8bc3abfa7abd36715e6f6a3258cb105d52e92a",
+      "standard_api_equivalent_usd": 0.036536
+    },
+    {
+      "attempt_id": "eval-1-outcome_boundaries-openai_reasoning",
+      "model_key": "openai_reasoning",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 8010.015,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 16820,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 155,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "f0977bd676b221a9fd8fcb5701c5e0da85a96f1acdf64f3cad6d34cae4fa5d5a",
+      "stdout_sha256": "c9ba7865036b22ead1db4cab71e93d9a5faad37791ff0ea0a91453bfae3b93b4",
+      "standard_api_equivalent_usd": 0.07038
+    },
+    {
+      "attempt_id": "eval-1-outcome_boundaries-openai_frontier",
+      "model_key": "openai_frontier",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 9442.312,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 17715,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 155,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "b01395a8b8931bcabf0605017eff1cd366d03e670ee25465b08c4163441684b4",
+      "stdout_sha256": "64ad10c768bf2b813f14d045f05b14891ab579d5d4cf133a27ac66d131d1cb17",
+      "standard_api_equivalent_usd": 0.1849
+    },
+    {
+      "attempt_id": "eval-1-outcome_boundaries-openai_worker_fast",
+      "model_key": "openai_worker_fast",
+      "task_id": "outcome_boundaries",
+      "elapsed_ms": 8192.659,
+      "quality": {
+        "passed": true,
+        "correct": 12,
+        "total": 12
+      },
+      "usage": {
+        "input_tokens": 15255,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 220,
+        "reasoning_output_tokens": 63
+      },
+      "receipt_sha256": "ad227a6a4223c97a55100035970c56bc3c8b273c2159ad10d5bdbd0feb7a6485",
+      "stdout_sha256": "57c9556423467e30d2978c12d4e608fcbd6c187c7879039ad6660c007e0a978d",
+      "standard_api_equivalent_usd": 0.003315
+    },
+    {
+      "attempt_id": "eval-1-code_review-openai_reasoning",
+      "model_key": "openai_reasoning",
+      "task_id": "code_review",
+      "elapsed_ms": 7157.131,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 16772,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 91,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "99e3d7b632fd9e78ced38b12e2fd4f92d99857d910be247c01fd8304f5a7076a",
+      "stdout_sha256": "c6883b3bdd68c0c12564dc5883c19c6e2b94a7f62d161522dc4fd2a36e1d5abd",
+      "standard_api_equivalent_usd": 0.068908
+    },
+    {
+      "attempt_id": "eval-1-code_review-openai_frontier",
+      "model_key": "openai_frontier",
+      "task_id": "code_review",
+      "elapsed_ms": 9879.596,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 17663,
+        "cached_input_tokens": 12160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 91,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "dfe79294cab7df0b14b2fc5b002bd303a150029bc9255019388e18f2120f9e29",
+      "stdout_sha256": "04f9ec38b02aa1fc8da73886cd73da44f8c50c5232c5a28874276901186cfadb",
+      "standard_api_equivalent_usd": 0.07174
+    },
+    {
+      "attempt_id": "eval-1-code_review-openai_worker_fast",
+      "model_key": "openai_worker_fast",
+      "task_id": "code_review",
+      "elapsed_ms": 8602.348,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 15205,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 269,
+        "reasoning_output_tokens": 176
+      },
+      "receipt_sha256": "72b3744d204c9dac6b81901c978f1527bb125f73faf94830c0264892612ca870",
+      "stdout_sha256": "17b51a3f239f304133ce727173a48fbde5769cdf17158ce72be227fab2cde12e",
+      "standard_api_equivalent_usd": 0.0033638
+    },
+    {
+      "attempt_id": "eval-1-code_review-openai_worker_balanced",
+      "model_key": "openai_worker_balanced",
+      "task_id": "code_review",
+      "elapsed_ms": 5751.897,
+      "quality": {
+        "passed": true,
+        "correct": 6,
+        "total": 6
+      },
+      "usage": {
+        "input_tokens": 16770,
+        "cached_input_tokens": 11008,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 91,
+        "reasoning_output_tokens": 0
+      },
+      "receipt_sha256": "54c2a33c88a5a3eebfd12b6af7cbf00f43e1d549f1eae0a9ac6baf0831c43383",
+      "stdout_sha256": "1aeb23a8c313c22943e899817517384de05d0d833d0992638b662dcb95791089",
+      "standard_api_equivalent_usd": 0.0148176
+    },
+    {
+      "attempt_id": "eval-1-joint_assignment-openai_frontier",
+      "model_key": "openai_frontier",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 10158.848,
+      "quality": {
+        "passed": true,
+        "correct": 8,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 17787,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 165,
+        "reasoning_output_tokens": 35
+      },
+      "receipt_sha256": "78269e0b97cf434cd21bc9a6e6e621775f81bd1dbb4e562f005fd8b41b38d709",
+      "stdout_sha256": "04abae17556707ade663184fe9a9b3eb291168e2a954185ed0b052c47cebd8f9",
+      "standard_api_equivalent_usd": 0.18612
+    },
+    {
+      "attempt_id": "eval-1-joint_assignment-openai_worker_fast",
+      "model_key": "openai_worker_fast",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 12252.72,
+      "quality": {
+        "passed": false,
+        "correct": 7,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 15329,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 476,
+        "reasoning_output_tokens": 343
+      },
+      "receipt_sha256": "6bf99406fe503c5535af31f6c076a731db76c088319550087bdb822dcf665cbc",
+      "stdout_sha256": "7f9cda9b955cdcd716e8c6c2102e8d6a0ad939f9a418741802e88fda2d8d8cbf",
+      "standard_api_equivalent_usd": 0.003637
+    },
+    {
+      "attempt_id": "eval-1-joint_assignment-openai_worker_balanced",
+      "model_key": "openai_worker_balanced",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 12429.153,
+      "quality": {
+        "passed": false,
+        "correct": 7,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 16896,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 492,
+        "reasoning_output_tokens": 359
+      },
+      "receipt_sha256": "e746927a80b43a293a7c1bed1b1b35a428453de657cfb4988ce516c653032a13",
+      "stdout_sha256": "c1291ecc3a3f20ecea4a7c6171d15027bd0c0d13ab2943321844d93f25b1f49e",
+      "standard_api_equivalent_usd": 0.039696
+    },
+    {
+      "attempt_id": "eval-1-joint_assignment-openai_reasoning",
+      "model_key": "openai_reasoning",
+      "task_id": "joint_assignment",
+      "elapsed_ms": 14704.065,
+      "quality": {
+        "passed": true,
+        "correct": 8,
+        "total": 8
+      },
+      "usage": {
+        "input_tokens": 16896,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 392,
+        "reasoning_output_tokens": 262
+      },
+      "receipt_sha256": "babdfb9b4551d0c66370c870126dce76ceeb21ea35a508720769329f4637f88e",
+      "stdout_sha256": "07473ab85345cc5e9a30d42802e7b7072558a4e24bb5a12d47f6bd939e4082e8",
+      "standard_api_equivalent_usd": 0.075424
+    }
+  ]
+}

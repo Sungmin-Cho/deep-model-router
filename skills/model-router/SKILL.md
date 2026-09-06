@@ -9,6 +9,10 @@ You are deciding two things about a piece of work: **who should do it**, and
 **how hard it should be checked**. Those are separate decisions, and keeping
 them separate is the point of this skill.
 
+Measured diagnostics and price freshness are documented in
+`references/evaluation.md`. Their small fixed suite does not establish global
+optimality; routing confidence is a policy heuristic, not a probability.
+
 The cheap model does the volume. Escalation happens on evidence, not on hunches.
 Review depth tracks risk, not the worker you happened to pick. And you never
 claim a safety property you did not actually enforce.

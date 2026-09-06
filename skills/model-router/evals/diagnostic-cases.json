@@ -1,0 +1,399 @@
+[
+  {
+    "id": "outcome_boundaries",
+    "instructions": "Apply rules in order: count must be an integer (not bool), nonnegative; unknown state -> HOLD_INPUT. Known states: TERMINATION_UNCONFIRMED, SUCCEEDED, capability_failure, timeout, quota_exhausted, publication_failure, invalid_output. Then TERMINATION_UNCONFIRMED -> HOLD_TERMINATION regardless budget/claim. Then claim=true -> HOLD_PUBLICATION. Then count>=4 -> STOP_BUDGET. Then SUCCEEDED -> DONE. Then capability_failure -> ESCALATE. Other states -> RETRY if recovered=true else RECOVER. Each answer is an array containing the one action string.",
+    "cases": [
+      {
+        "id": "unconfirmed_budget",
+        "input": {
+          "state": "TERMINATION_UNCONFIRMED",
+          "count": 4,
+          "claim": true,
+          "recovered": true
+        }
+      },
+      {
+        "id": "unpublished_success",
+        "input": {
+          "state": "SUCCEEDED",
+          "count": 0,
+          "claim": true,
+          "recovered": false
+        }
+      },
+      {
+        "id": "completed",
+        "input": {
+          "state": "SUCCEEDED",
+          "count": 0,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "capability",
+        "input": {
+          "state": "capability_failure",
+          "count": 1,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "timeout",
+        "input": {
+          "state": "timeout",
+          "count": 1,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "recovered_timeout",
+        "input": {
+          "state": "timeout",
+          "count": 1,
+          "claim": false,
+          "recovered": true
+        }
+      },
+      {
+        "id": "quota",
+        "input": {
+          "state": "quota_exhausted",
+          "count": 2,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "publication",
+        "input": {
+          "state": "publication_failure",
+          "count": 1,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "budget",
+        "input": {
+          "state": "capability_failure",
+          "count": 4,
+          "claim": false,
+          "recovered": true
+        }
+      },
+      {
+        "id": "boolean_count",
+        "input": {
+          "state": "capability_failure",
+          "count": true,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "unknown",
+        "input": {
+          "state": "invented",
+          "count": 0,
+          "claim": false,
+          "recovered": false
+        }
+      },
+      {
+        "id": "invalid_format_recovered",
+        "input": {
+          "state": "invalid_output",
+          "count": 2,
+          "claim": false,
+          "recovered": true
+        }
+      }
+    ],
+    "expected": {
+      "unconfirmed_budget": [
+        "HOLD_TERMINATION"
+      ],
+      "unpublished_success": [
+        "HOLD_PUBLICATION"
+      ],
+      "completed": [
+        "DONE"
+      ],
+      "capability": [
+        "ESCALATE"
+      ],
+      "timeout": [
+        "RECOVER"
+      ],
+      "recovered_timeout": [
+        "RETRY"
+      ],
+      "quota": [
+        "RECOVER"
+      ],
+      "publication": [
+        "RECOVER"
+      ],
+      "budget": [
+        "STOP_BUDGET"
+      ],
+      "boolean_count": [
+        "HOLD_INPUT"
+      ],
+      "unknown": [
+        "HOLD_INPUT"
+      ],
+      "invalid_format_recovered": [
+        "RETRY"
+      ]
+    },
+    "answer_order": "sequence"
+  },
+  {
+    "id": "code_review",
+    "instructions": "For each snippet return exactly the candidate finding IDs that demonstrate a violation of its explicit contract. Do not add findings outside that contract. An empty array means no violation. Candidate IDs are labels, not assertions.",
+    "cases": [
+      {
+        "id": "integer_guard",
+        "source": "Contract: accept only nonnegative JSON integers; reject booleans.\nCode: def valid(x): return isinstance(x, int) and x >= 0",
+        "candidates": [
+          "bool_is_int",
+          "negative_accepted",
+          "input_mutation"
+        ]
+      },
+      {
+        "id": "json_guard",
+        "source": "Contract: reject duplicate object keys and every non-finite number, including exponent overflow.\nCode: def parse(text): return json.loads(text, parse_constant=lambda s: (_ for _ in ()).throw(ValueError(s)))",
+        "candidates": [
+          "duplicate_keys",
+          "exponent_overflow",
+          "valid_null_rejected"
+        ]
+      },
+      {
+        "id": "reconcile_lock",
+        "source": "Contract: a concurrent cancellation cannot be overwritten by a stale successful proposal.\nCode:\n current = read_receipt()\n with lock:\n  proposal = preserve_cancel(current, proposal)\n  atomic_replace(proposal)",
+        "candidates": [
+          "stale_reconcile",
+          "non_atomic_replace",
+          "unbounded_output"
+        ]
+      },
+      {
+        "id": "normalization",
+        "source": "Contract: input is a list of strings; return a new lexicographically sorted list with duplicates removed; do not mutate input.\nCode: def normalize(ids): return sorted(set(ids))",
+        "candidates": [
+          "input_mutation",
+          "duplicates_retained",
+          "wrong_order"
+        ]
+      },
+      {
+        "id": "verdict",
+        "source": "Contract: only a single bare verdict line in the last === REVIEW === section counts; quoted/scaffold text is not authority.\nCode: def verdict(text): return re.search(r\"verdict: (PASS|FAIL)\", text).group(1)",
+        "candidates": [
+          "unanchored_verdict",
+          "wrong_model",
+          "digest_mismatch"
+        ]
+      },
+      {
+        "id": "permissions",
+        "source": "Contract: the dispatched child runs under the same UID as the supervisor and must be unable to overwrite receipt files.\nCode:\n os.chmod(receipt_dir, 0o700)\n subprocess.run(child_argv)",
+        "candidates": [
+          "same_uid_writable",
+          "different_uid_writable",
+          "no_process_group"
+        ]
+      }
+    ],
+    "expected": {
+      "integer_guard": [
+        "bool_is_int"
+      ],
+      "json_guard": [
+        "duplicate_keys",
+        "exponent_overflow"
+      ],
+      "reconcile_lock": [
+        "stale_reconcile"
+      ],
+      "normalization": [],
+      "verdict": [
+        "unanchored_verdict"
+      ],
+      "permissions": [
+        "same_uid_writable"
+      ]
+    },
+    "answer_order": "set"
+  },
+  {
+    "id": "joint_assignment",
+    "instructions": "Assign count reviewer seats followed by a judge iff judge=true. Use distinct model IDs; exclude worker, authors and unavailable IDs. Each reviewer tier>=floor. diverse=true requires at least two reviewer families. Judge tier>=every reviewer and the fixed worker, if present. Minimize total assigned cost (worker cost excluded); break ties by lexicographically smallest ordered tuple of IDs. Return that tuple as an array, or [\"UNAVAILABLE\"]. worker=null means no phantom worker is reserved. Costs are synthetic units, not API prices.",
+    "models": [
+      {
+        "id": "fast",
+        "tier": 0,
+        "family": "a",
+        "cost": 1
+      },
+      {
+        "id": "mid-a",
+        "tier": 2,
+        "family": "a",
+        "cost": 4
+      },
+      {
+        "id": "mid-b",
+        "tier": 2,
+        "family": "b",
+        "cost": 5
+      },
+      {
+        "id": "top-a",
+        "tier": 3,
+        "family": "a",
+        "cost": 10
+      },
+      {
+        "id": "top-b",
+        "tier": 3,
+        "family": "b",
+        "cost": 12
+      }
+    ],
+    "cases": [
+      {
+        "id": "ordinary",
+        "worker": "fast",
+        "authors": [],
+        "unavailable": [],
+        "count": 2,
+        "floor": 2,
+        "judge": true,
+        "diverse": true
+      },
+      {
+        "id": "source",
+        "worker": null,
+        "authors": [
+          "top-b"
+        ],
+        "unavailable": [],
+        "count": 2,
+        "floor": 2,
+        "judge": true,
+        "diverse": true
+      },
+      {
+        "id": "missing_judge",
+        "worker": "fast",
+        "authors": [],
+        "unavailable": [
+          "top-a",
+          "top-b"
+        ],
+        "count": 2,
+        "floor": 2,
+        "judge": true,
+        "diverse": true
+      },
+      {
+        "id": "single",
+        "worker": null,
+        "authors": [],
+        "unavailable": [],
+        "count": 1,
+        "floor": 0,
+        "judge": false,
+        "diverse": false
+      },
+      {
+        "id": "frontier_pair",
+        "worker": null,
+        "authors": [],
+        "unavailable": [],
+        "count": 2,
+        "floor": 3,
+        "judge": false,
+        "diverse": true
+      },
+      {
+        "id": "frontier_worker",
+        "worker": "top-a",
+        "authors": [],
+        "unavailable": [],
+        "count": 2,
+        "floor": 2,
+        "judge": true,
+        "diverse": true
+      },
+      {
+        "id": "author_shortage",
+        "worker": null,
+        "authors": [
+          "mid-a",
+          "top-a"
+        ],
+        "unavailable": [],
+        "count": 2,
+        "floor": 2,
+        "judge": false,
+        "diverse": true
+      },
+      {
+        "id": "without_judge",
+        "worker": "fast",
+        "authors": [],
+        "unavailable": [
+          "top-a",
+          "top-b"
+        ],
+        "count": 2,
+        "floor": 2,
+        "judge": false,
+        "diverse": true
+      }
+    ],
+    "expected": {
+      "ordinary": [
+        "mid-a",
+        "mid-b",
+        "top-a"
+      ],
+      "source": [
+        "mid-a",
+        "mid-b",
+        "top-a"
+      ],
+      "missing_judge": [
+        "UNAVAILABLE"
+      ],
+      "single": [
+        "fast"
+      ],
+      "frontier_pair": [
+        "top-a",
+        "top-b"
+      ],
+      "frontier_worker": [
+        "mid-a",
+        "mid-b",
+        "top-b"
+      ],
+      "author_shortage": [
+        "UNAVAILABLE"
+      ],
+      "without_judge": [
+        "mid-a",
+        "mid-b"
+      ]
+    },
+    "answer_order": "sequence"
+  }
+]
