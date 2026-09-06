@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import traceback
 from collections.abc import Mapping
@@ -58,7 +59,7 @@ REQUEST_V1_KEYS = frozenset({
     "route_schema_version", "task_class", "complexity", "uncertainty",
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
-    "host_seat", "worker_seat",
+    "host_seat", "worker_seat", "review_context",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -68,6 +69,7 @@ LOCAL_POLICY_KEYS = frozenset({
     "minimum_provider_families", "allowed_families",
 })
 HOST_SEAT_KEYS = frozenset({"model", "effort"})
+REVIEW_CONTEXT_KEYS = frozenset({"target_sha256", "author_model_ids", "author_families"})
 # Whether a route's WORKER needs a write-capable dispatch recipe. Two values,
 # not a boolean: the route records which one it applied, and `read_only` has to
 # read as a decision on the seat rather than as "false".
@@ -807,6 +809,7 @@ class Task:
     _local_policy: dict | None = field(default=None, repr=False, compare=False)
     # RouteRequestV1's optional declaration of the host's actual seat.
     _host_seat: dict | None = field(default=None, repr=False, compare=False)
+    _review_context: dict | None = field(default=None, repr=False, compare=False)
 
     def validate(self, policy: Policy) -> None:
         self._require_choice("task_class", self.task_class, policy.task_classes)
@@ -854,7 +857,36 @@ class Task:
         # a `Task` constructed directly.
         self._validate_local_policy(policy)
         self._validate_host_seat(policy)
+        self._validate_review_context(policy)
         self._policy = policy
+
+    def _validate_review_context(self, policy: Policy) -> None:
+        ctx = self._review_context
+        if ctx is None:
+            return
+        if (self.task_class != "REVIEW"
+                or (self.worker_seat or policy.worker_seat_kind(self.task_class)) != "read_only"):
+            raise ValidationError("review_context requires a read-only REVIEW task")
+        if not isinstance(ctx, dict):
+            raise ValidationError("review_context must be an object or null")
+        try:
+            ensure_json_value(ctx)
+        except ValueError as exc:
+            raise ValidationError(f"review_context: {exc}") from None
+        if set(ctx) - REVIEW_CONTEXT_KEYS:
+            raise ValidationError("review_context has unknown fields")
+        digest = ctx.get("target_sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValidationError("review_context.target_sha256 must be lowercase hex64")
+        ids = ctx.get("author_model_ids", [])
+        families = ctx.get("author_families", [])
+        self._require_str_list("review_context.author_model_ids", ids, policy.model_ids, "model id")
+        self._require_str_list("review_context.author_families", families, policy.families, "family")
+        if not ids and not families:
+            raise ValidationError("review_context must declare author models or families")
+        self._review_context = {"target_sha256": digest,
+                                "author_model_ids": sorted(set(ids)),
+                                "author_families": sorted(set(families))}
 
     def _validate_host_seat(self, policy: Policy) -> None:
         hs = self._host_seat
@@ -1628,6 +1660,11 @@ class Resolver:
             allowed = asked if allowed is None else allowed & asked
         self.allowed_families = allowed
 
+        context = task._review_context or {}
+        author_families = set(context.get("author_families", []))
+        self.author_excluded = set(context.get("author_model_ids", [])) | {
+            m["id"] for m in cfg["models"].values() if m["family"] in author_families}
+
         blocked = set(task.unavailable_models)
         for role in task.unavailable_roles:
             for b in (cfg["role_bindings"]["default"], self.binding):
@@ -1725,6 +1762,8 @@ class Resolver:
             if k in seen:
                 continue
             seen.add(k)
+            if cfg["models"][k]["id"] in self.author_excluded:
+                continue
             if self.allowed_families is not None and cfg["models"][k]["family"] not in self.allowed_families:
                 continue
             if cfg["models"][k].get("dispatchable", True) is False:
@@ -1779,6 +1818,12 @@ class Resolver:
             write = role == write_role
             primary_key = self._primary(role)
             primary_id = cfg["models"][primary_key]["id"] if primary_key else None
+            if primary_id in self.author_excluded:
+                # Intentional author exclusion is eligibility, not an outage.
+                # Keep the first eligible candidate as the baseline BEFORE
+                # applying availability, so a real outage still gets recorded.
+                offered = self._candidates(role, write=write)
+                primary_id = cfg["models"][offered[0]]["id"] if offered else None
             # A seat the policy never offered for THIS kind of work is not a
             # model that went missing, and must not be billed as one. Same rule
             # `_primary` already follows for the alt-seat preference: a swap the
@@ -2039,6 +2084,8 @@ def request_sha256_of(task: Task) -> str:
             "model": task._host_seat["model"],
             "effort": task._host_seat.get("effort"),
         }
+    if task._review_context is not None:
+        canonical["review_context"] = task._review_context
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -2231,6 +2278,10 @@ def route(task: Task, cfg: dict | None = None) -> dict:
             else:
                 result = without
                 result["notes"].append(f"execution band {exec_band} yielded {candidate.role}: {row}")
+    if task._review_context is not None:
+        result["review_context"] = {k: list(v) if isinstance(v, list) else v
+                                    for k, v in task._review_context.items()}
+        result["notes"].append("review_context excludes declared source authors from every REVIEW-task seat; target identity is caller-declared")
     result["rationale"] = explain(task, result, policy)
     return result
 
@@ -2582,6 +2633,9 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # Every id the binding can reach, including roles outside `role_tiers`
         # (`worker_balanced_alt`) that the fallback ladder can still seat.
         supply = {cfg["models"][key]["id"] for key in resolver.binding.values()}
+        if task._review_context is not None:
+            supply = {cfg["models"][key]["id"] for role in policy.roles
+                      for key in resolver._candidates(role)}
         unsatisfiable = bool(shortfall) and sum(
             1 for m in supply if policy.tier_of[m] >= floor) < seats
         if shortfall:
@@ -3300,6 +3354,7 @@ def task_from_request_v1(payload: dict) -> Task:
         isolation_evidence=string_list(snap.get("isolation_evidence"), "isolation_evidence"),
         _local_policy=lp,
         _host_seat=hs,
+        _review_context=payload.get("review_context"),
     )
 
 

@@ -200,6 +200,11 @@ host seat remains invalid. Valid inputs keep the same policy and fingerprints.
 
 ## Observability
 
+An explicitly declared `review_context` binds an existing artifact's target hash
+and source-author exclusions to a read-only REVIEW request. It is echoed only
+when supplied, including on terminal routes, and is caller input rather than
+an executable model binding. See `review-policy.md` for its contract.
+
 Every route emits (this file is the only inventory; `SKILL.md` Step 5
 summarises it):
 
