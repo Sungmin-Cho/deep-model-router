@@ -15,7 +15,9 @@ import os
 import re
 import stat
 import sys
+from datetime import datetime
 from pathlib import Path
+from strict_json import loads as strict_json_loads, ensure_json_value
 
 HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 ATTEMPT_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")  # dispatch_receipt
@@ -23,7 +25,7 @@ PRODUCER_ATTEMPT_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 PRODUCER_RE = re.compile(r"\A[a-z][a-z0-9]*(-[a-z0-9]+)*\Z")
 GIT_HEAD_RE = re.compile(r"\A[0-9a-f]{7,40}\Z")
 RFC3339_RE = re.compile(
-    r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\Z"
+    r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z"
 )
 SEMVER_RE = re.compile(r"\A\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\Z")
 DIFF_HUNK_RE = re.compile(r"(?m)^@@ -[0-9]+")
@@ -180,6 +182,18 @@ def _rfc3339(value, label, *, allow_null=False):
         raise ValidateError(f"I-STRING: {label} is null")
     if not isinstance(value, str) or not RFC3339_RE.match(value):
         raise ValidateError(f"I-STRING: {label} is not RFC3339")
+    # Newer Python versions normalize 24:00:00, and offsets such as +00:60.
+    # This observation profile uses ordinary clock seconds, not leap seconds.
+    if int(value[11:13]) > 23 or int(value[14:16]) > 59 or int(value[17:19]) > 59:
+        raise ValidateError(f"I-STRING: {label} has an invalid clock time")
+    if value[-1] != "Z" and (int(value[-5:-3]) > 23 or int(value[-2:]) > 59):
+        raise ValidateError(f"I-STRING: {label} has an invalid timezone offset")
+    try:
+        # Check only calendar components here. Fraction parsing differs by
+        # Python version; the validated fractional spelling stays unchanged.
+        datetime(int(value[:4]), int(value[5:7]), int(value[8:10]))
+    except ValueError:
+        raise ValidateError(f"I-STRING: {label} is not a supported calendar timestamp") from None
     return value
 
 
@@ -266,35 +280,35 @@ def _source_pair(obj, label):
 
 
 def _load(path: Path) -> dict:
-    st = path.stat()
-    if st.st_size > MAX_FILE_BYTES:
-        raise ValidateError("I-JSON: file exceeds 32KiB")
-    with path.open("rb") as fh:
+    # Input may be outside --root and may be an alias to a regular file.
+    # Inspect the opened fd, so a FIFO (including through an alias) cannot
+    # block before file-type validation. References have stricter no-follow rules.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ValidateError("I-JSON: input is not a regular file")
+        if st.st_size > MAX_FILE_BYTES:
+            raise ValidateError("I-JSON: file exceeds 32KiB")
         raw = fh.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
         raise ValidateError("I-JSON: file exceeds 32KiB")
 
-    def reject_dup(pairs):
-        d = {}
-        for k, v in pairs:
-            if k in d:
-                raise ValidateError(f"I-JSON: duplicate key {k!r}")
-            d[k] = v
-        return d
-
     try:
-        data = json.loads(raw, object_pairs_hook=reject_dup)
-    except ValidateError:
-        raise
-    except json.JSONDecodeError as exc:
-        raise ValidateError(f"I-JSON: {exc.msg}") from exc
+        data = strict_json_loads(raw)
+    except ValueError as exc:
+        raise ValidateError(f"I-JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise ValidateError("I-JSON: root is not an object")
     return data
 
 
 def _canonical_size(document):
-    blob = json.dumps(document, ensure_ascii=True)
+    try:
+        ensure_json_value(document)
+        blob = json.dumps(document, ensure_ascii=True, allow_nan=False)
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise ValidateError(f"I-JSON: {exc}") from exc
     if len(blob.encode("utf-8")) > MAX_FILE_BYTES:
         raise ValidateError("I-SIZE: canonical JSON exceeds 32KiB")
 
@@ -309,7 +323,7 @@ def _git(obj):
         raise ValidateError("I-CONTRACT: envelope.git.head")
     _identity(obj["branch"], "envelope.git.branch")
     dirty = obj["dirty"]
-    if dirty not in (True, False, "unknown"):
+    if type(dirty) is not bool and dirty != "unknown":
         raise ValidateError("I-CONTRACT: envelope.git.dirty")
     if "worktree" in obj and obj["worktree"] is not None:
         _identity(obj["worktree"], "envelope.git.worktree")
@@ -359,7 +373,7 @@ def _decision(obj):
         if key not in obj:
             raise ValidateError(f"I-STRUCT: decision.{key} missing")
     quality = obj["linkage_quality"]
-    if quality not in LINKAGES:
+    if not isinstance(quality, str) or quality not in LINKAGES:
         raise ValidateError("I-LINK: linkage_quality")
     fingerprint = obj["decision_fingerprint"]
     policy = obj["policy_sha256"]
@@ -369,7 +383,7 @@ def _decision(obj):
     if quality == "full":
         _hex64(fingerprint, "decision_fingerprint")
         _hex64(policy, "policy_sha256")
-        if route_schema != 1:
+        if type(route_schema) is not int or route_schema != 1:
             raise ValidateError("I-LINK: full requires route_schema_version 1")
         _semver(plugin_version, "router_plugin_version")
         _hex64(request, "request_sha256", allow_null=True)
@@ -377,7 +391,7 @@ def _decision(obj):
         if fingerprint is not None:
             raise ValidateError("I-LINK: identity_only fingerprint must be null")
         _hex64(policy, "policy_sha256")
-        if route_schema != 1:
+        if type(route_schema) is not int or route_schema != 1:
             raise ValidateError("I-LINK: identity_only requires route_schema_version 1")
         _semver(plugin_version, "router_plugin_version")
         _hex64(request, "request_sha256", allow_null=True)
@@ -430,7 +444,8 @@ def _subject(obj):
 def _task(obj):
     obj = _expect_object(obj, "payload.task")
     _reject_unknown(obj, TASK_KEYS, "payload.task")
-    if "class" in obj and obj["class"] is not None and obj["class"] not in TASK_CLASSES:
+    if ("class" in obj and obj["class"] is not None
+            and (not isinstance(obj["class"], str) or obj["class"] not in TASK_CLASSES)):
         raise ValidateError("I-STRUCT: task.class")
     if "risk_band" in obj and obj["risk_band"] is not None:
         band = obj["risk_band"]
@@ -491,7 +506,7 @@ def _attempt(obj, seen_dispatch):
     if missing:
         raise ValidateError(f"I-STRUCT: attempts[] missing {sorted(missing)}")
     kind = obj["evidence_kind"]
-    if kind not in EVIDENCE_KINDS:
+    if not isinstance(kind, str) or kind not in EVIDENCE_KINDS:
         raise ValidateError("I-ATTEMPT: evidence_kind")
     attempt_id = obj["attempt_id"]
     ref = obj["evidence_ref"]
@@ -513,7 +528,7 @@ def _attempt(obj, seen_dispatch):
             raise ValidateError("I-ATTEMPT: producer_record requires evidence_ref")
         _evidence_ref(ref, "evidence_ref")
     _hex64(obj["prompt_sha256"], "prompt_sha256", allow_null=True)
-    if obj["seat"] not in SEATS:
+    if not isinstance(obj["seat"], str) or obj["seat"] not in SEATS:
         raise ValidateError("I-STRUCT: seat")
     _source_pair(obj["seat_source"], "seat_source")
     if obj["expected_model_id"] is not None:
@@ -525,13 +540,13 @@ def _attempt(obj, seen_dispatch):
     if "observed_model_source_native" in obj and obj["observed_model_source_native"] is not None:
         _source_pair(obj["observed_model_source_native"], "observed_model_source_native")
     runtime = obj["runtime"]
-    if runtime is not None and runtime not in RUNTIMES:
+    if runtime is not None and (not isinstance(runtime, str) or runtime not in RUNTIMES):
         raise ValidateError("I-STRUCT: runtime")
     if obj["transport_id"] is not None:
         _identity(obj["transport_id"], "transport_id")
     if obj["effort_native"] is not None:
         _identity(obj["effort_native"], "effort_native")
-    if obj["state"] not in STATES:
+    if not isinstance(obj["state"], str) or obj["state"] not in STATES:
         raise ValidateError("I-STRUCT: state")
     _source_pair(obj["state_source"], "state_source")
     if "timing" in obj and obj["timing"] is not None:
@@ -551,6 +566,11 @@ def _gates(obj):
     missing = _expect_list(obj["missing_gate_ids"], "missing_gate_ids")
     if type(obj["complete"]) is not bool:
         raise ValidateError("I-GATES: complete is not bool")
+    for label, values in (("required_gate_ids", required), ("satisfied_gate_ids", satisfied),
+                          ("missing_gate_ids", missing)):
+        for value in values:
+            if not isinstance(value, str) or not value:
+                raise ValidateError(f"I-GATES: {label} must contain non-empty strings")
     req = set(required)
     sat = set(satisfied)
     miss = set(missing)
@@ -565,7 +585,7 @@ def _gates(obj):
 def _objective(obj):
     obj = _expect_object(obj, "objective_results")
     _reject_unknown(obj, OBJECTIVE_KEYS, "objective_results")
-    if "tests_passed" in obj and obj["tests_passed"] not in (True, False, None):
+    if obj.get("tests_passed") is not None and type(obj["tests_passed"]) is not bool:
         raise ValidateError("I-STRUCT: tests_passed")
     if "gates" in obj and obj["gates"] is not None:
         for i, item in enumerate(_expect_list(obj["gates"], "gates")):
@@ -612,7 +632,7 @@ def _accepted(obj):
     obj = _expect_object(obj, "final.accepted")
     _reject_unknown(obj, ACCEPTED_KEYS, "final.accepted")
     decided = obj.get("decided_by")
-    if decided not in DECIDED_BY:
+    if not isinstance(decided, str) or decided not in DECIDED_BY:
         raise ValidateError("I-ACCEPTED: decided_by")
     signals = _expect_list(obj.get("signals"), "final.accepted.signals")
     if not signals:
@@ -622,13 +642,14 @@ def _accepted(obj):
         item = _expect_object(item, f"signals[{i}]")
         _reject_unknown(item, {"kind"}, f"signals[{i}]")
         kind = item.get("kind")
-        if kind not in SIGNAL_KINDS:
+        if not isinstance(kind, str) or kind not in SIGNAL_KINDS:
             raise ValidateError("I-ACCEPTED: signal kind")
         kinds.append(kind)
     expected_kinds, allowed_verdict = ACCEPTED_TABLE[decided]
     if frozenset(kinds) != expected_kinds:
         raise ValidateError("I-ACCEPTED: signal kinds")
-    if obj.get("verdict") not in allowed_verdict:
+    verdict = obj.get("verdict")
+    if (verdict is not None and type(verdict) is not bool) or verdict not in allowed_verdict:
         raise ValidateError("I-ACCEPTED: verdict")
 
 
@@ -765,9 +786,11 @@ def _hash_fd(fd, size):
     while remaining:
         chunk = os.read(fd, min(1024 * 1024, remaining))
         if not chunk:
-            break
+            raise ValidateError("I-REFS: file shrank during hashing")
         digest.update(chunk)
         remaining -= len(chunk)
+    if os.read(fd, 1):
+        raise ValidateError("I-REFS: file grew during hashing")
     os.lseek(fd, 0, os.SEEK_SET)
     return digest.hexdigest()
 
@@ -776,7 +799,7 @@ def open_under_root(root, rel):
     """Open `rel` under `root` with O_NOFOLLOW. Caller owns the returned fd."""
     parts = _split_rel(rel)
     dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     root_fd = os.open(os.fspath(root), os.O_RDONLY | os.O_DIRECTORY)
     owned = [root_fd]
     try:
@@ -849,11 +872,15 @@ def _check_receipts(document, root, receipts_dir):
             try:
                 if (st1.st_dev, st1.st_ino) != (st2.st_dev, st2.st_ino):
                     raise ValidateError("I-RECEIPTS: receipt is not the evidence_ref file")
-                raw = os.read(fd2, st2.st_size)
+                raw = os.read(fd2, st2.st_size + 1)
+                if hashlib.sha256(raw).hexdigest() != ref["sha256"]:
+                    raise ValidateError("I-RECEIPTS: receipt changed during read")
                 try:
-                    receipt = json.loads(raw)
-                except json.JSONDecodeError as exc:
-                    raise ValidateError(f"I-RECEIPTS: receipt is not JSON: {exc.msg}") from exc
+                    receipt = strict_json_loads(raw)
+                except ValueError as exc:
+                    raise ValidateError(f"I-RECEIPTS: receipt is not JSON: {exc}") from exc
+                if not isinstance(receipt, dict):
+                    raise ValidateError("I-RECEIPTS: receipt is not an object")
                 if _receipt_field(receipt, "attempt_id") != attempt_id:
                     raise ValidateError("I-RECEIPTS: receipt attempt_id mismatch")
                 rec_fp = _receipt_field(receipt, "decision_fingerprint")

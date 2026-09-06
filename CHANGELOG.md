@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject ambiguous or malformed routing JSON without coercing boolean or availability values, preserving valid null and CSV inputs.
+- Validate observation JSON values, booleans, enums and calendar timestamps strictly, and reject FIFO inputs/references without blocking.
+
 - Prevent on-disk success from overriding a supervised failure, and reject incomplete or unpublished success in status, cancellation, and review-evidence checks.
 - Refuse pre-existing output paths without truncation and bound plain-output and receipt reads to avoid FIFO hangs.
 - Read the explicit final review section, rejecting conflicting and quoted verdicts; require a boolean Claude error discriminator.

@@ -46,6 +46,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 
 from policy_digest import canonical_policy_sha256, policy_sha256
+from strict_json import loads as strict_json_loads, ensure_json_value
 from pathlib import Path
 from typing import Any
 
@@ -3217,11 +3218,15 @@ PUBLIC_FIELDS = {f.name for f in fields(Task) if not f.name.startswith("_")}
 def task_from_request_v1(payload: dict) -> Task:
     if not isinstance(payload, dict):
         raise ValidationError("--request-json must be a JSON object")
+    try:
+        ensure_json_value(payload)
+    except ValueError as exc:
+        raise ValidationError(f"--request-json: {exc}") from None
     if (unknown := set(payload) - REQUEST_V1_KEYS):
         raise ValidationError(
             f"--request-json has unknown field(s): {', '.join(sorted(unknown))}")
     version = payload.get("route_schema_version")
-    if version != ROUTE_SCHEMA_VERSION:
+    if type(version) is not int or version != ROUTE_SCHEMA_VERSION:
         raise ValidationError(
             f"unsupported route_schema_version {version!r} (want {ROUTE_SCHEMA_VERSION})")
     if (missing := [f for f in REQUIRED_JSON_FIELDS if f not in payload]):
@@ -3236,10 +3241,12 @@ def task_from_request_v1(payload: dict) -> Task:
     if not isinstance(prior, list) or not all(isinstance(x, str) for x in prior):
         raise ValidationError("prior_failures must be a list of model ids")
 
-    snap = payload.get("availability_snapshot") or {}
+    snap = payload.get("availability_snapshot")
+    if snap is None:
+        snap = {}
+    if not isinstance(snap, dict):
+        raise ValidationError("availability_snapshot must be an object")
     if snap:
-        if not isinstance(snap, dict):
-            raise ValidationError("availability_snapshot must be an object")
         if (unknown := set(snap) - AVAIL_KEYS):
             raise ValidationError(
                 f"availability_snapshot has unknown field(s): {', '.join(sorted(unknown))}")
@@ -3262,25 +3269,35 @@ def task_from_request_v1(payload: dict) -> Task:
                 f"host_seat has unknown field(s): {', '.join(sorted(unknown))}")
 
     isolation = snap.get("isolation") if snap else None
-    flags = payload.get("flags") or []
+    if isolation is not None and isolation not in ("available", "unavailable"):
+        raise ValidationError("availability_snapshot.isolation must be available, unavailable, or null")
+    def string_list(value, label):
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValidationError(f"{label} must be a list of strings or null")
+        return list(value)
+
+    flags = payload.get("flags")
     if isinstance(flags, str):
         flags = _split(flags)
+    flags = string_list(flags, "flags")
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
         uncertainty=payload["uncertainty"],
         blast_radius=payload["blast_radius"],
         reversibility=payload["reversibility"],
-        reasoning_centric=bool(payload.get("reasoning_centric", False)),
-        flags=list(flags),
+        reasoning_centric=payload.get("reasoning_centric", False),
+        flags=flags,
         prior_failures=len(prior),
         prior_models=list(prior),
         runtime=payload.get("runtime", "claude_code"),
         worker_seat=payload.get("worker_seat"),
-        unavailable_roles=list(snap.get("unavailable_roles") or []),
-        unavailable_models=list(snap.get("unavailable_models") or []),
+        unavailable_roles=string_list(snap.get("unavailable_roles"), "unavailable_roles"),
+        unavailable_models=string_list(snap.get("unavailable_models"), "unavailable_models"),
         isolation_available=None if isolation is None else isolation == "available",
-        isolation_evidence=list(snap.get("isolation_evidence") or []),
+        isolation_evidence=string_list(snap.get("isolation_evidence"), "isolation_evidence"),
         _local_policy=lp,
         _host_seat=hs,
     )
@@ -3301,18 +3318,18 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     try:
-        if args.request_json:
+        if args.request_json is not None:
             try:
-                payload = json.loads(Path(args.request_json).read_text(encoding="utf-8"))
+                payload = strict_json_loads(Path(args.request_json).read_bytes())
             except OSError as exc:
                 raise ValidationError(f"--request-json cannot be read: {exc}") from None
-            except json.JSONDecodeError as exc:
+            except ValueError as exc:
                 raise ValidationError(f"--request-json is not valid JSON: {exc}") from None
             task = task_from_request_v1(payload)
-        elif args.json:
+        elif args.json is not None:
             try:
-                payload = json.loads(args.json)
-            except json.JSONDecodeError as exc:
+                payload = strict_json_loads(args.json)
+            except ValueError as exc:
                 raise ValidationError(f"--json is not valid JSON: {exc}") from None
             if not isinstance(payload, dict):
                 raise ValidationError("--json must be a JSON object")

@@ -179,6 +179,25 @@ These situations stop or gate rather than proceeding:
 | No adjudicator could be seated | **Human confirmation.** The route is still dispatchable; what a human takes over is adjudicating a disagreement, should one arise |
 | Routing confidence below 0.60 | The router does not trust its own classification, and classification errors propagate everywhere downstream |
 
+## Routing JSON inputs
+
+Both `--json` and `--request-json` reject duplicate object keys, nonfinite
+numbers (including exponent overflow), malformed encodings, unpaired Unicode
+surrogates, and excessive nesting as input errors (exit 2).
+
+RouteRequestV1 requires integer `route_schema_version: 1` and a real boolean
+`reasoning_centric` when supplied. Optional collections and objects retain
+their null-as-omitted meaning; false, zero, and the wrong container type do
+not mean omitted. Availability lists contain strings and `isolation` is
+`available`, `unavailable`, or null. Nonempty isolation evidence still requires
+the isolation key to be present; its existing null semantics are unchanged.
+
+V1 `flags` accepts a string array or the existing comma-separated string
+form. Legacy `--json` uses the Task contract, so its flags must remain an
+array. Repeated prior model IDs represent repeated attempts and are retained.
+An empty `allowed_families` remains an unsatisfiable policy; an empty declared
+host seat remains invalid. Valid inputs keep the same policy and fingerprints.
+
 ## Observability
 
 Every route emits (this file is the only inventory; `SKILL.md` Step 5
