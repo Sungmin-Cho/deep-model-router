@@ -140,6 +140,37 @@ already is.
 
 ## Reviewer independence
 
+### Reviewing an existing artifact with declared authors
+
+RouteRequestV1 accepts optional `review_context` on read-only `REVIEW` tasks:
+
+```json
+{
+  "target_sha256": "<64 lowercase hex characters>",
+  "author_model_ids": ["<model id from the registry>"],
+  "author_families": []
+}
+```
+
+Declare at least one model ID or family. Exact model IDs, including retired
+history IDs, exclude those IDs only; `author_families` additionally excludes
+whole provider families. All executable seats for this REVIEW task are filtered,
+including its lead review executor, secondary reviewers and judge. The actual
+host remains advisory and is never used to infer who wrote the source artifact.
+
+The context is normalized and included in request identity and the decision
+fingerprint. Changing the target or authors changes that identity. Omitted/null
+context leaves legacy routes and hashes unchanged. Invalid context, write-seat
+overrides and other task classes are rejected. Exclusion is an eligibility rule,
+not a model outage; genuine outages of eligible replacements remain recorded.
+
+This is a caller declaration. The router does not read the artifact to verify
+its digest, authenticate authorship, or certify the served provider model.
+The context is echoed as input even on terminal routes. Existing review-of-review
+allocation is retained: the lead executor is still distinct from the secondary
+review slate. This feature prevents source-author assignment; joint allocation
+and removing unnecessary extra seats are separate work.
+
 Two reviews are independent if and only if reviewer B's input contains no token
 derived from reviewer A's output, transitively.
 
