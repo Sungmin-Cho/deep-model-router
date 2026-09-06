@@ -180,6 +180,8 @@ execute:
 | `ESCALATE_ROUTING` | routing confidence fell below 0.60 — re-classify at higher effort or ask a human; for a host orchestrator, use user `/effort` or delegate to a higher-effort seat |
 | `INDEPENDENCE_UNAVAILABLE` | the band requires independent review and it cannot be had — no distinct-model assignment exists, or the caller reported isolation unavailable |
 | `RETRY_HISTORY_REQUIRED` | `--prior-failures N` without one concrete model id per failure. The router does not guess what ran |
+| `OPERATIONAL_RECOVERY_REQUIRED` | typed operational attempt history lacks recovery evidence; repair the execution/adapter issue before retrying |
+| `TERMINATION_UNCONFIRMED` | a previous process may still write; confirm termination and reroute before another attempt |
 | `SUPPLY_EXHAUSTED` | no usable model remains for a role the route needs — an operational shortage, not a bad request |
 | `UNSATISFIABLE_LOCAL_POLICY` | `local_policy` cannot be met (empty `allowed_families`, empty intersection, or a floor the binding cannot seat) |
 

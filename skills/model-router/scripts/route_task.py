@@ -59,7 +59,7 @@ REQUEST_V1_KEYS = frozenset({
     "route_schema_version", "task_class", "complexity", "uncertainty",
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
-    "host_seat", "worker_seat", "review_context",
+    "host_seat", "worker_seat", "review_context", "attempt_outcomes",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -70,6 +70,10 @@ LOCAL_POLICY_KEYS = frozenset({
 })
 HOST_SEAT_KEYS = frozenset({"model", "effort"})
 REVIEW_CONTEXT_KEYS = frozenset({"target_sha256", "author_model_ids", "author_families"})
+OPERATIONAL_OUTCOMES = frozenset({"transport_failure", "launch_failure", "resolution_failure",
+    "timeout", "max_turns_partial", "no_artifact", "invalid_output", "authentication_failure",
+    "quota_exhausted", "cancelled", "unknown"})
+ATTEMPT_OUTCOME_KINDS = OPERATIONAL_OUTCOMES | {"capability_failure", "termination_unconfirmed"}
 # Whether a route's WORKER needs a write-capable dispatch recipe. Two values,
 # not a boolean: the route records which one it applied, and `read_only` has to
 # read as a decision on the seat rather than as "false".
@@ -100,6 +104,7 @@ def plugin_manifest_version(start: Path | None = None) -> str:
 TERMINAL_STATES = (
     "HUMAN_REQUIRED", "ESCALATE_ROUTING", "INDEPENDENCE_UNAVAILABLE",
     "RETRY_HISTORY_REQUIRED", "SUPPLY_EXHAUSTED", "UNSATISFIABLE_LOCAL_POLICY",
+    "OPERATIONAL_RECOVERY_REQUIRED", "TERMINATION_UNCONFIRMED",
 )
 
 MAX_PROMOTION_PASSES = 4   # bounded fixed point; the band ladder is only 4 deep
@@ -491,7 +496,7 @@ class Policy:
         per_key = dict.fromkeys((
             "on_independence_unachievable", "on_any_critical_review",
             "on_judge_unavailable", "on_review_depth_reduced",
-            "on_effort_below_floor", "on_termination_unconfirmed"), implemented)
+            "on_effort_below_floor"), implemented)
         per_key["on_production_hotfix"] = {
             "require_human_confirmation", "defer_human_confirmation"}
         for key, allowed in per_key.items():
@@ -810,6 +815,11 @@ class Task:
     # RouteRequestV1's optional declaration of the host's actual seat.
     _host_seat: dict | None = field(default=None, repr=False, compare=False)
     _review_context: dict | None = field(default=None, repr=False, compare=False)
+    _attempt_outcomes: list[dict] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def total_prior_attempts(self) -> int:
+        return len(self._attempt_outcomes) if self._attempt_outcomes is not None else self.prior_failures
 
     def validate(self, policy: Policy) -> None:
         self._require_choice("task_class", self.task_class, policy.task_classes)
@@ -858,7 +868,48 @@ class Task:
         self._validate_local_policy(policy)
         self._validate_host_seat(policy)
         self._validate_review_context(policy)
+        self._validate_attempt_outcomes(policy)
         self._policy = policy
+
+    def _validate_attempt_outcomes(self, policy: Policy) -> None:
+        history = self._attempt_outcomes
+        if history is None:
+            return
+        if self.prior_failures or self.prior_models:
+            raise ValidationError("attempt_outcomes cannot be mixed with legacy failure history")
+        if not isinstance(history, list):
+            raise ValidationError("attempt_outcomes must be an array or null")
+        try:
+            ensure_json_value(history)
+        except ValueError as exc:
+            raise ValidationError(f"attempt_outcomes: {exc}") from None
+        required = {"attempt_id", "model_id", "kind", "evidence_sha256"}
+        seen, normalized = set(), []
+        for item in history:
+            if (not isinstance(item, dict) or not required <= set(item)
+                    or set(item) - (required | {"recovery_sha256"})):
+                raise ValidationError("attempt_outcomes entry has missing or unknown fields")
+            attempt_id = item["attempt_id"]
+            if (not isinstance(attempt_id, str)
+                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", attempt_id) is None
+                    or attempt_id in seen):
+                raise ValidationError("attempt_outcomes requires unique safe attempt IDs")
+            seen.add(attempt_id)
+            self._require_choice("attempt_outcomes.model_id", item["model_id"], sorted(policy.model_ids))
+            kind = item["kind"]
+            self._require_choice("attempt_outcomes.kind", kind, sorted(ATTEMPT_OUTCOME_KINDS))
+            for key in ("evidence_sha256", "recovery_sha256"):
+                value = item.get(key)
+                if key == "recovery_sha256" and value is None:
+                    continue
+                if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                    raise ValidationError(f"attempt_outcomes.{key} must be lowercase hex64")
+            if kind not in OPERATIONAL_OUTCOMES and item.get("recovery_sha256") is not None:
+                raise ValidationError("recovery evidence cannot bypass capability failure or unconfirmed termination")
+            if item.get("recovery_sha256") == item["evidence_sha256"]:
+                raise ValidationError("recovery evidence must differ from the failed attempt evidence")
+            normalized.append({**item, "recovery_sha256": item.get("recovery_sha256")})
+        self._attempt_outcomes = normalized
 
     def _validate_review_context(self, policy: Policy) -> None:
         ctx = self._review_context
@@ -2086,6 +2137,8 @@ def request_sha256_of(task: Task) -> str:
         }
     if task._review_context is not None:
         canonical["review_context"] = task._review_context
+    if task._attempt_outcomes is not None:
+        canonical["attempt_outcomes"] = task._attempt_outcomes
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -2202,8 +2255,19 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     cfg = cfg if cfg is not None else default_config()
     policy = Policy.of(cfg)
     task.validate(policy)
-
     request_sha = request_sha256_of(task)
+
+    if task._attempt_outcomes is not None:
+        failures = [row["model_id"] for row in task._attempt_outcomes
+                    if row["kind"] == "capability_failure"]
+        flags = list(task.flags)
+        if (any(row["kind"] == "termination_unconfirmed" for row in task._attempt_outcomes)
+                and "termination_unconfirmed" not in flags):
+            flags.append("termination_unconfirmed")
+        # Project onto the legacy capability ladder without mutating the input
+        # Task, so rerouting the same validated request is repeatable.
+        task = replace(task, prior_failures=len(failures), prior_models=failures, flags=flags)
+
     # The digest of the policy ACTUALLY IN USE — the same computation that
     # keyed this Policy, not a second dump of the same object. A non-dict
     # Mapping (test instrumentation such as test_d14's recorder) has no
@@ -2223,7 +2287,7 @@ def route(task: Task, cfg: dict | None = None) -> dict:
     # Before anything resolves: a route whose retry history cannot be used will
     # not run, so nothing may be inferred from that history on the way there.
     history_note = history_gap(task, policy)
-    budget_spent = task.prior_failures >= cfg["retry"]["max_total_implementation_attempts"]
+    budget_spent = task.total_prior_attempts >= cfg["retry"]["max_total_implementation_attempts"]
     if history_note:
         if budget_spent:
             history_note = ("retry budget spent; no further attempt is available, so "
@@ -2282,6 +2346,16 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
         result["notes"].append("review_context excludes declared source authors from every REVIEW-task seat; target identity is caller-declared")
+    if task._attempt_outcomes is not None:
+        history = task._attempt_outcomes
+        result["attempt_outcomes"] = [dict(row) for row in history]
+        result["attempt_outcome_summary"] = {
+            "classification": "caller_declared", "total": len(history),
+            "capability_failures": task.prior_failures,
+            "operational_outcomes": sum(row["kind"] in OPERATIONAL_OUTCOMES for row in history),
+            "unconfirmed_terminations": sum(row["kind"] == "termination_unconfirmed" for row in history),
+        }
+        result["notes"].append("typed attempt history separates capability escalation from operational recovery; evidence hashes are caller declarations")
     result["rationale"] = explain(task, result, policy)
     return result
 
@@ -2776,9 +2850,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             Control("on_effort_below_floor", "effort_below_floor",
                     any(r["floor_broken"] for r in ceiling_records),
                     "HUMAN_REQUIRED"),
-            Control("on_termination_unconfirmed", "unconfirmed_prior_termination",
-                    task.has("termination_unconfirmed"),
-                    "HUMAN_REQUIRED"),
         ]
 
         terminal = None
@@ -2832,9 +2903,21 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             terminal = terminal or "HUMAN_REQUIRED"
             requires_human = True
             worker_notes.append(
-                f"retry budget spent: {task.prior_failures} attempt(s) against a cap of "
+                f"retry budget spent: {task.total_prior_attempts} attempt(s) against a cap of "
                 f"{cfg['retry']['max_total_implementation_attempts']} — stop retrying and "
                 f"surface what was tried to a human")
+
+        if task.has("termination_unconfirmed"):
+            terminal = terminal or "TERMINATION_UNCONFIRMED"
+            requires_human = True
+            fired_causes.append("unconfirmed_prior_termination")
+            worker_notes.append("terminal/termination_unconfirmed: " + CAUSE_REASONS["unconfirmed_prior_termination"])
+        elif task._attempt_outcomes is not None:
+            if any(row["kind"] in OPERATIONAL_OUTCOMES and row["recovery_sha256"] is None
+                     for row in task._attempt_outcomes):
+                terminal = terminal or "OPERATIONAL_RECOVERY_REQUIRED"
+                requires_human = True
+                worker_notes.append("operational outcomes lack recovery evidence; recover before retrying")
 
         if local_unsat:
             worker_notes.append("local_policy cannot be satisfied")
@@ -3119,7 +3202,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             "unavailable_models": sorted(resolver.blocked),
             "excluded_prior_failures": sorted(resolver.failed),
             "escalation_count": task.prior_failures,
-            "retry_count": task.prior_failures,
+            "retry_count": task.total_prior_attempts,
             "routing_confidence": confidence,
             # A heuristic gate score (base minus penalties), NOT a calibrated
             # success probability. The kind is emitted so no consumer has to
@@ -3158,9 +3241,11 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
     if r["critical_flags"]:
         parts.append(f"Critical-domain flags: {', '.join(r['critical_flags'])}.")
     if r["terminal"]:
+        history_text = (f"{task.prior_failures} prior failure(s)" if task._attempt_outcomes is None
+                        else f"{task.total_prior_attempts} prior attempt(s), {task.prior_failures} capability failure(s)")
         parts.append(
             f"TERMINAL: {r['terminal']} — no executable bindings emitted; routing confidence "
-            f"{r['routing_confidence']} after {task.prior_failures} prior failure(s). Surface to a "
+            f"{r['routing_confidence']} after {history_text}. Surface to a "
             "human with what was tried, what evidence accumulated, and the blocking uncertainty."
         )
     else:
@@ -3355,6 +3440,7 @@ def task_from_request_v1(payload: dict) -> Task:
         _local_policy=lp,
         _host_seat=hs,
         _review_context=payload.get("review_context"),
+        _attempt_outcomes=payload.get("attempt_outcomes"),
     )
 
 
