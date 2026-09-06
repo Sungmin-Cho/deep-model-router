@@ -958,7 +958,7 @@ RECEIPT_KEYS = {
     # DD-3 the effective-policy evidence read from the session directory.
     "output_envelope", "session_evidence",
     # Issue #19 maker-seat prevention — always present, null when undeclared.
-    "child_cwd", "grok_home", "seat_profile", "require_single_linked_cwd",
+    "child_cwd", "grok_home", "seat_profile", "require_single_linked_cwd", "receipt_guard",
 }
 RECEIPT_PROCESS_KEYS = {"pid", "process_group_id", "supervisor_pid"}
 RECEIPT_TIMING_KEYS = {

@@ -527,6 +527,13 @@ the kill ladder, and termination confirmation. Read
 `references/adapters.md` ("Dispatch contract") before the first background
 dispatch of a session.
 
+On Darwin, when promoting stored receipts to trusted completion evidence, use
+`run --receipt-guard darwin-sandbox-v1` and
+`verify-evidence --require-receipt-guard`. If the requested guard is unavailable,
+keep protected authority unavailable; do not silently substitute an unguarded
+launch. See `references/adapters.md` for the exact process-tree boundary and
+external-writer limitations.
+
 Two receipts are two different proofs, and neither substitutes for the
 other: `--isolation-evidence` takes the `attempt_id`s of reviewer receipts
 that reached `SUCCEEDED` — validate the set first with
