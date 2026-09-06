@@ -30,8 +30,30 @@ is enforced before and during reading. Referenced files retain no-follow
 containment under `--root` and their separate 8 MiB limit; nonregular leaves
 such as FIFOs are rejected without waiting for a writer. Receipt bytes decoded
 by `--check-receipts` must match the declared digest as well as the existing
-inode linkage checks. This does not authenticate receipt authors or compare
-observation outcome/model/effort claims with the complete receipt semantics.
+inode linkage checks.
+
+`--check-receipts` also compares each dispatch-backed attempt's normalized state
+and seat, and every non-null expected-model, effort, runtime and transport claim,
+with the producer receipt. Nullable unknown values remain unknown; this validator
+does not enrich the record. Successful receipts must have exit zero, confirmed
+termination, validated output and a digest, with no pending claim sentinel.
+
+Native states normalize as follows: SUCCEEDED → succeeded; FAILED, START_FAILED
+and INVALID_OUTPUT → failed; TIMED_OUT → timed_out; CANCELLED → cancelled;
+TERMINATION_UNCONFIRMED → blocked; STARTING/RUNNING → in_progress.
+Numbered reviewer seats normalize to reviewer. Producer-native source labels
+remain opaque metadata rather than an alternate authority over these values.
+
+A non-null `observed_model_id` is permitted only with source `dispatch_envelope`
+and dispatch-receipt evidence, through `--check-receipts`. It must match the single
+served-model entry in a successful, parsed, completed supported envelope. The
+requested model is not substituted for the observed model; multiple served IDs
+are ambiguous and must remain unavailable. In-memory/structure-only validation
+cannot attest that claim and rejects it without file-backed receipt checks.
+
+These checks do not authenticate the receipt writer, re-read raw stdout, validate
+all aggregate quality/timing/usage assertions, or make an accepted verdict follow
+automatically from successful execution. Those remain distinct contracts.
 
 Worked subject hashes:
 

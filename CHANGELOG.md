@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Receipt-backed observation checks now verify outcome, role, model and effort claims and permit uniquely evidenced served-model identity.
+
 - Typed attempt history separates capability escalation from operational recovery while counting all attempts toward the retry limit.
 
 - Fingerprint-bound source-author exclusions for existing-artifact review tasks, independent of the host model declaration.
