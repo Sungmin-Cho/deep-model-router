@@ -63,5 +63,10 @@ def test_the_floor_tables_did_not_move():
     for key in ("worker_selection", "review", "effort_by_work",
                 "role_tiers", "effort_map", "worker_balanced_selection"):
         assert new[key] == old[key], key
-    # The frontier addition must preserve the older models and their history ids.
-    assert {k: new["models"][k] for k in old["models"]} == old["models"]
+    # Preserve every historical model field except independently refreshed billing
+    # quotes. Current quote values/provenance are covered by model-evaluation tests.
+    for key, historical in old["models"].items():
+        assert {k: v for k, v in new["models"][key].items()
+                if k != "price_per_mtok"} == {
+                    k: v for k, v in historical.items() if k != "price_per_mtok"
+                }, key
