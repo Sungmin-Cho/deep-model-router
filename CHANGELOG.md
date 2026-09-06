@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GPT-6 Astra for frontier reasoning, upper OpenAI-only roles, and architect fallback, with Sol retained for senior work and fallback.
 - Model-specific native effort mappings so models without disabled reasoning receive `low` for a `MINIMAL` request.
 
+### Fixed
+
+- Prevent on-disk success from overriding a supervised failure, and reject incomplete or unpublished success in status, cancellation, and review-evidence checks.
+- Refuse pre-existing output paths without truncation and bound plain-output and receipt reads to avoid FIFO hangs.
+- Read the explicit final review section, rejecting conflicting and quoted verdicts; require a boolean Claude error discriminator.
+
 ## [1.13.0] — 2026-09-03 (two-axis routing)
 
 ### Added
