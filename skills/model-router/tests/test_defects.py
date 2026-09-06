@@ -704,6 +704,7 @@ _ID = lambda key: CFG["models"][key]["id"]                      # noqa: E731
 _DISPATCHABLE = sorted(m["id"] for m in CFG["models"].values() if m.get("dispatchable", True))
 SCARCITY_SWEEP = [
     [],
+    [_ID("claude_architect"), _ID("openai_frontier")],  # actual frontier tier loss
     [_ID("claude_architect")],                                                  # was _MODEL_IDS[0]
     [_ID("claude_architect"), _ID("claude_worker_fast")],                       # was [:2]
     [_ID("claude_architect"), _ID("claude_worker_fast"), _ID("claude_senior")], # was [:3]
@@ -1414,7 +1415,7 @@ def test_d14_every_declared_compensation_can_actually_be_emitted():
         **CFG["fallback_compensations"], "principal_architect_to_senior": "typo_effect"}}
     with pytest.raises(UnknownCompensationError):
         route(_task(task_class="ARCHITECTURE", complexity=3, uncertainty=3, blast_radius=3,
-                    reversibility=2, unavailable_roles=["principal_architect"]), altered)
+                    reversibility=2, unavailable_roles=["principal_architect"], unavailable_models=[ID("openai_frontier")]), altered)
 
 
 def test_d16_a_retry_needs_one_concrete_model_id_per_failure():
@@ -1961,7 +1962,7 @@ def test_d19_every_control_fires_exactly_on_its_declared_cause():
                           ["termination_unconfirmed"]):
                 for iso in (None, True, False):
                     for pf, pm in ((0, []), (1, [ids[4]]), (cap, [ids[4]] * cap)):
-                        for scarce in ([], [ids[0]], ids[:3]):
+                        for scarce in ([], [ids[0]], ids[:3], [ID("claude_architect"), ID("openai_frontier")]):
                             task = _task(task_class=task_class, complexity=dims[0],
                                          uncertainty=dims[1], blast_radius=dims[2],
                                          reversibility=dims[3], flags=list(flags),
@@ -2170,7 +2171,7 @@ def test_d14_a_bonus_review_that_cannot_be_isolated_does_not_kill_the_task():
     compensation punishing the caller for its own best effort. The terminal
     belongs to the band's own requirement."""
     out = r(task_class="ARCHITECTURE", flags=["long_horizon"],
-            unavailable_models=[ARCHITECT_ID], isolation_available=False)
+            unavailable_models=[ARCHITECT_ID, ID("openai_frontier")], isolation_available=False)
     assert out["review"]["band"] == "LOW", "probe drifted"
     assert not CFG["review"]["LOW"].get("independent"), "LOW now asks for independence"
     assert out["fallback_compensations_applied"], "probe no longer reaches the compensation"
@@ -2467,7 +2468,7 @@ def test_d23_native_is_looked_up_from_the_effort_that_ships():
 
     out = route(_task(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
                       blast_radius=3, reversibility=2, flags=["auth_sensitive"],
-                      unavailable_models=[ARCHITECT_ID]), cfg)
+                      unavailable_models=[ARCHITECT_ID, ID("openai_frontier")]), cfg)
     assert out["selected_model"] == ID("claude_senior"), "probe drifted"
     assert out["selected_effort"] == "MAX", "probe drifted"
     assert out["selected_effort_effective"] == "HIGH", (
@@ -2565,7 +2566,7 @@ def test_d23_a_capped_reviewer_seat_gates_on_a_live_route():
     """
     out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
             blast_radius=3, reversibility=2, flags=["auth_sensitive"],
-            unavailable_models=[ARCHITECT_ID])
+            unavailable_models=[ARCHITECT_ID, ID("openai_frontier")])
     assert out["terminal"] is None, f"probe went terminal: {out['terminal']}"
     assert out["review"]["band"] == "CRITICAL"
     assert ID("xai_frontier") in out["review"]["reviewer_models"], (
@@ -2596,7 +2597,7 @@ def test_d23_a_terminal_route_keeps_the_ceiling_record_without_the_model():
     dispatcher, which emitted the cause before emit ran."""
     out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3,
             blast_radius=3, reversibility=2, flags=["auth_sensitive"],
-            unavailable_models=[ARCHITECT_ID], isolation_available=False)
+            unavailable_models=[ARCHITECT_ID, ID("openai_frontier")], isolation_available=False)
     assert out["terminal"] == "INDEPENDENCE_UNAVAILABLE", "probe drifted"
     assert out["effort_ceiling_applied"], "the disclosure was dropped on terminal"
     assert all(rec["model"] is None for rec in out["effort_ceiling_applied"])
