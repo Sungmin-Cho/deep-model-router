@@ -210,6 +210,7 @@ Only `capability_failure` feeds the existing model exclusion, tier escalation,
 and failure-confidence penalty. Operational kinds are `transport_failure`,
 `launch_failure`, `resolution_failure`, `timeout`, `max_turns_partial`,
 `no_artifact`, `invalid_output`, `authentication_failure`, `quota_exhausted`,
+`publication_failure`,
 `cancelled`, and `unknown`. They require recovery evidence before an ordinary
 policy retry; unresolved records produce `OPERATIONAL_RECOVERY_REQUIRED` with
 no executable bindings. A timeout here means termination was confirmed.

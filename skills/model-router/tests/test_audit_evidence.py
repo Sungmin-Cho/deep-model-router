@@ -91,7 +91,7 @@ def test_disk_cancellation_cannot_claim_termination_when_supervisor_cannot(tmp_p
 
 @pytest.mark.parametrize("field,bad", [("argv", ["different"]), ("output_schema", "none"),
                                       ("started_at", "different"), ("stdout_path", "/different")])
-def test_cancellation_from_different_dispatch_identity_is_ignored(tmp_path, field, bad):
+def test_cancellation_from_different_dispatch_identity_fails_publication(tmp_path, field, bad):
     receipt = good_receipt(tmp_path)
     receipt["result"].update(state="FAILED", exit_status=3)
     forged = copy.deepcopy(receipt)
@@ -105,10 +105,11 @@ def test_cancellation_from_different_dispatch_identity_is_ignored(tmp_path, fiel
     (tmp_path / "receipts/t1.json").write_text(json.dumps(forged))
     claim = tmp_path / "receipts/t1.claim"
     claim.touch()
-    assert dispatch._commit_terminal(tmp_path / "receipts", receipt, claim) == 1
+    assert dispatch._commit_terminal(tmp_path / "receipts", receipt, claim) == 8
+    assert claim.exists()
 
 
-def test_recursively_malformed_disk_json_does_not_defeat_local_terminal_write(tmp_path, monkeypatch):
+def test_recursively_malformed_disk_json_fails_publication(tmp_path, monkeypatch):
     receipt = good_receipt(tmp_path)
     receipt["result"].update(state="FAILED", exit_status=3)
     claim = tmp_path / "receipts/t1.claim"
@@ -116,9 +117,11 @@ def test_recursively_malformed_disk_json_does_not_defeat_local_terminal_write(tm
     def malformed(*args):
         raise RecursionError("JSON nesting limit")
     monkeypatch.setattr(dispatch, "read_receipt", malformed)
-    assert dispatch._commit_terminal(tmp_path / "receipts", receipt, claim) == 1
-    assert json.loads((tmp_path / "receipts/t1.json").read_text())["result"]["state"] == "FAILED"
-    assert not claim.exists()
+    assert dispatch._commit_terminal(tmp_path / "receipts", receipt, claim) == 8
+    assert claim.exists()
+    assert json.loads((tmp_path / "receipts/t1.json").read_text())["result"]["state"] == "SUCCEEDED"
+    # A terminal receipt with this retained claim is rejected by every reader.
+    assert claim.exists()
 
 
 @pytest.mark.parametrize("suffix", ["stdout", "stderr"])

@@ -33,7 +33,7 @@ def test_capability_failure_alone_excludes_and_escalates():
 
 @pytest.mark.parametrize("kind", ["transport_failure", "launch_failure", "resolution_failure",
     "timeout", "max_turns_partial", "no_artifact", "invalid_output", "authentication_failure",
-    "quota_exhausted", "cancelled", "unknown"])
+    "quota_exhausted", "publication_failure", "cancelled", "unknown"])
 def test_operational_failure_requires_recovery_but_never_capability_escalation(kind):
     held = rt.route(task([record(kind)]), CFG)
     assert held["terminal"] == "OPERATIONAL_RECOVERY_REQUIRED"

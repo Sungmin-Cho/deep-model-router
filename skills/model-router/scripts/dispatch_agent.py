@@ -24,7 +24,8 @@ Design rules this file enforces:
   waiting on the child, validating output, or writing the terminal receipt
   itself — still runs the termination ladder and leaves a terminal receipt
   (CANCELLED if the group's death is confirmed, TERMINATION_UNCONFIRMED if
-  not) before the crash is re-raised as exit 9. A supervisor crash must
+  not) before the crash is re-raised as exit 9 (exit5 takes precedence when
+  termination is unconfirmed). A supervisor crash must
   never be a silent abandonment of a live process group behind a receipt
   stuck at RUNNING.
 - Prompts travel by file into the child's stdin; with no prompt file, stdin
@@ -57,7 +58,7 @@ Subcommands: run | status | cancel | verify-evidence
 
 Exit status: 0 SUCCEEDED; 1 FAILED; 2 invalid usage; 3 TIMED_OUT;
 4 START_FAILED; 5 TERMINATION_UNCONFIRMED; 6 INVALID_OUTPUT;
-7 CANCELLED (cancel: confirmed); 9 internal error — a crash, never an
+7 CANCELLED (cancel: confirmed); 8 receipt publication failed; 9 internal error — a crash, never an
 attempt outcome (the same lesson route_task.py's exit 5 encodes). status
 exits 0 and prints the receipt. verify-evidence exits 0 iff the evidence
 set is exactly valid.
@@ -68,7 +69,9 @@ POSIX only: process-group control uses start_new_session and os.killpg.
 from __future__ import annotations
 
 import argparse
+import copy
 import errno
+import fcntl
 import hashlib
 import json
 import math
@@ -81,6 +84,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,6 +97,13 @@ STATES = (
 # for "a claim sentinel exists but no receipt does yet" (see cmd_status) —
 # there is no receipt in that window to hold a `result.state`, so it is not
 # a receipt state and never appears in a receipt's `result.state` field.
+
+PUBLICATION_FAILED = 8
+
+
+class UnconfirmedPublicationError(ValueError):
+    """Publication error with a stronger possibly-live-writer hold."""
+
 
 EXIT_BY_STATE = {
     "SUCCEEDED": 0, "FAILED": 1, "TIMED_OUT": 3, "START_FAILED": 4,
@@ -1690,35 +1702,140 @@ def _same_attempt_identity(local: dict, disk: dict) -> bool:
         return False
 
 
-def _commit_terminal(receipt_dir: Path, receipt: dict, claim_path: Path) -> int:
-    """Publish the supervisor's result, preserving only conservative cancellation.
+@contextmanager
+def _terminal_lock(receipt_dir: Path, attempt_id: str):
+    """A stable inode serializes cooperating writers; never unlink this file."""
+    path = receipt_dir / f"{attempt_id}.lock"
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("publication lock is not a single-linked regular file")
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise OSError("publication lock deadline exceeded")
+                time.sleep(.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
-    A disk success is not authority over the exit status observed in memory.
-    Concurrent cancel can contribute CANCELLED/TERMINATION_UNCONFIRMED for the
-    same attempt and process, but cannot certify a termination we could not
-    confirm. Never copy identity or result evidence back from writable storage.
-    This is not filesystem isolation: callers must deny the child write access
-    to the receipt directory before using stored evidence as trusted authority.
+
+def _merge_terminal(receipt: dict, current: dict, owned_starting: dict | None = None) -> None:
+    own_unpublished_launch = (owned_starting is not None
+        and current.get("result", {}).get("state") == "STARTING"
+        and json.dumps(current, sort_keys=True) == json.dumps(owned_starting, sort_keys=True))
+    if not _same_attempt_identity(receipt, current) and not own_unpublished_launch:
+        raise ValueError("receipt identity changed during finalization")
+    local, disk = receipt["result"], current["result"]
+    if disk.get("state") not in STATES:
+        raise ValueError("unknown native receipt state")
+    if disk.get("state") == "TERMINATION_UNCONFIRMED" and disk.get("termination_confirmed") is not False:
+        local.update(state="TERMINATION_UNCONFIRMED", termination_confirmed=False)
+        raise ValueError("unconfirmed receipt has malformed confirmation")
+    if disk.get("state") == "CANCELLED" and disk.get("termination_confirmed") is not True:
+        if disk.get("termination_confirmed") is False:
+            local.update(state="TERMINATION_UNCONFIRMED", termination_confirmed=False)
+        raise ValueError("cancelled receipt lacks confirmed termination")
+    intent = disk.get("cancel_requested_at")
+    if isinstance(intent, str) and intent:
+        local["cancel_requested_at"] = intent
+    if (local.get("termination_confirmed") is False
+            or (disk.get("state") == "TERMINATION_UNCONFIRMED"
+                and disk.get("termination_confirmed") is False)):
+        local.update(state="TERMINATION_UNCONFIRMED", termination_confirmed=False)
+    elif local.get("termination_confirmed") is True and (
+            (isinstance(intent, str) and bool(intent))
+            or (disk.get("state") == "CANCELLED" and disk.get("termination_confirmed") is True)):
+        local["state"] = "CANCELLED"
+
+
+def _commit_terminal(receipt_dir: Path, receipt: dict, claim_path: Path,
+                     owned_starting: dict | None = None, *, preserve_published: bool = False) -> int:
+    """Publish under one lock; failure retains the claim and cannot return green.
+
+    This serializes cooperating supervisors/cancelers. Filesystem authority
+    against a child requires a separately enforced receipt-store guard.
     """
     try:
-        on_disk = read_receipt(receipt_dir, receipt["attempt_id"])
-        same_attempt = _same_attempt_identity(receipt, on_disk)
-        disk_result = on_disk.get("result", {})
-        disk_state = disk_result.get("state")
-        if (same_attempt and disk_state == "TERMINATION_UNCONFIRMED"
-                and disk_result.get("termination_confirmed") is False):
-            receipt["result"].update(state=disk_state, termination_confirmed=False)
-        elif (same_attempt and disk_state == "CANCELLED"
-              and disk_result.get("termination_confirmed") is True
-              and receipt["result"].get("termination_confirmed") is True):
-            receipt["result"]["state"] = "CANCELLED"
-    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
-        # Missing, malformed, or replaced disk evidence cannot override the
-        # result this supervisor already observed.
-        pass
-    write_receipt(receipt_dir, receipt)
-    claim_path.unlink(missing_ok=True)
-    return EXIT_BY_STATE[receipt["result"]["state"]]
+        with _terminal_lock(receipt_dir, receipt["attempt_id"]):
+            current = read_receipt(receipt_dir, receipt["attempt_id"])
+            _merge_terminal(receipt, current, owned_starting)
+            state = current["result"]["state"]
+            claimed = os.path.lexists(claim_path)
+            if state in EXIT_BY_STATE and not claimed and not current["result"].get("cancel_requested_at"):
+                if not preserve_published:
+                    raise ValueError("attempt already published without an active cancel intent")
+                # A stale cancel snapshot is not authority to reopen a finished
+                # attempt. An already accepted durable intent remains distinct.
+                if state == "SUCCEEDED" and _success_evidence_problems(receipt_dir, current, receipt["attempt_id"]):
+                    raise ValueError("published success has invalid evidence")
+                return EXIT_BY_STATE[state]
+            if state in ("STARTING", "RUNNING") and not claimed:
+                raise ValueError("active attempt lost publication claim")
+            write_receipt(receipt_dir, receipt)
+            claim_path.unlink(missing_ok=True)
+        return EXIT_BY_STATE[receipt["result"]["state"]]
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError) as exc:
+        print(f"receipt publication failed: {exc}", file=sys.stderr)
+        # Missing storage proof must not erase a known live-process hazard.
+        if receipt.get("result", {}).get("termination_confirmed") is False:
+            return EXIT_BY_STATE["TERMINATION_UNCONFIRMED"]
+        return PUBLICATION_FAILED
+
+
+def _request_cancellation(receipt_dir: Path, receipt: dict) -> bool:
+    """Linearize cancellation before signaling, surviving requester death."""
+    with _terminal_lock(receipt_dir, receipt["attempt_id"]):
+        current = read_receipt(receipt_dir, receipt["attempt_id"])
+        if not _same_attempt_identity(receipt, current):
+            raise ValueError("receipt identity changed before cancellation")
+        state = current["result"].get("state")
+        if state not in STATES:
+            raise ValueError("unknown native receipt state")
+        if state == "TERMINATION_UNCONFIRMED":
+            raise UnconfirmedPublicationError("termination unconfirmed during cancellation publication")
+        if state in EXIT_BY_STATE and os.path.lexists(receipt_dir / f"{receipt['attempt_id']}.claim"):
+            raise ValueError("terminal receipt publication is incomplete")
+        if state != "RUNNING" or current["result"].get("cancel_requested_at"):
+            return False
+        if not (receipt_dir / f"{receipt['attempt_id']}.claim").exists():
+            raise ValueError("active attempt lost its claim")
+        current["result"]["cancel_requested_at"] = _utcnow()
+        write_receipt(receipt_dir, current)
+        receipt["result"]["cancel_requested_at"] = current["result"]["cancel_requested_at"]
+        return True
+
+
+class CancellationRequested(Exception):
+    pass
+
+
+def _wait_with_cancellation(proc, receipt_dir, receipt, deadline):
+    while True:
+        try:
+            current = read_receipt(receipt_dir, receipt["attempt_id"])
+            intent = current.get("result", {}).get("cancel_requested_at")
+            if isinstance(intent, str) and intent and _same_attempt_identity(receipt, current):
+                receipt["result"]["cancel_requested_at"] = intent
+                raise CancellationRequested
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+            # Unreadable storage cannot request a signal. Final publication
+            # still requires readable matching authority and fails closed.
+            pass
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            return proc.wait(timeout=min(.2, remaining))
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                raise
 
 
 def _backfill_terminal_evidence(args, receipt: dict,
@@ -2047,7 +2164,9 @@ def _run_attempt(args, pins: list[dict]) -> int:
         time.time() + args.deadline_seconds, timezone.utc
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     deadline_monotonic = time.monotonic() + args.deadline_seconds
-    write_receipt(receipt_dir, receipt)
+    starting_snapshot = copy.deepcopy(receipt)
+    with _terminal_lock(receipt_dir, args.attempt_id):
+        write_receipt(receipt_dir, receipt)
 
     # Attempt output files are new objects. O_EXCL refuses every pre-existing
     # path (including FIFO, symlink and hardlink) without opening or truncating
@@ -2078,14 +2197,9 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 os.close(stdout_fd)
             receipt["result"]["state"] = "START_FAILED"
             receipt["timing"]["finished_at"] = _utcnow()
-            write_receipt(receipt_dir, receipt)
-            # The receipt is terminal now — same rule as every other
-            # terminal path: release the claim sentinel so it does not sit
-            # forever as a claim with no attempt behind it.
-            claim_path.unlink(missing_ok=True)
             print(f"start failed: cannot open output file: {exc}",
                   file=sys.stderr)
-            return EXIT_BY_STATE["START_FAILED"]
+            return _commit_terminal(receipt_dir, receipt, claim_path)
 
         # stdout/stderr go straight to files: no pipe buffer to fill, no
         # drain thread to forget, no deadlock when the child floods.
@@ -2112,13 +2226,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 receipt["result"]["state"] = "START_FAILED"
                 receipt["timing"]["finished_at"] = _utcnow()
                 err_f.write(f"start failed: {exc}\n".encode())
-                write_receipt(receipt_dir, receipt)
-                # The receipt is terminal now — the claim sentinel has done
-                # its job (kept a racing `run` from clobbering this attempt
-                # while it was still ambiguous) and would otherwise sit
-                # forever as a claim with no attempt behind it.
-                claim_path.unlink(missing_ok=True)
-                return EXIT_BY_STATE["START_FAILED"]
+                return _commit_terminal(receipt_dir, receipt, claim_path)
 
             pgid = proc.pid  # start_new_session: pgid == pid
             # supervisor_pid is this `run` process's own pid — distinct from
@@ -2133,6 +2241,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
             # handle is not a result, and nothing after Popen succeeds may
             # leave the group unsupervised or the receipt stuck non-terminal
             # (below, `except Exception`).
+            running_published = False
             try:
                 receipt["process"] = {"pid": proc.pid, "process_group_id": pgid,
                                       "supervisor_pid": os.getpid()}
@@ -2142,6 +2251,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 receipt["timing"]["deadline_at"] = deadline_at
                 receipt["result"]["state"] = "RUNNING"
                 write_receipt(receipt_dir, receipt)
+                running_published = True
 
                 try:
                     # Consume the REMAINING budget against the one monotonic
@@ -2153,7 +2263,11 @@ def _run_attempt(args, pins: list[dict]) -> int:
                     # TimeoutExpired now fires at the absolute deadline
                     # instant, not deadline_seconds after this wait started.
                     remaining = max(0.0, deadline_monotonic - time.monotonic())
-                    exit_status = proc.wait(timeout=remaining)
+                    exit_status = _wait_with_cancellation(proc, receipt_dir, receipt, deadline_monotonic)
+                except CancellationRequested:
+                    confirmed = terminate_group(proc, pgid, args.grace_seconds)
+                    receipt["result"].update(termination_confirmed=confirmed,
+                        state="CANCELLED" if confirmed else "TERMINATION_UNCONFIRMED")
                 except subprocess.TimeoutExpired:
                     # Past the deadline nothing the attempt writes can matter:
                     # the state is decided by termination alone, and a late
@@ -2318,18 +2432,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                     pass
 
                 receipt["timing"]["finished_at"] = _utcnow()
-                # DEFER-2: terminal persistence is best-effort. OSError here
-                # must not skip claim release or borrow crash exit 9 — the
-                # child is already reaped on this happy path. STARTING /
-                # start-failed writes above stay strict. Both this tail
-                # and the crash handler commit through `_commit_terminal`
-                # so only matching conservative cancellation can affect the result.
-                try:
-                    return _commit_terminal(receipt_dir, receipt, claim_path)
-                except OSError:
-                    print("receipt write failed", file=sys.stderr)
-                    claim_path.unlink(missing_ok=True)
-                    return EXIT_BY_STATE[receipt["result"]["state"]]
+                return _commit_terminal(receipt_dir, receipt, claim_path)
             except Exception:
                 # A crash writing the RUNNING receipt, waiting on the child,
                 # validating output, or writing the terminal receipt above
@@ -2347,14 +2450,13 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 receipt["result"]["state"] = (
                     "CANCELLED" if confirmed else "TERMINATION_UNCONFIRMED")
                 receipt["timing"]["finished_at"] = _utcnow()
-                # The return value is ignored here on purpose: whichever
-                # terminal state ends up on disk (this handler's own
-                # conclusion, or an already-terminal state
-                # `_commit_terminal` preserved instead), `main()`'s crash
-                # guard still turns THIS exception into exit 9 — the
-                # receipt being terminal is what matters here, not what
-                # `cmd_run` would have returned.
-                _commit_terminal(receipt_dir, receipt, claim_path)
+                # A known possibly-live writer outranks generic crash status,
+                # including when its receipt could not be published.
+                publication = _commit_terminal(receipt_dir, receipt, claim_path,
+                    owned_starting=starting_snapshot if not running_published else None)
+                if publication == EXIT_BY_STATE["TERMINATION_UNCONFIRMED"]:
+                    traceback.print_exc()
+                    return publication
                 raise
     finally:
         if stdin_f is not subprocess.DEVNULL:
@@ -2417,6 +2519,9 @@ def cmd_status(args) -> int:
               f"— no receipt and no claim", file=sys.stderr)
         return 2
     state = receipt["result"]["state"]
+    if state in EXIT_BY_STATE and os.path.lexists(claim_path):
+        print("receipt publication is incomplete (claim retained): " + state, file=sys.stderr)
+        return 5 if state == "TERMINATION_UNCONFIRMED" else PUBLICATION_FAILED
     if state == "SUCCEEDED":
         problems = _success_evidence_problems(receipt_dir, receipt, args.attempt_id)
         if problems:
@@ -2506,6 +2611,9 @@ def cmd_cancel(args) -> int:
               f"— no receipt and no claim", file=sys.stderr)
         return 2
     state = receipt["result"]["state"]
+    if state in EXIT_BY_STATE and os.path.lexists(claim_path):
+        print("receipt publication is incomplete (claim retained): " + state, file=sys.stderr)
+        return 5 if state == "TERMINATION_UNCONFIRMED" else PUBLICATION_FAILED
     if state == "SUCCEEDED":
         problems = _success_evidence_problems(receipt_dir, receipt, args.attempt_id)
         if problems:
@@ -2540,13 +2648,7 @@ def cmd_cancel(args) -> int:
         receipt["result"]["termination_confirmed"] = False
         receipt["result"]["state"] = "TERMINATION_UNCONFIRMED"
         receipt["timing"]["finished_at"] = _utcnow()
-        write_receipt(receipt_dir, receipt)
-        # The receipt is terminal now — same rule every terminal writer
-        # follows (ITEM-V-5): release the claim sentinel so it does not
-        # sit forever as a claim with a terminal receipt already behind
-        # it.
-        claim_path.unlink(missing_ok=True)
-        return EXIT_BY_STATE["TERMINATION_UNCONFIRMED"]
+        return _commit_terminal(receipt_dir, receipt, claim_path, preserve_published=True)
     if state == "STARTING":
         # The supervisor is alive but the attempt has not reached RUNNING
         # yet — there is no child process group to signal, and the receipt
@@ -2558,14 +2660,22 @@ def cmd_cancel(args) -> int:
               f"STARTING, supervisor {supervisor_pid} is alive) — nothing "
               f"to signal yet", file=sys.stderr)
         return 2
+    try:
+        if not _request_cancellation(receipt_dir, receipt):
+            print("cancellation already requested or attempt no longer RUNNING", file=sys.stderr)
+            return 2
+    except UnconfirmedPublicationError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_BY_STATE["TERMINATION_UNCONFIRMED"]
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError) as exc:
+        print(f"cancel request publication failed: {exc}", file=sys.stderr)
+        return PUBLICATION_FAILED
     confirmed = terminate_group(None, pgid, args.grace_seconds)
     receipt["result"]["termination_confirmed"] = confirmed
     receipt["result"]["state"] = (
         "CANCELLED" if confirmed else "TERMINATION_UNCONFIRMED")
     receipt["timing"]["finished_at"] = _utcnow()
-    write_receipt(receipt_dir, receipt)
-    claim_path.unlink(missing_ok=True)  # receipt is terminal now — same rule every terminal writer follows
-    return EXIT_BY_STATE[receipt["result"]["state"]]
+    return _commit_terminal(receipt_dir, receipt, claim_path)
 
 
 def cmd_verify_evidence(args) -> int:
