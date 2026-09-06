@@ -228,7 +228,15 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
             # not on `route_path == "disagreement"`: the disagreement route seats a JUDGE,
             # and excluding all of it skipped 117 class-C rows to cover 24 [impl-R1-opus-F2].
             if not b["review"]["self_review_avoided"] and not b["review"]["compensating_reviewers"]:
-                if "reviewers" in table:
+                if "jointly allocated eligible models across the review and judge seats" in b["notes"]:
+                    # A joint assignment keeps the band's seat count and depth;
+                    # aliases need not equal the old greedy role table.
+                    assert len(b["review"]["reviewers"]) == len(table.get("reviewers", [None])), inp
+                    model_tiers = {m["id"]: m["capability_tier"] for m in new_cfg["models"].values()}
+                    from route_task import Policy
+                    floor = Policy(new_cfg).band_reviewer_floor[b["review"]["band"]]
+                    assert all(model_tiers[m] >= floor for m in b["review"]["reviewer_models"]), inp
+                elif "reviewers" in table:
                     assert b["review"]["reviewers"] == table["reviewers"], inp
                 else:                                          # MEDIUM seats one candidate
                     assert len(b["review"]["reviewers"]) == 1 and b["review"]["reviewers"][0] in table["candidates"], inp

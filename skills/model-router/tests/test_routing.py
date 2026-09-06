@@ -238,10 +238,15 @@ def test_s11_disagreement_judge_is_configured_and_bound():
 
     out = r(task_class="ARCHITECTURE", complexity=3, uncertainty=3,
             blast_radius=3, reversibility=2, flags=["financial_sensitive"])
-    # The architect is the implementer here, so it cannot also judge its own
-    # work; with no higher tier free, adjudication goes to a human.
-    assert out["review"]["judge_unavailable"] is True
+    # The architect cannot judge itself; joint allocation can now seat the
+    # other frontier model while retaining the CRITICAL human gate.
+    rv = out["review"]
+    assert rv["judge_unavailable"] is False
+    assert rv["judge_model"] not in [out["selected_model"], *rv["reviewer_models"]]
+    tiers = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
+    assert tiers[rv["judge_model"]] >= max(tiers[m] for m in [out["selected_model"], *rv["reviewer_models"]])
     assert out["requires_human_confirmation"] is True
+    assert "critical_review_band" in out["human_control_causes"]
 
 
 def test_s16_isolation_unavailable_is_a_disclosed_degradation():

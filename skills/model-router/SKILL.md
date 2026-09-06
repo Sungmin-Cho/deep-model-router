@@ -367,6 +367,16 @@ effort; `MAX` is for when the dependency graph is genuinely complex, five or
 more subtasks interlock, requirements conflict, routing confidence is below
 0.60, or failure would have `HIGH`+ blast radius.
 
+### Existing-artifact reviews
+
+For a read-only REVIEW of existing work, pass RouteRequestV1 `review_context`
+with its target SHA-256 and known author model IDs or families. Do not infer
+source authorship from your host model. See `references/review-policy.md`.
+When this context is present, dispatch **only `dispatch_seats`**, once per entry.
+`selected_*` identifies its lead reviewer; it is not an additional worker to
+spawn. Keep peer contexts independent and collect one session ID per reviewer.
+An empty dispatch list is not permission to invent a replacement route.
+
 ## Step 3 — Review, by band alone
 
 Review depth does not depend on which worker you picked. That independence is

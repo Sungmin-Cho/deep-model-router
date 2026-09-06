@@ -292,16 +292,16 @@ review:
   required:        independent=True
   actual:          degraded
   checks:          security, edge_cases, rollback, test_adequacy, specification_compliance
-  judge:           UNAVAILABLE — a human settles any disagreement
+  judge:           worker_balanced -> openai_frontier
 cross_family_review: True
 fallbacks:   (none)
 confidence:  0.75
 human:       CONFIRMATION REQUIRED
 notes:
+  - jointly allocated eligible models across the review and judge seats
   - confirm/on_any_critical_review: a CRITICAL review cannot be accepted automatically
-  - confirm/on_judge_unavailable: no adjudicator is available
 
-ARCHITECTURE scored 17/18 (c=3 u=3 b=3 r=2) -> band CRITICAL; execution 15/18 -> VERY_HARD. Overrides applied: critical_domain, critical_irreversible. Overrides that fired but were already satisfied: critical_domain, critical_irreversible. Critical-domain flags: financial_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No independent adjudicator is available at or above every party's tier (the implementer included); a human must resolve any disagreement. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Human control: no adjudicator is available. Requires human confirmation before proceeding.
+ARCHITECTURE scored 17/18 (c=3 u=3 b=3 r=2) -> band CRITICAL; execution 15/18 -> VERY_HARD. Overrides applied: critical_domain, critical_irreversible. Overrides that fired but were already satisfied: critical_domain, critical_irreversible. Critical-domain flags: financial_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. Judge: worker_balanced. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Requires human confirmation before proceeding.
 ```
 
 `critical_irreversible` fired because a critical-domain flag met
@@ -444,16 +444,16 @@ review:
   required:        independent=True
   actual:          degraded
   checks:          security, edge_cases, rollback, test_adequacy, specification_compliance
-  judge:           UNAVAILABLE — a human settles any disagreement
+  judge:           worker_balanced -> openai_frontier
 cross_family_review: True
 fallbacks:   (none)
 confidence:  0.87
 human:       CONFIRMATION REQUIRED
 notes:
+  - jointly allocated eligible models across the review and judge seats
   - confirm/on_any_critical_review: a CRITICAL review cannot be accepted automatically
-  - confirm/on_judge_unavailable: no adjudicator is available
 
-MIGRATION scored 16/18 (c=3 u=2 b=3 r=3) -> band CRITICAL; execution 13/18 -> HARD. Overrides applied: critical_domain, critical_irreversible, migration_data_integrity. Overrides that fired but were already satisfied: critical_domain, critical_irreversible, migration_data_integrity. Critical-domain flags: data_integrity_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. No independent adjudicator is available at or above every party's tier (the implementer included); a human must resolve any disagreement. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Human control: no adjudicator is available. Requires human confirmation before proceeding.
+MIGRATION scored 16/18 (c=3 u=2 b=3 r=3) -> band CRITICAL; execution 13/18 -> HARD. Overrides applied: critical_domain, critical_irreversible, migration_data_integrity. Overrides that fired but were already satisfied: critical_domain, critical_irreversible, migration_data_integrity. Critical-domain flags: data_integrity_sensitive. Worker principal_architect at MAX effort. Review band CRITICAL: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. Judge: worker_balanced. Required checks: security, edge_cases, rollback, test_adequacy, specification_compliance. No fallbacks applied. Human control: a CRITICAL review cannot be accepted automatically. Requires human confirmation before proceeding.
 ```
 
 Three overrides fire independently and agree. Each encodes a different reason

@@ -155,21 +155,33 @@ RouteRequestV1 accepts optional `review_context` on read-only `REVIEW` tasks:
 Declare at least one model ID or family. Exact model IDs, including retired
 history IDs, exclude those IDs only; `author_families` additionally excludes
 whole provider families. All executable seats for this REVIEW task are filtered,
-including its lead review executor, secondary reviewers and judge. The actual
+including its lead reviewer, peer reviewers and judge. The actual
 host remains advisory and is never used to infer who wrote the source artifact.
 
 The context is normalized and included in request identity and the decision
 fingerprint. Changing the target or authors changes that identity. Omitted/null
-context leaves legacy routes and hashes unchanged. Invalid context, write-seat
+context retains worker-plus-review semantics and the same request identity. Invalid context, write-seat
 overrides and other task classes are rejected. Exclusion is an eligibility rule,
 not a model outage; genuine outages of eligible replacements remain recorded.
 
 This is a caller declaration. The router does not read the artifact to verify
 its digest, authenticate authorship, or certify the served provider model.
-The context is echoed as input even on terminal routes. Existing review-of-review
-allocation is retained: the lead executor is still distinct from the secondary
-review slate. This feature prevents source-author assignment; joint allocation
-and removing unnecessary extra seats are separate work.
+The context is echoed as input even on terminal routes. With this explicit
+context, the selected executor is the lead reviewer, included once in the
+band's reviewer count. Use `dispatch_seats` as the canonical execution list;
+do not dispatch `selected_model` again alongside that list. Each entry gives
+`seat`, `role`, `model_id`, `effort`, and `effort_native`. Terminal routes return
+an empty list. Isolation evidence still needs one distinct session per reviewer.
+The lead receives the higher of its selected effort and the review effort.
+
+For a deficient ordinary slate, or an explicit source review, the router searches
+eligible fallback candidates jointly. Ordinary workers stay fixed; a source
+review's lead can rise to the final review floor. Reviewers must meet
+the band's tier and effort floors; a judge must be distinct and at least as
+capable as every party. Candidate preference breaks ties after provider diversity.
+Intentional seating is not an outage penalty. If no complete assignment exists,
+reviewer shortages retain conservative gates. If reviewers are feasible but
+a judge is not, the review slate is retained with a human adjudication gate. This search does not establish empirical model quality.
 
 Two reviews are independent if and only if reviewer B's input contains no token
 derived from reviewer A's output, transitively.

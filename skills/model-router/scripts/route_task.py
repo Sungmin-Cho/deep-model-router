@@ -1682,6 +1682,102 @@ def _extra_reviewer(review: dict, worker: str, policy: "Policy", resolver: "Reso
 # Stage 7 — resolution
 # --------------------------------------------------------------------------
 
+def _joint_seats(review: dict, worker: str, judge: str | None,
+                 policy: "Policy", resolver: "Resolver") -> tuple[dict, str | None]:
+    """Search eligible candidate IDs, retaining a conservative slate on failure.
+
+    An ordinary worker is fixed. A declared source review jointly seats its
+    lead reviewer at or above the selected worker tier and final review floor. Only successful complete assignments are installed.
+    """
+    if any(row.get("with") not in review["reviewers"] for row in review.get("self_review_avoided", [])):
+        raise RouterInvariantError("stale reviewer substitution before joint allocation")
+    source_review = resolver.task._review_context is not None
+    def unavailable():
+        return ({**review, "independence_compromised": True} if source_review else review), judge
+    floor = policy.band_reviewer_floor[review["band"]]
+    worker_model = resolver.peek(worker, write=True)
+    if worker_model is None and not source_review:
+        return unavailable()
+    need_judge = judge is not None or bool(review.get("judge_unavailable"))
+    current = [resolver.peek(r) for r in review["reviewers"]]
+    deficient = (review.get("independence_compromised") or review.get("judge_unavailable")
+                 or any(m is None or policy.tier_of[m] < floor for m in current))
+    if not source_review and not deficient:
+        return unavailable()
+
+    count = len(review["reviewers"])
+    # Aliases carry one model each; reserve a unique alias for every real seat.
+    aliases = list(dict.fromkeys([r for r in review["reviewers"] if r != worker]
+                                + [r for r in policy.roles if r != worker]))
+    reviewer_roles = ([worker] if source_review else []) + aliases[:count - int(source_review)]
+    if len(reviewer_roles) != count:
+        return unavailable()
+    free_aliases = [r for r in policy.roles if r != worker and r not in reviewer_roles]
+    if need_judge and not free_aliases:
+        return unavailable()
+    judge_role = (judge if judge in free_aliases else free_aliases[-1]) if need_judge else None
+    variable_roles = [r for r in reviewer_roles if source_review or r != worker] + ([judge_role] if judge_role else [])
+    offered = list(dict.fromkeys(key for r in policy.roles for key in resolver._candidates(r)))
+    pools = {}
+    for role in variable_roles:
+        pools[role] = list(dict.fromkeys(
+            policy.cfg["models"][key]["id"] for key in list(dict.fromkeys(resolver._candidates(role) + offered))
+            if policy.cfg["models"][key]["id"] not in resolver.unusable
+            and policy.tier_of[policy.cfg["models"][key]["id"]] >= floor
+            and _clamp(policy, review["effort"], policy.cfg["models"][key]["id"]) == review["effort"]))
+    if source_review:
+        lead_floor = (policy.tier_of[worker_model] if worker_model else
+                      policy.cfg["models"][policy.cfg["role_bindings"]["default"][worker]]["capability_tier"])
+        lp = resolver.task._local_policy or {}
+        lead_floor = max(lead_floor, (lp.get("minimum_capability_tier") or 0))
+        minimum_effort = (lp.get("minimum_effort") or review["effort"])
+        pools[worker] = [m for m in pools[worker] if policy.tier_of[m] >= lead_floor
+                         and _clamp(policy, minimum_effort, m) == minimum_effort]
+    best, best_rank = None, None
+
+    def search(index, assigned, used, preference):
+        nonlocal best, best_rank
+        if index == len(variable_roles):
+            reviewers = [assigned[r] for r in reviewer_roles]
+            if judge_role and policy.tier_of[assigned[judge_role]] < max(
+                    policy.tier_of[m] for m in [assigned[worker], *reviewers]):
+                return
+            families = {policy.family_of[m] for m in reviewers}
+            source_families = {policy.family_of[m] for m in resolver.author_excluded}
+            comparison_families = source_families if source_review else {policy.family_of[assigned[worker]]}
+            cross = len(families) > 1 or (len(reviewers) == 1 and
+                    policy.family_of[reviewers[0]] not in comparison_families)
+            family_floor = ((resolver.task._local_policy or {}).get("minimum_provider_families") or 0)
+            all_families = {policy.family_of[m] for m in assigned.values()}
+            rank = (len(all_families) >= family_floor, int(cross), len(families), -preference)
+            if best_rank is None or rank > best_rank:
+                best, best_rank = dict(assigned), rank
+            return
+        role = variable_roles[index]
+        for order, model in enumerate(pools[role]):
+            if model not in used:
+                assigned[role] = model
+                search(index + 1, assigned, used | {model}, preference + order)
+                del assigned[role]
+
+    initial = {} if source_review else {worker: worker_model}
+    used = set() if source_review else {worker_model}
+    search(0, dict(initial), used, 0)
+    if best is None and judge_role:
+        variable_roles.remove(judge_role)
+        judge_role = None
+        search(0, dict(initial), used, 0)
+    if best is None:
+        return unavailable()
+    resolver.assignments = best
+    result = dict(review)
+    result["reviewers"] = reviewer_roles
+    result["independence_compromised"] = False
+    result["judge_unavailable"] = need_judge and judge_role is None
+    result["self_review_avoided"] = []
+    return result, judge_role
+
+
 class Resolver:
     """Turns role aliases into concrete models, honouring every constraint the
     caller supplied and the provider boundary implied by the runtime state."""
@@ -1761,6 +1857,7 @@ class Resolver:
         # came out INDEPENDENCE_UNAVAILABLE because the one entry resolved to
         # the worker's model and the reviewer had nothing left.
         self.write_seat_role: str | None = None
+        self.assignments: dict[str, str] = {}
 
     def _primary(self, role: str) -> str | None:
         """The registry key this role binds to FOR THIS TASK.
@@ -1840,6 +1937,8 @@ class Resolver:
         caller that is asking about the WORKER passes it; reviewer and judge
         seating does not, because those seats read.
         """
+        if role in self.assignments:
+            return self.assignments[role]
         cfg = self.policy.cfg
         for key in self._candidates(role, write=write):
             model_id = cfg["models"][key]["id"]
@@ -1914,9 +2013,16 @@ class Resolver:
                                 f"{self.task.runtime}")
                 raise SupplyExhausted(f"no usable model for role {role!r}: {because}")
             resolved[role] = chosen_id
+            # Deliberate seat allocation is not model unavailability. Preserve
+            # an actual outage behind the original role baseline.
+            if role in self.assignments and primary_id not in self.unusable:
+                primary_id = chosen_id
             if primary_id is not None and chosen_id != primary_id:
                 fallbacks.append(f"{role}: {primary_id} unavailable -> {chosen_id}")
-                compensations.extend(self._compensations(role, primary_id, chosen_id, comp_cfg))
+                # Joint seats already meet their explicit tier/effort floors.
+                # A role label reused for a peer is not an architect downgrade.
+                if role not in self.assignments:
+                    compensations.extend(self._compensations(role, primary_id, chosen_id, comp_cfg))
         return resolved, fallbacks, compensations
 
     def _compensations(self, role, primary_id, chosen_id, comp_cfg) -> list[str]:
@@ -1924,7 +2030,8 @@ class Resolver:
         these were policy that existed only as a comment."""
         out = []
         fam = self.policy.family_of
-        if role == "principal_architect" and (rule := comp_cfg.get("principal_architect_to_senior")):
+        if (role == "principal_architect" and self.policy.tier_of[chosen_id] < self.policy.tier_of[primary_id]
+                and (rule := comp_cfg.get("principal_architect_to_senior"))):
             out.append(rule)
         if role == "reasoning_specialist" and fam[chosen_id] == fam.get(
                 self.peek("senior_engineer") or chosen_id):
@@ -2346,6 +2453,20 @@ def route(task: Task, cfg: dict | None = None) -> dict:
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
         result["notes"].append("review_context excludes declared source authors from every REVIEW-task seat; target identity is caller-declared")
+        result["dispatch_seats"] = []
+        if result["terminal"] is None:
+            rv = result["review"]
+            for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
+                effort = rv["effort"]
+                if role == result["selected_role"]:
+                    effort = max((effort, result["selected_effort_effective"]), key=policy.efforts.index)
+                result["dispatch_seats"].append(dict(seat=f"reviewer-{i+1}", role=role,
+                    model_id=model, effort=effort, effort_native=policy.native_effort(model, effort)))
+            if rv["judge_model"]:
+                result["dispatch_seats"].append(dict(seat="judge", role=rv["judge"],
+                    model_id=rv["judge_model"], effort=rv["effort"],
+                    effort_native=policy.native_effort(rv["judge_model"], rv["effort"])))
+        result["notes"].append("For review_context dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer, not an extra worker")
     if task._attempt_outcomes is not None:
         history = task._attempt_outcomes
         result["attempt_outcomes"] = [dict(row) for row in history]
@@ -2365,10 +2486,12 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
     """Everything after the worker is chosen, as a pure function of its inputs.
 
     Pure means: every value the old body mutated is rebuilt here from `pre`
-    and `choice`; `resolver.write_seat_role` is set on entry and cleared on
-    exit so a second call sees the resolver exactly as the first did
-    (design DD-2 S6, [R3-opus-F3]). Nothing else on the resolver is written.
+    and `choice`; a fresh resolver owns per-pass seat assignments, so a second
+    candidate plan cannot inherit the first plan's bindings.
     """
+    # Each candidate plan owns its assignments; no state reaches a sibling plan.
+    resolver = Resolver(task, policy)
+    resolver.worker_writes = pre.seat_kind == "write"
     worker = choice.role
     worker_notes = list(choice.notes)
     ceiling_exhausted = choice.ceiling_exhausted
@@ -2454,9 +2577,19 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # body is not idempotent is a fold, and a ceiling record accumulated
             # across passes would report a cap the emitted plan never applied.
             ceiling_records = []
+            resolver.assignments = {}
             review = select_review(review_band, worker, policy, resolver)
+            source_judge = None
+            if task._review_context is not None:
+                source_judge = disagreement["default_judge"] if (
+                    review["band"] == "CRITICAL" or route_path == "disagreement") else None
+                review, source_judge = _joint_seats(review, worker, source_judge, policy, resolver)
+                preliminary_roles = list(dict.fromkeys([worker] + review["reviewers"]
+                    + ([source_judge] if source_judge else [])))
+            else:
+                preliminary_roles = roles_for(review)
             try:
-                resolved, fallbacks, compensations = resolver.resolve(roles_for(review), write_role=worker)
+                resolved, fallbacks, compensations = resolver.resolve(preliminary_roles, write_role=worker)
             except SupplyExhausted as exc:
                 resolved, fallbacks, compensations = {}, [], []
                 supply_exhausted = str(exc)
@@ -2536,18 +2669,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # equals the final `resolved[worker]` whenever resolution succeeds.
             # Reviewer seating still moves below, so a reviewer clamp here would
             # still read a roster that does not ship.
-            worker_model = resolver.peek(worker, write=True)
-            worker_effective = _clamp(policy, effort, worker_model)
-            if worker_effective != effort:
-                floor = _worker_effort_floor(task, band, pre.execution_band, policy)
-                broken = floor and policy.efforts.index(worker_effective) < policy.efforts.index(floor[1])
-                ceiling_records.append({
-                    "role": worker, "model": worker_model,
-                    "requested": effort, "capped_at": worker_effective,
-                    "floor_broken": floor[0] if broken else None,
-                    "floor_requires": floor[1] if broken else None,
-                })
-
             # Final de-confliction, at the emit boundary rather than mid-pipeline.
             #
             # This invariant has now been broken four times, each in a different place,
@@ -2574,11 +2695,27 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # worker-reviews-itself is documented design. The judge is not covered by
             # that exemption: an adjudicator brought in to settle a dispute must not be
             # one of the parties, whatever the band.
-            if review["independent"]:
-                review = _deconflict(review, worker, policy, resolver)
+            if task._review_context is not None:
+                judge_role = source_judge
+            else:
+                if review["independent"]:
+                    review = _deconflict(review, worker, policy, resolver)
+                if judge_role:
+                    review, judge_role = _seat_judge(review, worker, judge_role, policy, resolver)
 
-            if judge_role:
-                review, judge_role = _seat_judge(review, worker, judge_role, policy, resolver)
+            review, judge_role = _joint_seats(review, worker, judge_role, policy, resolver)
+
+            worker_model = resolver.peek(worker, write=True)
+            worker_effective = _clamp(policy, effort, worker_model)
+            if worker_effective != effort:
+                floor = _worker_effort_floor(task, band, pre.execution_band, policy)
+                broken = floor and policy.efforts.index(worker_effective) < policy.efforts.index(floor[1])
+                ceiling_records.append({
+                    "role": worker, "model": worker_model,
+                    "requested": effort, "capped_at": worker_effective,
+                    "floor_broken": floor[0] if broken else None,
+                    "floor_requires": floor[1] if broken else None,
+                })
 
             try:
                 resolved, fallbacks, _ = resolver.resolve(
@@ -2631,11 +2768,14 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             raise ConfigError("review band promotion failed to reach a fixed point")
 
 
+        if resolver.assignments:
+            worker_notes.append("jointly allocated eligible models across the review and judge seats")
+
         # Post-condition, asserted rather than assumed. Reviewer duplication is
         # only a defect where independence was requested; a judge sharing any seat
         # is a defect always.
         seat_models = {
-            "worker": resolved.get(worker),
+            **({"worker": resolved.get(worker)} if task._review_context is None else {}),
             **{f"reviewer_{i}": resolved.get(x) for i, x in enumerate(review["reviewers"])},
         }
         if review["independent"]:
@@ -2702,7 +2842,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # gate that restoring one model would have cleared.
         worker_model = resolved.get(worker)
         seats = len(review["reviewers"]) + (
-            1 if review["independent"] and worker_model
+            1 if task._review_context is None and review["independent"] and worker_model
             and policy.tier_of[worker_model] >= floor else 0)
         # Every id the binding can reach, including roles outside `role_tiers`
         # (`worker_balanced_alt`) that the fallback ladder can still seat.
@@ -2723,6 +2863,10 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             len(review["reviewers"]) == 1 and review["reviewers"][0] in fams and worker in fams
             and fams[review["reviewers"][0]] != fams[worker]
         )
+        if task._review_context is not None and len(review["reviewers"]) == 1:
+            source_families = {policy.family_of[m] for m in resolver.author_excluded}
+            cross_family = bool(reviewer_families - source_families)
+
 
         if resolver.allowed_families is not None and len(resolver.allowed_families) == 0:
             local_unsat = True
@@ -3223,6 +3367,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         return result
     finally:
         resolver.write_seat_role = None
+        resolver.assignments = {}
 
 
 def explain(task: Task, r: dict, policy: Policy) -> str:

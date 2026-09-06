@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Jointly assign eligible fallback models when a slate lacks depth, distinctness, or a judge; explicit source reviews count the lead once and provide canonical `dispatch_seats`.
+
 ### Added
 
 - Receipt-backed observation checks now verify outcome, role, model and effort claims and permit uniquely evidenced served-model identity.

@@ -1084,8 +1084,30 @@ def _paired_population():
     return rows
 
 
+def _risk_only_current_policy(kw):
+    """Counterfactual execution axis off, with the SAME current seating policy.
+
+    Historical1.12.1 included a role-only, same-tier downgrade compensation;
+    that is deliberately corrected now. It cannot be the exact shape oracle
+    for an execution-axis comparison. Its immutable snapshot remains tested.
+    Disable both effort selection and floor grading, not just the worker cell.
+    """
+    from unittest.mock import patch
+    import route_task as rt
+    select, effort, floor = rt.select_worker, rt.select_effort, rt._worker_effort_floor
+    def worker(*args, **kwargs):
+        _candidate, legacy = select(*args, **kwargs)
+        return legacy, legacy
+    def no_execution_effort(task, band, execution_band, policy):
+        return effort(task, band, "EASY", policy)
+    def no_execution_floor(task, band, execution_band, policy):
+        return floor(task, band, "EASY", policy)
+    with patch.object(rt, "select_worker", worker), patch.object(rt, "select_effort", no_execution_effort), patch.object(rt, "_worker_effort_floor", no_execution_floor):
+        return rt.route(rt.Task(**kw), CFG)
+
+
 def _assert_not_weaker(new: dict, old: dict) -> None:
-    """Design DD-2 S6 rows 1-12, new vs the 1.12.1 route (design §4 T3(c))."""
+    """Design DD-2 S6 rows 1-12, execution on vs off at the current policy."""
     import route_task as rt
     if old["terminal"]:
         assert new["terminal"] in (None, old["terminal"])
@@ -1290,15 +1312,14 @@ T15_SEEN_MIN = 39          # measured 2026-09-03: 79 raised over 30,496 paired r
                            # which is the terminal unlock counted separately (78 // 2 = 39).
 
 
-def test_t15_where_the_cell_won_review_depth_is_the_baseline_s():
-    base = load_baseline(); bcfg = _bcfg(base)
+def test_t15_where_the_cell_won_review_depth_matches_current_risk_only_policy():
     seen = unlocked = 0
     for kw, new in _paired_population():
         if not _raised(new):
             continue
-        old = base.route(base.Task(**kw), bcfg)
+        old = _risk_only_current_policy(kw)
         if old["terminal"]:
-            # The one direction G9 allows: 1.12.1 could not route this at all and
+            # The one direction G9 allows: the risk-only current policy could not route this at all and
             # the stronger worker makes it routable. A terminal route nulls its
             # review fields, so there is no depth to preserve — what must hold is
             # that the unlock went that way and not the other, which row 1 of the
@@ -1375,16 +1396,23 @@ T3_RAISED_MIN = 39          # measured 79 raised
 T3_EFFORT_ONLY_MIN = 77     # measured 154 effort-only deltas (0 before the Task 6 floors)
 
 
-def test_t3_no_route_is_weaker_than_1_12_1_and_notes_match_changes():
+def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
     import route_task as rt
     base = load_baseline(); bcfg = _bcfg(base)
     policy = rt.Policy.of(CFG)
     EXCLUDED = {"execution_score", "execution_band", "rationale", "policy_sha256", "decision_fingerprint",
                 "router_plugin_version", "selected_effort", "selected_effort_effective",
                 "selected_effort_native", "effort_ceiling_applied", "notes"}
-    compared = raised = yielded = effort_only = 0
+    compared = raised = yielded = effort_only = historical_compatible = 0
     for kw, new in _paired_population():
-        old = base.route(base.Task(**kw), bcfg)
+        old = _risk_only_current_policy(kw)
+        historical = base.route(base.Task(**kw), bcfg)
+        if historical["terminal"] is None and old["terminal"] is None:
+            # Allocation/compensation repairs must not secretly alter the
+            # historical risk-only worker choice on executable routes.
+            assert old["selected_role"] == historical["selected_role"], kw
+            assert old["selected_model"] == historical["selected_model"], kw
+            historical_compatible += 1
         compared += 1
         _assert_not_weaker(new, old)                                         # (a)(b)(c)
         rn, yn = _raised(new), _yielded(new)
@@ -1439,6 +1467,8 @@ def test_t3_no_route_is_weaker_than_1_12_1_and_notes_match_changes():
     assert compared >= T3_COMPARED_MIN and raised >= T3_RAISED_MIN and effort_only >= T3_EFFORT_ONLY_MIN, \
         (compared, raised, yielded, effort_only)
 
+
+    assert historical_compatible > 500
 
 def test_t17_plan_purity_holds_across_real_two_plan_routes():
     """T17 above pins one HIGH x VERY_HARD input. Purity is a property of every

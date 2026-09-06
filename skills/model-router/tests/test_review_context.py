@@ -51,8 +51,9 @@ def test_author_family_exclusion_is_explicit_and_global_to_review_task():
     out = rt.route(request(ctx), CFG)
     family = {m["id"]: m["family"] for m in CFG["models"].values()}
     assert all(family[m] != "openai" for m in models(out))
-    assert out["review"]["review_depth_reduced"]
-    assert out["requires_human_confirmation"]
+    # Two eligible Claude reviewers suffice; the lead is no phantom third seat.
+    assert len(set(out["review"]["reviewer_models"])) == 2
+    assert not out["review"]["review_depth_reduced"]
 
 
 def test_exclusion_is_not_reported_as_model_unavailability():
