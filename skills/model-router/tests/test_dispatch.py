@@ -9,6 +9,7 @@ Run:  python3 -m pytest skills/model-router/tests/test_dispatch.py -q
 
 import argparse
 import errno
+import hashlib
 import json
 import os
 import signal
@@ -456,11 +457,13 @@ def test_a_clean_exit_that_leaves_an_orphan_is_cleaned_and_confirmed(tmp_path):
 
 
 def test_a_flooding_child_cannot_deadlock_the_supervisor(tmp_path):
-    """stdout goes to a file, not a pipe — 10 MB must complete, not jam."""
+    """10 MB must finish writing without a pipe deadlock, then exceed the read cap."""
     fake = write_fake(tmp_path, "flooder.py", FLOODER)
     proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                                  deadline=30.0, harness_timeout=60)
-    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert proc.returncode == 6
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert receipt["result"]["termination_confirmed"] is True
     assert Path(receipt["result"]["stdout_path"]).stat().st_size > 10_000_000
 
 
@@ -742,9 +745,8 @@ def test_a_post_spawn_crash_never_relabels_an_already_terminal_receipt(
     design doc DD-9 documents for the run/cancel race, now reachable from
     the crash path too (ITEM-V-4). The fix: both the normal tail (the test
     above) and this crash handler now go through the shared
-    `_commit_terminal` helper, so whichever terminal state is on disk right
-    before the final atomic write wins, no matter which of the two code
-    paths gets there last. Direct-state simulation stands in for an actual
+    `_commit_terminal` helper, so a matching conservative cancellation
+    on disk is preserved on both paths without trusting a disk success. Direct-state simulation stands in for an actual
     concurrent `cancel`, exactly as the test above does for the normal
     tail — the preservation check reads whatever state is on disk, not who
     wrote it."""
@@ -843,6 +845,11 @@ def _fake_receipt(tmp_path, attempt_id, seat, state, output_schema="review",
         "model_id": model_id,
         "decision_fingerprint": decision_fingerprint,
     }
+    stdout = b"verdict: PASS\nconfidence: 0.9\n"
+    (receipts / f"{attempt_id}.stdout").write_bytes(stdout)
+    payload["result"].update(exit_status=0, termination_confirmed=True,
+                             output_sha256=hashlib.sha256(stdout).hexdigest(), verdict="PASS")
+    payload["timing"] = {"started_at": "2026-09-06T00:00:00Z", "finished_at": "2026-09-06T00:00:01Z"}
     if schema_valid is not None:
         payload["result"]["schema_valid"] = schema_valid
     (receipts / f"{attempt_id}.json").write_text(json.dumps(payload))
@@ -2473,8 +2480,8 @@ def test_termination_unconfirmed_is_not_relabeled_by_evidence_collection(tmp_pat
     Only the NON-relabeling half is asserted here, and deliberately so: a
     genuine in-process TERMINATION_UNCONFIRMED needs a process group that
     survives SIGKILL, which no test can arrange without becoming a race, and
-    the pre-planted route used below is preserved verbatim by
-    `_commit_terminal` (so it can never show what the supervisor collected).
+    the pre-planted unconfirmed outcome below is preserved by
+    `_commit_terminal`, while other evidence remains supervisor-owned.
     Persistence is covered by the TIMED_OUT test above, which reaches the
     same unconditional tail through the same branch.
     """
@@ -2845,6 +2852,12 @@ def _xai_receipt(tmp_path, attempt_id, seat, *, transport_id="claude_code.to_xai
             "session_id": SESSION_UUID, "created_at": "2026-08-25T08:50:40.219543Z",
             "terminal_event": {"outcome": "completed",
                                "cancellation_category": None}}
+    stdout = (json.dumps(grok_doc(stop_reason=envelope)).encode()
+              if envelope is not None else b"verdict: PASS\nconfidence: 0.9\n")
+    (receipts / f"{attempt_id}.stdout").write_bytes(stdout)
+    payload["result"].update(exit_status=0, termination_confirmed=True,
+                             output_sha256=hashlib.sha256(stdout).hexdigest(), verdict="PASS")
+    payload["timing"] = {"started_at": "2026-09-06T00:00:00Z", "finished_at": "2026-09-06T00:00:01Z"}
     (receipts / f"{attempt_id}.json").write_text(json.dumps(payload))
 
 
@@ -3663,10 +3676,10 @@ def test_a_quoted_verdict_block_the_seat_never_answered_is_not_recovered(tmp_pat
     fake = write_fake(tmp_path, "quoted.py", envelope_fake(grok_doc(text=quoted)))
     proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
                                  extra=ENVELOPE_ARGS)
-    # The quoted block IS line-anchored, so the primary grammar takes it. What
-    # this pins is that the recovery adds nothing here — the value comes from a
-    # real verdict line, and `verdict_recovered` stays false.
-    assert receipt["result"]["verdict"] == "PASS_WITH_CHANGES"
+    # A historical anchored block is not a final answer. With no explicit
+    # final-section marker or leading verdict, reject rather than adopt it.
+    assert proc.returncode == 6
+    assert receipt["result"]["verdict"] is None
     assert receipt["result"]["verdict_recovered"] is False
 
 
@@ -3717,6 +3730,7 @@ def test_a_grok_document_read_as_the_claude_format_fails_closed(tmp_path):
     assert receipt["result"]["state"] == "INVALID_OUTPUT"
     assert receipt["result"]["invalid_reasons"] == [
         "envelope_document_type:<absent>", "envelope_subtype:<absent>",
+        "envelope_invalid_error_discriminator",
         "envelope_stop_reason:<absent>"]
 
 

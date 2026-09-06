@@ -809,6 +809,25 @@ comes from"). For seats dispatched from a route, bind the decision as well —
 --expect-models <route review.reviewer_models, comma-separated>` — since without those two the
 check cannot tell this decision's receipts from any other completed review's.
 
+**Receipt storage is a trust boundary.** Keep the receipt directory outside
+the child's enforced write authority. Mode `0700` excludes other UIDs; it
+does not isolate a child with the same UID. The supervisor's in-memory result
+owns completion. A disk `SUCCEEDED` cannot override its observed failure;
+only a matching conservative cancellation may affect finalization, and it
+cannot turn unconfirmed termination into confirmed termination. The existing
+read/replace race between cooperating terminal writers remains; this change
+does not claim atomic cancellation reconciliation or filesystem authentication.
+
+`status`, `cancel`, and `verify-evidence` check any claimed success for an
+absent claim sentinel, integer exit status zero, confirmed termination, valid
+schema, completion timing, and matching stdout digest. The same bounded bytes
+are decoded again to check the envelope and the recorded review verdict.
+`FAIL` is a completed review, not approval. Incomplete or still-claimed
+success is refused (`status`/`cancel` exit 2; evidence verification exit 1), so
+retry status after publication completes. Older incomplete synthetic receipts
+must be regenerated. These consistency checks cannot authenticate arbitrary
+post-completion edits when the child can write the entire evidence store.
+
 ### Output is a contract
 
 `--output-schema review` requires a parseable `verdict:` line. Exit 0 with
@@ -819,6 +838,12 @@ truncated `PASS` after a timeout kill is `TIMED_OUT`, never `INVALID_OUTPUT`
 produce a parseable verdict. Either way the review "did not run" —
 re-dispatch it per `review-policy.md` ("A seat that returns no verdict");
 never grade its fragments.
+
+Stdout and stderr must be new paths: a pre-existing regular file, FIFO,
+symlink, or hardlink causes `START_FAILED` without spawning or truncation.
+Plain stdout and receipt reads, like envelope reads, are bounded to 4 MiB and
+refuse symlinks and nonregular files without blocking. Oversized or unreadable
+plain stdout is invalid output; a nonregular receipt is not completion proof.
 
 **The envelope is a contract too, and it is graded first.** With
 `--output-envelope grok-headless-json-v1` declared, stdout must be one JSON
@@ -840,6 +865,7 @@ discriminator is `subtype` on a document whose `type` is always `result`. All
 three are graded, not merely recorded: a document is a finished turn only when
 `type` is `result`, `subtype` is `success`, and `is_error` is false, so a
 mis-declared or foreign object fails closed instead of passing on null fields.
+Missing or non-boolean `is_error` is invalid; only literal false can pass.
 `is_error` outranks the finishing reason — a turn can end `end_turn` and still
 declare it failed — and every reason that applies is reported, because the stop
 reason is what tells a recipe defect from a model failure.
@@ -866,7 +892,7 @@ can join the model's progress notes to its final answer with no newline
 between them, so the line-anchored grammar reports nothing on a turn that
 produced a verdict and the seat is re-dispatched over a formatting artifact.
 
-Two rules, on **both** the envelope and the plain-stdout path — the canonical
+The same rules apply to **both** the envelope and the plain-stdout path — the canonical
 reviewer recipe declares no envelope, so a net that covered only one would
 miss the seat most reviews actually use.
 
@@ -875,11 +901,20 @@ miss the seat most reviews actually use.
   including at line start, where it was accepted for as long as the grammar
   existed. A seat that echoed the instructions and reviewed nothing does not
   grade as having reviewed.
-- Failing an anchored verdict, the LAST unanchored one counts, but only if the
-  schema's second field is on the very next line and in range. Adjacency is the
-  predicate: an unbounded search for `confidence:` anywhere later accepts a
-  document that quoted someone else's verdict block and then said nothing of
-  its own, and `confidence: 1.9` is not a confidence.
+- Prefer an explicit final section: put `=== REVIEW ===` on its own line,
+  followed by the final `verdict:`. Only the last such section is parsed;
+  earlier progress notes or historical verdicts cannot determine its result.
+  The marker may be concatenated to Grok's preceding narration; the newline
+  after it must remain. Put a blank line after quoted paragraphs before the
+  final section.
+- Markdown fenced code and blockquotes cannot supply a verdict. The final
+  section must have exactly one verdict; conflicting or repeated verdicts are
+  invalid. A verdict token followed by other prose on the same line is invalid.
+- Without a final marker, accept a leading verdict. An anchored verdict buried
+  after historical prose is refused. The existing run-in recovery remains for
+  exactly one unanchored verdict with an adjacent in-range `confidence:` line;
+  it is a formatting repair, not semantic proof that the surrounding prose is
+  a review. Use the explicit marker to remove that legacy ambiguity.
 
 The receipt records both the `verdict` it parsed and whether it was
 `verdict_recovered`, and `verify-evidence` prints a note for a recovered one.

@@ -98,9 +98,9 @@ EXIT_BY_STATE = {
     "TERMINATION_UNCONFIRMED": 5, "INVALID_OUTPUT": 6, "CANCELLED": 7,
 }
 
-VERDICT_RE = re.compile(r"^verdict:\s*(PASS_WITH_CHANGES|PASS|FAIL)\b", re.M)
-# The same grammar unanchored. Used ONLY by the recovery in `_verdict_of`.
-VERDICT_ANYWHERE_RE = re.compile(r"verdict:\s*(PASS_WITH_CHANGES|PASS|FAIL)\b")
+# Candidate tokens are confined to one line; `_verdict_of` then validates
+# whether they belong to the final section or the supported run-in recovery.
+VERDICT_ANYWHERE_RE = re.compile(r"verdict:[ \t]*(PASS_WITH_CHANGES|PASS|FAIL)\b")
 # The schema's second field, on the line immediately after the verdict, and in
 # range. `confidence: 1.9` is not a confidence, and a `confidence:` paragraphs
 # away is not this verdict's.
@@ -245,6 +245,7 @@ INVALID_REASON_FLAGS = (
     "session_evidence_unbound",     # evidence belongs to some other attempt
     "sandbox_event_missing",        # --expect-sandbox-enforced, no ProfileApplied
     "envelope_reported_error",      # the document says so itself (is_error)
+    "envelope_invalid_error_discriminator",  # Claude requires a boolean is_error
 )
 INVALID_REASON_PREFIXES = (
     "envelope_stop_reason",         # :<the non-end_turn value>
@@ -525,7 +526,12 @@ def write_receipt(receipt_dir: Path, receipt: dict) -> None:
 
 
 def read_receipt(receipt_dir: Path, attempt_id: str) -> dict:
-    return json.loads(_receipt_path(receipt_dir, attempt_id).read_text())
+    fd, _ = _open_regular(_receipt_path(receipt_dir, attempt_id))
+    with os.fdopen(fd, "rb") as f:
+        data = f.read(ENVELOPE_MAX_BYTES + 1)
+    if len(data) > ENVELOPE_MAX_BYTES:
+        raise OSError(errno.EFBIG, "receipt exceeds read limit")
+    return json.loads(data)
 
 
 def _group_alive(pgid: int) -> bool:
@@ -579,8 +585,8 @@ def _validate_output(stdout_path: Path,
     has to re-parse the stdout file to learn what the seat said is one grammar
     change away from disagreeing with the receipt.
     """
-    data = stdout_path.read_bytes()
-    if not data.strip():
+    data, _ = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    if data is None or not data.strip():
         return False, None, None, False
     digest = hashlib.sha256(data).hexdigest()
     if output_schema != "review":
@@ -1359,11 +1365,16 @@ def _read_envelope(stdout_path: Path, fmt: str) -> dict:
     channel (`evidence_oversized` / `envelope_unreadable`) so a caller can
     tell an over-budget stdout from a merely malformed one.
     """
+    data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    return _decode_envelope(data, fmt, oversized=oversized)
+
+
+def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -> dict:
+    """Decode the exact bytes also used for a success reader's digest check."""
     envelope = {"parse_ok": False, "stop_reason": None, "session_id": None,
                 "served_models": None, "text": None, "error_type": None,
                 "usage": None, "reported_error": False,
                 "doc_type": None, "fmt": fmt}
-    data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
     if oversized:
         envelope["error_type"] = "evidence_oversized"
         return envelope
@@ -1372,7 +1383,7 @@ def _read_envelope(stdout_path: Path, fmt: str) -> dict:
         return envelope
     try:
         doc = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return envelope
     if not isinstance(doc, dict):
         # A bare array or scalar parses as JSON but is not an envelope.
@@ -1386,6 +1397,7 @@ def _read_envelope(stdout_path: Path, fmt: str) -> dict:
     # whatever its finishing reason says; `is_error` is Claude's channel for
     # that and absent from grok's, where `error_type` already carries it.
     envelope["reported_error"] = doc.get("is_error") is True
+    envelope["error_discriminator_valid"] = type(doc.get("is_error")) is bool
     doc_type = doc.get("type")
     if isinstance(doc_type, str):
         envelope["doc_type"] = doc_type
@@ -1434,6 +1446,8 @@ def _grade_envelope(envelope: dict) -> list[str]:
                                    envelope["doc_type"]))
         if envelope["error_type"] != CLAUDE_OK_SUBTYPE:
             reasons.append(_reason("envelope_subtype", envelope["error_type"]))
+        if envelope.get("error_discriminator_valid") is not True:
+            reasons.append("envelope_invalid_error_discriminator")
     if envelope.get("reported_error"):
         reasons.append("envelope_reported_error")
     stop_reason = envelope["stop_reason"]
@@ -1456,34 +1470,60 @@ def _is_spec_echo(text: str, pos: int) -> bool:
 
 
 def _verdict_of(text: str) -> tuple[str | None, bool]:
-    """`(verdict, recovered)` for one seat's output under schema `review`.
+    """Parse a final review, refusing quoted or conflicting verdicts.
 
-    Measured 2026-09-02: a grok headless document's `text` can join the
-    model's progress notes to its final answer with no newline between them
-    (`...the plan expects.verdict: PASS_WITH_CHANGES\nconfidence: 0.86`), so
-    the line-anchored grammar reports no verdict on a turn that produced one
-    and the seat is re-dispatched over a formatting artifact.
-
-    The primary grammar is a line-anchored verdict that is not the format
-    spec. Failing that, ONE recovery: a headless format can join the model's
-    progress notes to its final answer with no newline between them (measured
-    2026-09-02 on this repo's own plan review), so the last unanchored verdict
-    counts if it is not the spec AND the schema's second field is on the very
-    next line, in range. Adjacency is the point: an unbounded search for
-    `confidence:` anywhere later accepts a document that quoted someone else's
-    verdict block and then said nothing of its own.
-
-    A recovery is never silent. The seat's output did need repair, and a
-    receipt that hid that would tell the next caller the recipe is fine.
+    An explicit final marker owns its section; earlier progress/history is
+    excluded. Otherwise accept a leading verdict, or the documented run-in
+    recovery with an adjacent confidence line. Markdown fences and blockquotes
+    are evidence quoted by the reviewer, never the reviewer's own verdict.
     """
-    text = text or ""
-    for match in VERDICT_RE.finditer(text):
-        if not _is_spec_echo(text, match.end()):
-            return match.group(1), False
-    candidates = [m for m in VERDICT_ANYWHERE_RE.finditer(text)
-                  if not _is_spec_echo(text, m.end())]
-    if candidates and CONFIDENCE_NEXT_LINE_RE.match(text, candidates[-1].end()):
-        return candidates[-1].group(1), True
+    lines = []
+    fence = None
+    quote = False
+    for line in (text or "").splitlines(keepends=True):
+        stripped = line.lstrip()
+        match = re.match(r"(`{3,}|~{3,})", stripped)
+        if fence is not None:
+            if (match and match[1][0] == fence[0] and len(match[1]) >= len(fence)
+                    and not stripped[match.end():].strip()):
+                fence = None
+            lines.append("\n")
+        elif quote:
+            # Markdown permits unmarked continuation lines in a quoted
+            # paragraph. Require a blank line before returning to prose.
+            if not stripped.strip():
+                quote = False
+            lines.append("\n")
+        elif stripped.startswith(">"):
+            quote = True
+            lines.append("\n")
+        elif match:
+            fence = match[1]
+            lines.append("\n")
+        else:
+            lines.append(line)
+    visible = "".join(lines)
+    # Grok can concatenate progress and the marker itself. Its trailing
+    # newline still separates the final answer from that progress.
+    markers = list(re.finditer(r"=== REVIEW ===[ \t]*\r?$", visible, re.M))
+    if markers:
+        visible = visible[markers[-1].end():]
+    visible = visible.strip()
+    candidates = [m for m in VERDICT_ANYWHERE_RE.finditer(visible)
+                  if not _is_spec_echo(visible, m.end())]
+    if len(candidates) != 1:
+        return None, False
+    match = candidates[0]
+    # A token embedded in a sentence is not an anchored verdict line.
+    line_end = visible.find("\n", match.end())
+    remainder = visible[match.end():line_end if line_end >= 0 else len(visible)]
+    if remainder.strip():
+        return None, False
+    anchored = match.start() == 0 or visible[match.start() - 1] == "\n"
+    if anchored:
+        return (match[1], False) if match.start() == 0 or markers else (None, False)
+    if CONFIDENCE_NEXT_LINE_RE.match(visible, match.end()):
+        return match[1], True
     return None, False
 
 
@@ -1568,47 +1608,116 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
     }
 
 
+def _success_evidence_problems(receipt_dir: Path, receipt: dict, attempt_id: str) -> list[str]:
+    """Consistency checks, not authentication of child-writable storage.
+
+    Every public reader of SUCCEEDED applies the same minimum proof. A claim
+    means the supervisor has not published its final result yet. The expected
+    stdout path comes from the attempt id, never a path supplied by the file.
+    """
+    result = receipt.get("result")
+    if not isinstance(result, dict):
+        return ["result is not an object"]
+    problems = []
+    if receipt.get("attempt_id") != attempt_id:
+        problems.append("receipt attempt_id does not match the requested attempt")
+    if not isinstance(receipt.get("seat"), str) or not receipt["seat"].strip():
+        problems.append("seat is missing or invalid")
+    timing = receipt.get("timing")
+    if (not isinstance(timing, dict)
+            or any(not isinstance(timing.get(k), str) or not timing[k].strip()
+                   for k in ("started_at", "finished_at"))):
+        problems.append("completion timing is missing or invalid")
+    if os.path.lexists(receipt_dir / f"{attempt_id}.claim"):
+        problems.append("attempt is still claimed")
+    if type(result.get("exit_status")) is not int or result["exit_status"] != 0:
+        problems.append("exit_status is not integer zero")
+    if result.get("termination_confirmed") is not True:
+        problems.append("termination is not confirmed")
+    if result.get("schema_valid") is not True:
+        problems.append("schema_valid is not true")
+    if result.get("invalid_reasons"):
+        problems.append("success carries invalid reasons")
+    if receipt.get("output_schema") not in ("none", "review"):
+        problems.append("output_schema is missing or invalid")
+    data, _ = _capped_bytes(receipt_dir / f"{attempt_id}.stdout", ENVELOPE_MAX_BYTES)
+    digest = result.get("output_sha256")
+    if not isinstance(digest, str) or not HEX64_RE.fullmatch(digest):
+        problems.append("output digest is missing or malformed")
+    elif data is None or digest != hashlib.sha256(data).hexdigest():
+        problems.append("output digest does not match readable stdout")
+    if data is not None:
+        fmt = receipt.get("output_envelope")
+        text = data.decode(errors="replace")
+        if fmt is not None:
+            if not isinstance(fmt, str) or fmt not in ENVELOPE_FIELDS:
+                problems.append("unknown output envelope")
+                text = ""
+            else:
+                envelope = _decode_envelope(data, fmt)
+                if _grade_envelope(envelope):
+                    problems.append("stdout envelope is not valid completion")
+                text = envelope.get("text") or ""
+        elif not data.strip():
+            problems.append("plain stdout is empty")
+        if receipt.get("output_schema") == "review":
+            verdict, _ = _verdict_of(text)
+            if verdict is None or verdict != result.get("verdict"):
+                problems.append("review verdict does not match stdout")
+    return problems
+
+
+def _same_attempt_identity(local: dict, disk: dict) -> bool:
+    """Compare declarations and launch identity, including JSON value types."""
+    # Session/served-model observations can be collected after RUNNING. They
+    # are results, not dispatch identity; including them loses a real cancel
+    # whenever terminal evidence backfill fills a formerly-null field.
+    keys = set(local) - {"result", "timing", "session_evidence",
+                         "observed_model_id", "observed_model_source"}
+    if not keys <= set(disk):
+        return False
+    def identity(receipt):
+        return {
+            "declarations": {k: receipt[k] for k in keys},
+            "launch": {k: receipt["timing"][k] for k in
+                       ("started_at", "deadline_at", "launch_anchor_at")},
+            "output_paths": {k: receipt["result"][k] for k in
+                             ("stdout_path", "stderr_path")},
+        }
+    try:
+        return json.dumps(identity(local), sort_keys=True) == json.dumps(identity(disk), sort_keys=True)
+    except (KeyError, TypeError):
+        return False
+
+
 def _commit_terminal(receipt_dir: Path, receipt: dict, claim_path: Path) -> int:
-    """The single last-instant commit for a terminal receipt — shared by
-    `cmd_run`'s normal tail and its post-spawn `except Exception` handler,
-    so an external terminal write (typically `cancel`) is preserved no
-    matter which of the two paths reaches this attempt's last write. The
-    caller has already set `receipt["result"]["state"]` (and
-    `finished_at`) to its own conclusion before calling this.
+    """Publish the supervisor's result, preserving only conservative cancellation.
 
-    This re-read is the LAST action before the atomic replace below — as
-    close to the write as the language lets it get, to shrink (not
-    eliminate) the read-replace gap that design doc DD-9 documents as a
-    residual race. An external `cancel` (or, in principle, a second `run`
-    sharing this attempt-id) may have reached the receipt first with a
-    terminal state of its own; whichever terminal state is already on disk
-    wins — the caller's own conclusion (typically FAILED or CANCELLED)
-    never overwrites it. Preserve ANY state in EXIT_BY_STATE (every
-    terminal state this file knows), not only CANCELLED/
-    TERMINATION_UNCONFIRMED: a late overwrite of a cancelled or unconfirmed
-    attempt must not relabel it FAILED, SUCCEEDED, or anything else,
-    regardless of which of the two call sites (normal tail or crash
-    handler) is the one doing the overwriting.
-
-    The claim sentinel is unlinked in both branches: this `run` process is
-    the only holder of the claim either way, so it is the one that
-    releases it once ANY terminal state is confirmed on disk, whoever's
-    conclusion that terminal state is."""
+    A disk success is not authority over the exit status observed in memory.
+    Concurrent cancel can contribute CANCELLED/TERMINATION_UNCONFIRMED for the
+    same attempt and process, but cannot certify a termination we could not
+    confirm. Never copy identity or result evidence back from writable storage.
+    This is not filesystem isolation: callers must deny the child write access
+    to the receipt directory before using stored evidence as trusted authority.
+    """
     try:
         on_disk = read_receipt(receipt_dir, receipt["attempt_id"])
-        on_disk_state = on_disk["result"]["state"]
-        if on_disk_state in EXIT_BY_STATE:
-            # Someone else (typically `cancel`, racing this same attempt)
-            # already landed a terminal state — this `run` is the only
-            # holder of the claim sentinel either way, so it is the one
-            # that removes it once ANY terminal state is confirmed on
-            # disk, whoever's conclusion that terminal state is.
-            claim_path.unlink(missing_ok=True)
-            return EXIT_BY_STATE[on_disk_state]
-    except (OSError, json.JSONDecodeError):
+        same_attempt = _same_attempt_identity(receipt, on_disk)
+        disk_result = on_disk.get("result", {})
+        disk_state = disk_result.get("state")
+        if (same_attempt and disk_state == "TERMINATION_UNCONFIRMED"
+                and disk_result.get("termination_confirmed") is False):
+            receipt["result"].update(state=disk_state, termination_confirmed=False)
+        elif (same_attempt and disk_state == "CANCELLED"
+              and disk_result.get("termination_confirmed") is True
+              and receipt["result"].get("termination_confirmed") is True):
+            receipt["result"]["state"] = "CANCELLED"
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        # Missing, malformed, or replaced disk evidence cannot override the
+        # result this supervisor already observed.
         pass
     write_receipt(receipt_dir, receipt)
-    claim_path.unlink(missing_ok=True)  # receipt is terminal now
+    claim_path.unlink(missing_ok=True)
     return EXIT_BY_STATE[receipt["result"]["state"]]
 
 
@@ -1871,14 +1980,9 @@ def _run_attempt(args, pins: list[dict]) -> int:
         stdin_f = open(prompt_path, "rb")
 
     receipt_dir = Path(args.receipt_dir)
-    # 0o700: supervisor-owned, no other principal can read, write, or place
-    # anything inside it. This is the out-of-band mitigation for the residual
-    # O_TRUNC-on-hardlink risk noted at the stdout/stderr opens below —
-    # O_NOFOLLOW refuses a symlink hop, but a hardlink is not a symlink and
-    # still resolves to the external file's own inode, so O_TRUNC through it
-    # still truncates that file. A 0700 directory this process exclusively
-    # owns is what keeps anything else from placing a hardlink in here to
-    # begin with.
+    # 0700 excludes other UIDs, not a child running under this same UID.
+    # Trusted deployments must deny the child write access to this directory;
+    # path placement and permission-mode declarations alone do not enforce it.
     receipt_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     receipt_path = _receipt_path(receipt_dir, args.attempt_id)
     claim_path = receipt_dir / f"{args.attempt_id}.claim"
@@ -1945,29 +2049,18 @@ def _run_attempt(args, pins: list[dict]) -> int:
     deadline_monotonic = time.monotonic() + args.deadline_seconds
     write_receipt(receipt_dir, receipt)
 
-    # stdout/stderr open without following a symlink: a regular open() that
-    # follows one would let a symlink prepared at either path (by whatever
-    # placed the prompt/receipt directory) truncate an arbitrary external
-    # file this process can write to. O_NOFOLLOW refuses instead of
-    # following.
-    #
-    # Residual risk O_NOFOLLOW does NOT close: a hardlink is not a symlink,
-    # so O_NOFOLLOW does not refuse one — a hardlink at either path still
-    # resolves straight to the external file's own inode, and O_TRUNC
-    # through it still truncates that file. Nothing in this open() call can
-    # tell a hardlink from an ordinary regular file. The mitigation is the
-    # out-of-band 0700 mode receipt_dir was created with above: nothing but
-    # this supervisor can place anything — symlink or hardlink — inside a
-    # directory it exclusively owns.
+    # Attempt output files are new objects. O_EXCL refuses every pre-existing
+    # path (including FIFO, symlink and hardlink) without opening or truncating
+    # it. This does not depend on 0700 providing same-UID process isolation.
     stdout_fd = None
     try:
         try:
             stdout_fd = os.open(
                 stdout_path,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             stderr_fd = os.open(
                 stderr_path,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         except OSError as exc:
             # Either open can fail (ELOOP on a planted symlink, a
             # permission failure, ENOSPC, ...). This arm must exist for the
@@ -2132,7 +2225,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                                 # grammar applies to the envelope's `text`,
                                 # not to the raw JSON document carrying it —
                                 # the document's own bytes never match
-                                # VERDICT_RE at line start. An empty `text`
+                                # the verdict-line grammar. An empty `text`
                                 # is fine under schema `none`: DD-2's
                                 # artifact contract, not stdout length, is
                                 # what proves that seat finished.
@@ -2230,7 +2323,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 # child is already reaped on this happy path. STARTING /
                 # start-failed writes above stay strict. Both this tail
                 # and the crash handler commit through `_commit_terminal`
-                # so an already-terminal on-disk state is never relabeled.
+                # so only matching conservative cancellation can affect the result.
                 try:
                     return _commit_terminal(receipt_dir, receipt, claim_path)
                 except OSError:
@@ -2324,6 +2417,11 @@ def cmd_status(args) -> int:
               f"— no receipt and no claim", file=sys.stderr)
         return 2
     state = receipt["result"]["state"]
+    if state == "SUCCEEDED":
+        problems = _success_evidence_problems(receipt_dir, receipt, args.attempt_id)
+        if problems:
+            print("invalid completion receipt: " + "; ".join(problems), file=sys.stderr)
+            return 2
     if state in ("STARTING", "RUNNING"):
         pgid = receipt["process"]["process_group_id"]
         # RUNNING with a dead group means the supervising `run` died before
@@ -2408,6 +2506,11 @@ def cmd_cancel(args) -> int:
               f"— no receipt and no claim", file=sys.stderr)
         return 2
     state = receipt["result"]["state"]
+    if state == "SUCCEEDED":
+        problems = _success_evidence_problems(receipt_dir, receipt, args.attempt_id)
+        if problems:
+            print("invalid completion receipt: " + "; ".join(problems), file=sys.stderr)
+            return 2
     if state not in ("STARTING", "RUNNING"):
         # A terminal state is already someone's final word — refuse without
         # touching the receipt.
@@ -2535,6 +2638,9 @@ def cmd_verify_evidence(args) -> int:
                 problems.append(f"{attempt_id}: no readable receipt")
             continue
         state = receipt["result"]["state"]
+        if state == "SUCCEEDED":
+            problems.extend(f"{attempt_id}: {reason}" for reason in
+                            _success_evidence_problems(receipt_dir, receipt, attempt_id))
         if state != "SUCCEEDED":
             problems.append(f"{attempt_id}: state is {state}, not SUCCEEDED")
         if receipt.get("output_schema") != "review":
