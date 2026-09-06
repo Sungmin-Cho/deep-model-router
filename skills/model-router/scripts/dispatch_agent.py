@@ -89,6 +89,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import receipt_guard
+
 STATES = (
     "STARTING", "RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT",
     "CANCELLED", "START_FAILED", "TERMINATION_UNCONFIRMED", "INVALID_OUTPUT",
@@ -250,6 +252,8 @@ EVENTS_TAIL_BYTES = 256 * 1024
 # prefix, so the vocabulary cannot drift by someone f-stringing a new one
 # in at a call site.
 INVALID_REASON_FLAGS = (
+    "receipt_guard_unavailable",   # requested guard could not be admitted
+    "deadline_expired_before_launch",  # target was never started
     "envelope_unparseable",         # stdout was not one JSON object
     "evidence_oversized",           # a gate surface exceeded its budget
     "schema_invalid",               # --output-schema was not satisfied
@@ -1570,6 +1574,8 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         "observed_model_id": None,
         "observed_model_source": "unavailable",
         "argv": args.argv,
+        "receipt_guard": (None if getattr(args, "receipt_guard", "none") == "none" else
+                          {"mechanism": args.receipt_guard, "phase": "requested"}),
         "prompt_sha256": None,
         "output_schema": args.output_schema,
         # DD-1: the DECLARED envelope contract, null when none was
@@ -2100,7 +2106,18 @@ def _run_attempt(args, pins: list[dict]) -> int:
     # 0700 excludes other UIDs, not a child running under this same UID.
     # Trusted deployments must deny the child write access to this directory;
     # path placement and permission-mode declarations alone do not enforce it.
-    receipt_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        if getattr(args, "receipt_guard", "none") != "none" and receipt_dir.is_symlink():
+            raise receipt_guard.GuardError("guarded receipt root must not be a final symlink")
+        receipt_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if getattr(args, "receipt_guard", "none") != "none":
+            receipt_dir = (receipt_guard.canonical_directory(receipt_dir) if sys.platform == "darwin"
+                           else receipt_dir.resolve())
+    except (OSError, receipt_guard.GuardError) as exc:
+        if stdin_f is not subprocess.DEVNULL:
+            stdin_f.close()
+        print(f"invalid receipt root: {exc}", file=sys.stderr)
+        return 2
     receipt_path = _receipt_path(receipt_dir, args.attempt_id)
     claim_path = receipt_dir / f"{args.attempt_id}.claim"
     # Exclusive attempt creation is one atomic O_CREAT|O_EXCL claim on a
@@ -2210,18 +2227,43 @@ def _run_attempt(args, pins: list[dict]) -> int:
             # has already returned — a bound stamped after the event it is
             # supposed to precede is not a bound. Kept untruncated for the
             # comparison; the receipt shows the human-readable form.
+            launch_argv = args.argv
+            if getattr(args, "receipt_guard", "none") != "none":
+                try:
+                    remaining = deadline_monotonic - time.monotonic()
+                    if remaining <= 0:
+                        raise receipt_guard.GuardError("deadline expired before guard preparation")
+                    if stdin_f is not subprocess.DEVNULL:
+                        receipt_guard.reject_protected_input(receipt_dir, stdin_f.fileno())
+                    prefix, metadata = receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(), remaining)
+                    if time.monotonic() >= deadline_monotonic:
+                        raise receipt_guard.GuardError("deadline expired during guard preparation")
+                except (OSError, receipt_guard.GuardError) as exc:
+                    receipt["result"]["state"] = "START_FAILED"
+                    receipt["result"]["invalid_reasons"] = ["receipt_guard_unavailable"]
+                    receipt["timing"]["finished_at"] = _utcnow()
+                    print(f"receipt guard unavailable: {exc}", file=sys.stderr)
+                    return _commit_terminal(receipt_dir, receipt, claim_path)
+                receipt["receipt_guard"] = metadata
+                starting_snapshot = copy.deepcopy(receipt)
+                with _terminal_lock(receipt_dir, args.attempt_id):
+                    write_receipt(receipt_dir, receipt)
+                launch_argv = [*prefix, *args.argv]
             launch_anchor = time.time()
             try:
                 popen_kw = dict(
                     stdin=stdin_f, stdout=out_f, stderr=err_f,
-                    start_new_session=True)  # child leads its own group
+                    start_new_session=True, close_fds=True)  # only declared stdio is inherited
                 if args.child_cwd is not None:
                     popen_kw["cwd"] = args.child_cwd
                 if args.grok_home is not None:
                     child_env = os.environ.copy()
                     child_env["GROK_HOME"] = args.grok_home
                     popen_kw["env"] = child_env
-                proc = subprocess.Popen(args.argv, **popen_kw)
+                if time.monotonic() >= deadline_monotonic:
+                    receipt["result"]["invalid_reasons"] = ["deadline_expired_before_launch"]
+                    raise OSError(errno.ETIMEDOUT, "deadline expired before target launch")
+                proc = subprocess.Popen(launch_argv, **popen_kw)
             except OSError as exc:
                 receipt["result"]["state"] = "START_FAILED"
                 receipt["timing"]["finished_at"] = _utcnow()
@@ -2243,6 +2285,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
             # (below, `except Exception`).
             running_published = False
             try:
+                if receipt.get("receipt_guard") is not None:
+                    receipt["receipt_guard"]["phase"] = "launched"
                 receipt["process"] = {"pid": proc.pid, "process_group_id": pgid,
                                       "supervisor_pid": os.getpid()}
                 receipt["timing"]["started_at"] = _utcnow()
@@ -2747,6 +2791,9 @@ def cmd_verify_evidence(args) -> int:
             else:
                 problems.append(f"{attempt_id}: no readable receipt")
             continue
+        if getattr(args, "require_receipt_guard", False) and not receipt_guard.verified_metadata(
+                receipt.get("receipt_guard"), receipt_dir, attempt_id):
+            problems.append(f"{attempt_id}: receipt guard is missing or invalid")
         state = receipt["result"]["state"]
         if state == "SUCCEEDED":
             problems.extend(f"{attempt_id}: {reason}" for reason in
@@ -2842,6 +2889,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="supervise one attempt to a terminal state")
     run.add_argument("--attempt-id", required=True)
     run.add_argument("--receipt-dir", required=True)
+    run.add_argument("--receipt-guard", choices=["none", receipt_guard.GUARD_NAME], default="none",
+                     help="explicit kernel protection for this child's receipt store; no silent fallback")
     run.add_argument("--deadline-seconds", type=float, required=True)
     run.add_argument("--grace-seconds", type=float, default=15.0)
     run.add_argument("--seat", required=True,
@@ -2956,6 +3005,8 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-evidence",
         help="check ids against receipts before --isolation-evidence")
     verify.add_argument("--receipt-dir", required=True)
+    verify.add_argument("--require-receipt-guard", action="store_true",
+                        help="require a matching launched Darwin receipt-guard recipe")
     verify.add_argument("--ids", required=True,
                         help="comma-separated attempt ids")
     verify.add_argument("--expect-count", type=int, required=True,

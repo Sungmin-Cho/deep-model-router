@@ -1087,3 +1087,53 @@ A post-spawn crash still cleans up the group and exits9 unless termination
 is unconfirmed, which always retains exit5; if RUNNING was never
 published, only the supervisor's privately retained exact STARTING snapshot
 can authorize publishing that launch's cleanup result.
+
+
+### Darwin receipt-store guard
+
+When stored receipts will be promoted to trusted completion evidence on macOS,
+run with `--receipt-guard darwin-sandbox-v1` and verify with
+`verify-evidence --require-receipt-guard`. The default `none` preserves existing
+cross-platform launches and makes no receipt-store protection claim. A requested
+but unavailable guard is `START_FAILED`; it never silently launches unprotected.
+
+Before claiming an attempt, the supervisor pins the receipt directory to its
+`F_GETPATH` kernel path; all later lock, polling, output, and publication paths
+use it. A final symlink root is rejected. Orchestrators should retain a canonical
+store path rather than a mutable alias. After creating output files, the
+supervisor obtains their kernel paths and passes paths as Seatbelt parameters, and probes an actual denied write
+before launching the target under that same policy. It denies receipt-root reads
+and writes, mutation of every canonical ancestor node, and all new hard links.
+Pre-existing store symlinks, special files, and multiply linked regular files
+are refused; use a fresh store if the bounded 10,000-entry inspection is exceeded.
+Only writes and metadata inspection of this attempt's stdout/stderr are allowed
+in the store. Metadata access lets Node initialize its write-only inherited
+streams; it does not permit reading stream data or opening the publication lock.
+A prompt descriptor into the protected store is refused; keep prompt files
+outside the receipt directory so inherited stdin cannot bypass read denial.
+Workspace reads/writes and normal Git add/commit remain available. Signals are
+limited to the same sandbox; privileged task ports, AppleEvents, and launchd job
+creation are denied. Descendants inherit the guard. Admission is checked again
+immediately before target launch; an expired deadline never starts the target.
+
+The receipt's `receipt_guard` is null when undeclared; otherwise it progresses
+through `requested`, `prepared`, and `launched`. A prepared/launched record binds
+`mechanism`, `profile_sha256`, and `protected_root` to the parameterized recipe.
+The verifier requires `launched` and recomputes that binding from current kernel
+paths. This checks recipe consistency; a self-described JSON file is not
+cryptographic authentication. Keep the receipt store under trusted supervisor
+control for its lifetime and apply the guard to every untrusted child that could
+reach it. Unrelated unsandboxed same-UID processes and external service deputies
+are outside this direct-process-tree boundary. This is not workspace containment or verifier/runtime integrity protection;
+use a trusted verifier installation/runtime that the child cannot alter (or
+validate its pinned integrity through a trusted controller before invoking it).
+Existing maker-seat sandbox and `--require-single-linked-cwd` obligations remain.
+
+Accepted cancellation optionally records `result.cancel_requested_at`; this
+control intent is owned by the supervisor/canceler, not the child output.
+
+Guard/prelaunch failures use the registered operational reasons
+`receipt_guard_unavailable` and `deadline_expired_before_launch` with
+`START_FAILED`. These are launch/admission failures, not model capability failures.
+Root validation errors before an attempt is claimed return invalid usage without
+creating an attempt receipt.
