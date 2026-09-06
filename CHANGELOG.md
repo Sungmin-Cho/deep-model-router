@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-09-07
+
 - Add opt-in, source-backed model diagnostics and dated API price quotes; refresh Sol promotional rates and cache-write axes. Publish 24 native diagnostic calls without claiming global optimality or changing routing defaults.
 
 - Add an explicit Darwin receipt guard with kernel-canonical paths, ancestor and hard-link protection, a live denial probe, and recipe-bound evidence verification.
