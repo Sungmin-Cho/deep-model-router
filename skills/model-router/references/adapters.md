@@ -105,6 +105,12 @@ VERY_HIGH: xhigh
 MAX:       max
 ```
 
+These are family defaults. Overlay a resolved model's `effort_map` from the
+registry before dispatch (or use `Policy.native_effort(model, effort)`). The
+OpenAI frontier maps `MINIMAL` upward to `low` because it cannot disable
+reasoning. Apply this after the model's effort ceiling, including when the
+model fills a fallback role; use `selected_effort_native` for the worker.
+
 Set it with `-c model_reasoning_effort=<value>`.
 
 ### xai family
@@ -897,9 +903,9 @@ never fails it.
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
 | `worker_balanced` (xai) | `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
-| `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect` |
-| `reasoning_specialist` (openai) | `claude_senior`, then `claude_architect` |
-| `principal_architect` (claude) | `claude_senior`, then `openai_reasoning` |
+| `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
+| `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
+| `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
 | Cross-family reviewer | Strongest available same-family reviewer; set `cross_family_review: false` |
 
 ### Codex runtime
@@ -908,9 +914,9 @@ never fails it.
 |---|---|
 | `worker_fast` (openai) | `openai_worker_balanced`, then `claude_worker_fast` |
 | `worker_balanced` (xai) | `claude_worker_balanced`, then `openai_worker_balanced`, then `openai_reasoning` |
-| `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior` |
-| `reasoning_specialist` (openai) | `openai_reasoning`, then `claude_senior` |
-| `principal_architect` (claude) | `openai_reasoning`, then `claude_architect` |
+| `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior`, then `openai_frontier` |
+| `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
+| `principal_architect` (claude) | `openai_frontier`, then `openai_reasoning`, then `claude_architect` |
 | Cross-family reviewer | Strongest available same-family reviewer; set `cross_family_review: false` |
 
 ### grok runtime
@@ -919,9 +925,9 @@ never fails it.
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `openai_worker_balanced` |
 | `worker_balanced` (xai) | `claude_worker_balanced`, then `openai_worker_balanced` |
-| `senior_engineer` (claude) | `claude_senior`, then `openai_reasoning` |
-| `reasoning_specialist` (openai) | `openai_reasoning`, then `claude_senior` |
-| `principal_architect` (claude) | `claude_architect`, then `claude_senior` |
+| `senior_engineer` (claude) | `claude_senior`, then `openai_reasoning`, then `openai_frontier` |
+| `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
+| `principal_architect` (claude) | `openai_frontier`, then `claude_architect`, then `claude_senior` |
 | Cross-family reviewer | Strongest available same-family reviewer; set `cross_family_review: false` |
 
 **Write-capable xai on Claude Code only.** `claude_code.to_xai` ships
@@ -985,8 +991,8 @@ openai_only:
   worker_fast:          openai_worker_fast
   worker_balanced:      openai_worker_balanced
   senior_engineer:      openai_reasoning
-  reasoning_specialist: openai_reasoning
-  principal_architect:  openai_reasoning       # at MAX effort + second review
+  reasoning_specialist: openai_frontier
+  principal_architect:  openai_frontier
 
 xai_only:
   worker_fast:          xai_frontier
@@ -996,11 +1002,13 @@ xai_only:
   principal_architect:  xai_frontier          # at VERY_HIGH; the model's ceiling
 ```
 
-`claude_only` and `openai_only` collapse the two frontier roles onto one model,
-so dual review loses family diversity — set `cross_family_review: false` and
-weigh the second verdict accordingly. They still have enough distinct models
-to seat independent reviewers, so a band that requires independence stays
-executable (at reduced depth under `openai_only`).
+Both single-provider bindings lose family diversity — set
+`cross_family_review: false` and weigh the second verdict accordingly.
+`claude_only` shares a model between senior and reasoning roles;
+`openai_only` now has separate tier-2 senior and tier-3 frontier models.
+Each has enough distinct models to seat two reviewers for a balanced worker,
+but stronger workers and unavailable models can still reduce review depth or
+leave no judge. Inspect the emitted shortfall and confirmation fields.
 
 `xai_only` is not that pattern. One model fills every role, so any band that
 requires independent review is `INDEPENDENCE_UNAVAILABLE` — terminal, not

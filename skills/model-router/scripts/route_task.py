@@ -390,6 +390,22 @@ class Policy:
                 f"{sorted(cfg['effort_map'])} but the registry holds "
                 f"{sorted(families)}")
 
+        # Model generations within one family need not accept the same native
+        # tokens. Merge once so fallback seats use their resolved model's map.
+        self.effort_map_of: dict[str, dict[str, str]] = {}
+        for key, model in cfg["models"].items():
+            overrides = model.get("effort_map", {})
+            if (not isinstance(overrides, Mapping)
+                    or set(overrides) - set(self.efforts)
+                    or any(not isinstance(v, str) or not v.strip()
+                           for v in overrides.values())):
+                raise ConfigError(
+                    f"models.{key}.effort_map must map known conceptual efforts "
+                    "to non-empty native effort strings")
+            self.effort_map_of[model["id"]] = {
+                **cfg["effort_map"][model["family"]], **overrides,
+            }
+
         # Strength, measured on the model rather than on the role holding it.
         # Every comparison that used `roles.index(...)` as a proxy for capability
         # was wrong the moment scarcity made a role resolve to something other
@@ -707,6 +723,11 @@ class Policy:
     def execution_band_of(self, score: int) -> str: return self._exec_band_of[score]
     def effort_max(self, a, b): return self.efforts[max(self.efforts.index(a), self.efforts.index(b))]
     def effort_up(self, e, n=1): return self.efforts[min(self.efforts.index(e) + n, len(self.efforts) - 1)]
+
+    def native_effort(self, model: str, effort: str) -> str:
+        """Spell effective conceptual effort for the resolved model."""
+        return self.effort_map_of[model][effort]
+
     def role_max(self, a, b): return self.roles[max(self.roles.index(a), self.roles.index(b))]
     def role_above(self, r, n=1): return self.roles[min(self.roles.index(r) + n, len(self.roles) - 1)]
     def at_ceiling(self, r): return self.roles.index(r) == len(self.roles) - 1
@@ -2997,7 +3018,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # false assurance.
             "selected_effort_effective": worker_effective if executable else None,
             "selected_effort_native": (
-                cfg["effort_map"][policy.family_of[resolved[worker]]][worker_effective]
+                policy.native_effort(resolved[worker], worker_effective)
                 if executable else None),
             "review": {
                 "band": review["band"],

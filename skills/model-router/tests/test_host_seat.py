@@ -389,9 +389,8 @@ def test_ia1_route_is_invariant_to_host_seat():
 
 
 def test_terminal_keeps_declared_and_is_path_precise():
-    roles = list(CFG["role_tiers"])
     t = _t(task_class="ARCHITECTURE", uncertainty=3,
-           unavailable_roles=roles)  # Supply-exhausted terminal.
+           unavailable_models=[m["id"] for m in CFG["models"].values()])  # Exhaust fallbacks too.
     t._host_seat = {"model": ID("claude_worker_balanced"), "effort": "HIGH"}
     out = route(t, CFG)
     assert out["terminal"] is not None
