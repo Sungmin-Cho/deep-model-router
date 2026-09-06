@@ -344,7 +344,11 @@ def _receipt_bytes(attempt_id="att-1", fingerprint="f" * 64, prompt=None, policy
         "decision_fingerprint": fingerprint,
         "prompt_sha256": prompt,
         "policy_sha256": policy,
-        "result": {"stdout_path": "stdout.txt"},
+        "seat": "worker", "runtime": "codex", "model_id": None,
+        "effort_native": None, "transport_id": None,
+        "result": {"stdout_path": "stdout.txt", "state": "SUCCEEDED",
+                   "exit_status": 0, "termination_confirmed": True,
+                   "schema_valid": True, "output_sha256": "e" * 64},
     }
     return json.dumps(body, separators=(",", ":")).encode("utf-8")
 

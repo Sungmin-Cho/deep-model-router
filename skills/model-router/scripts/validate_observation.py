@@ -51,6 +51,11 @@ STATES = frozenset({
     "succeeded", "failed", "timed_out", "cancelled",
     "in_progress", "blocked", "unknown",
 })
+DISPATCH_STATE_MAP = {
+    "SUCCEEDED": "succeeded", "FAILED": "failed", "TIMED_OUT": "timed_out",
+    "CANCELLED": "cancelled", "START_FAILED": "failed", "INVALID_OUTPUT": "failed",
+    "TERMINATION_UNCONFIRMED": "blocked", "STARTING": "in_progress", "RUNNING": "in_progress",
+}
 RUNTIMES = frozenset({"claude_code", "codex", "grok"})
 EVIDENCE_KINDS = frozenset({"dispatch_receipt", "producer_record", "none"})
 LINKAGES = frozenset({"full", "identity_only", "none"})
@@ -533,10 +538,13 @@ def _attempt(obj, seen_dispatch):
     _source_pair(obj["seat_source"], "seat_source")
     if obj["expected_model_id"] is not None:
         _identity(obj["expected_model_id"], "expected_model_id")
-    if obj["observed_model_id"] is not None:
-        raise ValidateError("I-OBS-MODEL: observed_model_id must be null")
-    if obj["observed_model_source"] != "unavailable":
-        raise ValidateError("I-OBS-MODEL: observed_model_source must be unavailable")
+    if obj["observed_model_id"] is None:
+        if obj["observed_model_source"] != "unavailable":
+            raise ValidateError("I-OBS-MODEL: null identity requires unavailable source")
+    else:
+        _identity(obj["observed_model_id"], "observed_model_id")
+        if kind != "dispatch_receipt" or obj["observed_model_source"] != "dispatch_envelope":
+            raise ValidateError("I-OBS-MODEL: observed identity requires a dispatch envelope receipt")
     if "observed_model_source_native" in obj and obj["observed_model_source_native"] is not None:
         _source_pair(obj["observed_model_source_native"], "observed_model_source_native")
     runtime = obj["runtime"]
@@ -703,8 +711,8 @@ def _artifact_digests(obj, provenance_paths):
             raise ValidateError("I-DIGEST: artifact_digests path not in provenance")
 
 
-def validate(document, root=None):
-    """Validate an in-memory RouteObservationV1 object."""
+def _validate_structure(document, root=None):
+    """Validate structure before optional file-backed semantic checks."""
     if not isinstance(document, dict):
         raise ValidateError("I-JSON: root is not an object")
     _canonical_size(document)
@@ -760,6 +768,18 @@ def validate(document, root=None):
         _review(payload["review_results"])
     if "final" in payload and payload["final"] is not None:
         _final(payload["final"], artifact_id)
+    return document
+
+
+def _require_no_unverified_model_claims(document):
+    if any(a["observed_model_id"] is not None for a in document["payload"]["attempts"]):
+        raise ValidateError("I-OBS-MODEL: observed identity requires --check-receipts")
+
+
+def validate(document, root=None):
+    """Validate an in-memory observation without claiming file-backed identity."""
+    _validate_structure(document, root)
+    _require_no_unverified_model_claims(document)
     return document
 
 
@@ -851,6 +871,67 @@ def _receipt_field(receipt, key):
     return None
 
 
+def _check_receipt_semantics(attempt, receipt, receipts_dir):
+    result = _expect_object(receipt.get("result"), "receipt.result")
+    state = result.get("state")
+    if not isinstance(state, str) or state not in DISPATCH_STATE_MAP:
+        raise ValidateError("I-RECEIPTS: unknown or missing native state")
+    if attempt["state"] != DISPATCH_STATE_MAP[state]:
+        raise ValidateError("I-RECEIPTS: observation state does not match receipt")
+    seat = receipt.get("seat")
+    if not isinstance(seat, str) or not seat.strip():
+        raise ValidateError("I-RECEIPTS: receipt seat is missing")
+    canonical_seat = ("reviewer" if re.fullmatch(r"reviewer-[1-9][0-9]*", seat) else
+                      seat if seat in SEATS else "other")
+    if attempt["seat"] != canonical_seat:
+        raise ValidateError("I-RECEIPTS: observation seat does not match receipt")
+    for observed, native in (("expected_model_id", "model_id"), ("effort_native", "effort_native"),
+                             ("runtime", "runtime"), ("transport_id", "transport_id")):
+        value = receipt.get(native)
+        if value is not None and not isinstance(value, str):
+            raise ValidateError(f"I-RECEIPTS: invalid receipt {native}")
+        if attempt[observed] is not None and attempt[observed] != value:
+            raise ValidateError(f"I-RECEIPTS: observation {observed} does not match receipt")
+
+    exit_status = result.get("exit_status")
+    if exit_status is not None and type(exit_status) is not int:
+        raise ValidateError("I-RECEIPTS: exit_status is not integer or null")
+    confirmed = result.get("termination_confirmed")
+    if state in ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED", "INVALID_OUTPUT"):
+        if confirmed is not True:
+            raise ValidateError("I-RECEIPTS: finished state lacks confirmed termination")
+    elif state == "TERMINATION_UNCONFIRMED" and confirmed is not False:
+        raise ValidateError("I-RECEIPTS: unconfirmed state has contradictory termination evidence")
+    if state == "FAILED" and (exit_status is None or exit_status == 0):
+        raise ValidateError("I-RECEIPTS: FAILED requires a nonzero exit")
+    if state in ("SUCCEEDED", "INVALID_OUTPUT") and exit_status != 0:
+        raise ValidateError("I-RECEIPTS: output-graded state requires exit zero")
+    if state == "SUCCEEDED":
+        if os.path.lexists(Path(receipts_dir) / f"{attempt['attempt_id']}.claim"):
+            raise ValidateError("I-RECEIPTS: success is not published yet")
+        if result.get("schema_valid") is not True or result.get("invalid_reasons"):
+            raise ValidateError("I-RECEIPTS: success contradicts output validation")
+        _hex64(result.get("output_sha256"), "receipt.output_sha256")
+        envelope = result.get("envelope")
+        fmt = receipt.get("output_envelope")
+        if envelope is not None or fmt is not None:
+            if (fmt not in ("claude-print-json-v1", "grok-headless-json-v1")
+                    or not isinstance(envelope, dict) or envelope.get("parse_ok") is not True
+                    or envelope.get("stop_reason") != "end_turn"
+                    or (fmt == "grok-headless-json-v1" and envelope.get("error_type") is not None)
+                    or (fmt == "claude-print-json-v1" and envelope.get("error_type") != "success")):
+                raise ValidateError("I-RECEIPTS: success contradicts its envelope")
+
+    if attempt["observed_model_id"] is not None:
+        envelope = result.get("envelope")
+        if (state != "SUCCEEDED" or receipt.get("output_envelope") not in (
+                "claude-print-json-v1", "grok-headless-json-v1")
+                or not isinstance(envelope, dict) or envelope.get("parse_ok") is not True
+                or envelope.get("stop_reason") != "end_turn"
+                or envelope.get("served_models") != [attempt["observed_model_id"]]):
+            raise ValidateError("I-OBS-MODEL: receipt does not uniquely attest the observed model")
+
+
 def _check_receipts(document, root, receipts_dir):
     payload = document["payload"]
     decision = payload["decision"]
@@ -895,6 +976,7 @@ def _check_receipts(document, root, receipts_dir):
                 obs_prompt = attempt.get("prompt_sha256")
                 if rec_prompt != obs_prompt:
                     raise ValidateError("I-RECEIPTS: prompt_sha256 mismatch")
+                _check_receipt_semantics(attempt, receipt, receipts_dir)
             finally:
                 os.close(fd2)
         finally:
@@ -903,11 +985,13 @@ def _check_receipts(document, root, receipts_dir):
 
 def validate_path(file_path: Path, root: Path, *, check_refs=False, check_receipts=None):
     document = _load(file_path)
-    validate(document, root=root)
+    _validate_structure(document, root=root)
     if check_refs:
         _check_refs(document, root)
     if check_receipts is not None:
         _check_receipts(document, root, check_receipts)
+    else:
+        _require_no_unverified_model_claims(document)
     return document
 
 
