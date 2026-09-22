@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-09-22
+
+### Added
+
+- Grok 4.6 stays valid as history input — `--prior-models`, `--unavailable-models`, `--host-model` — as a non-dispatchable registry row, so a control loop holding a pre-upgrade failure keeps working; it is never seated.
+
+### Changed
+
+- Bind the balanced worker seat to Grok 4.7, xAI's new default model. Model acceptance, the effort ceiling and the reviewer and maker seat recipes were probed on it; the published prices, the 200K whole-request tier and the 500K context window were re-read and are unchanged. Routing, bindings and `capability_tier` stay where they were.
+- Record the balanced seat's quality evidence as inherited rather than current: the head-to-head scores on file were measured on Grok 4.6 and were not re-run, so tier-1 fitness for this seat is now an assumption carried over, and the model profile and verification ledger say so.
+- Record dated provenance for the xAI rates. The seat still reports an unavailable reference quote, because xAI publishes no cache-write rate and inventing one would state a number as evidence.
+
+### Fixed
+
+- Grade the Grok sandbox attestation at every location the CLI writes it. Grok 1.0.40 moved that log, so a write-seat dispatch failed closed as unattested even when the sandbox was enforced, leaving the seat undispatchable; the supervisor now reserves and reads each known location, and the shipped maker recipe denies every location it reads.
+- Refuse a sandbox attestation the supervisor did not reserve. Replacing the reserved log with a file of the child's own previously graded as genuine, because only its link count was checked; the reservation is now held open and pinned by inode. A location that has gone missing, one that is not the reserved inode, and two locations that disagree are each refused with their own reason.
+- Refuse a symlink inside a maker seat's working directory before launch, as hard links already were. A path-scoped write rule cannot tell a second name from the file it names, which is the whole reason that audit exists.
+
 ## [1.14.0] — 2026-09-07
 
 - Add opt-in, source-backed model diagnostics and dated API price quotes; refresh Sol promotional rates and cache-write axes. Publish 24 native diagnostic calls without claiming global optimality or changing routing defaults.

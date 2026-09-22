@@ -260,6 +260,7 @@ INVALID_REASON_FLAGS = (
     "session_evidence_unreadable",  # declared, but summary.json is not there
     "session_evidence_unbound",     # evidence belongs to some other attempt
     "sandbox_event_missing",        # --expect-sandbox-enforced, no ProfileApplied
+    "sandbox_event_disagreement",   # two reserved locations, two different records
     "envelope_reported_error",      # the document says so itself (is_error)
     "envelope_invalid_error_discriminator",  # Claude requires a boolean is_error
 )
@@ -274,6 +275,8 @@ INVALID_REASON_PREFIXES = (
     "artifact_unchanged",           # :<path> — a prior attempt's leftover
     "artifact_multiply_linked",     # :<path> — a second name for the inode
     "artifact_identity_replaced",   # :<path> — not the inode pinned pre-spawn
+    "sandbox_event_identity_replaced",  # :<path> — the ProfileApplied log is
+                                    # not the inode reserved pre-spawn
     "artifact_reservation_cleanup_failed",  # :<path> — the supervisor's own
                                     # pre-spawn reservation is still on disk
                                     # because withdrawing it failed
@@ -294,6 +297,14 @@ assert set(ENVELOPE_FIELDS) == set(ENVELOPE_FORMATS), (
 
 MAKER_SEAT_PROFILE = "grok-maker-v1"
 MAKER_SANDBOX_PROFILE = "dmr-maker-v1"
+# Every `$GROK_HOME`-relative location a grok build has written its
+# ProfileApplied log to, current first. 1.0.40 moved it under `sessions/`;
+# 1.0.13 wrote it at the home root. All of them are reserved before spawn,
+# all of them are read at grading, and the shipped `mechanism_maker` denies
+# the child Write/Edit on each — a location that is read but not denied is a
+# forgery channel, so the two lists are the same list.
+SANDBOX_EVENT_RELPATHS = (("sessions", "sandbox-events.jsonl"),
+                          ("sandbox-events.jsonl",))
 MAKER_SEAT_REQUIRED = (
     ("--child-cwd", "child_cwd"),
     ("--require-single-linked-cwd", "require_single_linked_cwd"),
@@ -329,13 +340,20 @@ def _is_documented_reason(reason: str) -> bool:
 
 
 def _audit_single_linked_tree(root: Path) -> str | None:
-    """Refuse any regular file in `root` whose inode has more than one name.
+    """Refuse any second name for a file in `root` — hard link or symlink.
 
     Walks without following symlinks. Any stat error is a refusal: a tree
     we cannot inspect is not a tree we can claim is single-linked. This is
     the supervisor-side prevention for the grok maker hard-link escape —
     path-scoped Write/Edit and Seatbelt both see the inside path, so the
     only real prevention is not launching if a second name is already there.
+
+    A symlink is such a name and used to walk through: it is neither a
+    regular file nor a directory, so the loop below skipped it. Whether the
+    CLI's permission rules match an alias or its target is not something this
+    repository has measured, and the hard-link finding says a path-scoped
+    rule cannot tell the two apart. Refusing the alias does not need the
+    answer.
     """
     try:
         root_st = os.lstat(root)
@@ -357,6 +375,12 @@ def _audit_single_linked_tree(root: Path) -> str | None:
                     except OSError as exc:
                         return (f"--child-cwd contains an unreadable path "
                                 f"{entry.path}: {os.strerror(exc.errno)}")
+                    if stat.S_ISLNK(st.st_mode):
+                        return (f"--child-cwd {str(root)!r} contains the "
+                                f"symlink {entry.path}; a symlink is a second "
+                                f"name for a file outside the tree this audit "
+                                f"just walked, which the path-scoped write "
+                                f"rules cannot distinguish either")
                     if stat.S_ISREG(st.st_mode) and st.st_nlink != 1:
                         return (f"--child-cwd {str(root)!r} contains "
                                 f"{entry.path} with {st.st_nlink} links; "
@@ -372,8 +396,13 @@ def _audit_single_linked_tree(root: Path) -> str | None:
 
 
 def _prepare_grok_home(home: Path, auth_seed: Path | None,
-                       sandbox_profile: str | None) -> str | None:
-    """Create an attempt-private GROK_HOME. Never follows a symlink."""
+                       sandbox_profile: str | None,
+                       pins: dict) -> str | None:
+    """Create an attempt-private GROK_HOME. Never follows a symlink.
+
+    `pins` is filled with `{relpath_tuple: (st_dev, st_ino)}` for every
+    reserved ProfileApplied location, and is what grading compares against.
+    """
     if home.exists() or os.path.lexists(home):
         try:
             st = os.lstat(home)
@@ -415,35 +444,87 @@ def _prepare_grok_home(home: Path, auth_seed: Path | None,
         except OSError as exc:
             return (f"--grok-home sandbox.toml could not be written: "
                     f"{os.strerror(exc.errno)}")
-    events = home / "sandbox-events.jsonl"
-    try:
-        fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(fd)
-    except OSError as exc:
-        return (f"--grok-home sandbox-events.jsonl could not be reserved: "
-                f"{os.strerror(exc.errno)}")
+    for parts in SANDBOX_EVENT_RELPATHS:
+        events = home.joinpath(*parts)
+        try:
+            events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.set_inheritable(fd, False)
+            st = os.fstat(fd)
+        except OSError as exc:
+            return (f"--grok-home {'/'.join(parts)} could not be reserved: "
+                    f"{os.strerror(exc.errno)}")
+        # Pin the inode this supervisor created, the same way --require-artifact
+        # pins its reservations. Reserving a NAME only proves something is there
+        # at grading; a child that unlinks the reservation and writes a fresh
+        # file of its own gets a forged record read as the logger's. Measured on
+        # grok 1.0.40: the logger APPENDS to this inode (the reservation's 0600
+        # survives the run), so pinning costs nothing a real run needs.
+        #
+        # The descriptor is HELD, not closed, for the same reason the artifact
+        # pin holds one: an unlinked inode is freed, and a comparison against a
+        # bare (dev, ino) would rest on the filesystem never recycling that
+        # number. An open descriptor keeps the inode alive for the attempt, so
+        # a recycled number cannot be the reserved one. It is non-inheritable,
+        # so the child never sees it, and it goes back with the process.
+        pins[parts] = {"identity": (st.st_dev, st.st_ino), "fd": fd}
     return None
 
 
-def _grade_sandbox_events(home: Path, expected_profile: str
-                          ) -> tuple[dict, list[str]]:
-    """Read `$GROK_HOME/sandbox-events.jsonl` for ProfileApplied.enforced."""
-    path = home / "sandbox-events.jsonl"
-    view: dict = {"path": str(path), "enforced": None, "profile": None}
+def _last_profile_applied(path: Path, pin: tuple | None
+                          ) -> tuple[dict | None, str]:
+    """`(record, status)` for one reserved events file.
+
+    `status` is `"ok"` when the file is the reservation this supervisor made
+    and was read; `"absent"` when it is gone; `"untrusted"` when something is
+    there but is not that reservation — not a regular file, more than one link
+    to its inode, not the pinned (dev, ino), or an unreadable fd. Absence and
+    substitution are separate words because a caller triaging a failed write
+    seat has to tell a CLI that moved its log from a child that swapped it.
+
+    The identity check is the half that absence alone does not cover. Making
+    a missing reservation fail stopped a child from DELETING the record that
+    disagreed with it; without the pin it could unlink and recreate the same
+    name around a record of its own, and a fresh single-linked regular file
+    reads exactly like the logger's.
+
+    ABSENCE IS TAMPERING, not emptiness. The supervisor creates every
+    candidate location before spawn and nothing legitimate removes one, so a
+    path that is gone at grading was unlinked by the child. Reading it as an
+    empty file let a child suppress the location whose record disagreed and
+    keep the one that passed — the mismatch gate below cannot fire on a
+    record that is no longer there. A location grok never wrote is still
+    PRESENT — the supervisor's own empty reservation — which is the normal
+    one-writer case and not a failure.
+    """
+    # O_NOFOLLOW guards the final element only, and this log now lives one
+    # directory down. A `sessions` swapped for a symlink between reservation
+    # and grading would be followed silently, so the containing directory is
+    # checked in its own right before the file is opened. It runs for the
+    # root-level location too, where it checks $GROK_HOME itself: narrowing
+    # it to the nested path would be a special case earning nothing.
+    if path.parent != path.parent.parent:
+        try:
+            parent = os.lstat(path.parent)
+        except OSError:
+            return None, "untrusted"
+        if stat.S_ISLNK(parent.st_mode) or not stat.S_ISDIR(parent.st_mode):
+            return None, "untrusted"
     try:
         fd, st = _open_regular(path)
     except FileNotFoundError:
-        return view, ["sandbox_event_missing"]
+        return None, "absent"
     except (OSError, NotARegularFile):
-        return view, ["sandbox_event_missing"]
+        return None, "untrusted"
     try:
-        if st.st_nlink != 1:
+        if st.st_nlink != 1 or (pin is not None
+                                and (st.st_dev, st.st_ino) != pin):
             os.close(fd)
-            return view, ["sandbox_event_missing"]
+            return None, "untrusted"
         with os.fdopen(fd, "rb") as f:
             data = f.read()
     except OSError:
-        return view, ["sandbox_event_missing"]
+        return None, "untrusted"
     applied = None
     for line in data.split(b"\n"):
         line = line.strip()
@@ -455,11 +536,65 @@ def _grade_sandbox_events(home: Path, expected_profile: str
             continue
         if isinstance(obj, dict) and obj.get("event_type") == "ProfileApplied":
             applied = obj
-    if applied is None:
+    return applied, "ok"
+
+
+def _grade_sandbox_events(home: Path, expected_profile: str, pins: dict
+                          ) -> tuple[dict, list[str]]:
+    """Read the reserved `ProfileApplied` log for `enforced`.
+
+    grok moved this file: 1.0.13 wrote `$GROK_HOME/sandbox-events.jsonl` and
+    1.0.40 writes `$GROK_HOME/sessions/sandbox-events.jsonl`. Reading one
+    hard-coded location made an enforced sandbox indistinguishable from an
+    absent one — the attempt failed closed, which is safe, but the seat was
+    unusable on the shipped CLI. Every candidate location is reserved before
+    spawn and every one is read here, so a CLI that moves the file again
+    degrades to `sandbox_event_missing` rather than to a forged pass.
+
+    Two records that disagree are a failure, not a vote: the supervisor has
+    no way to tell which run wrote which file, and picking either one would
+    let a stale or planted record answer for this attempt.
+    """
+    view: dict = {"path": None, "enforced": None, "profile": None,
+                  "paths_read": [str(home.joinpath(*parts))
+                                 for parts in SANDBOX_EVENT_RELPATHS]}
+    found: list[tuple[Path, dict]] = []
+    for parts in SANDBOX_EVENT_RELPATHS:
+        path = home.joinpath(*parts)
+        reserved = pins.get(parts)
+        applied, status = _last_profile_applied(
+            path, reserved["identity"] if reserved else None)
+        if status != "ok":
+            view["path"] = str(path)
+            return view, ["sandbox_event_missing" if status == "absent"
+                          else _reason("sandbox_event_identity_replaced", path)]
+        if applied is not None:
+            found.append((path, applied))
+    if not found:
         return view, ["sandbox_event_missing"]
+    path, applied = found[0]
+    view["path"] = str(path)
     view["enforced"] = applied.get("enforced")
     view["profile"] = applied.get("profile")
     reasons: list[str] = []
+    for other_path, other in found[1:]:
+        if (other.get("enforced"), other.get("profile")) != (
+                view["enforced"], view["profile"]):
+            # Both sides, each beside its own path. Recording one file's path
+            # with another file's values describes a state no file was in.
+            view["path"] = None
+            view["disagreement"] = [
+                {"path": str(where), "profile": rec.get("profile"),
+                 "enforced": rec.get("enforced")} for where, rec in found]
+            view["enforced"] = None
+            view["profile"] = None
+            # Its own reason. `sandbox_profile_event_mismatch:<observed>` means
+            # the sandbox that ran was not the one asked for; two locations that
+            # disagree may both name the right profile and differ only on
+            # `enforced`, and reporting that as a profile mismatch tells a
+            # control loop keying off the prefix the wrong thing. The differing
+            # records are in `view["disagreement"]`.
+            return view, ["sandbox_event_disagreement"]
     if view["profile"] != expected_profile:
         reasons.append(_reason("sandbox_profile_event_mismatch",
                                view["profile"]))
@@ -2022,8 +2157,10 @@ def _run_attempt(args, pins: list[dict]) -> int:
             return 2
         if not args.grok_home:
             print("--expect-sandbox-enforced requires --grok-home: "
-                  "ProfileApplied is recorded in $GROK_HOME/"
-                  "sandbox-events.jsonl", file=sys.stderr)
+                  "ProfileApplied is recorded under $GROK_HOME ("
+                  + ", ".join("/".join(parts)
+                              for parts in SANDBOX_EVENT_RELPATHS) + ")",
+                  file=sys.stderr)
             return 2
 
     if args.child_cwd is not None:
@@ -2057,13 +2194,15 @@ def _run_attempt(args, pins: list[dict]) -> int:
             return 2
         args.child_cwd = str(child.resolve())
 
+    sandbox_event_pins: dict = {}
     if args.grok_home is not None:
         home = Path(args.grok_home)
         home = home if home.is_absolute() else Path.cwd() / home
         seed = Path(args.grok_auth_seed) if args.grok_auth_seed else None
         if seed is not None and not seed.is_absolute():
             seed = Path.cwd() / seed
-        err = _prepare_grok_home(home, seed, args.expect_sandbox_enforced)
+        err = _prepare_grok_home(home, seed, args.expect_sandbox_enforced,
+                                 sandbox_event_pins)
         if err is not None:
             print(f"error: {err}", file=sys.stderr)
             return 2
@@ -2422,7 +2561,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         if args.expect_sandbox_enforced is not None:
                             view, event_reasons = _grade_sandbox_events(
                                 Path(args.grok_home),
-                                args.expect_sandbox_enforced)
+                                args.expect_sandbox_enforced,
+                                sandbox_event_pins)
                             receipt["result"]["sandbox_events"] = view
                             reasons = reasons + event_reasons
                         if artifact_entries:
@@ -2980,9 +3120,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="regular file copied onto a NEW inode at "
                           "$GROK_HOME/auth.json; requires --grok-home")
     run.add_argument("--expect-sandbox-enforced", default=None, metavar="PROFILE",
-                     help="require $GROK_HOME/sandbox-events.jsonl to "
-                          "contain ProfileApplied with this profile and "
-                          "enforced=true; requires --grok-home")
+                     help="require the reserved ProfileApplied log under "
+                          "$GROK_HOME (" + ", ".join(
+                              "/".join(parts)
+                              for parts in SANDBOX_EVENT_RELPATHS)
+                          + ") to name this profile with enforced=true; every "
+                            "location is read and two that disagree fail; "
+                            "requires --grok-home")
     run.add_argument("--seat-profile", default=None,
                      choices=[MAKER_SEAT_PROFILE],
                      help="typed maker-seat declaration; grok-maker-v1 "

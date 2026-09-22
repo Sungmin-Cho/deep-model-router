@@ -242,6 +242,17 @@ the xai seat against sonnet-5's 38.6s). No regression detected against the
 claimed frontier tier; a single suite at ceiling is not grounds to raise
 `capability_tier`.
 
+**That measurement is inherited, not current.** A newer xai generation was
+observed as the CLI's default on 2026-09-22 and the registry id moved to it.
+Id acceptance and the effort ceiling were re-probed on it; the published
+prices and the context window were re-read from the provider's documentation.
+All are unchanged, so the price argument above is current. Neither the
+446-node head-to-head nor the repeat eval was re-run, and the ledger says so
+in its own row. Read every quality number in this section as the predecessor
+generation's until a fresh head-to-head exists — and note that the binding
+and the tier below do rest on them, so what is inherited is the seat's
+fitness itself, not merely a promotion nobody took.
+
 **`capability_tier` is 1 on purpose.** Honesty first: the one measured
 comparison there is finished at the suite's ceiling, which separates nothing —
 promoting the model to tier 2 on it would treat an undiscriminating result as

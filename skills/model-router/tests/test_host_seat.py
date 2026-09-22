@@ -316,7 +316,7 @@ def test_whitespace_padded_registered_model_cannot_bypass_policy_validation():
     with pytest.raises(ValidationError, match="family"):
         _route_with_host(f" {ID('openai_reasoning')} ")
     with pytest.raises(ValidationError, match="ceiling"):
-        _route_with_host("\tgrok-4.6\n", "MAX", over=dict(runtime="grok"))
+        _route_with_host(f"\t{ID('xai_frontier')}\n", "MAX", over=dict(runtime="grok"))
 
 
 def test_model_only_equals_model_with_null_effort():
