@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Grade the Grok sandbox attestation at every location the CLI writes it. Grok 1.0.40 moved that log, so a write-seat dispatch failed closed as unattested even when the sandbox was enforced, leaving the seat undispatchable; the supervisor now reserves and reads each known location, and the shipped maker recipe denies every location it reads.
-- Refuse a sandbox attestation the supervisor did not reserve. A location that has gone missing, one replaced by a file the supervisor never created, and two locations that disagree are each their own refusal with its own reason — previously deleting or replacing the inconvenient record bought a pass.
+- Refuse a sandbox attestation the supervisor did not reserve. Replacing the reserved log with a file of the child's own previously graded as genuine, because only its link count was checked; the reservation is now held open and pinned by inode. A location that has gone missing, one that is not the reserved inode, and two locations that disagree are each refused with their own reason.
+- Refuse a symlink inside a maker seat's working directory before launch, as hard links already were. A path-scoped write rule cannot tell a second name from the file it names, which is the whole reason that audit exists.
 
 ## [1.14.0] — 2026-09-07
 

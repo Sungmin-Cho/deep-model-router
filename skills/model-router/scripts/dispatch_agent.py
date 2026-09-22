@@ -340,13 +340,20 @@ def _is_documented_reason(reason: str) -> bool:
 
 
 def _audit_single_linked_tree(root: Path) -> str | None:
-    """Refuse any regular file in `root` whose inode has more than one name.
+    """Refuse any second name for a file in `root` — hard link or symlink.
 
     Walks without following symlinks. Any stat error is a refusal: a tree
     we cannot inspect is not a tree we can claim is single-linked. This is
     the supervisor-side prevention for the grok maker hard-link escape —
     path-scoped Write/Edit and Seatbelt both see the inside path, so the
     only real prevention is not launching if a second name is already there.
+
+    A symlink is such a name and used to walk through: it is neither a
+    regular file nor a directory, so the loop below skipped it. Whether the
+    CLI's permission rules match an alias or its target is not something this
+    repository has measured, and the hard-link finding says a path-scoped
+    rule cannot tell the two apart. Refusing the alias does not need the
+    answer.
     """
     try:
         root_st = os.lstat(root)
@@ -368,6 +375,12 @@ def _audit_single_linked_tree(root: Path) -> str | None:
                     except OSError as exc:
                         return (f"--child-cwd contains an unreadable path "
                                 f"{entry.path}: {os.strerror(exc.errno)}")
+                    if stat.S_ISLNK(st.st_mode):
+                        return (f"--child-cwd {str(root)!r} contains the "
+                                f"symlink {entry.path}; a symlink is a second "
+                                f"name for a file outside the tree this audit "
+                                f"just walked, which the path-scoped write "
+                                f"rules cannot distinguish either")
                     if stat.S_ISREG(st.st_mode) and st.st_nlink != 1:
                         return (f"--child-cwd {str(root)!r} contains "
                                 f"{entry.path} with {st.st_nlink} links; "
@@ -436,10 +449,8 @@ def _prepare_grok_home(home: Path, auth_seed: Path | None,
         try:
             events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            try:
-                st = os.fstat(fd)
-            finally:
-                os.close(fd)
+            os.set_inheritable(fd, False)
+            st = os.fstat(fd)
         except OSError as exc:
             return (f"--grok-home {'/'.join(parts)} could not be reserved: "
                     f"{os.strerror(exc.errno)}")
@@ -449,7 +460,14 @@ def _prepare_grok_home(home: Path, auth_seed: Path | None,
         # file of its own gets a forged record read as the logger's. Measured on
         # grok 1.0.40: the logger APPENDS to this inode (the reservation's 0600
         # survives the run), so pinning costs nothing a real run needs.
-        pins[parts] = (st.st_dev, st.st_ino)
+        #
+        # The descriptor is HELD, not closed, for the same reason the artifact
+        # pin holds one: an unlinked inode is freed, and a comparison against a
+        # bare (dev, ino) would rest on the filesystem never recycling that
+        # number. An open descriptor keeps the inode alive for the attempt, so
+        # a recycled number cannot be the reserved one. It is non-inheritable,
+        # so the child never sees it, and it goes back with the process.
+        pins[parts] = {"identity": (st.st_dev, st.st_ino), "fd": fd}
     return None
 
 
@@ -476,8 +494,8 @@ def _last_profile_applied(path: Path, pin: tuple | None
     empty file let a child suppress the location whose record disagreed and
     keep the one that passed — the mismatch gate below cannot fire on a
     record that is no longer there. A location grok never wrote is still
-    PRESENT (the supervisor's own empty reservation) and returns
-    `(None, True)`, which is the normal one-writer case.
+    PRESENT — the supervisor's own empty reservation — which is the normal
+    one-writer case and not a failure.
     """
     # O_NOFOLLOW guards the final element only, and this log now lives one
     # directory down. A `sessions` swapped for a symlink between reservation
@@ -541,7 +559,9 @@ def _grade_sandbox_events(home: Path, expected_profile: str, pins: dict
     found: list[tuple[Path, dict]] = []
     for parts in SANDBOX_EVENT_RELPATHS:
         path = home.joinpath(*parts)
-        applied, status = _last_profile_applied(path, pins.get(parts))
+        reserved = pins.get(parts)
+        applied, status = _last_profile_applied(
+            path, reserved["identity"] if reserved else None)
         if status != "ok":
             view["path"] = str(path)
             return view, ["sandbox_event_missing" if status == "absent"

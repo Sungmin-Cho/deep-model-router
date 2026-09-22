@@ -1432,10 +1432,11 @@ verification_ledger:
       probed_on: "2026-09-22"
       cli_version: "grok 1.0.40 (eb1a2256660d)"
       evidence: >
-        Seven `grok -p -m grok-4.7 --effort <value>` round-trips: low, medium,
-        high and xhigh returned OK; minimal, none and max were rejected before
-        dispatch ("unknown effort level ... use one of: xhigh, high, medium,
-        low"). Identical to the grok-4.6 acceptance set, so `effort_ceiling:
+        Seven `grok -p -m grok-4.7 --effort <value>` invocations, of which
+        four were round-trips: low, medium, high and xhigh returned OK.
+        minimal, none and max never reached the model — the CLI's argument
+        parser rejected them ("unknown effort level ... use one of: xhigh,
+        high, medium, low"). Identical to the grok-4.6 acceptance set, so `effort_ceiling:
         VERY_HIGH` and the xai family effort map carry over unchanged.
 
     - item: "grok-4.7 pricing and context window"
@@ -1539,10 +1540,10 @@ verification_ledger:
       attempt_id: "g47-maker-2"
       cli_version: "grok 1.0.40 (eb1a2256660d)"
       # Named for the seat key `route_task.Policy` matches, because that guard
-      # requires EVERY row naming the key to be verified. Before this rename the
-      # only row it matched was 2026-09-01's, which probed a two-deny recipe
-      # against the root path — a historical probe authorizing a recipe that had
-      # since changed. The argv below is the shipped four-deny string with the
+      # requires EVERY row naming the key to be verified. Until this row was
+      # added the only one it matched was 2026-09-01's, which probed a two-deny
+      # recipe against the root path — a historical probe authorizing a recipe
+      # that had since changed. The argv below is the shipped four-deny string with the
       # placeholders substituted.
       argv: "grok --no-auto-update -m grok-4.7 --effort high --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sessions/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sessions/sandbox-events.jsonl)\" --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
       probes:
@@ -1550,6 +1551,7 @@ verification_ledger:
         - { attempt_id: "g47-maker-2", outcome: SUCCEEDED }
         - { attempt_id: "g47-maker-forge", outcome: SUCCEEDED }
         - { attempt_id: "g47-maker-3", note: "re-run with (dev, ino) pinning active", outcome: SUCCEEDED }
+        - { attempt_id: "g47-maker-4", note: "re-run with the reservation descriptor held and the alias audit widened", outcome: SUCCEEDED }
       evidence: >
         Darwin 25.6.0. grok 1.0.40 writes the ProfileApplied log to
         $GROK_HOME/sessions/sandbox-events.jsonl, not $GROK_HOME/
@@ -1588,10 +1590,21 @@ verification_ledger:
         APPENDS to the supervisor's inode rather than replacing it, and
         g47-maker-3 re-ran the whole seat with pinning active and still graded
         SUCCEEDED (enforced true, profile dmr-maker-v1, artifact nlink 1 and
-        contained). A later CLI that starts replacing the file will fail
+        contained), as did g47-maker-4 with the descriptor held open and the
+        cwd audit widened to aliases. A later CLI that starts replacing the file will fail
         closed as sandbox_event_identity_replaced — the same failure class as
         the relocation above, and the same remedy: probe, then teach the
         supervisor.
+
+        Two supervisor-side controls were added alongside, neither of them
+        probed against a live escape because the measured tool surface has no
+        way to attempt one (S8: Write/StrReplace create a regular file, and
+        there is no terminal tool): the reservation descriptor is HELD open so
+        an unlinked inode cannot be impersonated by a recycled number, and
+        --require-single-linked-cwd now refuses a SYMLINK in the tree as well
+        as a hard link — it walked past aliases before, and the 2026-09-01
+        finding is precisely that a path-scoped rule cannot tell a second name
+        from the file it names.
 
         This row does NOT re-run the rest of the 2026-09-01 containment
         suite (S0-S9), which remains a 1.0.13 measurement; the hard-link

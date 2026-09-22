@@ -482,3 +482,41 @@ def test_a_mismatch_receipt_never_pairs_one_path_with_another_files_values(tmp_p
     assert [(d["path"], d["enforced"]) for d in events["disagreement"]] == [
         (str(home.joinpath(*CURRENT_EVENTS)), True),
         (str(home.joinpath(*LEGACY_EVENTS)), False)]
+
+
+def test_a_symlink_inside_child_cwd_is_refused_pre_spawn(tmp_path):
+    """A symlink is a second name too. The audit rejected hard links and
+    walked straight past aliases, so a name pointing anywhere — including at
+    a location the supervisor is about to reserve — survived into the run."""
+    cwd = tmp_path / "wd"
+    cwd.mkdir()
+    (cwd / "alias.txt").symlink_to(tmp_path / "elsewhere.txt")
+    fake = write_fake(tmp_path, "would_write.py", HAPPY)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake], extra=_cwd_args(cwd))
+    assert proc.returncode == 2, proc.stdout
+    assert receipt is None
+    assert "symlink" in proc.stderr
+
+
+def test_the_reserved_events_inode_is_held_open_for_the_attempt(tmp_path):
+    """A bare (dev, ino) pin rests on the filesystem never recycling an inode
+    number. An unlinked inode with no open descriptor is freed and its number
+    is available again; holding the reservation keeps it out of reach."""
+    home = tmp_path / "ghome"
+    pins: dict = {}
+    err = dispatch._prepare_grok_home(home, None, "dmr-maker-v1", pins)
+    assert err is None, err
+    assert set(pins) == set(dispatch.SANDBOX_EVENT_RELPATHS)
+    for parts, reserved in pins.items():
+        path = home.joinpath(*parts)
+        held = os.fstat(reserved["fd"])
+        assert (held.st_dev, held.st_ino) == reserved["identity"], parts
+        on_disk = path.stat()
+        assert (on_disk.st_dev, on_disk.st_ino) == reserved["identity"], parts
+        # Unlinking must not free it: the descriptor still names the inode.
+        path.unlink()
+        still = os.fstat(reserved["fd"])
+        assert (still.st_dev, still.st_ino) == reserved["identity"], parts
+        assert not os.get_inheritable(reserved["fd"]), parts
+        os.close(reserved["fd"])
