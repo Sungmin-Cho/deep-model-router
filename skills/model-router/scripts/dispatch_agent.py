@@ -499,8 +499,10 @@ def _last_profile_applied(path: Path, pin: tuple | None
     """
     # O_NOFOLLOW guards the final element only, and this log now lives one
     # directory down. A `sessions` swapped for a symlink between reservation
-    # and grading would be followed silently, so the component is checked in
-    # its own right before the file is opened.
+    # and grading would be followed silently, so the containing directory is
+    # checked in its own right before the file is opened. It runs for the
+    # root-level location too, where it checks $GROK_HOME itself: narrowing
+    # it to the nested path would be a special case earning nothing.
     if path.parent != path.parent.parent:
         try:
             parent = os.lstat(path.parent)

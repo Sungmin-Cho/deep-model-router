@@ -811,7 +811,8 @@ effort_map:
     HIGH:      high
     VERY_HIGH: xhigh
     MAX:       xhigh      # unreachable: the clamp runs before this lookup and
-                          # the only xai model's ceiling is VERY_HIGH
+                          # every xai model's ceiling is VERY_HIGH — the live
+                          # seat and the retired row alike
   gemini:
     MINIMAL:   low
     LOW:       low
