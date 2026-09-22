@@ -937,7 +937,14 @@ def test_every_write_verified_direction_is_bound_to_a_verified_ledger_row():
     dispatch. Until 1.10.0 the ledger rule ran only for maker seats, so the four
     `mechanism`-only directions authorised write work on nothing but a non-empty
     string. `Policy._validate_write_seats` now refuses those at load; this pins
-    the rows, so deleting one is a named failure rather than a silent gap."""
+    the rows, so deleting one is a named failure rather than a silent gap.
+
+    At least one, and every matching row verified — the same shape as the
+    runtime rule, which reads ALL rows naming the seat and refuses any that is
+    not verified. The count was pinned at exactly one until a CLI upgrade
+    needed a second probe of the same seat; requiring exactly one would have
+    forced that evidence to overwrite the row it extends, which is the
+    history-rewriting this ledger exists to prevent."""
     for host, entries in CFG["transports"].items():
         for name, entry in entries.items():
             if name == "native" or not isinstance(entry, dict):
@@ -947,8 +954,11 @@ def test_every_write_verified_direction_is_bound_to_a_verified_ledger_row():
             needle = (f"{host}.{name}.mechanism_maker" if "mechanism_maker" in entry
                       else f"transports.{host}.{name}.write_verified")
             rows = [r for r in CFG["verification_ledger"]["entries"]
-                    if r.get("status") == "verified" and needle in str(r.get("item", ""))]
-            assert len(rows) == 1, (host, name, needle, [r.get("item") for r in rows])
+                    if needle in str(r.get("item", ""))]
+            assert rows, (host, name, needle, "no ledger row names this seat")
+            unverified = [r.get("item") for r in rows
+                          if r.get("status") != "verified"]
+            assert unverified == [], (host, name, needle, unverified)
 
 
 def test_the_claude_artifact_limitation_is_documented_where_a_caller_hits_it():

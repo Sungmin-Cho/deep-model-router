@@ -406,3 +406,45 @@ def test_the_shipped_maker_argv_denies_every_location_the_supervisor_reads():
         denied = set(re.findall(r'--deny "(?:Write|Edit)\(<grok-home>/([^)]+)\)"',
                                 maker))
         assert denied == read, (host, denied ^ read)
+
+
+def test_deleting_a_disagreeing_record_does_not_buy_a_pass(tmp_path):
+    """Round-2 finding: suppression beat the mismatch gate. Absence was read
+    as emptiness, so a child with a record it did not like could unlink that
+    location and have the surviving one graded alone. The supervisor created
+    every location before spawn — a missing one is tampering."""
+    home = tmp_path / "ghome"
+    body = (_events_writer(home, where=CURRENT_EVENTS, enforced=True)
+            + textwrap.dedent("""
+        import os
+        from pathlib import Path
+        (Path(os.environ["GROK_HOME"]) / "sandbox-events.jsonl").unlink()
+    """))
+    fake = write_fake(tmp_path, "ev.py", body)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--grok-home", str(home),
+               "--expect-sandbox-enforced", "dmr-maker-v1"))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "sandbox_event_missing" in receipt["result"]["invalid_reasons"]
+
+
+def test_a_mismatch_receipt_never_pairs_one_path_with_another_files_values(tmp_path):
+    """A receipt that reads `path: A, enforced: true` while A said false
+    describes a state no file was ever in. Both records, each beside its own
+    path, or nothing."""
+    home = tmp_path / "ghome"
+    body = (_events_writer(home, where=CURRENT_EVENTS, enforced=True)
+            + _events_writer(home, where=LEGACY_EVENTS, enforced=False))
+    fake = write_fake(tmp_path, "ev.py", body)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--grok-home", str(home),
+               "--expect-sandbox-enforced", "dmr-maker-v1"))
+    assert proc.returncode == 6, proc.stderr
+    events = receipt["result"]["sandbox_events"]
+    assert events["path"] is None and events["enforced"] is None
+    assert [(d["path"], d["enforced"]) for d in events["disagreement"]] == [
+        (str(home.joinpath(*CURRENT_EVENTS)), True),
+        (str(home.joinpath(*LEGACY_EVENTS)), False)]

@@ -324,7 +324,9 @@ outside path included). What closed the three axes on darwin/arm64 grok
   cannot apply). `--expect-sandbox-enforced` grades
   `ProfileApplied.enforced == true`.
   `--deny "Write(<grok-home>/…/sandbox-events.jsonl)"` (and Edit) blocks
-  model forgery of that log while the grok logger still appends.
+  model forgery of that log while the grok logger still appends. Measured,
+  per location: the root path on 1.0.13, both paths on 1.0.40. The deny is a
+  permission-policy control, not a kernel one.
 
 **The events log moved, so it has two addresses.** grok 1.0.13 wrote
 `$GROK_HOME/sandbox-events.jsonl`; 1.0.40 writes

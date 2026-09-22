@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Grade the Grok sandbox attestation at every location the CLI writes it. Grok 1.0.40 moved that log, so a write-seat dispatch failed closed as unattested even when the sandbox was enforced, leaving the seat undispatchable; the supervisor now reserves and reads each known location, refuses two records that disagree, and the shipped maker recipe denies every location it reads.
+- Grade the Grok sandbox attestation at every location the CLI writes it. Grok 1.0.40 moved that log, so a write-seat dispatch failed closed as unattested even when the sandbox was enforced, leaving the seat undispatchable; the supervisor now reserves and reads each known location, and the shipped maker recipe denies every location it reads.
+- Refuse a sandbox attestation that two locations disagree about, and treat a reserved location that has gone missing as tampering rather than as an empty one — otherwise deleting the inconvenient record bought a pass.
 
 ## [1.14.0] — 2026-09-07
 

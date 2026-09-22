@@ -438,16 +438,22 @@ def _prepare_grok_home(home: Path, auth_seed: Path | None,
 def _last_profile_applied(path: Path) -> tuple[dict | None, bool]:
     """`(record, readable)` for one reserved events file.
 
-    `readable` is False only when the file exists and cannot be trusted — a
-    non-regular file, more than one link to its inode, or an unreadable fd.
-    An ABSENT file is readable-but-empty: the supervisor reserves every
-    candidate location before spawn, so absence means the child removed it,
-    which `_open_regular` then reports as the missing-file case handled here.
+    `readable` is False whenever the file cannot be trusted: absent, not a
+    regular file, more than one link to its inode, or an unreadable fd.
+
+    ABSENCE IS TAMPERING, not emptiness. The supervisor creates every
+    candidate location before spawn and nothing legitimate removes one, so a
+    path that is gone at grading was unlinked by the child. Reading it as an
+    empty file let a child suppress the location whose record disagreed and
+    keep the one that passed — the mismatch gate below cannot fire on a
+    record that is no longer there. A location grok never wrote is still
+    PRESENT (the supervisor's own empty reservation) and returns
+    `(None, True)`, which is the normal one-writer case.
     """
     try:
         fd, st = _open_regular(path)
     except FileNotFoundError:
-        return None, True
+        return None, False
     except (OSError, NotARegularFile):
         return None, False
     try:
@@ -510,7 +516,14 @@ def _grade_sandbox_events(home: Path, expected_profile: str
     for other_path, other in found[1:]:
         if (other.get("enforced"), other.get("profile")) != (
                 view["enforced"], view["profile"]):
-            view["path"] = str(other_path)
+            # Both sides, each beside its own path. Recording one file's path
+            # with another file's values describes a state no file was in.
+            view["path"] = None
+            view["disagreement"] = [
+                {"path": str(where), "profile": rec.get("profile"),
+                 "enforced": rec.get("enforced")} for where, rec in found]
+            view["enforced"] = None
+            view["profile"] = None
             return view, [_reason("sandbox_profile_event_mismatch",
                                   other.get("profile"))]
     if view["profile"] != expected_profile:
@@ -2075,8 +2088,10 @@ def _run_attempt(args, pins: list[dict]) -> int:
             return 2
         if not args.grok_home:
             print("--expect-sandbox-enforced requires --grok-home: "
-                  "ProfileApplied is recorded in $GROK_HOME/"
-                  "sandbox-events.jsonl", file=sys.stderr)
+                  "ProfileApplied is recorded under $GROK_HOME ("
+                  + ", ".join("/".join(parts)
+                              for parts in SANDBOX_EVENT_RELPATHS) + ")",
+                  file=sys.stderr)
             return 2
 
     if args.child_cwd is not None:
@@ -3033,9 +3048,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="regular file copied onto a NEW inode at "
                           "$GROK_HOME/auth.json; requires --grok-home")
     run.add_argument("--expect-sandbox-enforced", default=None, metavar="PROFILE",
-                     help="require $GROK_HOME/sandbox-events.jsonl to "
-                          "contain ProfileApplied with this profile and "
-                          "enforced=true; requires --grok-home")
+                     help="require the reserved ProfileApplied log under "
+                          "$GROK_HOME (" + ", ".join(
+                              "/".join(parts)
+                              for parts in SANDBOX_EVENT_RELPATHS)
+                          + ") to name this profile with enforced=true; every "
+                            "location is read and two that disagree fail; "
+                            "requires --grok-home")
     run.add_argument("--seat-profile", default=None,
                      choices=[MAKER_SEAT_PROFILE],
                      help="typed maker-seat declaration; grok-maker-v1 "
