@@ -643,6 +643,37 @@ models:
     # more on both axes. `worker_balanced_selection.prefer_alt_when_flags` is
     # the rule that acts on this; see also `context_window`.
     price_per_mtok:
+      # Dated provenance like the OpenAI rows, and for the same reason: a rate
+      # with no date is a rate nobody can tell is stale. It does NOT make this
+      # seat quotable — `quote_cost` needs a cache_write rate and xAI publishes
+      # none, only a reduced cached-input read rate. Inventing one (0.00, or a
+      # copy of the input rate) would turn an absent published fact into a
+      # number this file states as evidence, so the seat keeps reporting an
+      # unavailable quote until xAI publishes the axis.
+      verified_on: "2026-09-22"
+      max_age_days: 30
+      source: https://docs.x.ai/docs/models/grok-4.7
+      input: 2.00
+      output: 6.00
+      cached_input: 0.50
+      long_context: { above_input_tokens: 200000, boundary: inclusive,
+                      input: 4.00, output: 12.00, cached_input: 1.00 }
+    context_window: 500000
+
+  # Retired 2026-09-22 with the grok-4.7 bump, on the rule adapters.md states
+  # for exactly this case: "bump the id, re-probe, and keep the retired id as a
+  # non-dispatchable history row." Valid as HISTORY input (--prior-models,
+  # --unavailable-models, --host-model) so a control loop holding a 1.14.0
+  # failure keeps working across the release boundary; never a candidate for
+  # any seat. Same mechanism as claude_architect_retired.
+  xai_frontier_retired:
+    id: grok-4.6
+    family: xai
+    capability_tier: 1
+    effort_ceiling: VERY_HIGH
+    dispatchable: false
+    verified: true
+    price_per_mtok:
       input: 2.00
       output: 6.00
       cached_input: 0.50
@@ -830,8 +861,14 @@ transports:
       # single-linked --child-cwd, a per-attempt --grok-home seeded from
       # --grok-auth-seed, custom profile dmr-maker-v1 (fail-closed), and
       # --expect-sandbox-enforced. See adapters.md "Grok seat profiles".
+      #
+      # The ProfileApplied log moved: 1.0.13 wrote it at the GROK_HOME root
+      # and 1.0.40 writes it under sessions/. Both are denied here because
+      # the supervisor reserves and READS both — a location it grades but
+      # leaves writable is a forgery channel, so the denied set and
+      # dispatch_agent.SANDBOX_EVENT_RELPATHS are kept equal by test.
       mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
-      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
+      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sessions/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sessions/sandbox-events.jsonl)\" --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
       isolation: separate_process
       verified: true
       # Claude Code -> xAI write seat: recipe + this flag + the ledger
@@ -878,7 +915,7 @@ transports:
       # verified and write_verified stay false: this direction was not
       # probed from a Codex host. The string is not authorization.
       mechanism_reviewer: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
-      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
+      mechanism_maker: "grok --no-auto-update -m <id> --effort <native-effort> --output-format json -s <fresh-uuid> --agent general-purpose --permission-mode acceptEdits --tools read_file,list_dir,grep,search_replace --disallowed-tools Agent --no-subagents --allow \"Write(./**)\" --allow \"Edit(./**)\" --deny MCPTool --deny \"Write(<grok-home>/sessions/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sessions/sandbox-events.jsonl)\" --deny \"Write(<grok-home>/sandbox-events.jsonl)\" --deny \"Edit(<grok-home>/sandbox-events.jsonl)\" --disable-web-search --sandbox dmr-maker-v1 --prompt-file /dev/stdin"
       isolation: separate_process
       verified: false
       write_verified: false
@@ -1365,8 +1402,10 @@ verification_ledger:
       cli_version: "grok 1.0.40 (eb1a2256660d)"
       argv: "grok --no-auto-update -m grok-4.7 --effort high --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
       evidence: >
-        `grok models` lists grok-4.7 as the CLI default, with grok-4.6 and
-        grok-4.5 still served. Round-trip `grok -p -m grok-4.7` returned OK.
+        `grok models` lists grok-4.7 as the CLI default, and also lists
+        grok-4.7-build-fast, grok-4.6 and grok-4.5 as available — a listing,
+        not proof that any of them is served. Only grok-4.7 was round-tripped:
+        `grok -p -m grok-4.7` returned OK.
         Under dispatch_agent.py (transport claude_code.to_xai, seat
         reviewer-1, --output-schema review, --output-envelope
         grok-headless-json-v1) attempt g47-reviewer-1 graded SUCCEEDED:
@@ -1411,13 +1450,16 @@ verification_ledger:
         number this registry holds for the xai balanced seat — the 2026-08-18
         446-node head-to-head and the 2026-08-20 repeat eval, both recorded
         below — was measured on grok-4.6 and has NOT been re-run on grok-4.7.
-        What was re-verified is id acceptance, the effort ceiling, published
-        prices and the context window, all unchanged. `capability_tier` stays
-        1: it was never raised on the 4.6 measurements either, so nothing
-        rests on transferring them. Treat the balanced seat's quality as
-        inherited from the predecessor generation until a fresh head-to-head
-        exists; a regression would surface as a normal escalation, not as a
-        silent one, because the ladder still crosses families above this seat.
+        What was re-verified is id acceptance, the effort ceiling, the
+        published prices and the context window, all unchanged. Keeping
+        `capability_tier: 1` and the default worker_balanced binding does rest
+        on the predecessor's numbers: both say this seat is fit for tier 1,
+        and that fitness is now inherited and unmeasured, not merely
+        unpromoted. Nor does this registry have a detector for a quality
+        regression — the escalation ladder reacts to a FAILED or rejected
+        attempt, not to work that is merely worse. Until a fresh head-to-head
+        exists, read tier-1 fitness here as an assumption carried over from
+        grok-4.6.
 
     - item: "Claude Code -> xAI transport (grok -p)"
       status: verified
@@ -1474,6 +1516,36 @@ verification_ledger:
         envelope, session evidence). claude_code.to_xai write_verified
         is true; codex.to_xai stays false (direction unprobed from a
         Codex host). Machine- and platform-specific (darwin/arm64).
+
+    - item: "Grok maker seat on CLI 1.0.40 (ProfileApplied log relocated)"
+      status: verified
+      probed_on: "2026-09-22"
+      attempt_id: "g47-maker-2"
+      cli_version: "grok 1.0.40 (eb1a2256660d)"
+      evidence: >
+        Darwin 25.6.0. grok 1.0.40 writes the ProfileApplied log to
+        $GROK_HOME/sessions/sandbox-events.jsonl, not $GROK_HOME/
+        sandbox-events.jsonl as 1.0.13 did. The supervisor read only the
+        1.0.13 path, so attempt g47-maker-1 — sandbox genuinely enforced,
+        profile dmr-maker-v1, artifact written and contained — graded
+        INVALID_OUTPUT on sandbox_event_missing. The seat failed CLOSED,
+        which is how the move was found, but it was unusable on the shipped
+        CLI: no maker dispatch could reach SUCCEEDED. dispatch_agent.py now
+        reserves and reads every known location and the shipped
+        mechanism_maker denies each one; the two lists are held equal by
+        test, because a location graded but left writable is a forgery
+        channel. Re-probe g47-maker-2 on the same host, model grok-4.7,
+        --seat-profile grok-maker-v1: SUCCEEDED, exit_status 0,
+        termination_confirmed true, sandbox_events enforced true with
+        profile dmr-maker-v1 read from the sessions/ path, required artifact
+        present with nlink 1 and contained true, envelope stop_reason
+        end_turn with served_models ["grok-4.7-build"], session summary
+        agent_name general-purpose and sandbox_profile dmr-maker-v1. This
+        row attests the seat's DISPATCHABILITY on 1.0.40 with grok-4.7. It
+        does NOT re-run the 2026-09-01 containment suite (S0-S11) above,
+        which remains a 1.0.13 measurement; the hard-link finding recorded
+        there is unchanged and supervisor-side prevention is still what
+        ships.
 
     - item: "Grok headless prompt delivery through the supervisor"
       status: verified
@@ -1567,6 +1639,10 @@ verification_ledger:
     - item: "worker_balanced binding: grok-4.6 over claude-sonnet-5"
       status: price_verified_quality_probed
       probed_on: 2026-08-20
+      # A pointer, not an amendment: the prose below is the 2026-08-20
+      # observation and stays byte-identical to what was measured that day.
+      # The named row states which half of it the grok-4.7 bump carried over.
+      superseded_by: "xai_frontier quality evidence after the grok-4.7 id bump"
       evidence: >
         PRICE: verified from published rates — grok-4.6 $2.00/$6.00 per MTok
         vs sonnet-5 $2.00/$10.00. Anthropic made Sonnet 5's $2/$10
@@ -1588,11 +1664,6 @@ verification_ledger:
         change). The output-price advantage holds BELOW 200K input tokens
         only; see the long-context tier entry above, which is why
         `worker_balanced_selection.prefer_alt_when_flags` exists.
-        2026-09-22: the seat's id moved to grok-4.7. The published rates
-        this row compares are identical on the new generation, so the PRICE
-        half still reads as current; the QUALITY half does not, and the
-        "xai_frontier quality evidence after the grok-4.7 id bump" row above
-        states what was and was not re-run.
 
     - item: "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
       status: verified

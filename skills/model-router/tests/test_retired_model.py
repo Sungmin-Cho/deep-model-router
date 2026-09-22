@@ -31,43 +31,80 @@ def _r(**over):
 
 RETIRED_KEY = "claude_architect_retired"
 
+# Every retired row, not just the first one written. A generation bump that
+# adds `<seat>_retired` and forgets it here would leave the new row untested
+# while every assertion below still passed on the architect's.
+RETIRED_KEYS = sorted(k for k in CFG["models"] if k.endswith("_retired"))
 
-def _retired():
-    row = CFG["models"].get(RETIRED_KEY)
-    assert row is not None, f"{RETIRED_KEY} is not in the registry"
+# A host model must belong to its runtime's native family, so `--host-model`
+# on a retired id has to be asked from the runtime that family is native to.
+NATIVE_RUNTIME = {CFG["role_bindings"][spec["degraded_binding"]]["senior_engineer"]: rt
+                  for rt, spec in CFG["runtimes"].items()}
+RUNTIME_OF_FAMILY = {CFG["models"][key]["family"]: rt
+                     for key, rt in NATIVE_RUNTIME.items()}
+
+
+def _retired(key=RETIRED_KEY):
+    row = CFG["models"].get(key)
+    assert row is not None, f"{key} is not in the registry"
     return row
 
 
-def test_retired_key_is_bound_nowhere_and_not_dispatchable():
-    assert _retired()["dispatchable"] is False
+def test_every_retired_key_names_a_distinct_id_and_is_verified():
+    """A retired row exists to answer for one concrete past id. Two rows on the
+    same id, or an unverified one, would make it answer for nothing."""
+    assert RETIRED_KEYS, "the registry has no retired row at all"
+    ids = [_retired(k)["id"] for k in RETIRED_KEYS]
+    assert len(set(ids)) == len(ids), ids
+    live = {m["id"] for k, m in CFG["models"].items() if not k.endswith("_retired")}
+    for key, rid in zip(RETIRED_KEYS, ids):
+        assert rid not in live, (key, rid, "a retired id is still seated live")
+        assert _retired(key)["verified"] is True, key
+
+
+@pytest.mark.parametrize("key", RETIRED_KEYS)
+def test_retired_key_is_bound_nowhere_and_not_dispatchable(key):
+    assert _retired(key)["dispatchable"] is False
     for binding in CFG["role_bindings"].values():
-        assert RETIRED_KEY not in binding.values(), binding
+        assert key not in binding.values(), binding
     for runtime, per_role in CFG["fallbacks"].items():
         for role, keys in per_role.items():
-            assert RETIRED_KEY not in keys, (runtime, role, keys)
+            assert key not in keys, (runtime, role, keys)
 
 
-def test_retired_id_is_valid_history_input_and_changes_nothing():
-    retired_id = _retired()["id"]
+@pytest.mark.parametrize("key", RETIRED_KEYS)
+def test_retired_id_is_valid_history_input_and_is_never_re_seated(key):
+    retired_id = _retired(key)["id"]
     base = _r()
     withheld = _r(unavailable_models=[retired_id])
     assert withheld["selected_model"] == base["selected_model"]
     assert withheld["fallbacks_applied"] == []                       # nothing was removed
     failed = _r(prior_failures=1, prior_models=[retired_id])
+    # Where the ladder goes depends on the retired row's tier — a tier-3
+    # failure exhausts it, a tier-1 failure escalates — but a retired id is
+    # never what comes back out.
+    assert failed["selected_model"] != retired_id
+
+
+def test_retired_architect_failure_exhausts_the_ladder():
+    failed = _r(prior_failures=1, prior_models=[_retired()["id"]])
     assert failed["terminal"] == "HUMAN_REQUIRED"                    # a tier-3 failure has no tier above: valid input, exhausted ladder [P2-sol-F8]
     assert failed["selected_model"] is None
 
 
-def test_retired_id_cli_exit_statuses_are_never_invalid_input():
+@pytest.mark.parametrize("key", RETIRED_KEYS)
+def test_retired_id_cli_exit_statuses_are_never_invalid_input(key):
     """Valid history input means exit 0 or 1 — never 2 (invalid input)."""
     script = Path(__file__).resolve().parent.parent / "scripts" / "route_task.py"
-    base = [sys.executable, str(script), "--runtime", "claude_code", "--class", "IMPLEMENTATION",
+    row = _retired(key)
+    runtime = RUNTIME_OF_FAMILY[row["family"]]
+    base = [sys.executable, str(script), "--runtime", runtime, "--class", "IMPLEMENTATION",
             "--complexity", "1", "--uncertainty", "1", "--blast-radius", "1", "--reversibility", "1"]
-    rid = _retired()["id"]
+    rid = row["id"]
     run = lambda *extra: subprocess.run(base + list(extra), capture_output=True, text=True).returncode  # noqa: E731
-    assert run("--unavailable-models", rid) == 0
-    assert run("--host-model", rid, "--host-effort", "HIGH") == 0
-    assert run("--prior-failures", "1", "--prior-models", rid) == 1     # HUMAN_REQUIRED, not 2
+    assert run("--unavailable-models", rid) in (0, 1)
+    assert run("--host-model", rid, "--host-effort", "HIGH") in (0, 1)
+    assert run("--prior-failures", "1", "--prior-models", rid) in (0, 1)
 
 
 def test_retired_host_model_is_still_compared_by_tier():

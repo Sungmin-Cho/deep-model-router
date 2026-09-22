@@ -11,10 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.15.0] — 2026-09-22
 
+### Added
+
+- Grok 4.6 stays valid as history input — `--prior-models`, `--unavailable-models`, `--host-model` — as a non-dispatchable registry row, so a control loop holding a pre-upgrade failure keeps working; it is never seated.
+
 ### Changed
 
-- Bind the balanced worker seat to Grok 4.7, xAI's new default model. Prices, the 200K whole-request tier, the 500K context window and the effort ceiling were re-verified on it and are unchanged, so routing, bindings and `capability_tier` stay where they were.
-- Record the balanced seat's quality evidence as inherited: the head-to-head scores still on file were measured on Grok 4.6 and were not re-run, and the model profile and verification ledger now say so rather than reading as current.
+- Bind the balanced worker seat to Grok 4.7, xAI's new default model. Model acceptance, the effort ceiling and the reviewer and maker seat recipes were probed on it; the published prices, the 200K whole-request tier and the 500K context window were re-read and are unchanged. Routing, bindings and `capability_tier` stay where they were.
+- Record the balanced seat's quality evidence as inherited rather than current: the head-to-head scores on file were measured on Grok 4.6 and were not re-run, so tier-1 fitness for this seat is now an assumption carried over, and the model profile and verification ledger say so.
+- Record dated provenance for the xAI rates. The seat still reports an unavailable reference quote, because xAI publishes no cache-write rate and inventing one would state a number as evidence.
+
+### Fixed
+
+- Grade the Grok sandbox attestation at every location the CLI writes it. Grok 1.0.40 moved that log, so a write-seat dispatch failed closed as unattested even when the sandbox was enforced, leaving the seat undispatchable; the supervisor now reserves and reads each known location, refuses two records that disagree, and the shipped maker recipe denies every location it reads.
 
 ## [1.14.0] — 2026-09-07
 

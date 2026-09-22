@@ -53,6 +53,29 @@ def test_snapshot_policy_cache_is_separate_from_the_live_one():
     assert mod.Policy._cache is not live.Policy._cache
 
 
+# Every model id that has moved since the 1.12.1 baseline: key -> (was, is).
+# One line per generation bump, added in the same change that bumps the
+# registry, so the move is stated somewhere a reader can diff.
+ID_SUCCESSION = {
+    "xai_frontier": ("grok-4.6", "grok-4.7"),      # 2026-09-22, xAI default moved
+}
+
+
+def test_every_superseded_id_is_kept_as_a_retired_row():
+    """adapters.md: "bump the id, re-probe, and keep the retired id as a
+    non-dispatchable history row." Without it a control loop holding a
+    pre-bump failure gets exit 2 — invalid input — for a model it really did
+    dispatch. The succession table is where that obligation is checkable."""
+    import route_task as live
+    models = live.load_config()["models"]
+    retired = {m["id"]: (key, m) for key, m in models.items()
+               if key.endswith("_retired")}
+    for key, (was, _is) in ID_SUCCESSION.items():
+        assert was in retired, (key, was, "superseded id has no retired row")
+        assert retired[was][1]["dispatchable"] is False, retired[was][0]
+        assert retired[was][1]["family"] == models[key]["family"], retired[was][0]
+
+
 def test_the_floor_tables_did_not_move():
     """T21 [P2-opus-missing-1]: the plan's strongest constraint — the risk-band
     worker table, review policy and effort table remain what 1.12.1 shipped.
@@ -63,19 +86,27 @@ def test_the_floor_tables_did_not_move():
     for key in ("worker_selection", "review", "effort_by_work",
                 "role_tiers", "effort_map", "worker_balanced_selection"):
         assert new[key] == old[key], key
-    # Preserve every historical model field except the two that are supposed to
-    # move on their own evidence: independently refreshed billing quotes, and the
-    # provider `id` when a family ships a new generation. Everything the ROUTER
-    # reads off a model — family, capability_tier, effort_ceiling, effort_map,
-    # context_window, dispatchable, verified — stays pinned here, so a generation
-    # refresh cannot quietly re-tier a seat or lift its ceiling. The id itself is
-    # guarded elsewhere and harder: `test_every_verified_model_id_is_named_
-    # verbatim_in_a_verified_ledger_row` refuses any verified id that no verified
-    # ledger row names, so a silent swap fails there rather than passing here.
-    MOVES_ON_ITS_OWN_EVIDENCE = ("price_per_mtok", "id")
+    # Preserve every historical model field except independently refreshed
+    # billing quotes, and the provider `id` ONLY where this file names the
+    # move. Everything the router reads off a model — family, capability_tier,
+    # effort_ceiling, effort_map, context_window, dispatchable, verified —
+    # stays pinned, so a generation refresh cannot quietly re-tier a seat or
+    # lift its ceiling.
+    #
+    # A blanket `id` exemption was the first attempt and it was wrong. The
+    # ledger rule it leaned on ("a verified id must be named verbatim in a
+    # verified row") is satisfied by ANY verified row, and a predecessor is
+    # named in its own: reverting `xai_frontier` to grok-4.6, or pointing it
+    # at grok-4.5, would have passed both guards. Naming each move closes
+    # that — an id that moves anywhere this table does not say fails here.
     for key, historical in old["models"].items():
         assert {k: v for k, v in new["models"][key].items()
-                if k not in MOVES_ON_ITS_OWN_EVIDENCE} == {
+                if k not in ("price_per_mtok", "id")} == {
                     k: v for k, v in historical.items()
-                    if k not in MOVES_ON_ITS_OWN_EVIDENCE
+                    if k not in ("price_per_mtok", "id")
                 }, key
+        move = ID_SUCCESSION.get(key)
+        if move is None:
+            assert new["models"][key]["id"] == historical["id"], key
+            continue
+        assert (historical["id"], new["models"][key]["id"]) == move, (key, move)

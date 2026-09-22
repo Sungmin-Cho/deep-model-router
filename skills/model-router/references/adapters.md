@@ -322,9 +322,20 @@ outside path included). What closed the three axes on darwin/arm64 grok
   inode with `--grok-auth-seed`.
 - **D.** `--sandbox dmr-maker-v1` is a custom profile (fail-closed if it
   cannot apply). `--expect-sandbox-enforced` grades
-  `$GROK_HOME/sandbox-events.jsonl` `ProfileApplied.enforced == true`.
-  `--deny "Write(<grok-home>/sandbox-events.jsonl)"` (and Edit) blocks
+  `ProfileApplied.enforced == true`.
+  `--deny "Write(<grok-home>/…/sandbox-events.jsonl)"` (and Edit) blocks
   model forgery of that log while the grok logger still appends.
+
+**The events log moved, so it has two addresses.** grok 1.0.13 wrote
+`$GROK_HOME/sandbox-events.jsonl`; 1.0.40 writes
+`$GROK_HOME/sessions/sandbox-events.jsonl`. The supervisor reserves both
+before spawn and reads both at grading, taking a disagreement between two
+present records as a failure rather than a vote. Every location it reads is
+also denied in the argv below: a log the supervisor grades but leaves
+writable is a forgery channel, so the denied set and the supervisor's
+location table are held equal by test. A future move degrades to
+`sandbox_event_missing` — the seat fails closed, which is how 1.0.40 was
+found.
 
 ```bash
 grok --no-auto-update -m <id> --effort <native-effort> \
@@ -334,6 +345,8 @@ grok --no-auto-update -m <id> --effort <native-effort> \
     --disallowed-tools Agent --no-subagents \
     --allow "Write(./**)" --allow "Edit(./**)" \
     --deny MCPTool \
+    --deny "Write(<grok-home>/sessions/sandbox-events.jsonl)" \
+    --deny "Edit(<grok-home>/sessions/sandbox-events.jsonl)" \
     --deny "Write(<grok-home>/sandbox-events.jsonl)" \
     --deny "Edit(<grok-home>/sandbox-events.jsonl)" \
     --disable-web-search --sandbox dmr-maker-v1 \

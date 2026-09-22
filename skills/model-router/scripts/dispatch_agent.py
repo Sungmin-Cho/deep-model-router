@@ -294,6 +294,14 @@ assert set(ENVELOPE_FIELDS) == set(ENVELOPE_FORMATS), (
 
 MAKER_SEAT_PROFILE = "grok-maker-v1"
 MAKER_SANDBOX_PROFILE = "dmr-maker-v1"
+# Every `$GROK_HOME`-relative location a grok build has written its
+# ProfileApplied log to, current first. 1.0.40 moved it under `sessions/`;
+# 1.0.13 wrote it at the home root. All of them are reserved before spawn,
+# all of them are read at grading, and the shipped `mechanism_maker` denies
+# the child Write/Edit on each — a location that is read but not denied is a
+# forgery channel, so the two lists are the same list.
+SANDBOX_EVENT_RELPATHS = (("sessions", "sandbox-events.jsonl"),
+                          ("sandbox-events.jsonl",))
 MAKER_SEAT_REQUIRED = (
     ("--child-cwd", "child_cwd"),
     ("--require-single-linked-cwd", "require_single_linked_cwd"),
@@ -415,35 +423,41 @@ def _prepare_grok_home(home: Path, auth_seed: Path | None,
         except OSError as exc:
             return (f"--grok-home sandbox.toml could not be written: "
                     f"{os.strerror(exc.errno)}")
-    events = home / "sandbox-events.jsonl"
-    try:
-        fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(fd)
-    except OSError as exc:
-        return (f"--grok-home sandbox-events.jsonl could not be reserved: "
-                f"{os.strerror(exc.errno)}")
+    for parts in SANDBOX_EVENT_RELPATHS:
+        events = home.joinpath(*parts)
+        try:
+            events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+        except OSError as exc:
+            return (f"--grok-home {'/'.join(parts)} could not be reserved: "
+                    f"{os.strerror(exc.errno)}")
     return None
 
 
-def _grade_sandbox_events(home: Path, expected_profile: str
-                          ) -> tuple[dict, list[str]]:
-    """Read `$GROK_HOME/sandbox-events.jsonl` for ProfileApplied.enforced."""
-    path = home / "sandbox-events.jsonl"
-    view: dict = {"path": str(path), "enforced": None, "profile": None}
+def _last_profile_applied(path: Path) -> tuple[dict | None, bool]:
+    """`(record, readable)` for one reserved events file.
+
+    `readable` is False only when the file exists and cannot be trusted — a
+    non-regular file, more than one link to its inode, or an unreadable fd.
+    An ABSENT file is readable-but-empty: the supervisor reserves every
+    candidate location before spawn, so absence means the child removed it,
+    which `_open_regular` then reports as the missing-file case handled here.
+    """
     try:
         fd, st = _open_regular(path)
     except FileNotFoundError:
-        return view, ["sandbox_event_missing"]
+        return None, True
     except (OSError, NotARegularFile):
-        return view, ["sandbox_event_missing"]
+        return None, False
     try:
         if st.st_nlink != 1:
             os.close(fd)
-            return view, ["sandbox_event_missing"]
+            return None, False
         with os.fdopen(fd, "rb") as f:
             data = f.read()
     except OSError:
-        return view, ["sandbox_event_missing"]
+        return None, False
     applied = None
     for line in data.split(b"\n"):
         line = line.strip()
@@ -455,11 +469,50 @@ def _grade_sandbox_events(home: Path, expected_profile: str
             continue
         if isinstance(obj, dict) and obj.get("event_type") == "ProfileApplied":
             applied = obj
-    if applied is None:
+    return applied, True
+
+
+def _grade_sandbox_events(home: Path, expected_profile: str
+                          ) -> tuple[dict, list[str]]:
+    """Read the reserved `ProfileApplied` log for `enforced`.
+
+    grok moved this file: 1.0.13 wrote `$GROK_HOME/sandbox-events.jsonl` and
+    1.0.40 writes `$GROK_HOME/sessions/sandbox-events.jsonl`. Reading one
+    hard-coded location made an enforced sandbox indistinguishable from an
+    absent one — the attempt failed closed, which is safe, but the seat was
+    unusable on the shipped CLI. Every candidate location is reserved before
+    spawn and every one is read here, so a CLI that moves the file again
+    degrades to `sandbox_event_missing` rather than to a forged pass.
+
+    Two records that disagree are a failure, not a vote: the supervisor has
+    no way to tell which run wrote which file, and picking either one would
+    let a stale or planted record answer for this attempt.
+    """
+    view: dict = {"path": None, "enforced": None, "profile": None,
+                  "paths_read": [str(home.joinpath(*parts))
+                                 for parts in SANDBOX_EVENT_RELPATHS]}
+    found: list[tuple[Path, dict]] = []
+    for parts in SANDBOX_EVENT_RELPATHS:
+        path = home.joinpath(*parts)
+        applied, readable = _last_profile_applied(path)
+        if not readable:
+            view["path"] = str(path)
+            return view, ["sandbox_event_missing"]
+        if applied is not None:
+            found.append((path, applied))
+    if not found:
         return view, ["sandbox_event_missing"]
+    path, applied = found[0]
+    view["path"] = str(path)
     view["enforced"] = applied.get("enforced")
     view["profile"] = applied.get("profile")
     reasons: list[str] = []
+    for other_path, other in found[1:]:
+        if (other.get("enforced"), other.get("profile")) != (
+                view["enforced"], view["profile"]):
+            view["path"] = str(other_path)
+            return view, [_reason("sandbox_profile_event_mismatch",
+                                  other.get("profile"))]
     if view["profile"] != expected_profile:
         reasons.append(_reason("sandbox_profile_event_mismatch",
                                view["profile"]))
