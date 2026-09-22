@@ -9,6 +9,7 @@ one of those contracts.
 Run:  python3 -m pytest skills/model-router/tests/ -q
 """
 
+import ast
 import io
 import re
 import tokenize
@@ -515,6 +516,33 @@ def test_model_profiles_quality_evidence_matches_ledger():
         assert any(label in s and score in s for s in sentences), (label, score)
 
 
+def test_a_seat_whose_id_moved_discloses_that_its_quality_numbers_are_inherited():
+    """The scores above were measured on a generation the registry no longer
+    seats. Nothing said so: the two tests that read this document assert only
+    the HISTORICAL row's status, so deleting the disclosure row left them
+    green and the profile reading as a current measurement.
+
+    Keyed off the succession table, so the obligation appears with the next
+    bump instead of naming this one forever."""
+    import sys
+    sys.path.insert(0, str(SKILL / "tests"))
+    from test_baseline_snapshot import ID_SUCCESSION                # noqa: E402
+    ledger = {e["item"]: e for e in CFG["verification_ledger"]["entries"]}
+    for key in ID_SUCCESSION:
+        rows = [e for e in ledger.values()
+                if e.get("status") == "quality_inherited_not_remeasured"
+                and key in str(e.get("item", ""))]
+        assert len(rows) == 1, (key, [e.get("item") for e in rows])
+        row = rows[0]
+        # A pointer to a row that does not exist documents nothing.
+        superseded = row.get("supersedes") or []
+        assert superseded, (key, "the disclosure names no superseded row")
+        for item in superseded:
+            assert item in ledger, (key, item)
+        # And the reader-facing document has to carry the same caveat.
+        assert "inherited, not current" in MODEL_PROFILES_MD
+
+
 # ---------------------------------------------------------------------------
 # examples.md is a transcript, so it has to be re-derivable from the router
 # ---------------------------------------------------------------------------
@@ -987,6 +1015,30 @@ _LEDGER_ITEM_QUOTES = (
     "worker_balanced binding: grok-4.6 over claude-sonnet-5",
 )
 
+# The one place a literal id is the POINT rather than a copy. `ID_SUCCESSION`
+# pins what the registry moved from and to; deriving either side from the
+# registry would make the guard assert the registry against itself and pass
+# any swap. Named here so the exemption is a decision, not an accident of how
+# the line was formatted.
+_ID_PIN_SITES = {"test_baseline_snapshot.py": "ID_SUCCESSION"}
+
+
+def _pinned_id_lines(path: Path, src: str) -> set:
+    """Line numbers of the one named assignment allowed to hold literal ids.
+
+    Resolved through the AST rather than by matching text, so the exemption
+    covers exactly that statement: a literal id anywhere else in the same
+    file — including a second table someone adds beside it — still fails.
+    """
+    name = _ID_PIN_SITES.get(path.name)
+    if name is None:
+        return set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    raise AssertionError(f"{path.name} no longer defines {name}; drop the exemption")
+
 
 def _code_lines(src):
     """Line number -> text, for lines that are neither comment nor docstring.
@@ -997,9 +1049,15 @@ def _code_lines(src):
     """
     prose = set()
     triple = ('"' * 3, "'" * 3)
+    lines = src.splitlines()
     for tok in tokenize.generate_tokens(io.StringIO(src).readline):
         if tok.type == tokenize.COMMENT:
-            prose.update(range(tok.start[0], tok.end[0] + 1))
+            # Only a comment-ONLY line is prose. A trailing comment used to
+            # exempt the code in front of it, so `X = "<id>"  # why` walked
+            # through the guard this file exists to be — which is exactly how
+            # the succession table below first slipped past it.
+            if lines[tok.start[0] - 1].lstrip().startswith("#"):
+                prose.update(range(tok.start[0], tok.end[0] + 1))
         elif tok.type == tokenize.STRING and tok.string.lstrip("rbfu").startswith(triple):
             prose.update(range(tok.start[0], tok.end[0] + 1))
     return {n: line for n, line in enumerate(src.splitlines(), 1) if n not in prose}
@@ -1015,8 +1073,10 @@ def test_tests_never_hardcode_a_registry_model_id_in_code():
     ids = {m["id"] for m in CFG["models"].values()}
     offenders = {}
     for path in sorted((SKILL / "tests").glob("test_*.py")):
-        for n, line in _code_lines(path.read_text()).items():
-            if any(quote in line for quote in _LEDGER_ITEM_QUOTES):
+        src = path.read_text()
+        exempt = _pinned_id_lines(path, src)
+        for n, line in _code_lines(src).items():
+            if any(quote in line for quote in _LEDGER_ITEM_QUOTES) or n in exempt:
                 continue
             hits = sorted(i for i in ids if _whole_token(i, line))
             if hits:

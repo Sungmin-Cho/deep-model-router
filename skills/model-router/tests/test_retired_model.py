@@ -36,6 +36,14 @@ RETIRED_KEY = "claude_architect_retired"
 # while every assertion below still passed on the architect's.
 RETIRED_KEYS = sorted(k for k in CFG["models"] if k.endswith("_retired"))
 
+# What `--prior-failures 1 --prior-models <retired id>` must exit with, per
+# key. The ladder's answer depends on the row's tier — a tier-3 failure
+# exhausts it (1, HUMAN_REQUIRED) and a tier-1 failure escalates (0) — so the
+# expectation is stated per key rather than relaxed to "0 or 1", which would
+# have stopped pinning the architect's terminal status this test was written
+# for. A new retired row must name its own expectation here.
+PRIOR_FAILURE_EXIT = {"claude_architect_retired": 1, "xai_frontier_retired": 0}
+
 # A host model must belong to its runtime's native family, so `--host-model`
 # on a retired id has to be asked from the runtime that family is native to.
 NATIVE_RUNTIME = {CFG["role_bindings"][spec["degraded_binding"]]["senior_engineer"]: rt
@@ -102,9 +110,10 @@ def test_retired_id_cli_exit_statuses_are_never_invalid_input(key):
             "--complexity", "1", "--uncertainty", "1", "--blast-radius", "1", "--reversibility", "1"]
     rid = row["id"]
     run = lambda *extra: subprocess.run(base + list(extra), capture_output=True, text=True).returncode  # noqa: E731
-    assert run("--unavailable-models", rid) in (0, 1)
-    assert run("--host-model", rid, "--host-effort", "HIGH") in (0, 1)
-    assert run("--prior-failures", "1", "--prior-models", rid) in (0, 1)
+    assert run("--unavailable-models", rid) == 0
+    assert run("--host-model", rid, "--host-effort", "HIGH") == 0
+    assert key in PRIOR_FAILURE_EXIT, (key, "name this key's expected exit status")
+    assert run("--prior-failures", "1", "--prior-models", rid) == PRIOR_FAILURE_EXIT[key]
 
 
 def test_retired_host_model_is_still_compared_by_tier():

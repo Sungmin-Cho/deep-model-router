@@ -339,6 +339,16 @@ location table are held equal by test. A future move degrades to
 `sandbox_event_missing` — the seat fails closed, which is how 1.0.40 was
 found.
 
+**Reserving the name is not reserving the log.** Each reservation is pinned
+by `(st_dev, st_ino)`, as `--require-artifact` pins its own, because the deny
+rule is a permission-policy control that stops an append and not an
+unlink-and-recreate: a fresh single-linked regular file in the same name
+reads exactly like the logger's. A location that is gone at grading is
+`sandbox_event_missing`; one that is there but is not the reserved inode is
+`sandbox_event_identity_replaced`. Two present records that disagree are
+`sandbox_event_disagreement`, with both records in the receipt. grok 1.0.40
+appends to the reserved inode, so the pin costs a real run nothing.
+
 ```bash
 grok --no-auto-update -m <id> --effort <native-effort> \
     --output-format json -s <fresh-uuid> \

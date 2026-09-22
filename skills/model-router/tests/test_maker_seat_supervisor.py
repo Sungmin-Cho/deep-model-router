@@ -359,8 +359,12 @@ def test_two_disagreeing_records_are_a_failure_not_a_vote(tmp_path):
                "--expect-sandbox-enforced", "dmr-maker-v1"))
     assert proc.returncode == 6, proc.stderr
     assert receipt["result"]["state"] == "INVALID_OUTPUT"
-    assert any("sandbox_profile_event_mismatch" in r
-               for r in receipt["result"]["invalid_reasons"])
+    # Its own word. Both records here name dmr-maker-v1 and differ only on
+    # `enforced`, so reporting a PROFILE mismatch would tell a control loop
+    # keying off the prefix that the wrong sandbox ran.
+    assert "sandbox_event_disagreement" in receipt["result"]["invalid_reasons"]
+    assert not any("sandbox_profile_event_mismatch" in r
+                   for r in receipt["result"]["invalid_reasons"])
 
 
 def test_a_multiply_linked_events_file_is_never_skipped_as_absent(tmp_path):
@@ -383,7 +387,36 @@ def test_a_multiply_linked_events_file_is_never_skipped_as_absent(tmp_path):
         extra=("--grok-home", str(home),
                "--expect-sandbox-enforced", "dmr-maker-v1"))
     assert proc.returncode == 6, proc.stderr
-    assert "sandbox_event_missing" in receipt["result"]["invalid_reasons"]
+    assert any(r.startswith("sandbox_event_identity_replaced")
+               for r in receipt["result"]["invalid_reasons"])
+
+
+def test_replacing_a_reservation_with_a_forged_record_is_refused(tmp_path):
+    """Round-3 finding: deletion failed, replacement did not. A child that
+    unlinks a reservation and writes its own single-linked file in that name
+    produces something the old check could not tell from the logger's output.
+    The reserved (dev, ino) is what distinguishes them."""
+    home = tmp_path / "ghome"
+    forged = {"event_type": "ProfileApplied", "profile": "dmr-maker-v1",
+              "enforced": True, "workspace": "/forged", "platform": "forged"}
+    body = textwrap.dedent(f"""
+        import json, os
+        from pathlib import Path
+        p = Path(os.environ["GROK_HOME"]) / "sessions" / "sandbox-events.jsonl"
+        p.unlink()                      # drop the supervisor's reservation
+        p.write_text(json.dumps({forged!r}))          # a fresh inode, ours
+        print("verdict: PASS")
+        print("confidence: 0.9")
+    """)
+    fake = write_fake(tmp_path, "swap.py", body)
+    proc, receipt = run_dispatch(
+        tmp_path, [sys.executable, fake],
+        extra=("--grok-home", str(home),
+               "--expect-sandbox-enforced", "dmr-maker-v1"))
+    assert proc.returncode == 6, proc.stderr
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert any(r.startswith("sandbox_event_identity_replaced")
+               for r in receipt["result"]["invalid_reasons"])
 
 
 def test_the_shipped_maker_argv_denies_every_location_the_supervisor_reads():
@@ -443,6 +476,7 @@ def test_a_mismatch_receipt_never_pairs_one_path_with_another_files_values(tmp_p
         extra=("--grok-home", str(home),
                "--expect-sandbox-enforced", "dmr-maker-v1"))
     assert proc.returncode == 6, proc.stderr
+    assert "sandbox_event_disagreement" in receipt["result"]["invalid_reasons"]
     events = receipt["result"]["sandbox_events"]
     assert events["path"] is None and events["enforced"] is None
     assert [(d["path"], d["enforced"]) for d in events["disagreement"]] == [

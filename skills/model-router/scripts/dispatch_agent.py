@@ -260,6 +260,7 @@ INVALID_REASON_FLAGS = (
     "session_evidence_unreadable",  # declared, but summary.json is not there
     "session_evidence_unbound",     # evidence belongs to some other attempt
     "sandbox_event_missing",        # --expect-sandbox-enforced, no ProfileApplied
+    "sandbox_event_disagreement",   # two reserved locations, two different records
     "envelope_reported_error",      # the document says so itself (is_error)
     "envelope_invalid_error_discriminator",  # Claude requires a boolean is_error
 )
@@ -274,6 +275,8 @@ INVALID_REASON_PREFIXES = (
     "artifact_unchanged",           # :<path> — a prior attempt's leftover
     "artifact_multiply_linked",     # :<path> — a second name for the inode
     "artifact_identity_replaced",   # :<path> — not the inode pinned pre-spawn
+    "sandbox_event_identity_replaced",  # :<path> — the ProfileApplied log is
+                                    # not the inode reserved pre-spawn
     "artifact_reservation_cleanup_failed",  # :<path> — the supervisor's own
                                     # pre-spawn reservation is still on disk
                                     # because withdrawing it failed
@@ -380,8 +383,13 @@ def _audit_single_linked_tree(root: Path) -> str | None:
 
 
 def _prepare_grok_home(home: Path, auth_seed: Path | None,
-                       sandbox_profile: str | None) -> str | None:
-    """Create an attempt-private GROK_HOME. Never follows a symlink."""
+                       sandbox_profile: str | None,
+                       pins: dict) -> str | None:
+    """Create an attempt-private GROK_HOME. Never follows a symlink.
+
+    `pins` is filled with `{relpath_tuple: (st_dev, st_ino)}` for every
+    reserved ProfileApplied location, and is what grading compares against.
+    """
     if home.exists() or os.path.lexists(home):
         try:
             st = os.lstat(home)
@@ -428,18 +436,39 @@ def _prepare_grok_home(home: Path, auth_seed: Path | None,
         try:
             events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(events, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.close(fd)
+            try:
+                st = os.fstat(fd)
+            finally:
+                os.close(fd)
         except OSError as exc:
             return (f"--grok-home {'/'.join(parts)} could not be reserved: "
                     f"{os.strerror(exc.errno)}")
+        # Pin the inode this supervisor created, the same way --require-artifact
+        # pins its reservations. Reserving a NAME only proves something is there
+        # at grading; a child that unlinks the reservation and writes a fresh
+        # file of its own gets a forged record read as the logger's. Measured on
+        # grok 1.0.40: the logger APPENDS to this inode (the reservation's 0600
+        # survives the run), so pinning costs nothing a real run needs.
+        pins[parts] = (st.st_dev, st.st_ino)
     return None
 
 
-def _last_profile_applied(path: Path) -> tuple[dict | None, bool]:
-    """`(record, readable)` for one reserved events file.
+def _last_profile_applied(path: Path, pin: tuple | None
+                          ) -> tuple[dict | None, str]:
+    """`(record, status)` for one reserved events file.
 
-    `readable` is False whenever the file cannot be trusted: absent, not a
-    regular file, more than one link to its inode, or an unreadable fd.
+    `status` is `"ok"` when the file is the reservation this supervisor made
+    and was read; `"absent"` when it is gone; `"untrusted"` when something is
+    there but is not that reservation — not a regular file, more than one link
+    to its inode, not the pinned (dev, ino), or an unreadable fd. Absence and
+    substitution are separate words because a caller triaging a failed write
+    seat has to tell a CLI that moved its log from a child that swapped it.
+
+    The identity check is the half that absence alone does not cover. Making
+    a missing reservation fail stopped a child from DELETING the record that
+    disagreed with it; without the pin it could unlink and recreate the same
+    name around a record of its own, and a fresh single-linked regular file
+    reads exactly like the logger's.
 
     ABSENCE IS TAMPERING, not emptiness. The supervisor creates every
     candidate location before spawn and nothing legitimate removes one, so a
@@ -450,20 +479,32 @@ def _last_profile_applied(path: Path) -> tuple[dict | None, bool]:
     PRESENT (the supervisor's own empty reservation) and returns
     `(None, True)`, which is the normal one-writer case.
     """
+    # O_NOFOLLOW guards the final element only, and this log now lives one
+    # directory down. A `sessions` swapped for a symlink between reservation
+    # and grading would be followed silently, so the component is checked in
+    # its own right before the file is opened.
+    if path.parent != path.parent.parent:
+        try:
+            parent = os.lstat(path.parent)
+        except OSError:
+            return None, "untrusted"
+        if stat.S_ISLNK(parent.st_mode) or not stat.S_ISDIR(parent.st_mode):
+            return None, "untrusted"
     try:
         fd, st = _open_regular(path)
     except FileNotFoundError:
-        return None, False
+        return None, "absent"
     except (OSError, NotARegularFile):
-        return None, False
+        return None, "untrusted"
     try:
-        if st.st_nlink != 1:
+        if st.st_nlink != 1 or (pin is not None
+                                and (st.st_dev, st.st_ino) != pin):
             os.close(fd)
-            return None, False
+            return None, "untrusted"
         with os.fdopen(fd, "rb") as f:
             data = f.read()
     except OSError:
-        return None, False
+        return None, "untrusted"
     applied = None
     for line in data.split(b"\n"):
         line = line.strip()
@@ -475,10 +516,10 @@ def _last_profile_applied(path: Path) -> tuple[dict | None, bool]:
             continue
         if isinstance(obj, dict) and obj.get("event_type") == "ProfileApplied":
             applied = obj
-    return applied, True
+    return applied, "ok"
 
 
-def _grade_sandbox_events(home: Path, expected_profile: str
+def _grade_sandbox_events(home: Path, expected_profile: str, pins: dict
                           ) -> tuple[dict, list[str]]:
     """Read the reserved `ProfileApplied` log for `enforced`.
 
@@ -500,10 +541,11 @@ def _grade_sandbox_events(home: Path, expected_profile: str
     found: list[tuple[Path, dict]] = []
     for parts in SANDBOX_EVENT_RELPATHS:
         path = home.joinpath(*parts)
-        applied, readable = _last_profile_applied(path)
-        if not readable:
+        applied, status = _last_profile_applied(path, pins.get(parts))
+        if status != "ok":
             view["path"] = str(path)
-            return view, ["sandbox_event_missing"]
+            return view, ["sandbox_event_missing" if status == "absent"
+                          else _reason("sandbox_event_identity_replaced", path)]
         if applied is not None:
             found.append((path, applied))
     if not found:
@@ -524,8 +566,13 @@ def _grade_sandbox_events(home: Path, expected_profile: str
                  "enforced": rec.get("enforced")} for where, rec in found]
             view["enforced"] = None
             view["profile"] = None
-            return view, [_reason("sandbox_profile_event_mismatch",
-                                  other.get("profile"))]
+            # Its own reason. `sandbox_profile_event_mismatch:<observed>` means
+            # the sandbox that ran was not the one asked for; two locations that
+            # disagree may both name the right profile and differ only on
+            # `enforced`, and reporting that as a profile mismatch tells a
+            # control loop keying off the prefix the wrong thing. The differing
+            # records are in `view["disagreement"]`.
+            return view, ["sandbox_event_disagreement"]
     if view["profile"] != expected_profile:
         reasons.append(_reason("sandbox_profile_event_mismatch",
                                view["profile"]))
@@ -2125,13 +2172,15 @@ def _run_attempt(args, pins: list[dict]) -> int:
             return 2
         args.child_cwd = str(child.resolve())
 
+    sandbox_event_pins: dict = {}
     if args.grok_home is not None:
         home = Path(args.grok_home)
         home = home if home.is_absolute() else Path.cwd() / home
         seed = Path(args.grok_auth_seed) if args.grok_auth_seed else None
         if seed is not None and not seed.is_absolute():
             seed = Path.cwd() / seed
-        err = _prepare_grok_home(home, seed, args.expect_sandbox_enforced)
+        err = _prepare_grok_home(home, seed, args.expect_sandbox_enforced,
+                                 sandbox_event_pins)
         if err is not None:
             print(f"error: {err}", file=sys.stderr)
             return 2
@@ -2490,7 +2539,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         if args.expect_sandbox_enforced is not None:
                             view, event_reasons = _grade_sandbox_events(
                                 Path(args.grok_home),
-                                args.expect_sandbox_enforced)
+                                args.expect_sandbox_enforced,
+                                sandbox_event_pins)
                             receipt["result"]["sandbox_events"] = view
                             reasons = reasons + event_reasons
                         if artifact_entries:
