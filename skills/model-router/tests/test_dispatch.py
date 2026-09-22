@@ -1232,7 +1232,7 @@ def envelope_fake(doc=None, *, raw=None, exit_code=0):
 
 
 def grok_doc(stop_reason="end_turn", text="verdict: PASS\nconfidence: 0.9",
-             session_id=SESSION_UUID, model_usage=("grok-4.6-build",),
+             session_id=SESSION_UUID, model_usage=("grok-4.7-build",),
              usage=_SENTINEL):
     """Shaped like the 44 real grok captures under docs/, `usage` included.
 
@@ -1384,7 +1384,7 @@ def test_envelope_end_turn_with_verdict_in_text_is_succeeded(tmp_path):
     assert receipt["result"]["envelope"]["parse_ok"] is True
     assert receipt["result"]["envelope"]["stop_reason"] == "end_turn"
     assert receipt["result"]["envelope"]["session_id"] == SESSION_UUID
-    assert receipt["result"]["envelope"]["served_models"] == ["grok-4.6-build"]
+    assert receipt["result"]["envelope"]["served_models"] == ["grok-4.7-build"]
     assert receipt["result"]["envelope"]["error_type"] is None
     assert receipt["result"]["invalid_reasons"] is None
 
@@ -2843,7 +2843,7 @@ def _xai_receipt(tmp_path, attempt_id, seat, *, transport_id="claude_code.to_xai
         payload["result"]["envelope"] = {
             "parse_ok": True, "stop_reason": envelope,
             "session_id": SESSION_UUID,
-            "served_models": ["grok-4.6-build"], "error_type": None}
+            "served_models": ["grok-4.7-build"], "error_type": None}
     if session_evidence:
         payload["session_evidence"] = {
             "format": "grok-session-v1", "dir": "/tmp/s",
@@ -2907,7 +2907,7 @@ def test_verify_evidence_leaves_non_xai_receipts_alone(tmp_path):
 
 def test_top_level_observed_pair_stays_null_unavailable_with_served_models_recorded(
         tmp_path):
-    """DD-7. The served identifier (`grok-4.6-build`) is now observable, but
+    """DD-7. The served identifier (`grok-4.7-build`) is now observable, but
     promoting it to the top-level pair would make an honest copy of this
     receipt fail RouteObservationV1's I-OBS-MODEL rule — or force the
     observation to lie by recording `unavailable`. The evidence is preserved
@@ -2923,7 +2923,7 @@ def test_top_level_observed_pair_stays_null_unavailable_with_served_models_recor
         extra=("--model-id", ID("xai_frontier"), *ENVELOPE_ARGS,
                *session_args(session_dir)))
     assert proc.returncode == 0, proc.stderr
-    assert receipt["result"]["envelope"]["served_models"] == ["grok-4.6-build"]
+    assert receipt["result"]["envelope"]["served_models"] == ["grok-4.7-build"]
     assert receipt["model_id"] == ID("xai_frontier")
     # Observed as served, recorded verbatim: the supervisor does not
     # normalize a served identifier against the declared one.

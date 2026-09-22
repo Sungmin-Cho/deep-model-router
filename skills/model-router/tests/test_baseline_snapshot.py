@@ -63,10 +63,19 @@ def test_the_floor_tables_did_not_move():
     for key in ("worker_selection", "review", "effort_by_work",
                 "role_tiers", "effort_map", "worker_balanced_selection"):
         assert new[key] == old[key], key
-    # Preserve every historical model field except independently refreshed billing
-    # quotes. Current quote values/provenance are covered by model-evaluation tests.
+    # Preserve every historical model field except the two that are supposed to
+    # move on their own evidence: independently refreshed billing quotes, and the
+    # provider `id` when a family ships a new generation. Everything the ROUTER
+    # reads off a model — family, capability_tier, effort_ceiling, effort_map,
+    # context_window, dispatchable, verified — stays pinned here, so a generation
+    # refresh cannot quietly re-tier a seat or lift its ceiling. The id itself is
+    # guarded elsewhere and harder: `test_every_verified_model_id_is_named_
+    # verbatim_in_a_verified_ledger_row` refuses any verified id that no verified
+    # ledger row names, so a silent swap fails there rather than passing here.
+    MOVES_ON_ITS_OWN_EVIDENCE = ("price_per_mtok", "id")
     for key, historical in old["models"].items():
         assert {k: v for k, v in new["models"][key].items()
-                if k != "price_per_mtok"} == {
-                    k: v for k, v in historical.items() if k != "price_per_mtok"
+                if k not in MOVES_ON_ITS_OWN_EVIDENCE} == {
+                    k: v for k, v in historical.items()
+                    if k not in MOVES_ON_ITS_OWN_EVIDENCE
                 }, key

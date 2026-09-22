@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-09-22
+
+### Changed
+
+- Bind the balanced worker seat to Grok 4.7, xAI's new default model. Prices, the 200K whole-request tier, the 500K context window and the effort ceiling were re-verified on it and are unchanged, so routing, bindings and `capability_tier` stay where they were.
+- Record the balanced seat's quality evidence as inherited: the head-to-head scores still on file were measured on Grok 4.6 and were not re-run, and the model profile and verification ledger now say so rather than reading as current.
+
 ## [1.14.0] — 2026-09-07
 
 - Add opt-in, source-backed model diagnostics and dated API price quotes; refresh Sol promotional rates and cache-write axes. Publish 24 native diagnostic calls without claiming global optimality or changing routing defaults.

@@ -622,8 +622,15 @@ models:
   # honest reading, not a measured one: no head-to-head was run here, and
   # raising it to 2 would move MEDIUM's reviewer floor — a band change with
   # nothing to do with adding a model.
+  #
+  # The id moved 4.6 -> 4.7 on 2026-09-22 (the CLI's default model changed).
+  # What carries over and what does not is recorded in the ledger: prices,
+  # window and effort ceiling were re-verified on 4.7 and are identical, so
+  # the price half of the worker_balanced binding still holds; the quality
+  # head-to-head was run on 4.6 and has NOT been re-run, so `capability_tier`
+  # stays 1 on inherited evidence rather than a fresh measurement.
   xai_frontier:
-    id: grok-4.6
+    id: grok-4.7
     family: xai
     capability_tier: 1
     effort_ceiling: VERY_HIGH   # probed: the CLI rejects `max`
@@ -1351,6 +1358,67 @@ verification_ledger:
         also rejects xhigh, which contradicts the published docs (those say
         xhigh is treated as high). This ledger follows the CLI.
 
+    - item: "grok-4.7 model id"
+      status: verified
+      probed_on: "2026-09-22"
+      attempt_id: "g47-reviewer-1"
+      cli_version: "grok 1.0.40 (eb1a2256660d)"
+      argv: "grok --no-auto-update -m grok-4.7 --effort high --output-format json -s <fresh-uuid> --permission-mode plan --tools read_file,list_dir,grep --deny MCPTool --disable-web-search --sandbox read-only --prompt-file /dev/stdin"
+      evidence: >
+        `grok models` lists grok-4.7 as the CLI default, with grok-4.6 and
+        grok-4.5 still served. Round-trip `grok -p -m grok-4.7` returned OK.
+        Under dispatch_agent.py (transport claude_code.to_xai, seat
+        reviewer-1, --output-schema review, --output-envelope
+        grok-headless-json-v1) attempt g47-reviewer-1 graded SUCCEEDED:
+        exit_status 0, termination_confirmed true, schema_valid true,
+        verdict PASS (not recovered), stop_reason end_turn, session id
+        cross-proved between stdout and summary.json, and stdout modelUsage
+        keys == ["grok-4.7-build"]. The session summary read back
+        current_model_id grok-4.7, reasoning_effort high, sandbox_profile
+        read-only. This also re-verifies the shipped reviewer recipe on CLI
+        1.0.40 for this model; the maker seat was NOT re-probed and its row
+        below still governs.
+
+    - item: "grok-4.7 reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-22"
+      cli_version: "grok 1.0.40 (eb1a2256660d)"
+      evidence: >
+        Seven `grok -p -m grok-4.7 --effort <value>` round-trips: low, medium,
+        high and xhigh returned OK; minimal, none and max were rejected before
+        dispatch ("unknown effort level ... use one of: xhigh, high, medium,
+        low"). Identical to the grok-4.6 acceptance set, so `effort_ceiling:
+        VERY_HIGH` and the xai family effort map carry over unchanged.
+
+    - item: "grok-4.7 pricing and context window"
+      status: documented
+      probed_on: "2026-09-22"
+      source: "https://docs.x.ai/docs/models"
+      evidence: >
+        The official model page lists grok-4.7 at $2.00/$6.00 per MTok with
+        $0.50 cached input below 200K prompt tokens, and $4.00/$12.00 with
+        $1.00 cached input at or above 200K, on a 500K window — identical to
+        grok-4.6 on every axis, boundary included. The whole-request tier
+        entry above therefore still describes this seat, and the price half
+        of the worker_balanced binding is unchanged. Read from published
+        documentation; the tier boundary itself was not exercised by a probe.
+
+    - item: "xai_frontier quality evidence after the grok-4.7 id bump"
+      status: quality_inherited_not_remeasured
+      probed_on: "2026-09-22"
+      evidence: >
+        The seat's id moved grok-4.6 -> grok-4.7 on 2026-09-22. Every quality
+        number this registry holds for the xai balanced seat — the 2026-08-18
+        446-node head-to-head and the 2026-08-20 repeat eval, both recorded
+        below — was measured on grok-4.6 and has NOT been re-run on grok-4.7.
+        What was re-verified is id acceptance, the effort ceiling, published
+        prices and the context window, all unchanged. `capability_tier` stays
+        1: it was never raised on the 4.6 measurements either, so nothing
+        rests on transferring them. Treat the balanced seat's quality as
+        inherited from the predecessor generation until a fresh head-to-head
+        exists; a regression would surface as a normal escalation, not as a
+        silent one, because the ladder still crosses families above this seat.
+
     - item: "Claude Code -> xAI transport (grok -p)"
       status: verified
       probed_on: 2026-08-14
@@ -1520,6 +1588,11 @@ verification_ledger:
         change). The output-price advantage holds BELOW 200K input tokens
         only; see the long-context tier entry above, which is why
         `worker_balanced_selection.prefer_alt_when_flags` exists.
+        2026-09-22: the seat's id moved to grok-4.7. The published rates
+        this row compares are identical on the new generation, so the PRICE
+        half still reads as current; the QUALITY half does not, and the
+        "xai_frontier quality evidence after the grok-4.7 id bump" row above
+        states what was and was not re-run.
 
     - item: "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
       status: verified
