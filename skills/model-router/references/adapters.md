@@ -239,7 +239,11 @@ effort ceiling and the verification ledger are per concrete model.
 declared `lineage` on this machine: it reads the CLI model catalogs for a
 newer id on the same line, verifies it with read-only reviewer probes through
 `dispatch_agent.py run` (empty throwaway `--child-cwd`, no write seat), and
-publishes the passing id as a local overlay entry. The router then swaps only
+publishes the passing id as a local overlay entry. With no Claude catalog
+cache, each Claude row's alias (`catalog_name`, lower-cased) is probed once
+on the same contained reviewer recipe and the served id read off the
+envelope; a strictly newer one then goes through every probe gate like a
+catalog candidate. The router then swaps only
 that row's `id` (and effort map/ceiling), prices it `unavailable`, and keeps
 the old id as a history row. An overlay id's maker seat is not re-probed:
 containment is the transport recipe's, not the id's, and the route says so in
@@ -1167,7 +1171,7 @@ are outside this direct-process-tree boundary. This is not workspace containment
 use a trusted verifier installation/runtime that the child cannot alter (or
 validate its pinned integrity through a trusted controller before invoking it).
 Existing maker-seat sandbox and `--require-single-linked-cwd` obligations remain.
-A guarded `run` whose argv launches codex with its own `-s`/`--sandbox` is refused before spawn (exit 2, no receipt) — the nested Seatbelt cannot read files yet exits 0 — unless `--allow-nested-sandbox no-file-access` declares the child reads no files (the model-evaluation collector does); the opt-in is recorded as the receipt's `allow_nested_sandbox`.
+A guarded `run` whose argv launches codex at all is refused before spawn (exit 2, no receipt) — codex applies its own sandbox whether argv says so (`-s`/`--sandbox`) or not (its `exec` default, `--full-auto`, `-c sandbox_mode=…`, config.toml), and the nested Seatbelt cannot read files yet exits 0 — unless `--allow-nested-sandbox no-file-access` declares the child reads no files (the model-evaluation collector does); the opt-in is recorded as the receipt's `allow_nested_sandbox`.
 
 Accepted cancellation optionally records `result.cancel_requested_at`; this
 control intent is owned by the supervisor/canceler, not the child output.

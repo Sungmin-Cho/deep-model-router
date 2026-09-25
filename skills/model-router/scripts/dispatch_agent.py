@@ -2145,20 +2145,17 @@ def _backfill_terminal_evidence(args, receipt: dict,
             _read_envelope(stdout_path, args.output_envelope))
 
 
-def _nested_codex_sandbox(argv: list[str]) -> bool:
-    """True when argv launches codex with its own sandbox flag.
+def _launches_codex(argv: list[str]) -> bool:
+    """True when argv launches codex (by basename, anywhere in argv).
 
     The one place this supervisor reads argv, and only to REFUSE (DD-B9):
-    a codex executable (by basename) followed anywhere by `-s`, `-s<mode>`,
-    `--sandbox` or `--sandbox=<mode>`. An over-match refuses a launch the
-    caller can still opt into; it never admits one.
+    codex applies its own Seatbelt whether or not argv says so — an explicit
+    `-s`/`--sandbox`, its `exec` default, a `--full-auto` preset, a `-c
+    sandbox_mode=…` override or config.toml — so matching sandbox flags would
+    miss every implicit case (i1r1 opus F5). An over-match refuses a launch
+    the caller can still opt into; it never admits one.
     """
-    for i, arg in enumerate(argv):
-        if os.path.basename(arg) == "codex":
-            return any(a in ("-s", "--sandbox") or a.startswith("--sandbox=")
-                       or (a.startswith("-s") and not a.startswith("--"))
-                       for a in argv[i + 1:])
-    return False
+    return any(os.path.basename(arg) == "codex" for arg in argv)
 
 
 def cmd_run(args) -> int:
@@ -2273,19 +2270,21 @@ def _run_attempt(args, pins: list[dict]) -> int:
             return 2
 
     # --- Guard vs a nested codex sandbox (2026-09-25 DD-B9) -------------
-    # Seatbelt does not nest: a codex `-s <mode>` child inside the receipt
-    # guard cannot read the files it was asked to review and still exits 0 —
-    # a silent non-review that grades SUCCEEDED. Refused before spawn unless
-    # the caller declares the child reads no files at all.
+    # Seatbelt does not nest: a codex child inside the receipt guard runs its
+    # own sandbox (explicit -s, its exec default, a preset or config.toml),
+    # cannot read the files it was asked to review and still exits 0 — a
+    # silent non-review that grades SUCCEEDED. Every guarded codex child is
+    # refused before spawn unless the caller declares it reads no files.
     guarded = getattr(args, "receipt_guard", "none") != "none"
-    if guarded and _nested_codex_sandbox(args.argv) \
+    if guarded and _launches_codex(args.argv) \
             and args.allow_nested_sandbox is None:
-        print("--receipt-guard with a codex child that runs its own "
-              "-s/--sandbox is refused: the nested Seatbelt cannot read files "
-              "and still exits 0, so a review would succeed without reading "
-              "anything. Drop the guard, or declare "
-              "--allow-nested-sandbox no-file-access when the child reads no "
-              "files (references/adapters.md).", file=sys.stderr)
+        print("--receipt-guard with a codex child is refused: codex runs its "
+              "own sandbox (-s/--sandbox, its exec default, --full-auto or "
+              "config.toml), the nested Seatbelt cannot read files and still "
+              "exits 0, so a review would succeed without reading anything. "
+              "Drop the guard, or declare --allow-nested-sandbox "
+              "no-file-access when the child reads no files "
+              "(references/adapters.md).", file=sys.stderr)
         return 2
     if args.allow_nested_sandbox is not None and not guarded:
         print("--allow-nested-sandbox without --receipt-guard constrains "

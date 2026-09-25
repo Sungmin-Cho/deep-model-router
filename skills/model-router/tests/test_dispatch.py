@@ -3995,7 +3995,13 @@ GUARD_ARGS = ("--receipt-guard", "darwin-sandbox-v1")
 
 @pytest.mark.parametrize("sandbox", [("-s", "read-only"),
                                      ("--sandbox", "read-only"),
-                                     ("--sandbox=read-only",)])
+                                     ("--sandbox=read-only",),
+                                     # i1r1 opus F5: codex applies its sandbox
+                                     # without -s too — its exec default, a
+                                     # --full-auto preset, a -c override.
+                                     (),
+                                     ("--full-auto",),
+                                     ("-c", "sandbox_mode=read-only")])
 def test_guard_with_a_codex_sandbox_is_refused_before_spawn(tmp_path, sandbox):
     """A codex Seatbelt nested inside the receipt guard cannot read files and
     still exits 0 — a silent non-review. Refused pre-spawn: exit 2, no
@@ -4020,15 +4026,15 @@ def test_codex_sandbox_without_guard_is_not_refused(tmp_path):
     assert receipt["allow_nested_sandbox"] is None
 
 
-def test_guard_without_codex_sandbox_is_not_refused_by_this_check(tmp_path):
-    """The refusal is the conjunction; a guard alone keeps its old meaning."""
+def test_every_codex_child_counts_as_sandboxed_but_nothing_else_does(tmp_path):
+    """i1r1 opus F5: codex sandboxes itself from its exec default, presets or
+    config.toml whether or not argv says so, so a guarded codex child is
+    refused on the executable alone; a non-codex child is not."""
     dispatch_agent = _in_process(tmp_path)
-    assert dispatch_agent._nested_codex_sandbox(
-        ["codex", "exec", "-m", "x", "-"]) is False
-    assert dispatch_agent._nested_codex_sandbox(
-        ["python3", "x.py", "-s", "read-only"]) is False
-    assert dispatch_agent._nested_codex_sandbox(
-        ["/opt/bin/codex", "exec", "-s", "read-only"]) is True
+    assert dispatch_agent._launches_codex(["codex", "exec", "-m", "x", "-"]) is True
+    assert dispatch_agent._launches_codex(["/opt/bin/codex", "exec", "-s", "read-only"]) is True
+    assert dispatch_agent._launches_codex(["python3", "x.py", "-s", "read-only"]) is False
+    assert dispatch_agent._launches_codex(["claude", "-p", "--model", "x"]) is False
 
 
 def test_nested_sandbox_opt_in_requires_a_guard(tmp_path):
