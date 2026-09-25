@@ -117,9 +117,21 @@ EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → 워커와
 
 critical-domain 플래그(auth, security, financial, data integrity)는 채점 후 모든 작업 클래스에서 밴드를 올립니다. 잘 이해된 작은 인가 경로 수정도 강한 워커와 독립 리뷰를 받습니다.
 
-정책은 `skills/model-router/config/model-routing.yaml`에 있습니다. 모델 식별자는 여기에만 등장합니다. 스킬 본문과 `references/`는 스크립트가 실행하는 규칙과 같습니다.
+정책은 `skills/model-router/config/model-routing.yaml`에 있습니다. 모델 식별자는 이 레지스트리 또는 이 기계에서 프로브를 통과한 로컬 오버레이 항목(아래)에서만 생기며, 레지스트리로 돌아가는 길은 `model_sync.py promote`뿐입니다. 스킬 본문과 `references/`는 스크립트가 실행하는 규칙과 같습니다.
 
 exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2** 잘못된 입력, **3** 먼저 확인 필요, **4** production hotfix(배포 후 확인), **5** 내부 오류. 이 중 3만 설정 가능합니다 — `human_in_the_loop.human_gate_exit_status`이며 3..255 범위의 값을 가질 수 있으므로, 3을 이미 다른 용도로 쓰는 호출자는 게이트 코드를 옮길 수 있습니다. 하드코딩하지 말고 config에서 읽으세요. 0·1·2는 이미 사용 중이고 255를 넘으면 성공 코드로 잘리기 때문에, 이 범위는 로드 시점에 검증합니다.
+
+---
+
+## 모델 자동 업그레이드 / 로컬 오버레이
+
+벤더는 릴리스보다 빨리 새 모델 세대를 내놓습니다. `skills/model-router/scripts/model_sync.py`는 레지스트리 행마다 선언된 계열(lineage)을 이 기계에서 따라갑니다. CLI 모델 카탈로그를 오프라인으로 읽고, 후속 id를 봉쇄된 읽기 전용 프로브로 확인한 뒤, 로컬 오버레이 항목으로 발행합니다. 그러면 라우터는 그 행을 새 id로 라우팅합니다 — tier는 승계, 가격은 `unavailable`, 그리고 이 id의 maker 좌석은 재검증되지 않았다는 note가 붙습니다. 플러그인 파일은 수정하지 않습니다.
+
+- **트리거.** SessionStart 훅이 `model_sync.py tick --detach`를 실행합니다(오프라인, 수 ms; 후속 id가 대상일 때만 분리된 프로브 실행을 띄웁니다). Codex는 훅 명령을 신뢰할지 한 번 묻습니다. Grok이나 훅이 없는 호스트는 스킬에서 같은 틱을 실행합니다.
+- **상태.** `$DEEP_MODEL_ROUTER_STATE_DIR`, 없으면 `$XDG_STATE_HOME/deep-model-router`, 없으면 `~/.local/state/deep-model-router`(0700; 도구가 쓰는 상태이며 사람이 편집하지 않습니다). 라우터는 `committed/`만 읽습니다. `committed/`를 지우면 처음 설치 상태로 돌아가며, 폐기도 함께 사라집니다.
+- **명령.** `model_sync.py status`(현 세대, 보류, 알림) · `revert <key>`(항목을 빼고 그 id를 폐기) · `unblock <id>` · `disable` / `enable`(자동 업그레이드; `disable`은 진행 중 프로브도 취소) · `repair [--to <generation>]` · `quota`(로컬 rollout 기록에서 읽는 codex 사용량; 모델 호출 없음) · `promote --repo … --key … --price …`(항목을 리포 체크아웃으로 옮김).
+- **끄기.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 틱과 발행을 멈춥니다. `DEEP_MODEL_ROUTER_OVERLAY=off`는 비상 스위치입니다: 라우터가 오버레이 항목을 무시하되 폐기는 유지합니다. 손상된 committed 상태는 그래도 fail closed(`MODEL_STATE_UNAVAILABLE`)입니다 — `repair`를 쓰세요.
+- **진행 중인 deep-loop 실행.** 정책 다이제스트가 바뀌면 — 플러그인 업데이트나 오버레이 발행 — deep-loop가 `policy_pin`을 넘기기 전까지 진행 중인 deep-loop 실행이 멈춥니다. 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
 
 ---
 

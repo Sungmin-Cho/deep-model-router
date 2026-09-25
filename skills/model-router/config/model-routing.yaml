@@ -6,8 +6,11 @@
 # task's class, its four dimension scores, and its flags is a judgment call that
 # belongs to the model, not to a config file.
 #
-# Concrete model identifiers live here and nowhere else. Routing logic addresses
-# models by role alias only, so a model rename is a one-line change in this file.
+# Concrete model identifiers of the shipped policy live here and nowhere else in
+# the source or public docs. Routing logic addresses models by role alias only,
+# so a model rename is a one-line change in this file. On one machine, a probed
+# local overlay entry (model_sync.py, tool-written state outside the repo) may
+# swap a row's id; `model_sync.py promote` is the only way back into this file.
 #
 # Verification status of every identifier is recorded in `verification_ledger`
 # at the bottom. Keep it honest: "assumed" and "verified" must not blur.

@@ -235,6 +235,18 @@ registry, the registry is stale: bump the id, re-probe, and keep the retired
 id as a non-dispatchable history row. Never register an alias — price, tier,
 effort ceiling and the verification ledger are per concrete model.
 
+**Local overlay path.** `scripts/model_sync.py` follows a registry row's
+declared `lineage` on this machine: it reads the CLI model catalogs for a
+newer id on the same line, verifies it with read-only reviewer probes through
+`dispatch_agent.py run` (empty throwaway `--child-cwd`, no write seat), and
+publishes the passing id as a local overlay entry. The router then swaps only
+that row's `id` (and effort map/ceiling), prices it `unavailable`, and keeps
+the old id as a history row. An overlay id's maker seat is not re-probed:
+containment is the transport recipe's, not the id's, and the route says so in
+a note. Per-id maker re-verification is the attended `model_sync.py
+probe-maker`, run before `model_sync.py promote` — the only way an overlay id
+enters the registry.
+
 ### Codex
 
 **Native:** the `multi_agent` feature (stable, enabled). Its context-isolation

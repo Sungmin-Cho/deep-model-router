@@ -117,9 +117,21 @@ EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → the worke
 
 Critical-domain flags (auth, security, financial, data integrity) raise the band after scoring, for every task class. A small, well-understood change in an authorization path still gets a strong worker and independent review.
 
-The policy lives in `skills/model-router/config/model-routing.yaml`. Model identifiers appear there and nowhere else. The skill body and `references/` describe the same rules the script executes.
+The policy lives in `skills/model-router/config/model-routing.yaml`. Model identifiers are born in that registry or in a probed local overlay entry on your machine (below), and `model_sync.py promote` is the only way back into the registry. The skill body and `references/` describe the same rules the script executes.
 
 Exit status is part of the contract: **0** dispatchable, **1** terminal, **2** invalid input, **3** needs confirmation first, **4** production hotfix (confirm after it ships), **5** internal error. Only 3 is configurable — it is `human_in_the_loop.human_gate_exit_status`, any value in 3..255, so a caller that already uses 3 for something else can move the gate. Read it from the config rather than hard-coding it; 0, 1 and 2 are taken and >255 truncates to a success code, which is why the range is validated at load time.
+
+---
+
+## Model auto-upgrade / local overlay
+
+Vendors ship new model generations faster than releases. `skills/model-router/scripts/model_sync.py` follows each registry row's declared lineage on your machine: it reads the CLI model catalogs offline, verifies a successor id with contained read-only probes, and publishes it as a local overlay entry. The router then routes that row on the new id — tier inherited, price `unavailable`, and a note that the maker seat was not re-probed for this id. Nothing is edited in the plugin.
+
+- **Trigger.** A SessionStart hook runs `model_sync.py tick --detach` (offline, milliseconds; it starts a detached probe run only when a successor is due). Codex asks once to trust the hook command. Grok, or any host without the hook, runs the same tick from the skill.
+- **State.** `$DEEP_MODEL_ROUTER_STATE_DIR`, else `$XDG_STATE_HOME/deep-model-router`, else `~/.local/state/deep-model-router` (0700; tool-written, not hand-edited). The router reads only `committed/`. Deleting `committed/` resets to a fresh install, revocations included.
+- **Commands.** `model_sync.py status` (current generation, deferrals, notices) · `revert <key>` (drop the entry and revoke its id) · `unblock <id>` · `disable` / `enable` (auto-upgrade; `disable` also cancels in-flight probes) · `repair [--to <generation>]` · `quota` (codex usage from local rollout records; no model call) · `promote --repo … --key … --price …` (move an entry into a repo checkout).
+- **Off switches.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0` stops ticks and publication. `DEEP_MODEL_ROUTER_OVERLAY=off` is the emergency switch: the router ignores overlay entries but keeps revocations. Corrupt committed state still fails closed (`MODEL_STATE_UNAVAILABLE`) — use `repair`.
+- **In-flight deep-loop runs.** A policy digest change — a plugin update or an overlay publication — stops an in-flight deep-loop run until deep-loop passes `policy_pin`. For long runs, set `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`.
 
 ---
 

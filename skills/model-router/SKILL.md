@@ -575,6 +575,8 @@ detail are defined in `references/routing-policy.md`.
 A model that does not resolve is unavailable — fall back per
 `references/adapters.md` and record it; never a hard failure.
 
+Run the offline model tick once: `python3 "$SKILL_DIR"/scripts/model_sync.py tick --detach`.
+
 ## References
 
 Read these when needed; not for a routine route.
