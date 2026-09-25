@@ -9,8 +9,8 @@ one of those contracts.
 Run:  python3 -m pytest skills/model-router/tests/ -q
 """
 
-import ast
 import io
+import json
 import re
 import tokenize
 import sys
@@ -522,17 +522,25 @@ def test_a_seat_whose_id_moved_discloses_that_its_quality_numbers_are_inherited(
     the HISTORICAL row's status, so deleting the disclosure row left them
     green and the profile reading as a current measurement.
 
-    Keyed off the succession table, so the obligation appears with the next
-    bump instead of naming this one forever."""
+    Keyed off the succession chains (every key whose id moved after the 1.12.1
+    snapshot), so the obligation appears with the next bump instead of naming
+    this one forever. One row per key for the CURRENT id: a second bump of the
+    same key adds a second disclosure row, and the older one stays in the
+    ledger reachable through the newer row's `supersedes`, so counting every
+    row that names the key would fail on the second bump for the wrong reason
+    (design 2026-09-25 DD-A3)."""
     import sys
     sys.path.insert(0, str(SKILL / "tests"))
-    from test_baseline_snapshot import ID_SUCCESSION                # noqa: E402
+    from test_baseline_snapshot import moved_since_baseline         # noqa: E402
     ledger = {e["item"]: e for e in CFG["verification_ledger"]["entries"]}
-    for key in ID_SUCCESSION:
+    moved = moved_since_baseline()
+    assert moved, "no key has moved since 1.12.1; re-read this test"
+    for key, (_was, current) in moved.items():
         rows = [e for e in ledger.values()
                 if e.get("status") == "quality_inherited_not_remeasured"
-                and key in str(e.get("item", ""))]
-        assert len(rows) == 1, (key, [e.get("item") for e in rows])
+                and key in str(e.get("item", ""))
+                and _whole_token(current, str(e.get("item", "")))]
+        assert len(rows) == 1, (key, current, [e.get("item") for e in rows])
         row = rows[0]
         # A pointer to a row that does not exist documents nothing.
         superseded = row.get("supersedes") or []
@@ -1015,29 +1023,16 @@ _LEDGER_ITEM_QUOTES = (
     "worker_balanced binding: grok-4.6 over claude-sonnet-5",
 )
 
-# The one place a literal id is the POINT rather than a copy. `ID_SUCCESSION`
-# pins what the registry moved from and to; deriving either side from the
+# The one place a literal id is the POINT rather than a copy: the succession
+# fixture pins what each registry key moved from and to, the history-row key
+# renames, and the human-set prior-failure exits. Deriving any of it from the
 # registry would make the guard assert the registry against itself and pass
-# any swap. Named here so the exemption is a decision, not an accident of how
-# the line was formatted.
-_ID_PIN_SITES = {"test_baseline_snapshot.py": "ID_SUCCESSION"}
-
-
-def _pinned_id_lines(path: Path, src: str) -> set:
-    """Line numbers of the one named assignment allowed to hold literal ids.
-
-    Resolved through the AST rather than by matching text, so the exemption
-    covers exactly that statement: a literal id anywhere else in the same
-    file — including a second table someone adds beside it — still fails.
-    """
-    name = _ID_PIN_SITES.get(path.name)
-    if name is None:
-        return set()
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.Assign) and any(
-                isinstance(t, ast.Name) and t.id == name for t in node.targets):
-            return set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
-    raise AssertionError(f"{path.name} no longer defines {name}; drop the exemption")
+# any swap. It is JSON, and the guard below scans only `tests/test_*.py`, so
+# the exemption is by FILE TYPE rather than by an AST-resolved assignment —
+# every Python test file is scanned in full, with no statement exempt
+# (design 2026-09-25 DD-A3). Named here so the exemption is a decision, not
+# an accident of where the file happens to live.
+_ID_PIN_SITES = {"fixtures/id-succession.json": ("chains", "key_renames", "prior_failure_exit")}
 
 
 def _code_lines(src):
@@ -1071,12 +1066,18 @@ def test_tests_never_hardcode_a_registry_model_id_in_code():
     site now derives its id from a registry KEY, which is the stable identity.
     """
     ids = {m["id"] for m in CFG["models"].values()}
+    # The pin sites are the only literal-id exemption, and they are not Python:
+    # a pin site that moved back into a `.py` file would be scanned (and fail)
+    # below, and one that vanished leaves a stale exemption.
+    for rel, keys in _ID_PIN_SITES.items():
+        pin = SKILL / "tests" / rel
+        assert pin.suffix == ".json" and pin.is_file(), rel
+        assert set(json.loads(pin.read_text())) == set(keys), rel
     offenders = {}
     for path in sorted((SKILL / "tests").glob("test_*.py")):
         src = path.read_text()
-        exempt = _pinned_id_lines(path, src)
         for n, line in _code_lines(src).items():
-            if any(quote in line for quote in _LEDGER_ITEM_QUOTES) or n in exempt:
+            if any(quote in line for quote in _LEDGER_ITEM_QUOTES):
                 continue
             hits = sorted(i for i in ids if _whole_token(i, line))
             if hits:

@@ -178,6 +178,7 @@ These situations stop or gate rather than proceeding:
 | Independence could not be established | **Terminal.** Disclosure is not a control — a route whose reviewers cannot hold distinct models is one where the implementer reviews itself |
 | No adjudicator could be seated | **Human confirmation.** The route is still dispatchable; what a human takes over is adjudicating a disagreement, should one arise |
 | Routing confidence below 0.60 | The router does not trust its own classification, and classification errors propagate everywhere downstream |
+| Local model state cannot be used | **Terminal** `MODEL_STATE_UNAVAILABLE` (exit 1, no model named; every key of "Every route emits" is present, null or `[]`). Either the state root itself fails admission — not a directory owned by this user with mode 0700, or a symlink — whether or not `committed/` exists (`state_reason: root_unadmitted`; the note names the check that failed and the `chmod 700 <root>` fix, and `model_sync.py status`/`repair` report it), or `committed/` exists but its pointer or generation fails admission, hashing or the schema (`state_reason: unreadable`; `model_sync.py repair` or deleting `committed/` fixes it). Seating anything while revocations are unknown could revive a revoked id, so `DEEP_MODEL_ROUTER_OVERLAY=off` does not bypass either. A `policy_pin` that cannot be reproduced ends the same way, with a `pin_*` reason (see Routing JSON inputs) |
 
 ## Routing JSON inputs
 
@@ -197,6 +198,23 @@ form. Legacy `--json` uses the Task contract, so its flags must remain an
 array. Repeated prior model IDs represent repeated attempts and are retained.
 An empty `allowed_families` remains an unsatisfiable policy; an empty declared
 host seat remains invalid. Valid inputs keep the same policy and fingerprints.
+
+`policy_pin` (RouteRequestV1, or `--policy-pin`) names the `policy_sha256` of
+an earlier route; anything but 64 lowercase hex is exit 2, and it is never part
+of `request_sha256` (the digest it selects already enters the fingerprint).
+Equal to the current effective policy, it changes nothing. Otherwise the router
+walks the committed generations' `parent_generation_sha256` chain (at most 256)
+and recomputes each as current base + that generation's entries and history +
+the **current** generation's revocations, before the request is validated; the
+null parent at the chain's end is the bundled policy with no overlay (a route
+taken before any `committed/` existed pinned it) under the same current
+revocations. The first match routes with `model_overlay.status: pinned`. No match is the
+`MODEL_STATE_UNAVAILABLE` terminal with one `state_reason`, decided in this
+order: `pin_suppressed_by_off` (`DEEP_MODEL_ROUTER_OVERLAY=off` removed entries
+the pin needs), `pin_revoked` (a later revocation — revert beats pin),
+`pin_base_changed` (the bundled policy moved, e.g. a plugin update),
+`pin_generation_missing`. A pin absorbs overlay replacements only; a route
+given an explicit config cannot honour one and refuses it (exit 2).
 
 ## Typed attempt history
 
@@ -302,6 +320,16 @@ human_control_causes: []       # which human_in_the_loop controls fired, by
 notes: []                      # every promotion, floor, compensation and
                                # policy decision the route actually made
 rationale:   # names the band, the triggering flags, and every fallback
+model_overlay:                 # null without committed local model state; else
+                               # {status (applied | partial | noop | pinned |
+                               # unavailable), base_policy_sha256,
+                               # generation_sha256, applied (registry keys),
+                               # noop and rejected ([{key, reason}]),
+                               # history_ids_synthesized, blocked_ids (a
+                               # count), state_reason (unreadable,
+                               # root_unadmitted or a pin_* reason)}. Keys and counts only,
+                               # never a model id. Not a RouteObservationV1
+                               # decision key
 ```
 
 ### Fields the router cannot know

@@ -1,0 +1,96 @@
+{
+ "fetched_at": "2026-09-25T18:01:15.902990Z",
+ "grok_version": "1.0.40",
+ "etag": "W/\"11157542339697348637\"",
+ "models": {
+  "grok-4.7": {
+   "info": {
+    "id": "grok-4.7",
+    "model": "grok-4.7",
+    "model_family": "xai",
+    "hidden": false,
+    "supported_in_api": true,
+    "reasoning_efforts": [
+     {
+      "id": "xhigh"
+     },
+     {
+      "id": "high"
+     },
+     {
+      "id": "medium"
+     },
+     {
+      "id": "low"
+     }
+    ]
+   }
+  },
+  "grok-4.7-build-fast": {
+   "info": {
+    "id": "grok-4.7-build-fast",
+    "model": "grok-4.7-build-fast",
+    "model_family": "xai",
+    "hidden": false,
+    "supported_in_api": true,
+    "reasoning_efforts": [
+     {
+      "id": "xhigh"
+     },
+     {
+      "id": "high"
+     },
+     {
+      "id": "medium"
+     },
+     {
+      "id": "low"
+     }
+    ]
+   }
+  },
+  "grok-4.6": {
+   "info": {
+    "id": "grok-4.6",
+    "model": "grok-4.6",
+    "model_family": "xai",
+    "hidden": false,
+    "supported_in_api": true,
+    "reasoning_efforts": [
+     {
+      "id": "xhigh"
+     },
+     {
+      "id": "high"
+     },
+     {
+      "id": "medium"
+     },
+     {
+      "id": "low"
+     }
+    ]
+   }
+  },
+  "grok-4.5": {
+   "info": {
+    "id": "grok-4.5",
+    "model": "grok-4.5",
+    "model_family": "xai",
+    "hidden": false,
+    "supported_in_api": true,
+    "reasoning_efforts": [
+     {
+      "id": "high"
+     },
+     {
+      "id": "medium"
+     },
+     {
+      "id": "low"
+     }
+    ]
+   }
+  }
+ }
+}

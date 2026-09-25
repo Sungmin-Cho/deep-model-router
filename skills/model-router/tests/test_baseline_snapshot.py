@@ -1,6 +1,7 @@
 """T19 — the 1.12.1 snapshot is a hermetic oracle, not a copy that reads the
 current repo through a side door (design §4 T3 / T19)."""
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -53,27 +54,59 @@ def test_snapshot_policy_cache_is_separate_from_the_live_one():
     assert mod.Policy._cache is not live.Policy._cache
 
 
-# Every model id that has moved since the 1.12.1 baseline: key -> (was, is).
-# One line per generation bump, added in the same change that bumps the
-# registry, so the move is stated somewhere a reader can diff.
-ID_SUCCESSION = {
-    "xai_frontier": ("grok-4.6", "grok-4.7"),      # 2026-09-22, xAI default moved
-}
+# Every model id each live key has held, oldest first: key -> [..., current].
+# Read from `fixtures/id-succession.json` — a literal record written in the
+# same change that bumps the registry, never derived from it, so the move is
+# stated somewhere a reader can diff and a swap cannot pass by asserting the
+# registry against itself. A chain may reach back past 1.12.1
+# (`claude_architect` moved before the snapshot was cut); the snapshot's id
+# must be ON the chain and the live id must be its LAST element.
+SUCCESSION = json.loads((HERE / "fixtures" / "id-succession.json").read_text())
+ID_SUCCESSION = {key: tuple(chain) for key, chain in SUCCESSION["chains"].items()}
+KEY_RENAMES = SUCCESSION["key_renames"]
 
 
-def test_every_superseded_id_is_kept_as_a_retired_row():
+def moved_since_baseline() -> dict:
+    """key -> (1.12.1 id, current id) for every chain whose id moved after the
+    snapshot was cut. What the quality-disclosure obligation keys off."""
+    old = baseline_cfg(load_baseline())["models"]
+    return {key: (old[key]["id"], chain[-1]) for key, chain in ID_SUCCESSION.items()
+            if key in old and old[key]["id"] != chain[-1]}
+
+
+def test_every_superseded_id_is_kept_as_a_history_row():
     """adapters.md: "bump the id, re-probe, and keep the retired id as a
     non-dispatchable history row." Without it a control loop holding a
     pre-bump failure gets exit 2 — invalid input — for a model it really did
-    dispatch. The succession table is where that obligation is checkable."""
+    dispatch. The succession chains are where that obligation is checkable."""
     import route_task as live
     models = live.load_config()["models"]
-    retired = {m["id"]: (key, m) for key, m in models.items()
-               if key.endswith("_retired")}
-    for key, (was, _is) in ID_SUCCESSION.items():
-        assert was in retired, (key, was, "superseded id has no retired row")
-        assert retired[was][1]["dispatchable"] is False, retired[was][0]
-        assert retired[was][1]["family"] == models[key]["family"], retired[was][0]
+    history = {m["id"]: (key, m) for key, m in models.items() if "history_of" in m}
+    for key, chain in ID_SUCCESSION.items():
+        assert len(chain) == len(set(chain)) >= 2, (key, chain)
+        assert models[key]["id"] == chain[-1], (key, "the chain must end at the live id")
+        for was in chain[:-1]:
+            assert was in history, (key, was, "superseded id has no history row")
+            hkey, row = history[was]
+            assert hkey == f"{key}@{was}", hkey
+            assert row["history_of"] == key, hkey
+            assert row["dispatchable"] is False, hkey
+            assert row["family"] == models[key]["family"], hkey
+
+
+def test_key_renames_point_retired_keys_at_live_history_rows():
+    """A rename names a pre-DD-A3 `_retired` key (1.12.1 had one of the two;
+    1.15.0 added the other) and the history row that replaced it."""
+    import route_task as live
+    old = baseline_cfg(load_baseline())["models"]
+    new = live.load_config()["models"]
+    assert any(was in old for was in KEY_RENAMES), "no rename reaches the snapshot"
+    for was, now in KEY_RENAMES.items():
+        assert was not in new, was
+        assert now in new and new[now]["history_of"] == now.split("@", 1)[0], now
+        assert now == f"{new[now]['history_of']}@{new[now]['id']}", now
+        if was in old:
+            assert old[was]["id"] == new[now]["id"], (was, now)
 
 
 def test_the_floor_tables_did_not_move():
@@ -99,14 +132,27 @@ def test_the_floor_tables_did_not_move():
     # named in its own: reverting `xai_frontier` to grok-4.6, or pointing it
     # at grok-4.5, would have passed both guards. Naming each move closes
     # that — an id that moves anywhere this table does not say fails here.
+    #
+    # `lineage` and `history_of` are exempt as ADDITIONS (design 2026-09-25
+    # DD-A1, DD-A3): 1.12.1 had neither, and the router routes on `id` and
+    # `dispatchable`, never on the template or the pointer. A history row moved
+    # key (`claude_architect_retired` -> `claude_architect@<id>`); the fixture's
+    # rename table is how the old key is found, so a rename it does not state
+    # fails here as a missing key.
+    exempt = ("price_per_mtok", "id", "lineage", "history_of")
     for key, historical in old["models"].items():
-        assert {k: v for k, v in new["models"][key].items()
-                if k not in ("price_per_mtok", "id")} == {
+        now = KEY_RENAMES.get(key, key)
+        assert now in new["models"], (key, now)
+        assert {k: v for k, v in new["models"][now].items()
+                if k not in exempt} == {
                     k: v for k, v in historical.items()
-                    if k not in ("price_per_mtok", "id")
+                    if k not in exempt
                 }, key
-        move = ID_SUCCESSION.get(key)
-        if move is None:
-            assert new["models"][key]["id"] == historical["id"], key
+        chain = ID_SUCCESSION.get(key)
+        if chain is None:
+            assert new["models"][now]["id"] == historical["id"], key
             continue
-        assert (historical["id"], new["models"][key]["id"]) == move, (key, move)
+        # On the chain, and the live id is the chain's end: reverting a key to
+        # an earlier id, or pointing it at one the chain never names, fails.
+        assert historical["id"] in chain, (key, historical["id"], chain)
+        assert new["models"][now]["id"] == chain[-1], (key, chain)

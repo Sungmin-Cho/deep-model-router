@@ -137,11 +137,14 @@ def test_repeated_mutation_of_one_cfg_keeps_the_policy_cache_bounded():
     from route_task import Policy
     task = Task(**BASE)
     cfg = load_config()
-    before = len(Policy._cache)
     for i in range(1, 26):
         cfg["router"]["confidence"]["escalate_below"] = 0.5 + i * 0.001
         route(task, cfg)
-    assert len(Policy._cache) - before == 1, (
+    # Counted per config object, not as a length delta: the cache is also
+    # bounded overall (LRU, design 2026-09-25 DD-A2), so a full cache stays
+    # the same length while still admitting this object's one entry.
+    held = [p for _, p in Policy._cache.values() if p.cfg is cfg]
+    assert len(held) == 1, (
         "25 revisions of one config object must not leave 25 cached policies")
     # Bounded, and still correct: the last revision routes like a fresh load.
     fresh = load_config()
@@ -158,3 +161,17 @@ def test_the_cache_key_digest_is_the_digest_the_route_emits():
     cfg = load_config()
     out = route(Task(**BASE), cfg)
     assert Policy.of(cfg).content_sha == out["policy_sha256"]
+
+
+def test_policy_pin_is_omitted_from_the_request_identity():
+    """Design 2026-09-25 DD-A9: a pin selects the policy — which the digest
+    already records — so it never enters request_sha256. Pinned from the
+    pre-pin canonical payload: absent and present both hash to it."""
+    from route_task import task_from_request_v1
+    request = {"route_schema_version": 1, "task_class": "IMPLEMENTATION",
+               "complexity": 2, "uncertainty": 1, "blast_radius": 1, "reversibility": 1}
+    golden = "7b50c0cd1c25f55c41c79cb9f14a1c24cfe6dd52bea9d155775367ae6aa16c8a"
+    assert request_sha256_of(task_from_request_v1(request)) == golden
+    pinned = task_from_request_v1({**request, "policy_pin": "d" * 64})
+    assert pinned._policy_pin == "d" * 64
+    assert request_sha256_of(pinned) == golden

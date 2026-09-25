@@ -6,8 +6,11 @@
 # task's class, its four dimension scores, and its flags is a judgment call that
 # belongs to the model, not to a config file.
 #
-# Concrete model identifiers live here and nowhere else. Routing logic addresses
-# models by role alias only, so a model rename is a one-line change in this file.
+# Concrete model identifiers of the shipped policy live here and nowhere else in
+# the source or public docs. Routing logic addresses models by role alias only,
+# so a model rename is a one-line change in this file. On one machine, a probed
+# local overlay entry (model_sync.py, tool-written state outside the repo) may
+# swap a row's id; `model_sync.py promote` is the only way back into this file.
 #
 # Verification status of every identifier is recorded in `verification_ledger`
 # at the bottom. Keep it honest: "assumed" and "verified" must not blur.
@@ -496,8 +499,17 @@ models:
   # role ordinals rank the assignment backwards. Peers share a tier: the two
   # frontier models are interchangeable in strength and differ only in what
   # they are good at, which `reasoning_centric` decides, not this number.
+  #
+  # `lineage` (every dispatchable row; design 2026-09-25 DD-A1) names the
+  # vendor's id spelling across generations: `line` is globally unique,
+  # `template` holds `{gen}` once and optionally a trailing `[-{date}]`, and
+  # the row's own `id` must match it. Policy refuses a row that breaks any of
+  # these, and two rows holding the same id. `catalog_name` (the Claude model
+  # catalog's short_name) and `served_forms` (the spellings a CLI may serve the
+  # id under) are read by model_sync, not by the router.
   claude_worker_fast:
     id: claude-haiku-4-5-20251001
+    lineage: { line: claude/haiku, template: "claude-haiku-{gen}[-{date}]", catalog_name: Haiku }
     family: claude
     capability_tier: 0
     verified: true
@@ -505,20 +517,40 @@ models:
 
   claude_worker_balanced:
     id: claude-sonnet-5
+    lineage: { line: claude/sonnet, template: "claude-sonnet-{gen}", catalog_name: Sonnet }
     family: claude
     capability_tier: 1
     verified: true
     price_per_mtok: { input: 2.00, output: 10.00, cached_input: 0.20 }
 
   claude_senior:
-    id: claude-opus-5
+    id: claude-opus-5-5
+    lineage: { line: claude/opus, template: "claude-opus-{gen}", catalog_name: Opus }
     family: claude
     capability_tier: 2
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-09-25"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      input: 4.0
+      output: 20.0
+      cached_input: 0.2
+      cache_write: 5.0
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "claude_senior@claude-opus-5":
+    id: claude-opus-5
+    history_of: claude_senior
+    family: claude
+    capability_tier: 2
+    dispatchable: false
     verified: true
     price_per_mtok: { input: 5.00, output: 25.00, cached_input: 0.50 }
 
   claude_architect:
     id: claude-fable-5-1
+    lineage: { line: claude/fable, template: "claude-fable-{gen}", catalog_name: Fable }
     family: claude
     capability_tier: 3
     verified: true
@@ -534,8 +566,16 @@ models:
   # that crosses the release boundary keeps working; never a candidate for
   # any seat: dispatchable: false, bound to no role, named in no fallback
   # list. Same mechanism as gemini_flash.
-  claude_architect_retired:
+  #
+  # History rows (design 2026-09-25 DD-A3) are keyed `<live key>@<id>` — the
+  # id verbatim, never a slug, so two spellings of one generation cannot
+  # collapse into one key — and name their live row with `history_of`.
+  # Policy refuses a history row whose live row is missing or has no lineage,
+  # whose family differs, whose id is not an OLDER generation of the live
+  # row's template, or that a binding or fallback list names.
+  "claude_architect@claude-fable-5":
     id: claude-fable-5
+    history_of: claude_architect
     family: claude
     capability_tier: 3
     dispatchable: false
@@ -544,6 +584,7 @@ models:
 
   openai_worker_fast:
     id: gpt-5.6-luna
+    lineage: { line: openai/luna, template: "gpt-{gen}-luna" }
     family: openai
     capability_tier: 0
     verified: true
@@ -561,6 +602,7 @@ models:
 
   openai_worker_balanced:
     id: gpt-5.6-terra
+    lineage: { line: openai/terra, template: "gpt-{gen}-terra" }
     family: openai
     capability_tier: 1
     verified: true
@@ -578,6 +620,7 @@ models:
 
   openai_reasoning:
     id: gpt-5.6-sol
+    lineage: { line: openai/sol, template: "gpt-{gen}-sol" }
     family: openai
     capability_tier: 2
     verified: true
@@ -599,6 +642,7 @@ models:
   # seat; routine volume continues through Luna and the balanced workers.
   openai_frontier:
     id: gpt-6-astra
+    lineage: { line: openai/astra, template: "gpt-{gen}-astra" }
     family: openai
     capability_tier: 3
     verified: true
@@ -635,6 +679,7 @@ models:
   # stays 1 on inherited evidence rather than a fresh measurement.
   xai_frontier:
     id: grok-4.7
+    lineage: { line: xai/grok, template: "grok-{gen}", served_forms: ["{id}", "{id}-build"] }
     family: xai
     capability_tier: 1
     effort_ceiling: VERY_HIGH   # probed: the CLI rejects `max`
@@ -669,9 +714,10 @@ models:
   # non-dispatchable history row." Valid as HISTORY input (--prior-models,
   # --unavailable-models, --host-model) so a control loop holding a 1.14.0
   # failure keeps working across the release boundary; never a candidate for
-  # any seat. Same mechanism as claude_architect_retired.
-  xai_frontier_retired:
+  # any seat. Same mechanism as the claude_architect history row.
+  "xai_frontier@grok-4.6":
     id: grok-4.6
+    history_of: xai_frontier
     family: xai
     capability_tier: 1
     effort_ceiling: VERY_HIGH
@@ -1813,3 +1859,58 @@ verification_ledger:
         identity of a claude_architect seat is declared_only, and the
         substitute (Opus 4.8) may not be in this registry.
         `served_model_caveats` on claude_architect discloses this per route.
+
+    - item: "claude-opus-5-5 model id"
+      status: verified
+      probed_on: "2026-09-25"
+      attempt_id: "p20260925T191511-1189f59c-1"
+      cli_version: "2.1.282"
+      argv: "claude -p --model claude-opus-5-5 --effort low --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config --output-format json"
+      evidence: >
+        model_sync contained read-only probe of claude_senior (claude-opus-5
+        -> claude-opus-5-5): P1 smoke answered pong with termination
+        confirmed; P2 served_models ['claude-opus-5-5'] are served forms of
+        the id; P3 boot input 35724 vs 36724 for the current id (paired).
+        Quality is not measured by this row.
+
+    - item: "claude-opus-5-5 reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-25"
+      evidence: >
+        Live-probed tokens for claude-opus-5-5: low, max (accepted). Other
+        levels were not live-probed for this id; the ceiling is unchanged
+        from claude-opus-5 (none).
+
+    - item: "claude-opus-5-5 pricing and context window"
+      status: documented
+      probed_on: "2026-09-25"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-09-25:
+        input 4.0, output 20.0, cached_input 0.2, cache_write 5.0. A
+        reference record, not the marginal cost of a subscription dispatch.
+        The context window was not re-recorded by promote.
+
+    - item: "claude_senior quality evidence after the claude-opus-5-5 id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
+      evidence: >
+        capability_tier 2 is inherited from the claude_senior lineage; no
+        quality measurement of claude-opus-5-5 has been run. Earlier quality
+        rows about claude-opus-5 describe that id, not this one.
+
+    - item: "claude-opus-5-5 maker seat"
+      status: verified
+      probed_on: "2026-09-25"
+      attempt_id: "m20260925T192607-2e405ac7-1"
+      cli_version: "2.1.282"
+      argv: "claude -p --model claude-opus-5-5 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
+      evidence: >
+        Attended model_sync probe-maker through grok.to_claude (mechanism):
+        the maker recipe with -m claude-opus-5-5, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        ea85c5c6baac918362017d1c2dbc017428638b60a7752f99006d307b7af1c068
+        equals the expected token's. Receipt sha256
+        d80d69bf330ea74ddb6933431c72950bc39bbf1fad05fee543c8ad875caa3455.

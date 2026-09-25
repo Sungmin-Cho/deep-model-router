@@ -235,6 +235,22 @@ registry, the registry is stale: bump the id, re-probe, and keep the retired
 id as a non-dispatchable history row. Never register an alias — price, tier,
 effort ceiling and the verification ledger are per concrete model.
 
+**Local overlay path.** `scripts/model_sync.py` follows a registry row's
+declared `lineage` on this machine: it reads the CLI model catalogs for a
+newer id on the same line, verifies it with read-only reviewer probes through
+`dispatch_agent.py run` (empty throwaway `--child-cwd`, no write seat), and
+publishes the passing id as a local overlay entry. With no Claude catalog
+cache, each Claude row's alias (`catalog_name`, lower-cased) is probed once
+on the same contained reviewer recipe and the served id read off the
+envelope; a strictly newer one then goes through every probe gate like a
+catalog candidate. The router then swaps only
+that row's `id` (and effort map/ceiling), prices it `unavailable`, and keeps
+the old id as a history row. An overlay id's maker seat is not re-probed:
+containment is the transport recipe's, not the id's, and the route says so in
+a note. Per-id maker re-verification is the attended `model_sync.py
+probe-maker`, run before `model_sync.py promote` — the only way an overlay id
+enters the registry.
+
 ### Codex
 
 **Native:** the `multi_agent` feature (stable, enabled). Its context-isolation
@@ -895,6 +911,8 @@ Missing or non-boolean `is_error` is invalid; only literal false can pass.
 declare it failed — and every reason that applies is reported, because the stop
 reason is what tells a recipe defect from a model failure.
 
+**Codex has two line-based formats.** `codex-exec-text-v1` (plain mode) grades stdout as the answer and records stderr evidence: the banner's `model:` as `header_model` (header-reported, not `served_models`), a `Model metadata for` warning as `metadata_warning`, and the footer as `footer_tokens_uncached` (it excludes cached input); `codex-exec-json-v1` (`--json`) parses JSONL by event name, requires a final `turn.completed`, fails on `turn.failed`/`error`, and records `turn.completed.usage` (total `input_tokens`) — that mode names no model anywhere.
+
 **Both formats carry `usage`**, and the receipt's envelope carries it too, so a
 caller measuring boot or context cost reads the receipt instead of scraping the
 retained stdout. The key sets differ — grok adds `reasoning_tokens` and
@@ -1153,6 +1171,7 @@ are outside this direct-process-tree boundary. This is not workspace containment
 use a trusted verifier installation/runtime that the child cannot alter (or
 validate its pinned integrity through a trusted controller before invoking it).
 Existing maker-seat sandbox and `--require-single-linked-cwd` obligations remain.
+A guarded `run` whose argv launches codex at all is refused before spawn (exit 2, no receipt) — codex applies its own sandbox whether argv says so (`-s`/`--sandbox`) or not (its `exec` default, `--full-auto`, `-c sandbox_mode=…`, config.toml), and the nested Seatbelt cannot read files yet exits 0 — unless `--allow-nested-sandbox no-file-access` declares the child reads no files (the model-evaluation collector does); the opt-in is recorded as the receipt's `allow_nested_sandbox`.
 
 Accepted cancellation optionally records `result.cancel_requested_at`; this
 control intent is owned by the supervisor/canceler, not the child output.

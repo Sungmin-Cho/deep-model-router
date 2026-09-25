@@ -159,6 +159,21 @@ request maps upward to native `low`; its per-model `effort_map` overlays the
 family map. A model missing from a stale local catalog must be checked in the
 actual runtime; hosts without access must report it in `unavailable_models`.
 
+### The Claude senior seat
+
+**Its tier is inherited, not current.** On 2026-09-25 the `claude_senior`
+id moved to the next Opus generation. A contained probe confirmed the id,
+the served model, the low and max effort tokens, and a write-seat run through
+the maker recipe. The published prices were re-read from the provider's
+documentation: the list price went down, $4 / $20 per million input / output
+tokens against the predecessor's $5 / $25. No quality comparison was run on
+the new generation. `capability_tier` 2 comes from the lineage, not from a
+measurement, and the ledger says so in its own row.
+
+This generation cannot turn thinking off, and its own default effort is
+medium. The router always passes an explicit `--effort` on this seat, so that
+default never takes effect on a routed dispatch.
+
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
 Worth recording, because it is the one binding decision that rests on

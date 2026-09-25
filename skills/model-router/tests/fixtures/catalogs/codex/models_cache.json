@@ -1,0 +1,236 @@
+{
+ "fetched_at": "2026-09-25T18:00:39.029864Z",
+ "etag": "W/\"d7d9f769f6a07227fcd98ca4080ab92c\"",
+ "client_version": "0.157.0",
+ "models": [
+  {
+   "slug": "gpt-6-astra",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    },
+    {
+     "effort": "ultra"
+    }
+   ],
+   "priority": 1,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-6-sol",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    },
+    {
+     "effort": "ultra"
+    }
+   ],
+   "priority": 2,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-6-luna",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "priority": 3,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-reserve",
+   "visibility": "hide",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "priority": 3,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-5.6-sol",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    },
+    {
+     "effort": "ultra"
+    }
+   ],
+   "priority": 4,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-5.6-terra",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    },
+    {
+     "effort": "ultra"
+    }
+   ],
+   "priority": 7,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-5.6-luna",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "priority": 8,
+   "upgrade": null
+  },
+  {
+   "slug": "gpt-5.5",
+   "visibility": "list",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    }
+   ],
+   "priority": 12,
+   "upgrade": {
+    "model": "gpt-5.6-sol",
+    "migration_markdown": "GPT-5.5 retires on October 14, 2026. Switch to GPT-5.6 Sol to continue working in Codex.",
+    "retirement_at": "2026-10-14T19:00:00Z"
+   }
+  },
+  {
+   "slug": "codex-auto-review",
+   "visibility": "hide",
+   "supported_in_api": true,
+   "supported_reasoning_levels": [
+    {
+     "effort": "low"
+    },
+    {
+     "effort": "medium"
+    },
+    {
+     "effort": "high"
+    },
+    {
+     "effort": "xhigh"
+    },
+    {
+     "effort": "max"
+    }
+   ],
+   "priority": 43,
+   "upgrade": null
+  }
+ ]
+}

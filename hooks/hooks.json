@@ -1,0 +1,18 @@
+{
+  "description": "deep-model-router: offline model-lineage tick at session start (starts a detached probe run only when a successor is due; DEEP_MODEL_ROUTER_AUTOUPGRADE=0 or `model_sync.py disable` turns it off).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "r=\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}\"; [ -n \"$r\" ] && python3 \"$r/skills/model-router/scripts/model_sync.py\" tick --detach; exit 0",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

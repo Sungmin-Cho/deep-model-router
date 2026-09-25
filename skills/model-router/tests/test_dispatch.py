@@ -966,6 +966,8 @@ RECEIPT_KEYS = {
     "output_envelope", "session_evidence",
     # Issue #19 maker-seat prevention — always present, null when undeclared.
     "child_cwd", "grok_home", "seat_profile", "require_single_linked_cwd", "receipt_guard",
+    # 2026-09-25 DD-B9 — the nested-sandbox opt-in, null when undeclared.
+    "allow_nested_sandbox",
 }
 RECEIPT_PROCESS_KEYS = {"pid", "process_group_id", "supervisor_pid"}
 RECEIPT_TIMING_KEYS = {
@@ -3796,3 +3798,309 @@ def test_an_xai_transport_refuses_another_vendors_envelope(tmp_path):
                "--session-id", SESSION_UUID, *CLAUDE_ENVELOPE_ARGS))
     assert proc.returncode == 2, proc.stderr
     assert "must be 'grok-headless-json-v1'" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-25 design DD-B9 (first half) — codex envelopes and the guard /
+# nested-sandbox refusal. Every codex byte below is a real codex-cli 0.157.0
+# capture copied from the design review's fixture set; nothing is invented.
+# ---------------------------------------------------------------------------
+
+CODEX_FIXTURES = SKILL / "tests" / "fixtures" / "codex"
+CODEX_PLAIN_STDOUT = CODEX_FIXTURES / "codex-0.157.0-plain.stdout"
+CODEX_PLAIN_STDERR = CODEX_FIXTURES / "codex-0.157.0-plain.stderr"
+CODEX_JSONL = CODEX_FIXTURES / "codex-0.157.0-json.jsonl"
+CODEX_TEXT_ARGS = ("--output-envelope", "codex-exec-text-v1")
+CODEX_JSON_ARGS = ("--output-envelope", "codex-exec-json-v1")
+# Quoted verbatim from the design's §1.3 measurement (codex-cli 0.155.1). Its
+# position inside a real stderr was not captured, so the tests below insert it
+# at more than one place and the parser does not depend on where it is.
+CODEX_METADATA_WARNING = (
+    "warning: Model metadata for gpt-6-sol not found. "
+    "Defaulting to fallback metadata")
+
+
+def codex_replay(stdout: bytes, stderr: bytes, exit_code=0):
+    """A fake child that replays captured codex bytes on both streams."""
+    return (
+        "import sys\n"
+        f"sys.stdout.buffer.write({stdout!r})\n"
+        f"sys.stderr.buffer.write({stderr!r})\n"
+        "sys.stdout.flush(); sys.stderr.flush()\n"
+        f"sys.exit({exit_code})\n")
+
+
+def _banner_model(stderr_text: str):
+    import re
+    match = re.search(r"^model: (\S+)$", stderr_text, re.M)
+    return match.group(1) if match else None
+
+
+def test_codex_text_envelope_reads_the_stderr_banner_and_footer(tmp_path):
+    """Plain mode: the banner's `model:` line is the only place codex names the
+    model — recorded as header-reported, never as `served_models`. The footer
+    `tokens used` excludes cached input, so its field name says so."""
+    stderr = CODEX_PLAIN_STDERR.read_bytes()
+    fake = write_fake(tmp_path, "codex_text.py", codex_replay(
+        CODEX_PLAIN_STDOUT.read_bytes(), stderr))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=CODEX_TEXT_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    env = receipt["result"]["envelope"]
+    assert env["parse_ok"] is True
+    assert env["header_model"] == _banner_model(stderr.decode())
+    assert env["header_model"] is not None
+    assert env["header_model_basis"] == "header-reported"
+    assert env["served_models"] is None
+    assert env["metadata_warning"] is False
+    assert env["footer_tokens_uncached"] == 15283
+    assert env["cli_version"] == "0.157.0"
+    assert receipt["output_envelope"] == "codex-exec-text-v1"
+    # The answer itself stays in the stdout file, never in the receipt.
+    assert Path(receipt["result"]["stdout_path"]).read_text().strip() == "pong"
+
+
+@pytest.mark.parametrize("where", ["head", "after_banner"])
+def test_codex_text_envelope_flags_the_metadata_warning(tmp_path, where):
+    lines = CODEX_PLAIN_STDERR.read_text().splitlines(keepends=True)
+    at = 0 if where == "head" else lines.index("--------\n", 2) + 1
+    lines.insert(at, CODEX_METADATA_WARNING + "\n")
+    fake = write_fake(tmp_path, "codex_warn.py", codex_replay(
+        CODEX_PLAIN_STDOUT.read_bytes(), "".join(lines).encode()))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              schema="none", extra=CODEX_TEXT_ARGS)
+    assert receipt["result"]["envelope"]["metadata_warning"] is True
+
+
+def test_codex_text_envelope_without_banner_reports_no_header_model(tmp_path):
+    """No banner, no claim: the header model is null (a probe then records
+    `served_unproven`), and neither the footer nor the version is guessed."""
+    fake = write_fake(tmp_path, "codex_nobanner.py", codex_replay(
+        CODEX_PLAIN_STDOUT.read_bytes(), b"something else entirely\n"))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=CODEX_TEXT_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    env = receipt["result"]["envelope"]
+    assert env["header_model"] is None
+    assert env["cli_version"] is None
+    assert env["footer_tokens_uncached"] is None
+    assert env["metadata_warning"] is False
+
+
+def test_codex_text_envelope_ignores_a_model_line_outside_the_banner(tmp_path):
+    """Only the first banner block counts: a `model:` line the conversation
+    echoes later must not become the header-reported model."""
+    stderr = CODEX_PLAIN_STDERR.read_text().replace(
+        "codex\npong\n", "codex\nmodel: some-other-model\npong\n")
+    assert "model: some-other-model" in stderr
+    fake = write_fake(tmp_path, "codex_echo.py", codex_replay(
+        CODEX_PLAIN_STDOUT.read_bytes(), stderr.encode()))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              schema="none", extra=CODEX_TEXT_ARGS)
+    assert receipt["result"]["envelope"]["header_model"] == \
+        _banner_model(CODEX_PLAIN_STDERR.read_text())
+
+
+def test_codex_text_envelope_grades_the_verdict_on_stdout(tmp_path):
+    fake = write_fake(tmp_path, "codex_review.py", codex_replay(
+        b"verdict: PASS\nconfidence: 0.9\n", CODEX_PLAIN_STDERR.read_bytes()))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="review", extra=CODEX_TEXT_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["verdict"] == "PASS"
+
+
+def test_codex_json_envelope_reads_turn_completed_usage(tmp_path):
+    raw = CODEX_JSONL.read_bytes()
+    fake = write_fake(tmp_path, "codex_json.py", codex_replay(raw, b""))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=CODEX_JSON_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    env = receipt["result"]["envelope"]
+    completed = [json.loads(l) for l in raw.decode().splitlines()
+                 if json.loads(l)["type"] == "turn.completed"][-1]["usage"]
+    assert env["usage"]["input_tokens"] == completed["input_tokens"]
+    assert env["usage"]["cached_input_tokens"] == completed["cached_input_tokens"]
+    assert env["usage"]["output_tokens"] == completed["output_tokens"]
+    assert env["stop_reason"] == "turn.completed"
+
+
+def test_codex_json_mode_names_no_model_anywhere(tmp_path):
+    """Measured 2026-09-25: `--json` carries no model name at all, so the json
+    envelope cannot prove what served — the P2 serving check uses plain mode."""
+    raw = CODEX_JSONL.read_text()
+    events = [json.loads(line) for line in raw.splitlines()]
+    def keys(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield k
+                yield from keys(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                yield from keys(v)
+    assert not any("model" in k.lower() for e in events for k in keys(e))
+    assert _banner_model(CODEX_PLAIN_STDERR.read_text()) not in raw
+    fake = write_fake(tmp_path, "codex_json2.py",
+                      codex_replay(raw.encode(), b""))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              schema="none", extra=CODEX_JSON_ARGS)
+    env = receipt["result"]["envelope"]
+    assert env["served_models"] is None
+    assert "header_model" not in env
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    (lambda lines: [l for l in lines if '"turn.completed"' not in l],
+     "envelope_stop_reason:<absent>"),
+    (lambda lines: lines + ['{"type":"turn.failed","error":{"message":"x"}}'],
+     "envelope_reported_error"),
+    (lambda lines: lines + ["not json"], "envelope_unparseable"),
+])
+def test_codex_json_envelope_fails_closed(tmp_path, mutate, reason):
+    lines = mutate(CODEX_JSONL.read_text().splitlines())
+    fake = write_fake(tmp_path, "codex_json_bad.py", codex_replay(
+        ("\n".join(lines) + "\n").encode(), b""))
+    proc, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                                 schema="none", extra=CODEX_JSON_ARGS)
+    assert proc.returncode == 6, proc.stderr
+    assert reason in receipt["result"]["invalid_reasons"]
+
+
+def test_codex_envelopes_keep_the_shared_receipt_keys(tmp_path):
+    """The six shared keys stay on every format; codex adds only its own."""
+    fake = write_fake(tmp_path, "codex_keys.py", codex_replay(
+        CODEX_PLAIN_STDOUT.read_bytes(), CODEX_PLAIN_STDERR.read_bytes()))
+    _, receipt = run_dispatch(tmp_path, [sys.executable, fake],
+                              schema="none", extra=CODEX_TEXT_ARGS)
+    assert set(receipt["result"]["envelope"]) == {
+        "parse_ok", "stop_reason", "session_id", "served_models",
+        "error_type", "usage", "header_model", "header_model_basis",
+        "metadata_warning", "footer_tokens_uncached", "cli_version"}
+
+
+def _fake_codex_bin(tmp_path: Path) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    codex = bindir / "codex"
+    codex.write_text(f"#!{sys.executable}\n" + codex_replay(
+        CODEX_PLAIN_STDOUT.read_bytes(), CODEX_PLAIN_STDERR.read_bytes()))
+    codex.chmod(0o755)
+    return codex
+
+
+GUARD_ARGS = ("--receipt-guard", "darwin-sandbox-v1")
+
+
+@pytest.mark.parametrize("sandbox", [("-s", "read-only"),
+                                     ("--sandbox", "read-only"),
+                                     ("--sandbox=read-only",),
+                                     # i1r1 opus F5: codex applies its sandbox
+                                     # without -s too — its exec default, a
+                                     # --full-auto preset, a -c override.
+                                     (),
+                                     ("--full-auto",),
+                                     ("-c", "sandbox_mode=read-only")])
+def test_guard_with_a_codex_sandbox_is_refused_before_spawn(tmp_path, sandbox):
+    """A codex Seatbelt nested inside the receipt guard cannot read files and
+    still exits 0 — a silent non-review. Refused pre-spawn: exit 2, no
+    receipt, and the message says why and names the opt-in."""
+    codex = _fake_codex_bin(tmp_path)
+    proc, receipt = run_dispatch(
+        tmp_path, [codex, "exec", *sandbox, "-m", "x", "-"],
+        schema="none", extra=GUARD_ARGS + CODEX_TEXT_ARGS)
+    assert proc.returncode == 2, proc.stderr
+    assert receipt is None
+    assert not (tmp_path / "receipts" / "t1.stdout").exists()
+    assert "--allow-nested-sandbox no-file-access" in proc.stderr
+    assert "sandbox" in proc.stderr
+
+
+def test_codex_sandbox_without_guard_is_not_refused(tmp_path):
+    codex = _fake_codex_bin(tmp_path)
+    proc, receipt = run_dispatch(
+        tmp_path, [codex, "exec", "-s", "read-only", "-"],
+        schema="none", extra=CODEX_TEXT_ARGS)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["allow_nested_sandbox"] is None
+
+
+def test_every_codex_child_counts_as_sandboxed_but_nothing_else_does(tmp_path):
+    """i1r1 opus F5: codex sandboxes itself from its exec default, presets or
+    config.toml whether or not argv says so, so a guarded codex child is
+    refused on the executable alone; a non-codex child is not."""
+    dispatch_agent = _in_process(tmp_path)
+    assert dispatch_agent._launches_codex(["codex", "exec", "-m", "x", "-"]) is True
+    assert dispatch_agent._launches_codex(["/opt/bin/codex", "exec", "-s", "read-only"]) is True
+    assert dispatch_agent._launches_codex(["python3", "x.py", "-s", "read-only"]) is False
+    assert dispatch_agent._launches_codex(["claude", "-p", "--model", "x"]) is False
+
+
+@pytest.mark.parametrize("argv, launches", [
+    # i1r2 opus F1: only the launched executable counts, never an argument.
+    (["claude", "-p", "x", "--add-dir", "/x/codex"], False),
+    (["claude", "-p", "x", "--add-dir=/x/codex"], False),
+    (["python3", "review.py", "codex"], False),
+    (["env", "FOO=1", "claude", "-p", "--add-dir", "/x/codex"], False),
+    (["npx", "-y", "@anthropic-ai/claude-code", "codex"], False),
+    (["env", "FOO=1", "codex", "exec", "-"], True),
+    (["/usr/bin/env", "-i", "A=1", "B=2", "/opt/bin/codex", "exec"], True),
+    (["env", "-u", "HOME", "codex", "exec"], True),
+    (["npx", "-y", "codex", "exec"], True),
+    (["node", "/usr/lib/node_modules/codex", "exec"], True),
+    (["env"], False),
+    ([], False),
+])
+def test_launches_codex_reads_only_the_launched_executable(tmp_path, argv, launches):
+    dispatch_agent = _in_process(tmp_path)
+    assert dispatch_agent._launches_codex(argv) is launches
+
+
+def test_guarded_child_with_a_codex_path_argument_is_not_refused(tmp_path):
+    """i1r2 opus F1: `--add-dir /x/codex` names a checkout, not the program;
+    the guard must not refuse a claude child for it."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    claude = bindir / "claude"
+    claude.write_text(f"#!{sys.executable}\n" + textwrap.dedent(HAPPY))
+    claude.chmod(0o755)
+    proc, _ = run_dispatch(
+        tmp_path, [claude, "-p", "review", "--add-dir", "/x/codex"],
+        extra=GUARD_ARGS)
+    assert "codex child is refused" not in proc.stderr
+    if sys.platform == "darwin":
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_guarded_codex_behind_env_is_refused_without_opt_in(tmp_path):
+    codex = _fake_codex_bin(tmp_path)
+    proc, receipt = run_dispatch(
+        tmp_path, ["env", "FOO=1", codex, "exec", "-m", "x", "-"],
+        schema="none", extra=GUARD_ARGS + CODEX_TEXT_ARGS)
+    assert proc.returncode == 2, proc.stderr
+    assert receipt is None
+    assert "--allow-nested-sandbox no-file-access" in proc.stderr
+
+
+def test_nested_sandbox_opt_in_requires_a_guard(tmp_path):
+    codex = _fake_codex_bin(tmp_path)
+    proc, receipt = run_dispatch(
+        tmp_path, [codex, "exec", "-s", "read-only", "-"], schema="none",
+        extra=("--allow-nested-sandbox", "no-file-access", *CODEX_TEXT_ARGS))
+    assert proc.returncode == 2, proc.stderr
+    assert receipt is None
+    assert "constrains nothing" in proc.stderr
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="real guard integration")
+def test_nested_sandbox_opt_in_runs_and_is_recorded(tmp_path):
+    codex = _fake_codex_bin(tmp_path)
+    proc, receipt = run_dispatch(
+        tmp_path, [codex, "exec", "-s", "read-only", "-"], schema="none",
+        extra=GUARD_ARGS + ("--allow-nested-sandbox", "no-file-access",
+                            *CODEX_TEXT_ARGS))
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert receipt["allow_nested_sandbox"] == "no-file-access"
+    assert receipt["receipt_guard"]["phase"] == "launched"

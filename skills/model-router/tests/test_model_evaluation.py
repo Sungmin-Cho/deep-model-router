@@ -158,6 +158,29 @@ for row in [{'type':'thread.started','thread_id':'fixture'}, {'type':'turn.start
     assert json.loads((root/'summary.json').read_text())['valid_measurements']==3
 
 
+@pytest.mark.skipif(sys.platform!='darwin',reason='real guard integration')
+def test_collector_without_the_nested_sandbox_opt_in_is_refused(tmp_path,monkeypatch):
+    """DD-B9: the collector's codex `--sandbox read-only` inside the receipt
+    guard is refused pre-spawn unless it opts in. The collector keeps its guard
+    by opting in; without the opt-in every attempt exits 2 and nothing runs."""
+    import os
+    from types import SimpleNamespace
+    from datetime import datetime,timezone
+    cfg=copy.deepcopy(ev.route_task.default_config())
+    cfg['models']['openai_worker_fast']['price_per_mtok']['verified_on']=datetime.now(timezone.utc).date().isoformat()
+    monkeypatch.setattr(ev.route_task,'default_config',lambda:cfg)
+    bindir=tmp_path/'bin';bindir.mkdir();stub=bindir/'codex';spawned=tmp_path/'spawned'
+    stub.write_text('#!/usr/bin/env python3\nimport sys\nif "--version" in sys.argv:\n    print("fixture-codex");sys.exit(0)\nopen('+repr(str(spawned))+',"w").close()\n')
+    stub.chmod(0o700)
+    monkeypatch.setenv('PATH',str(bindir)+os.pathsep+os.environ['PATH'])
+    monkeypatch.setattr(ev,'NESTED_SANDBOX_OPT_IN',())
+    root=tmp_path/'run'
+    assert ev.run(SimpleNamespace(models='openai_worker_fast',repetitions=1,effort='LOW',deadline=5,output_dir=str(root)))==1
+    rows=[json.loads(p.read_text()) for p in (root/'measurements').glob('*.json')]
+    assert rows and all(r['supervisor_exit']==2 for r in rows)
+    assert not spawned.exists()
+
+
 @pytest.mark.parametrize('terminal,expected',[(5,5),(7,130)])
 def test_interruption_preserves_supervisor_termination_outcome(tmp_path,monkeypatch,terminal,expected):
     from types import SimpleNamespace

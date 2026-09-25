@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] — 2026-09-25
+
+### Added
+
+- Declare a vendor lineage on every dispatchable registry row, and refuse a policy whose row id breaks its lineage template or whose id another row already holds.
+- Follow each lineage on your machine: a local model overlay finds a successor id in the CLI model catalogs offline (without a Claude catalog cache, through one contained alias probe per Claude row), verifies it with contained read-only probes, and publishes it, so the router seats that row on the new id with the tier inherited, the price unavailable and a note that the maker seat was not re-probed.
+- Report overlay provenance on every route as `model_overlay`, and fail closed with `MODEL_STATE_UNAVAILABLE` when the committed local state is damaged or the state root fails admission; that route names no model and carries every documented route key as null or empty.
+- Add the `model_sync.py` commands `status`, `revert`, `unblock`, `disable`, `enable`, `repair`, `quota`, `probe-maker` and `promote`, with `DEEP_MODEL_ROUTER_AUTOUPGRADE=0` and `DEEP_MODEL_ROUTER_OVERLAY=off` as off switches.
+- Accept `policy_pin` (`--policy-pin`) to reproduce the routing policy of a retained overlay generation, or the bundled policy that preceded the first one; a pin no retained generation matches, or one a later revocation invalidated, is refused.
+- Ship a SessionStart hook that runs an offline tick and starts a detached probe run only when a successor is due.
+- Read codex text and JSON output as answer envelopes that record the model the CLI reported and the token usage, failing closed on a failed or unfinished turn.
+
+### Changed
+
+- Seat Claude Opus 5.5 as the senior engineer model after contained, effort and maker-seat probes; its list price is lower, $4 / $20 per million input / output tokens against $5 / $25. Its `capability_tier` is inherited from the Opus lineage and its quality was not re-measured, which the model profile and verification ledger state; Claude Opus 5 stays valid as history input.
+- Key superseded model rows as history rows named `<seat>@<id>` instead of `_retired` keys; their ids stay valid history input and are never seated.
+- Refuse every `--receipt-guard` dispatch with a codex child, which always runs its own sandbox, unless the caller opts in with `--allow-nested-sandbox no-file-access`.
+- The GPT-6 Sol and GPT-6 Luna successors of the OpenAI reasoning and fast worker seats are not in this release: the Codex usage quota deferred their probes, and they follow in a patch release.
+- Updating stops an in-flight deep-loop run on the policy digest change: finish running loops before you update, restart a stopped loop as a new run, and set `DEEP_MODEL_ROUTER_AUTOUPGRADE=0` during long runs, because an overlay publication has the same effect.
+
+### Security
+
+- Open local model state relative to one verified directory handle, accepting only single-linked regular files owned by the current user with owner-only permissions under a size cap, and parse them as strict JSON.
+- Document the SessionStart hook's trust boundary: Codex's hook approval covers the command string, and the script it runs is trusted as installed plugin code.
+
 ## [1.15.0] — 2026-09-22
 
 ### Added

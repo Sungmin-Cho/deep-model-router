@@ -40,12 +40,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import traceback
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 
+import lineage
+import model_state
 from policy_digest import canonical_policy_sha256, policy_sha256
 from strict_json import loads as strict_json_loads, ensure_json_value
 from pathlib import Path
@@ -60,6 +64,7 @@ REQUEST_V1_KEYS = frozenset({
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
     "host_seat", "worker_seat", "review_context", "attempt_outcomes",
+    "policy_pin",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -105,6 +110,7 @@ TERMINAL_STATES = (
     "HUMAN_REQUIRED", "ESCALATE_ROUTING", "INDEPENDENCE_UNAVAILABLE",
     "RETRY_HISTORY_REQUIRED", "SUPPLY_EXHAUSTED", "UNSATISFIABLE_LOCAL_POLICY",
     "OPERATIONAL_RECOVERY_REQUIRED", "TERMINATION_UNCONFIRMED",
+    "MODEL_STATE_UNAVAILABLE",
 )
 
 MAX_PROMOTION_PASSES = 4   # bounded fixed point; the band ladder is only 4 deep
@@ -284,7 +290,13 @@ class Policy:
     # the cache is unbounded in the number of distinct config OBJECTS, so a
     # process routing against many of them retains all of them — but no longer
     # unbounded in how often any one of them is edited.
-    _cache: dict[int, tuple[str | None, "Policy"]] = {}
+    #
+    # Bounded since 2026-09-25 (DD-A2): effective policies are built per state
+    # generation, so a long-lived process would otherwise keep one per
+    # generation it ever routed on. Eviction keeps the identity guarantee: an
+    # entry still in the cache holds its cfg alive, and an evicted id that is
+    # later recycled simply misses and rebuilds.
+    _cache: "_LRU" = None  # set below the class (needs _LRU)
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -371,6 +383,28 @@ class Policy:
         self.max_risk_score: int = max_risk
         self.known_flags: frozenset[str] = frozenset(f for g in cfg["flags"].values() for f in g)
         self.runtimes: frozenset[str] = frozenset(cfg["runtimes"])
+        # Before any id-keyed table is built: a dict comprehension over two
+        # rows holding one id keeps the LAST row and drops the first without
+        # a word, so every table below would describe a registry that does
+        # not exist (design 2026-09-25 DD-A1).
+        seen_ids: dict[str, str] = {}
+        for key, model in cfg["models"].items():
+            mid = model["id"]
+            if mid in seen_ids:
+                raise ConfigError(
+                    f"models.{seen_ids[mid]} and models.{key} hold the same id "
+                    f"{mid!r}; an id must name exactly one registry row")
+            seen_ids[mid] = key
+        self.lineage_of: dict[str, dict] = self._validate_lineages(cfg)
+        # Local revocations merged in from model state (design 2026-09-25
+        # DD-A2 rule 8): never a seat candidate, from any source.
+        local_state = cfg.get("local_state", {})
+        if (not isinstance(local_state, Mapping) or set(local_state) - {"blocked_ids"}
+                or not isinstance(local_state.get("blocked_ids", []), list)
+                or not all(isinstance(b, str) and b for b in local_state.get("blocked_ids", []))):
+            raise ConfigError("local_state must be {blocked_ids: [model id, ...]}")
+        self.local_blocked_ids: frozenset[str] = frozenset(local_state.get("blocked_ids", []))
+        self._validate_history_rows(cfg, self.lineage_of)
         self.model_ids: frozenset[str] = frozenset(m["id"] for m in cfg["models"].values())
         self.id_to_key: dict[str, str] = {m["id"]: k for k, m in cfg["models"].items()}
         self.family_of: dict[str, str] = {m["id"]: m["family"] for m in cfg["models"].values()}
@@ -551,6 +585,130 @@ class Policy:
         }
         self._validate_native_families(cfg)
         self._validate_write_seats(cfg)
+
+    @staticmethod
+    def _validate_lineages(cfg: dict) -> dict[str, dict]:
+        """Every dispatchable row declares its lineage, and the declaration is
+        well-formed (design 2026-09-25 DD-A1): `line` globally unique, the
+        template parses, and the row's own id is a spelling of it. Returns
+        registry key -> lineage for the rows that have one.
+
+        `catalog_name` and `served_forms` are shape-checked here but consumed
+        by model_sync; the router routes on `id` alone.
+        """
+        allowed = {"line", "template", "catalog_name", "served_forms"}
+        lines: dict[str, str] = {}
+        out: dict[str, dict] = {}
+        for key, model in cfg["models"].items():
+            lin = model.get("lineage")
+            if lin is None:
+                if model.get("dispatchable", True) is not False:
+                    raise ConfigError(
+                        f"models.{key} is dispatchable and declares no lineage; "
+                        f"a seat whose successor cannot be recognised is a seat "
+                        f"that silently falls behind its vendor")
+                continue
+            if not isinstance(lin, Mapping):
+                raise ConfigError(f"models.{key}.lineage must be a mapping")
+            if (unknown := set(lin) - allowed) or not {"line", "template"} <= set(lin):
+                raise ConfigError(
+                    f"models.{key}.lineage must hold line and template (optional "
+                    f"catalog_name, served_forms); unknown {sorted(unknown)}")
+            line, template = lin["line"], lin["template"]
+            if not isinstance(line, str) or not line.strip():
+                raise ConfigError(f"models.{key}.lineage.line must be a non-empty string")
+            if line in lines:
+                raise ConfigError(
+                    f"models.{lines[line]} and models.{key} declare the same "
+                    f"lineage line {line!r}; a line names one registry row")
+            lines[line] = key
+            try:
+                gen = lineage.parse(template, model["id"])
+            except ValueError as exc:
+                raise ConfigError(f"models.{key}.lineage.template: {exc}") from None
+            if gen is None:
+                raise ConfigError(
+                    f"models.{key}.id {model['id']!r} does not match its own "
+                    f"lineage template {template!r}")
+            if "catalog_name" in lin and not (
+                    isinstance(lin["catalog_name"], str) and lin["catalog_name"].strip()):
+                raise ConfigError(f"models.{key}.lineage.catalog_name must be a non-empty string")
+            if "served_forms" in lin:
+                forms = lin["served_forms"]
+                if (not isinstance(forms, list) or not forms
+                        or not all(isinstance(f, str) and "{id}" in f for f in forms)):
+                    raise ConfigError(
+                        f"models.{key}.lineage.served_forms must be a non-empty "
+                        f"list of strings each containing {{id}}")
+            out[key] = {"line": line, "template": template}
+        return out
+
+    @staticmethod
+    def _validate_history_rows(cfg: dict, lineage_of: dict[str, dict]) -> None:
+        """History rows (design 2026-09-25 DD-A3): a superseded id kept as
+        valid HISTORY input and never seated.
+
+        The key is `<history_of>@<id>` with the id verbatim — a slug would fold
+        `gpt-6.0-sol` and `gpt-6-0-sol` into one key and turn one of them into
+        invalid input. The live row must carry a lineage whose template the
+        history id matches at a strictly LOWER generation, in the same family;
+        the row is non-dispatchable and no binding or fallback list names it.
+        The router still reads only `dispatchable` at route time.
+        """
+        bound = {k for binding in cfg["role_bindings"].values() for k in binding.values()}
+        in_fallback = {k for per_role in cfg["fallbacks"].values()
+                       for keys in per_role.values() for k in keys}
+        for key, model in cfg["models"].items():
+            live_key = model.get("history_of")
+            if live_key is None:
+                if "@" in key:
+                    raise ConfigError(
+                        f"models.{key}: a `<live key>@<id>` key is reserved for "
+                        f"history rows, and this row declares no history_of")
+                continue
+            mid = model["id"]
+            if key != f"{live_key}@{mid}":
+                raise ConfigError(
+                    f"models.{key} is a history row of {live_key!r}; its key must "
+                    f"be exactly {live_key}@{mid}")
+            live = cfg["models"].get(live_key) if isinstance(live_key, str) else None
+            if live is None or "history_of" in live:
+                raise ConfigError(
+                    f"models.{key}.history_of names {live_key!r}, which is not a "
+                    f"live registry row")
+            if live_key not in lineage_of:
+                raise ConfigError(
+                    f"models.{key}.history_of names {live_key!r}, which declares no "
+                    f"lineage to order the two ids by")
+            if model["family"] != live["family"]:
+                raise ConfigError(
+                    f"models.{key} is family {model['family']!r} but its live row "
+                    f"{live_key!r} is {live['family']!r}")
+            if model.get("dispatchable") is not False:
+                raise ConfigError(
+                    f"models.{key} is a history row and must be dispatchable: false")
+            template = lineage_of[live_key]["template"]
+            past, current = lineage.parse(template, mid), lineage.parse(template, live["id"])
+            if past is None:
+                raise ConfigError(
+                    f"models.{key}.id {mid!r} does not match the lineage template "
+                    f"{template!r} of {live_key!r}")
+            source = model.get("history_source")
+            if source is not None and source not in ("base", "probe"):
+                raise ConfigError(
+                    f"models.{key}.history_source is {source!r}; only rows "
+                    f"synthesized from local model state carry it (base|probe)")
+            # A row synthesized from a local generation's history record may be
+            # NEWER than the live id: a reverted overlay id stays valid history
+            # input while the live row is back on its base id (DD-A2 rule 7).
+            if source is None and lineage.compare(past, current) >= 0:
+                raise ConfigError(
+                    f"models.{key}.id {mid!r} is not an older generation than "
+                    f"{live_key!r}'s {live['id']!r}")
+            if key in bound:
+                raise ConfigError(f"models.{key} is a history row and a role binding names it")
+            if key in in_fallback:
+                raise ConfigError(f"models.{key} is a history row and a fallback list names it")
 
     def _validate_native_families(self, cfg: dict) -> None:
         """`local_family` and `transports` must answer "which family is native
@@ -741,6 +899,28 @@ class Policy:
     def at_ceiling(self, r): return self.roles.index(r) == len(self.roles) - 1
 
 
+class _LRU(OrderedDict):
+    """A dict that keeps its `maxsize` most recently used entries."""
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
+
+
+Policy._cache = _LRU(8)
+
 _DEFAULT_CFG: dict | None = None
 
 
@@ -770,6 +950,204 @@ def __getattr__(name: str):
     if name in mapping:
         return mapping[name]
     raise AttributeError(name)
+
+
+# --------------------------------------------------------------------------
+# Effective policy — base config + local model state (design 2026-09-25 DD-A2)
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EffectivePolicy:
+    """The config a route runs on and where it came from. `config` is None
+    exactly when the state cannot be used: the route is then the
+    MODEL_STATE_UNAVAILABLE terminal, whose reason `provenance` carries."""
+    config: dict | None
+    provenance: "model_state.Provenance | None"
+
+
+# digest -> effective config: one object per content, so `Policy.of` (keyed
+# on identity + digest) hits its cache for every route on the same generation.
+_EFFECTIVE_CACHE = _LRU(8)
+
+
+def _interned(cfg: dict, digest: str) -> dict:
+    cached = _EFFECTIVE_CACHE.get(digest)
+    if cached is not None:
+        return cached
+    _EFFECTIVE_CACHE[digest] = cfg
+    return cfg
+
+
+def _unavailable(base_sha: str, reason: str, detail: str | None = None) -> EffectivePolicy:
+    return EffectivePolicy(None, model_state.Provenance(
+        status="unavailable", base_policy_sha256=base_sha, state_reason=reason,
+        state_detail=detail))
+
+
+def resolve_effective_policy(env: Mapping[str, str], home: Path,
+                             pin: str | None = None) -> EffectivePolicy:
+    """Base config + the committed generation, read afresh on every call.
+
+    Reads exactly `committed/current.json`, the generation it names, and the
+    probe summary of each entry that reaches the summary check — no directory
+    scan. `DEEP_MODEL_ROUTER_OVERLAY=off` drops the entries only; history and
+    revocations still apply, and a damaged state fails closed either way.
+    """
+    base = default_config()
+    base_sha = canonical_policy_sha256(base)
+    off = model_state.overlay_off(env)
+    root_path = model_state.state_root_path(env, home)
+    with model_state.read_state(root_path) as state:
+        if state.shape == "unreadable" and state.root_unadmitted:
+            return _unavailable(base_sha, "root_unadmitted",
+                                f"{state.detail}; fix: {model_state.root_fix(root_path)}")
+        if state.shape == "unreadable":
+            return _unavailable(base_sha, "unreadable")
+        if state.shape == "absent":
+            cfg, prov = base, None
+        else:
+            cfg, prov = model_state.effective_config(
+                base, state.generation, apply_entries=not off, summary=state.summary,
+                generation_sha256=state.generation_sha256, base_sha=base_sha)
+        digest = base_sha if cfg is base else canonical_policy_sha256(cfg)
+        if pin is None or pin == digest:
+            return EffectivePolicy(cfg if cfg is base else _interned(cfg, digest), prov)
+        return _resolve_pin(pin, base, base_sha, state, off)
+
+
+def _check_pin(pin) -> None:
+    if not model_state.is_hex64(pin):
+        raise ValidationError("policy_pin must be a lowercase 64-hex policy_sha256")
+
+
+def _resolve_pin(pin: str, base: dict, base_sha: str, state: "model_state.StateRead",
+                 off: bool) -> EffectivePolicy:
+    """Walk `parent_generation_sha256` from the current generation (at most
+    MAX_PIN_CHAIN steps) and recompute each one as current base + that
+    generation's entries (unless off) and history + the CURRENT generation's
+    revocations; the null parent at the end of the chain is the stateless
+    policy (base + the current revocations). The first digest equal to the
+    pin is the policy. Only
+    committed generations are on the chain, so an unpublished one is
+    unreachable; a later revocation changes the recomputed digest, so revert
+    beats pin.
+
+    No match: one reason, in a fixed order — off (entries back on would
+    match), revoked (the generation's OWN revocations would match), base
+    changed (a generation on the chain recorded another base), missing.
+    """
+    if state.shape != "ok":
+        return _unavailable(base_sha, "pin_generation_missing")
+    current_blocked = state.generation["blocked_ids"]
+    suppressed = revoked = base_changed = False
+    sha, gen = state.generation_sha256, state.generation
+
+    def digest(g, g_sha, apply, blocked):
+        cfg, prov = model_state.effective_config(
+            base, g, apply_entries=apply, summary=state.summary, blocked_ids=blocked,
+            generation_sha256=g_sha, base_sha=base_sha)
+        return cfg, prov, (base_sha if cfg is base else canonical_policy_sha256(cfg))
+
+    for _ in range(model_state.MAX_PIN_CHAIN):
+        cfg, prov, d = digest(gen, sha, not off, current_blocked)
+        if d == pin:
+            prov.status = "pinned"
+            return EffectivePolicy(cfg if cfg is base else _interned(cfg, d), prov)
+        if off and digest(gen, sha, True, current_blocked)[2] == pin:
+            suppressed = True
+        if digest(gen, sha, not off, gen["blocked_ids"])[2] == pin:
+            revoked = True
+        if gen["base_policy_sha256"] != base_sha:
+            base_changed = True
+        sha = gen["parent_generation_sha256"]
+        if sha is None:
+            # The chain's end is the stateless policy the first generation
+            # replaced: base + nothing, still under the CURRENT revocations. A
+            # route taken before any `committed/` existed pinned exactly this.
+            empty = model_state.empty_generation(base_sha)
+            cfg, prov, d = digest(empty, None, True, current_blocked)
+            if d == pin:
+                prov.status = "pinned"
+                return EffectivePolicy(cfg if cfg is base else _interned(cfg, d), prov)
+            if digest(empty, None, True, [])[2] == pin:
+                revoked = True
+            break
+        try:
+            gen = state.generation_at(sha)
+        except (OSError, ValueError):
+            break
+    reason = ("pin_suppressed_by_off" if suppressed else "pin_revoked" if revoked
+              else "pin_base_changed" if base_changed else "pin_generation_missing")
+    return _unavailable(base_sha, reason)
+
+
+# The per-model disclosure for a seat whose id came from the local overlay.
+OVERLAY_SEAT_NOTE = ("{key}: id from local model overlay; capability tier inherited "
+                     "from the lineage (not re-measured); price unavailable; maker seat "
+                     "not re-probed for this id (containment is the transport recipe's)")
+
+STATE_UNAVAILABLE_MESSAGES = {
+    "unreadable": ("local model state under committed/ cannot be read; no seat is "
+                   "named while revocations are unknown — run model_sync.py repair "
+                   "(model_sync.py status shows the detail), or delete committed/ to "
+                   "start from the bundled policy"),
+    "root_unadmitted": ("the local model state root failed admission ({detail}); no "
+                        "seat is named while revocations are unknown"),
+}
+
+# The "Every route emits" inventory (references/control-loop.md), as the
+# values a route that decided nothing carries: null for a scalar, [] for a
+# list. The terminal below emits every key so a consumer indexing a
+# documented field never raises.
+_NULL_ROUTE_LISTS = frozenset({
+    "selected_families", "band_overrides_applied", "critical_flags",
+    "band_overrides_redundant", "fallbacks_applied", "effort_ceiling_applied",
+    "fallback_compensations_applied", "unavailable_models", "excluded_prior_failures",
+    "human_control_causes"})
+_NULL_ROUTE_SCALARS = (
+    "task_class", "complexity", "uncertainty", "blast_radius", "reversibility",
+    "effective_policy", "selected_capability_tier", "local_policy_applied",
+    "reasoning_centric", "risk_score", "risk_band", "execution_score", "execution_band",
+    "route_path", "selected_role", "selected_model", "selected_effort",
+    "selected_effort_effective", "selected_effort_native", "cross_family_review",
+    "escalation_count", "retry_count", "routing_confidence", "routing_confidence_kind",
+    "worker_seat", "host_seat_advisory")
+_NULL_REVIEW_LISTS = frozenset({"reviewers", "reviewer_models", "review_depth_reduced",
+                                "self_review_avoided", "required_checks"})
+_NULL_REVIEW_SCALARS = ("band", "effort", "independence_required", "review_independence",
+                        "independence_compromised", "judge_unavailable",
+                        "band_floor_unsatisfiable", "compensating_reviewers", "judge",
+                        "judge_model")
+
+
+def _state_unavailable_route(prov: "model_state.Provenance") -> dict:
+    """The MODEL_STATE_UNAVAILABLE terminal. Built before any request is
+    validated, so it carries no request digest, no request echo and names no
+    model at all — every documented key is present, holding null or []."""
+    terminal = "MODEL_STATE_UNAVAILABLE"
+    template = STATE_UNAVAILABLE_MESSAGES.get(prov.state_reason)
+    message = template.format(detail=prov.state_detail) if template else (
+        f"the pinned policy cannot be reproduced ({prov.state_reason}) — start the "
+        f"loop afresh or drop the pin")
+    out: dict = {k: None for k in _NULL_ROUTE_SCALARS}
+    out.update({k: [] for k in _NULL_ROUTE_LISTS})
+    review: dict = {k: None for k in _NULL_REVIEW_SCALARS}
+    review.update({k: [] for k in _NULL_REVIEW_LISTS})
+    out.update({
+        "route_schema_version": ROUTE_SCHEMA_VERSION,
+        "router_plugin_version": plugin_manifest_version(),
+        "policy_sha256": None,
+        "request_sha256": None,
+        "decision_fingerprint": None,
+        "terminal": terminal,
+        "review": review,
+        "requires_human_confirmation": False,
+        "human_confirmation_deferred": False,
+        "model_overlay": prov.to_json(),
+        "notes": [message],
+        "rationale": f"TERMINAL {terminal}: {message}",
+    })
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -816,6 +1194,9 @@ class Task:
     _host_seat: dict | None = field(default=None, repr=False, compare=False)
     _review_context: dict | None = field(default=None, repr=False, compare=False)
     _attempt_outcomes: list[dict] | None = field(default=None, repr=False, compare=False)
+    # RouteRequestV1 / --policy-pin: the policy digest to reproduce (DD-A9). A
+    # policy SELECTOR, not request content — never part of request_sha256.
+    _policy_pin: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def total_prior_attempts(self) -> int:
@@ -1832,7 +2213,11 @@ class Resolver:
         # exclusion set removed another, and the model that actually ran came
         # straight back out of `peek`. One function answers it now.
         self.failed = task.failed_models(policy)
-        self.unusable = self.blocked | self.failed
+        # Kept apart from `blocked`: that set is the CALLER's withholding and is
+        # echoed on every route, terminal ones included. A local revocation is
+        # not caller input, so it filters seats without being echoed.
+        self.local_blocked = set(policy.local_blocked_ids)
+        self.unusable = self.blocked | self.failed | self.local_blocked
 
         # Does THIS route's worker seat have to write? Set by `route()`.
         #
@@ -2358,8 +2743,27 @@ class _Prelude:
     execution_band: str
 
 
-def route(task: Task, cfg: dict | None = None) -> dict:
-    cfg = cfg if cfg is not None else default_config()
+def route(task: Task, cfg: dict | None = None, *,
+          env: Mapping[str, str] | None = None, home: Path | None = None) -> dict:
+    """Route `task`. With no `cfg`, on the effective policy (base + committed
+    local model state, read from `env`/`home`, default the process's); an
+    explicit `cfg` is used as given and never reads state."""
+    overlay = None
+    if task._policy_pin is not None:
+        _check_pin(task._policy_pin)
+        if cfg is not None:
+            # Dropping the pin would emit a route whose fingerprint is not the
+            # pinned one at exit 0 (DD-A2).
+            raise ValidationError(
+                "policy_pin needs the router's own effective policy; an explicit "
+                "cfg cannot honour it")
+    if cfg is None:
+        eff = resolve_effective_policy(os.environ if env is None else env,
+                                       Path.home() if home is None else Path(home),
+                                       pin=task._policy_pin)
+        if eff.config is None:
+            return _state_unavailable_route(eff.provenance)
+        cfg, overlay = eff.config, eff.provenance
     policy = Policy.of(cfg)
     task.validate(policy)
     request_sha = request_sha256_of(task)
@@ -2477,6 +2881,13 @@ def route(task: Task, cfg: dict | None = None) -> dict:
             "unconfirmed_terminations": sum(row["kind"] == "termination_unconfirmed" for row in history),
         }
         result["notes"].append("typed attempt history separates capability escalation from operational recovery; evidence hashes are caller declarations")
+    result["model_overlay"] = overlay.to_json() if overlay is not None else None
+    if overlay is not None and overlay.applied and result["terminal"] is None:
+        seated = {result["selected_model"], result["review"]["judge_model"],
+                  *result["review"]["reviewer_models"],
+                  *(seat["model_id"] for seat in result.get("dispatch_seats", []))}
+        keys = {policy.id_to_key[m] for m in seated if m} & set(overlay.applied)
+        result["notes"].extend(OVERLAY_SEAT_NOTE.format(key=k) for k in sorted(keys))
     result["rationale"] = explain(task, result, policy)
     return result
 
@@ -3491,6 +3902,9 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                         "worker needs a write-capable dispatch recipe")
     p.add_argument("--host-model", default=None)
     p.add_argument("--host-effort", default=None)
+    p.add_argument("--policy-pin", dest="policy_pin", default=None,
+                   help="policy_sha256 of an earlier route to reproduce from the "
+                        "committed local model state (64 lowercase hex)")
     p.add_argument("--format", default="text", choices=["text", "json"])
     return p
 
@@ -3566,6 +3980,9 @@ def task_from_request_v1(payload: dict) -> Task:
     if isinstance(flags, str):
         flags = _split(flags)
     flags = string_list(flags, "flags")
+    pin = payload.get("policy_pin")
+    if pin is not None:
+        _check_pin(pin)
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
@@ -3586,6 +4003,7 @@ def task_from_request_v1(payload: dict) -> Task:
         _host_seat=hs,
         _review_context=payload.get("review_context"),
         _attempt_outcomes=payload.get("attempt_outcomes"),
+        _policy_pin=pin,
     )
 
 
@@ -3650,6 +4068,9 @@ def main(argv: list[str] | None = None) -> int:
                     "model": args.host_model,
                     "effort": args.host_effort,
                 }
+        if args.policy_pin is not None:
+            _check_pin(args.policy_pin)
+            task._policy_pin = args.policy_pin
         result = route(task)
 
         if args.format == "json":
@@ -3684,6 +4105,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_text(r: dict) -> None:
+    if r["terminal"] == "MODEL_STATE_UNAVAILABLE":
+        print(f"TERMINAL:    {r['terminal']}  — no executable bindings emitted")
+        print(f"reason:      {r['model_overlay']['state_reason']}")
+        for note in r["notes"]:
+            print(f"  note: {note}")
+        return
     print(f"risk_score:  {r['risk_score']}")
     print(f"risk_band:   {r['risk_band']}")
     print(f"exec_score:  {r['execution_score']}")
