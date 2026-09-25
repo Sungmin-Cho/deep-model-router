@@ -129,8 +129,8 @@ exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2**
 
 - **트리거.** SessionStart 훅이 `model_sync.py tick --detach`를 실행합니다(오프라인, 수 ms; 후속 id가 대상일 때만 분리된 프로브 실행을 띄웁니다). Codex는 훅 명령을 신뢰할지 한 번 묻습니다. Grok이나 훅이 없는 호스트는 스킬에서 같은 틱을 실행합니다.
 - **상태.** `$DEEP_MODEL_ROUTER_STATE_DIR`, 없으면 `$XDG_STATE_HOME/deep-model-router`, 없으면 `~/.local/state/deep-model-router`(0700; 도구가 쓰는 상태이며 사람이 편집하지 않습니다). 라우터는 `committed/`만 읽습니다. `committed/`를 지우면 처음 설치 상태로 돌아가며, 폐기도 함께 사라집니다.
-- **명령.** `model_sync.py status`(현 세대, 보류, 알림) · `revert <key>`(항목을 빼고 그 id를 폐기) · `unblock <id>` · `disable` / `enable`(자동 업그레이드; `disable`은 진행 중 프로브도 취소) · `repair [--to <generation>]` · `quota`(로컬 rollout 기록에서 읽는 codex 사용량; 모델 호출 없음) · `promote --repo … --key … --price …`(항목을 리포 체크아웃으로 옮김).
-- **끄기.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 틱과 발행을 멈춥니다. `DEEP_MODEL_ROUTER_OVERLAY=off`는 비상 스위치입니다: 라우터가 오버레이 항목을 무시하되 폐기는 유지합니다. 손상된 committed 상태는 그래도 fail closed(`MODEL_STATE_UNAVAILABLE`)입니다 — `repair`를 쓰세요.
+- **명령.** `model_sync.py status`(현 세대, 보류, 알림) · `revert <key>`(항목을 빼고 그 id를 폐기) · `unblock <id>` · `disable` / `enable`(자동 업그레이드; `disable`은 진행 중 프로브도 취소) · `repair [--to <generation> [--force]]` · `quota`(로컬 rollout 기록에서 읽는 codex 사용량; 모델 호출 없음) · `promote --repo … --key … --price …`(항목을 리포 체크아웃으로 옮김).
+- **끄기.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 틱과 발행을 멈춥니다. `DEEP_MODEL_ROUTER_OVERLAY=off`는 비상 스위치입니다: 라우터가 오버레이 항목을 무시하되 폐기는 유지하며, 이미 좌석에 앉혔던 오버레이 id는 재시도 이력 입력으로 계속 유효합니다. 손상된 committed 상태는 그래도 fail closed(`MODEL_STATE_UNAVAILABLE`)입니다 — `repair`를 쓰세요. 승인 검사를 통과하지 못한 상태 루트(내가 소유한 0700 모드 디렉터리가 아님)도 마찬가지이며, 라우트 note가 `chmod 700` 조치를 알려 줍니다.
 - **진행 중인 deep-loop 실행.** 정책 다이제스트가 바뀌면 — 플러그인 업데이트나 오버레이 발행 — deep-loop가 `policy_pin`을 넘기기 전까지 진행 중인 deep-loop 실행이 멈춥니다. 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
 
 ---

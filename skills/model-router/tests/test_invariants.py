@@ -1554,3 +1554,34 @@ def test_t17_plan_purity_holds_across_real_two_plan_routes():
         if checked >= 40:
             break
     assert checked >= 20, checked
+
+
+def test_model_state_unavailable_emits_every_route_key_and_withholds_bindings(tmp_path):
+    """i1r1 opus F4: the MODEL_STATE_UNAVAILABLE terminal carries the whole
+    "Every route emits" key set (null / [] values) so a consumer indexing any
+    documented key does not raise, and it passes the same withholding scan as
+    every other terminal."""
+    import os
+    root = tmp_path / "state"
+    (root / "committed").mkdir(parents=True)
+    os.chmod(root, 0o700)
+    os.chmod(root / "committed", 0o700)
+    env = {**os.environ, "DEEP_MODEL_ROUTER_STATE_DIR": str(root)}
+    out = route(Task(task_class="MECHANICAL", complexity=0, uncertainty=0, blast_radius=0,
+                     reversibility=0), env=env, home=tmp_path)
+    assert out["terminal"] == "MODEL_STATE_UNAVAILABLE"
+    sample = route(Task(task_class="MECHANICAL", complexity=0, uncertainty=0,
+                        blast_radius=0, reversibility=0), CFG)
+    assert set(sample) <= set(out), sorted(set(sample) - set(out))
+    assert set(sample["review"]) <= set(out["review"]), \
+        sorted(set(sample["review"]) - set(out["review"]))
+    for k, v in out.items():
+        if k in ("route_schema_version", "router_plugin_version", "terminal", "notes",
+                 "rationale", "model_overlay", "requires_human_confirmation",
+                 "human_confirmation_deferred"):
+            continue
+        if k == "review":
+            assert all(x in (None, []) for kk, x in v.items()), v
+            continue
+        assert v in (None, []), (k, v)
+    _assert_terminal_withholds(out, {m["id"] for m in CFG["models"].values()})

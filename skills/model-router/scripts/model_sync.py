@@ -11,7 +11,8 @@ This file so far holds:
 * catalog adapters (DD-A4) — `read_codex_catalog`, `read_grok_catalog`,
   `read_claude_catalog`, `parse_grok_models_text`, `parse_cli_version`,
   `cli_versions`; candidates and notices — `find_candidates`,
-  `retirement_notices`, `alias_probe_plan`.
+  `retirement_notices`, `alias_probe_plan` (executed by `probe_alias` when
+  no Claude catalog exists).
 * probe gates (DD-A5), pure — `gate_p0` .. `gate_p4`, `retry_after_for`,
   `boot_input_tokens`, `parse_codex_debug_models`.
 * contained probe argv (DD-A0) — `probe_argv` (read-only reviewer recipes
@@ -302,6 +303,12 @@ def parse_cli_version(banner: str | None) -> str | None:
     return m.group(1) if m else None
 
 
+# grok checks for (and may install) updates on start unless told not to; the
+# global flag applies to `--version` and `models` too (grok 1.0.40, measured
+# 2026-09-25). The tick and run stay offline.
+OFFLINE_FLAGS = {"grok": ("--no-auto-update",)}
+
+
 def cli_versions(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
     """`<cli> --version` for the three CLIs on PATH. Offline and inference-
     free; a missing or failing CLI is None (the tick hash still changes when
@@ -314,7 +321,8 @@ def cli_versions(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
             out[cli] = None
             continue
         try:
-            proc = subprocess.run([exe, "--version"], capture_output=True, text=True,
+            proc = subprocess.run([exe, *OFFLINE_FLAGS.get(cli, ()), "--version"],
+                                  capture_output=True, text=True,
                                   timeout=CLI_VERSION_TIMEOUT, env=env,
                                   stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
@@ -394,8 +402,10 @@ def retirement_notices(rows: Mapping[str, dict],
 def alias_probe_plan(rows: Mapping[str, dict], claude_catalog: Catalog) -> list[dict]:
     """Only without a Claude catalog: probe each claude lineage row's alias
     (`catalog_name` lower-cased) through the same contained reviewer argv as
-    every probe (DD-A0), and read the served id off its envelope. Executed by
-    the probe harness, never here."""
+    every probe (DD-A0), and read the served id off its envelope. The plan
+    only; `plan()` makes each row an `alias_probe` candidate and `run()`
+    executes it with `probe_alias` — a newer served id is then probed through
+    every gate like any catalog candidate before anything is published."""
     if claude_catalog.status != "absent":
         return []
     return [{"key": key, "family": "claude", "alias": lin["catalog_name"].lower()}
@@ -418,6 +428,48 @@ P3_ABSOLUTE_CAP = 60_000
 TRANSIENT_RETRY = dt.timedelta(hours=6)
 QUOTA_UNKNOWN_RETRY = dt.timedelta(hours=24)
 UNSUPPORTED_MARKERS = ("not supported", "not found")
+# An effort/argument rejection (P4): one of these on an ERROR line that also
+# names the effort, the argument or the token. Anything else that fails is
+# transient — never a vendor verdict on the effort.
+REJECTION_MARKERS = ("not supported", "unsupported", "invalid", "not allowed", "unknown",
+                     "must be one of", "not a valid", "not available")
+_ERROR_LINE = re.compile(r"^\s*(error|fatal)\b", re.I)
+
+
+def error_lines(output: str | None) -> list[str]:
+    """The error text of a probe's combined output: plain lines that START
+    with `error`/`fatal` (a CLI's own error line, not a warning that merely
+    mentions a phrase), and the message of a JSON error event (`type: error`,
+    `turn.failed`, or `is_error: true`)."""
+    out = []
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            try:
+                doc = json.loads(stripped)
+            except ValueError:
+                doc = None
+            if isinstance(doc, dict):
+                if doc.get("type") in ("error", "turn.failed") or doc.get("is_error") is True:
+                    err = doc.get("error")
+                    for v in (doc.get("message"), doc.get("result"),
+                              err.get("message") if isinstance(err, dict) else err):
+                        if isinstance(v, str):
+                            out.append(v)
+                continue
+        if _ERROR_LINE.match(stripped):
+            out.append(stripped)
+    return out
+
+
+def effort_rejected(output: str | None, token: str) -> bool:
+    for line in error_lines(output):
+        low = line.lower()
+        if any(m in low for m in REJECTION_MARKERS) and (
+                "effort" in low or "argument" in low or "reasoning" in low
+                or re.search(r"(^|[^a-z0-9])" + re.escape(token.lower()) + r"([^a-z0-9]|$)", low)):
+            return True
+    return False
 
 
 class ProbeContext(NamedTuple):
@@ -593,12 +645,17 @@ def gate_p3(pair: Mapping, prior: int | None, cap: int, ctx: ProbeContext) -> di
 
 
 def gate_p4(results: list[Mapping], ctx: ProbeContext) -> dict:
-    """P4 top token: the first accepted level, top-down. Accepting below the
-    first attempt sets `effort_ceiling`; nothing accepted fails."""
+    """P4 top token: the first accepted level, top-down. Only a level the
+    vendor REJECTED (an effort/argument error in the receipt) lets the next
+    one down count, and accepting below the first attempt sets
+    `effort_ceiling`; a failure that is not a rejection (timeout, 5xx, crash)
+    is `transient` and lowers nothing. Every level rejected fails."""
     for i, r in enumerate(results):
         if r.get("accepted"):
             return _verdict("P4", "pass", None, ctx,
                             effort_ceiling=r["effort"] if i else None)
+        if not r.get("rejected"):
+            return _verdict("P4", "failed", "transient", ctx, effort_ceiling=None)
     return _verdict("P4", "failed", "top_token", ctx, effort_ceiling=None)
 
 
@@ -773,7 +830,7 @@ class _Run:
         text = stdout
         if receipt is not None and receipt.get("output_envelope") in (CLAUDE_ENVELOPE, GROK_ENVELOPE):
             text = _envelope_text(stdout, receipt["output_envelope"])
-        return receipt, text, (stderr or "") + (stdout or "")
+        return receipt, text, "\n".join(x for x in (stderr, stdout) if x)
 
 
 def _read_evidence_json(path: Path) -> tuple[dict | None, str | None]:
@@ -879,6 +936,45 @@ def probe_candidate(*, key: str, candidate: Mapping, base: dict, state_root: Pat
             "inferences": run.inferences if run else 0}
 
 
+ALIAS_INFERENCES = 1
+
+
+def probe_alias(*, key: str, candidate: Mapping, base: dict, state_root: Path,
+                env: Mapping[str, str], scratch: Path, ctx: ProbeContext,
+                on_attempt=None, deadline_seconds: float = 300) -> dict:
+    """DD-A4 fallback, only when no Claude catalog exists: ONE call of the
+    contained read-only reviewer recipe (`probe_argv`, `--strict-mcp-config`,
+    plan mode, the receipt guard where it exists) through `dispatch_agent.py
+    run`, on the row's alias. The served id is read off the receipt envelope.
+
+    Returns `{"outcome": "candidate" | "none" | "failed", "id", "reason",
+    "retry_after", "inferences"}`: `candidate` only when the call answered
+    `pong` with termination confirmed, served exactly one id, and that id is
+    a strictly newer generation of the row's current id under its template.
+    Nothing is published from this — the id still has to pass P0..P4."""
+    row = base["models"][key]
+    lin = row["lineage"]
+    run_ = _Run(family="claude", lin=lin, state_root=state_root, scratch=scratch, env=env,
+                deadline=deadline_seconds, on_attempt=on_attempt,
+                run_id=f"a{ctx.now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}")
+    receipt, text, _ = run_.call("alias", candidate["alias"], native_token(base, row, "LOW"))
+    out = {"id": None, "inferences": run_.inferences, "reason": None, "retry_after": None}
+    if not _accepted(receipt, text):
+        return {**out, "outcome": "failed", "reason": "smoke",
+                "retry_after": retry_after_for("smoke", ctx)}
+    env_ = ((receipt or {}).get("result") or {}).get("envelope") or {}
+    served = sorted(set(env_.get("served_models") or []))
+    template = lin["template"]
+    parsed = lineage.parse(template, served[0]) if len(served) == 1 else None
+    if parsed is None:
+        return {**out, "outcome": "failed", "reason": "served_unproven",
+                "retry_after": retry_after_for("served_unproven", ctx)}
+    current = lineage.parse(template, candidate["from_id"])
+    if current is None or lineage.compare(parsed, current) <= 0:
+        return {**out, "outcome": "none", "id": served[0]}
+    return {**out, "outcome": "candidate", "id": served[0]}
+
+
 def _p3(run: _Run, family, cand_id, current_id, low, p1_receipt, prior_baseline,
         cap, ctx, record) -> dict:
     mode = "json" if family == "openai" else "text"
@@ -889,7 +985,7 @@ def _p3(run: _Run, family, cand_id, current_id, low, p1_receipt, prior_baseline,
         cand_receipt = p1_receipt       # same argv shape: the P1 call is the pair's half
     current = boot_input_tokens(cur_receipt) if _succeeded(cur_receipt) else None
     unsupported = current is None and any(
-        m in (cur_output or "").lower() for m in UNSUPPORTED_MARKERS)
+        m in line.lower() for line in error_lines(cur_output) for m in UNSUPPORTED_MARKERS)
     prior = None
     if prior_baseline and prior_baseline.get("cli_version") == ctx.cli_version:
         prior = prior_baseline.get("input_tokens")
@@ -909,10 +1005,11 @@ def _p4(run: _Run, base, row, cand_id, ceiling, ctx, record) -> dict:
         token = native_token(base, row, level)
         if results and token == results[-1]["native"]:
             continue
-        receipt, text, _ = run.call("P4", cand_id, token)
-        results.append({"effort": level, "native": token,
-                        "accepted": _accepted(receipt, text)})
-        if results[-1]["accepted"]:
+        receipt, text, output = run.call("P4", cand_id, token)
+        accepted = _accepted(receipt, text)
+        results.append({"effort": level, "native": token, "accepted": accepted,
+                        "rejected": not accepted and effort_rejected(output, token)})
+        if accepted or not results[-1]["rejected"]:
             break
     record["effort_results"] = results
     return gate_p4(results, ctx)
@@ -1338,16 +1435,30 @@ def _admitted_generations(state_path: Path) -> list[dict]:
                               "blocked_ids": list(gen["blocked_ids"])})
     except (OSError, ValueError):
         pass
+    named = {g["parent_generation_sha256"] for g in found}
+    for g in found:
+        g["orphan"] = g["generation_sha256"] not in named
     return found
 
 
-def repair(state_path: Path, *, to: str | None = None) -> dict:
+def repair(state_path: Path, *, to: str | None = None, force: bool = False) -> dict:
     """A sound pointer is left alone. A damaged one is NEVER repaired by
     choice of this tool — an older generation would silently drop later
     replacements and revocations — only by `--to <generation_sha256>`,
     which restores that generation's revocations and names the ones that
-    disappear."""
+    disappear.
+
+    `--to` needs `--force` when the current pointer is sound (a rollback),
+    and when the target is an ORPHAN: a generation no other generation names
+    as its parent and the pointer does not name — what a crash before the
+    pointer moved, or a publication the recheck refused after `disable`,
+    leaves behind. Without a pointer log the newest committed generation is
+    indistinguishable from such a file, so it needs `--force` too."""
     state_path = Path(state_path)
+    admission = model_state.root_admission(state_path)
+    if admission["admitted"] is False:
+        raise SyncError(f"the state root fails admission ({admission['detail']}); "
+                        f"nothing under it was read. Fix: {admission['fix']}")
     if to is None:
         with model_state.read_state(state_path) as st:
             if st.shape != "unreadable":
@@ -1356,6 +1467,8 @@ def repair(state_path: Path, *, to: str | None = None) -> dict:
         listing = "\n".join(
             f"  {g['generation_sha256']}  parent={g['parent_generation_sha256']}  "
             f"entries={','.join(g['entries']) or '-'}  blocked={','.join(g['blocked_ids']) or '-'}"
+            + ("  [orphan: no generation names it as a parent; --force to adopt]"
+               if g["orphan"] else "")
             for g in _admitted_generations(state_path)) or "  (none admitted)"
         raise SyncError(
             f"the committed pointer is damaged ({detail}). Nothing was chosen "
@@ -1372,8 +1485,19 @@ def repair(state_path: Path, *, to: str | None = None) -> dict:
             raise SyncError(f"generation {to} is not admitted: {exc}") from None
         with model_state.read_state(state_path) as st:
             current = set(st.generation["blocked_ids"]) if st.shape == "ok" else None
+            current_sha = st.generation_sha256 if st.shape == "ok" else None
+        admitted = _admitted_generations(state_path)
+        if current is not None and to != current_sha and not force:
+            raise SyncError(f"the committed pointer is sound ({current_sha}); moving it "
+                            f"to {to} is a rollback — repeat with --force to confirm")
+        orphan = next((g["orphan"] for g in admitted if g["generation_sha256"] == to), True)
+        if orphan and to != current_sha and not force:
+            raise SyncError(f"generation {to} is an orphan: no generation names it as a "
+                            f"parent and the pointer does not name it (a crash or a "
+                            f"refused publication leaves such files). Repeat with "
+                            f"--force to adopt it anyway")
         if current is None:
-            current = {b for g in _admitted_generations(state_path) for b in g["blocked_ids"]}
+            current = {b for g in admitted for b in g["blocked_ids"]}
         disappearing = sorted(current - set(target["blocked_ids"]))
         model_state.write_pointer(root, to)
         root.fsync_dir(model_state.COMMITTED)
@@ -1441,10 +1565,31 @@ def _last_token_count(path: Path) -> dict | None:
     return None
 
 
+def _fullest_window(limits: Mapping) -> tuple[str, dict] | None:
+    """The window (primary, or a non-null secondary) with the highest
+    `used_percent`: where primary is the short window, weekly exhaustion is
+    only in secondary. None when a present window is malformed."""
+    best = None
+    for name in ("primary", "secondary"):
+        w = limits.get(name)
+        if w is None and name == "secondary":
+            continue
+        if not isinstance(w, Mapping):
+            return None
+        used, resets = w.get("used_percent"), w.get("resets_at")
+        if not isinstance(used, (int, float)) or isinstance(used, bool) \
+                or not isinstance(resets, int) or isinstance(resets, bool):
+            return None
+        if best is None or used > best[1]["used_percent"]:
+            best = (name, {"used_percent": used, "resets_at": resets})
+    return best
+
+
 def read_quota(sessions_dir: Path, now: dt.datetime | None = None) -> dict:
-    """`rate_limits.primary` of the last `token_count` event in the newest
-    rollout that has one (`sessions/YYYY/MM/DD/rollout-*.jsonl`). A record
-    older than 6 hours, or none at all, is `unknown` — and unknown defers."""
+    """The fullest `rate_limits` window (primary, or secondary when present)
+    of the last `token_count` event in the newest rollout that has one
+    (`sessions/YYYY/MM/DD/rollout-*.jsonl`). A record older than 6 hours, or
+    none at all, is `unknown` — and unknown defers."""
     now = _utcnow(now)
     pattern = os.path.join(glob.escape(str(sessions_dir)), "[0-9]" * 4, "[0-9]" * 2,
                            "[0-9]" * 2, "rollout-*.jsonl")
@@ -1453,17 +1598,17 @@ def read_quota(sessions_dir: Path, now: dt.datetime | None = None) -> dict:
         ev = _last_token_count(Path(name))
         if ev is None:
             continue
-        primary = ev["payload"]["rate_limits"]["primary"]
-        used, resets = primary.get("used_percent"), primary.get("resets_at")
         try:
             ts = _parse_time(ev["timestamp"])
         except ValueError:
             continue
-        if not isinstance(used, (int, float)) or isinstance(used, bool) \
-                or not isinstance(resets, int) or isinstance(resets, bool):
+        window = _fullest_window(ev["payload"]["rate_limits"])
+        if window is None:
             return {"status": "unknown", "reason": "shape", "source": name}
+        which, w = window
+        used, resets = w["used_percent"], w["resets_at"]
         out = {"source": name, "event_timestamp": ev["timestamp"], "used_percent": used,
-               "resets_at": resets,
+               "resets_at": resets, "window": which,
                "resets_at_iso": dt.datetime.fromtimestamp(resets, dt.timezone.utc).isoformat()}
         if now - ts > QUOTA_STALE_AFTER:
             return {"status": "unknown", "reason": "stale", **out}
@@ -1489,7 +1634,8 @@ def grok_models_text(env: Mapping[str, str]) -> str | None:
     if exe is None:
         return None
     try:
-        proc = subprocess.run([exe, "models"], capture_output=True, text=True,
+        proc = subprocess.run([exe, *OFFLINE_FLAGS["grok"], "models"],
+                              capture_output=True, text=True,
                               timeout=CLI_VERSION_TIMEOUT * 2, env=dict(env),
                               stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
@@ -1555,14 +1701,25 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
         c = found[key]
         if keys is not None and key not in keys:
             continue
-        if c["status"] != "candidate":
+        if c["status"] == "alias_probe":
+            # No Claude catalog: the row's alias is probed instead (DD-A4);
+            # a deferral recorded against the alias itself holds it back.
+            row = view.config["models"][key]
+            c = {**c, "id": None, "alias": row["lineage"]["catalog_name"].lower()}
+            neg = (work.get("negatives") or {}).get(key)
+            if neg and neg.get("id") is None and neg.get("alias") == c["alias"] \
+                    and not _negative_expired(neg, versions, catalogs, now):
+                skipped[key] = f"deferred:{neg.get('reason')}"
+                continue
+        elif c["status"] != "candidate":
             skipped[key] = c["status"]
             continue
-        if c["id"] in blocked:
+        elif c["id"] in blocked:
             skipped[key] = "blocked"
             continue
         neg = (work.get("negatives") or {}).get(key)
-        if neg and neg.get("id") == c["id"] and not _negative_expired(neg, versions, catalogs, now):
+        if c["id"] is not None and neg and neg.get("id") == c["id"] \
+                and not _negative_expired(neg, versions, catalogs, now):
             skipped[key] = f"deferred:{neg.get('reason')}"
             continue
         last = (work.get("last_probe") or {}).get(key)
@@ -1575,8 +1732,9 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
 
 # --- tick ------------------------------------------------------------------------
 
-def _spawn_detached(env: Mapping[str, str]) -> None:
-    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run"],
+def _spawn_detached(env: Mapping[str, str], digest: str | None = None) -> None:
+    extra = ["--tick-hash", digest] if digest else []
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run", *extra],
                      env=dict(env), cwd="/", stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True, close_fds=True)
@@ -1584,10 +1742,16 @@ def _spawn_detached(env: Mapping[str, str]) -> None:
 
 def tick(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime | None = None,
          detach: bool = True, spawn=None, versions=None) -> dict:
-    """Offline and inference-free. Same catalogs + CLI banners as last time
-    and no expired deferral -> return at once. Otherwise, when a candidate
-    is eligible, start `run` (detached: a new session, stdio on /dev/null)
-    and return."""
+    """Offline and inference-free. Same catalogs + CLI banners as the last
+    COMPLETED tick and no expired deferral -> return at once. Otherwise, when
+    a candidate is eligible, start `run` (detached: a new session, stdio on
+    /dev/null) and return.
+
+    The hash is a completion record: stored here only when nothing is
+    eligible, and otherwise by the run this tick starts once it has probed
+    everything it planned (`run --tick-hash`). A run that dies first, or is
+    cut short by the budget, leaves the tick due. A run already holding
+    `work/run.lock` makes this tick `busy` and stores nothing."""
     if autoupgrade_env_off(env):
         return {"status": "disabled", "reason": "DEEP_MODEL_ROUTER_AUTOUPGRADE=0"}
     from route_task import load_config
@@ -1607,20 +1771,34 @@ def tick(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime |
         return {"status": "unchanged"}
     eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work,
                              now=now)
-
-    def store(st):
-        st["tick_hash"] = digest
-    update_work_state(state_path, store)
     if not eligible:
+        _store_tick_hash(state_path, digest)
         return {"status": "no_candidates", "skipped": skipped}
+    if _run_lock_held(state_path):
+        return {"status": "busy"}
     keys = [c["key"] for c in eligible]
     if spawn is not None:
         spawn(keys)
     elif detach:
-        _spawn_detached(env)
+        _spawn_detached(env, digest)
     else:
-        return {"status": "ran", "run": run(env=env, home=home, now=now)}
-    return {"status": "spawned", "keys": keys}
+        return {"status": "ran", "run": run(env=env, home=home, now=now, tick_hash=digest)}
+    return {"status": "spawned", "keys": keys, "tick_hash": digest}
+
+
+def _store_tick_hash(state_path: Path, digest: str) -> None:
+    def store(st):
+        st["tick_hash"] = digest
+    update_work_state(state_path, store)
+
+
+def _run_lock_held(state_path: Path) -> bool:
+    with StateRoot.open(state_path, create=True) as root:
+        try:
+            with root.lock(timeout=0, relpath=RUN_LOCK):
+                return False
+        except StateError:
+            return True
 
 
 # --- run -------------------------------------------------------------------------
@@ -1652,23 +1830,29 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
         st["recent"] = ([{"key": key, "id": cand["id"], "outcome": outcome, "reason": reason,
                           "summary_sha256": summary_sha, "at": now.isoformat()}]
                         + list(st["recent"]))[:RECENT_KEEP]
-        if outcome == "pass":
+        if outcome in ("pass", "none"):
             st["negatives"].pop(key, None)
+        elif outcome == "held":
+            pass
         else:
             st["negatives"][key] = {"id": cand["id"], "family": cand["family"],
                                     "outcome": outcome, "reason": reason,
                                     "retry_after": retry_after, "summary_sha256": summary_sha,
                                     "at": now.isoformat()}
+            if cand.get("alias"):
+                st["negatives"][key]["alias"] = cand["alias"]
     update_work_state(state_path, rec)
 
 
 def run(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime | None = None,
         keys=None, budget: int = INFERENCE_BUDGET, probe=None, versions=None,
-        grok_text: Any = ...) -> dict:
+        grok_text: Any = ..., tick_hash: str | None = None, alias_probe=None) -> dict:
     """Probe every eligible candidate within the inference budget and
     publish the passing ones. One run at a time (`work/run.lock`); an
     explicit `keys` list is a manual request and skips the 24-hour lineage
-    interval (never a deferral or a revocation)."""
+    interval (never a deferral or a revocation). `tick_hash` is the digest of
+    the tick that started this run: stored as that tick's completion record
+    once every planned candidate was handled (none cut by the budget)."""
     if autoupgrade_env_off(env):
         return {"status": "disabled", "reason": "DEEP_MODEL_ROUTER_AUTOUPGRADE=0"}
     home, now = _home(env, home), _utcnow(now)
@@ -1682,13 +1866,15 @@ def run(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime | 
         try:
             return _run_locked(root, state_path, env=env, home=home, now=now, keys=keys,
                                budget=budget, probe=probe or probe_candidate,
-                               versions=versions, grok_text=grok_text)
+                               versions=versions, grok_text=grok_text,
+                               tick_hash=tick_hash,
+                               alias_probe=alias_probe or probe_alias)
         finally:
             lock.__exit__(None, None, None)
 
 
 def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versions,
-                grok_text) -> dict:
+                grok_text, tick_hash=None, alias_probe=None) -> dict:
     from route_task import load_config
     if read_work_state(root)["auto_upgrade"] == "disabled":
         return {"status": "disabled", "reason": "model_sync.py disable"}
@@ -1703,7 +1889,8 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
                              now=now, keys=keys, interval=keys is None)
     rep = {"status": "ok", "probed": [], "passed": [], "deferred": [], "failed": [],
            "over_budget": [], "interval": sorted(k for k, r in skipped.items() if r == "interval"),
-           "skipped": skipped, "inferences": 0, "generation_sha256": None}
+           "skipped": skipped, "inferences": 0, "generation_sha256": None, "aliases": {}}
+    blocked = set((view.generation or {}).get("blocked_ids") or [])
 
     def register(attempt: str, receipt_dir: Path) -> None:
         if autoupgrade_env_off(env):
@@ -1721,10 +1908,39 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
     try:
         for cand in eligible:
             key, fam = cand["key"], cand["family"]
-            if rep["inferences"] + MAX_INFERENCES[fam] > budget:
+            aliased = cand["status"] == "alias_probe"
+            need = MAX_INFERENCES[fam] + (ALIAS_INFERENCES if aliased else 0)
+            if rep["inferences"] + need > budget:
                 rep["over_budget"].append(key)
                 continue
             ctx = ProbeContext(now=now, cli_version=versions.get(FAMILY_CLI[fam]))
+            if aliased:
+                found = alias_probe(key=key, candidate=cand, base=base,
+                                    state_root=state_path, env=env, scratch=scratch,
+                                    ctx=ctx, on_attempt=register)
+                _clear_in_flight(state_path)
+                if _disabled_now(state_path, env):
+                    raise Disabled()
+                rep["inferences"] += found["inferences"]
+                rep["aliases"][key] = found["outcome"]
+                neg = (read_work_state(root).get("negatives") or {}).get(key)
+                if found["outcome"] == "candidate" and found["id"] not in blocked and not (
+                        neg and neg.get("id") == found["id"]
+                        and not _negative_expired(neg, versions, catalogs, now)):
+                    cand = {**cand, "status": "candidate", "id": found["id"],
+                            "efforts": [], "catalog_sha256": catalogs[fam].sha256}
+                else:
+                    # a served successor that is revoked, or deferred already,
+                    # is held: recorded (the interval counts) without touching
+                    # the deferral that holds it
+                    _record(state_path, key, {**cand, "id": None}, now=now,
+                            outcome=found["outcome"] if found["outcome"] != "candidate"
+                            else "held", reason=found["reason"],
+                            retry_after=found["retry_after"], summary_sha=None,
+                            inferences=found["inferences"])
+                    if found["outcome"] == "failed":
+                        rep["failed"].append(key)
+                    continue
             if fam == "openai":
                 if quota is None:
                     quota = read_quota(codex_sessions_dir(home, env), now)
@@ -1758,6 +1974,8 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
         if passing:
             rep["generation_sha256"] = publish_results(
                 state_path, base, passing, recheck=auto_upgrade_recheck(env))
+        if tick_hash is not None and not rep["over_budget"]:
+            _store_tick_hash(state_path, tick_hash)
     except Disabled:
         rep["status"] = "disabled_during_run"
     finally:
@@ -1782,6 +2000,7 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
         work["unreadable"] = str(exc)
     out: dict[str, Any] = {
         "state_dir": str(state_path),
+        "state_root": model_state.root_admission(state_path),
         "auto_upgrade": "disabled" if autoupgrade_env_off(env)
         or work["auto_upgrade"] == "disabled" else "enabled",
         "auto_upgrade_env_off": autoupgrade_env_off(env)}
@@ -1812,7 +2031,7 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
                        for f, c in sorted(catalogs.items())}
     out["retirement_notices"] = retirement_notices(view.config["models"], catalogs)
     eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work, now=now)
-    out["candidates"] = {c["key"]: c["id"] for c in eligible}
+    out["candidates"] = {c["key"]: c["id"] or f"alias:{c['alias']}" for c in eligible}
     out["skipped"] = skipped
     out["deferred"] = {k: {**n, "expired": _negative_expired(n, versions, catalogs, now)}
                        for k, n in sorted(work["negatives"].items())}
@@ -1853,6 +2072,8 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run", help="probe eligible candidates and publish passing ones")
     r.add_argument("--key", action="append", dest="keys", metavar="KEY",
                    help="only this registry key (repeatable); skips the 24h interval")
+    r.add_argument("--tick-hash", default=None, metavar="SHA256",
+                   help=argparse.SUPPRESS)      # set by `tick --detach` only
     sub.add_parser("status", help="committed generation, deferrals, notices, recent summaries")
     rv = sub.add_parser("revert", help="drop a key's overlay entry and revoke its id")
     rv.add_argument("key")
@@ -1860,6 +2081,8 @@ def main(argv: list[str] | None = None) -> int:
     ub.add_argument("model_id")
     rp = sub.add_parser("repair", help="check the pointer; --to moves it to a named generation")
     rp.add_argument("--to", metavar="GENERATION_SHA256")
+    rp.add_argument("--force", action="store_true",
+                    help="with --to: replace a sound pointer, or adopt an orphan generation")
     sub.add_parser("disable", help="turn auto-upgrade off and cancel in-flight probes")
     sub.add_parser("enable", help="turn auto-upgrade back on")
     sub.add_parser("quota", help="codex rate-limit usage from local rollout records")
@@ -1893,7 +2116,10 @@ def main(argv: list[str] | None = None) -> int:
                 if "lineage" not in base["models"].get(k, {}):
                     print(f"model_sync: {k!r} is not a lineage row", file=sys.stderr)
                     return 2
-            _print(run(env=env, home=home, keys=args.keys))
+            if args.tick_hash is not None and not model_state.is_hex64(args.tick_hash):
+                print("model_sync: --tick-hash must be 64 lowercase hex", file=sys.stderr)
+                return 2
+            _print(run(env=env, home=home, keys=args.keys, tick_hash=args.tick_hash))
         elif args.cmd == "status":
             _print(status(env=env, home=home))
         elif args.cmd == "revert":
@@ -1901,7 +2127,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "unblock":
             _print(unblock(state_path, args.model_id))
         elif args.cmd == "repair":
-            _print(repair(state_path, to=args.to))
+            _print(repair(state_path, to=args.to, force=args.force))
         elif args.cmd == "disable":
             _print(disable(state_path))
         elif args.cmd == "enable":

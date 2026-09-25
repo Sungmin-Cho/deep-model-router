@@ -15,8 +15,11 @@ Three shapes (`read_state`):
 * ``absent``      no ``committed/`` (no root, only ``work/``, or only an
                   interrupted ``committed.tmp-*`` bootstrap) — route on the base
 * ``ok``          pointer and generation admitted, content hash = file name
-* ``unreadable``  ``committed/`` exists and anything on the read path fails
-                  admission, decoding, hashing or the schema — fail closed
+* ``unreadable``  the root itself fails admission (``root_unadmitted``: mode,
+                  owner, type, a symlink — whether or not ``committed/``
+                  exists), or ``committed/`` exists and anything on its read
+                  path fails admission, decoding, hashing or the schema — fail
+                  closed
 
 `effective_config` is pure: base config + one generation -> the config the
 router routes on, plus a provenance record that names registry KEYS and
@@ -195,11 +198,15 @@ class StateRead:
 
     def __init__(self, shape: str, *, root: StateRoot | None = None,
                  generation: dict | None = None, generation_sha256: str | None = None,
-                 detail: str | None = None, prefix: str = COMMITTED):
+                 detail: str | None = None, prefix: str = COMMITTED,
+                 root_unadmitted: bool = False):
         self.shape = shape
         self.generation = generation
         self.generation_sha256 = generation_sha256
         self.detail = detail
+        # The root itself failed admission (mode, owner, type, symlink): no
+        # file under it was read, and `detail` names no model id.
+        self.root_unadmitted = root_unadmitted
         self._root = root
         self._prefix = prefix
 
@@ -249,7 +256,7 @@ def read_state(path: Path) -> StateRead:
     except FileNotFoundError:
         return StateRead("absent")
     except (OSError, ValueError) as exc:
-        return StateRead("unreadable", detail=str(exc))
+        return StateRead("unreadable", detail=str(exc), root_unadmitted=True)
     try:
         if not root.lexists(COMMITTED):
             root.close()
@@ -264,6 +271,33 @@ def read_state(path: Path) -> StateRead:
         root.close()
         return StateRead("unreadable", detail=str(exc))
     return StateRead("ok", root=root, generation=gen, generation_sha256=sha)
+
+
+def empty_generation(base_sha: str) -> dict:
+    """No entries, no history, no revocations: what precedes the first
+    generation. The pin walk merges it under the current revocations."""
+    return {"overlay_schema_version": OVERLAY_SCHEMA_VERSION, "entries": {},
+            "history": {}, "blocked_ids": [], "parent_generation_sha256": None,
+            "base_policy_sha256": base_sha}
+
+
+def root_admission(path: Path) -> dict:
+    """Whether the state root passes admission, for `status`, `repair` and
+    the terminal note: `{path, admitted (None when absent), detail, fix}`.
+    The detail names the path and the failed check, never a model id."""
+    try:
+        StateRoot.open(Path(path)).close()
+    except FileNotFoundError:
+        return {"path": str(path), "admitted": None, "detail": "absent", "fix": None}
+    except (OSError, ValueError) as exc:
+        return {"path": str(path), "admitted": False, "detail": str(exc),
+                "fix": root_fix(path)}
+    return {"path": str(path), "admitted": True, "detail": None, "fix": None}
+
+
+def root_fix(path: Path) -> str:
+    return (f"chmod 700 {path} (the state root must be a real directory owned by "
+            f"you with mode 0700), or point DEEP_MODEL_ROUTER_STATE_DIR elsewhere")
 
 
 # --------------------------------------------------------------------------
@@ -308,6 +342,8 @@ class Provenance:
     history_ids_synthesized: int = 0
     blocked_ids: int = 0
     state_reason: str | None = None
+    # For the terminal note only (never in `to_json`): an id-free detail.
+    state_detail: str | None = None
 
     def to_json(self) -> dict:
         """The route's `model_overlay`. Keys and counts only — never an id."""
@@ -387,13 +423,23 @@ def _history_reason(mid: str, rec: dict, base: dict, base_sha: str,
     if _gen(lin["template"], mid) is None:
         return "history_template_mismatch"
     if rec["source"] == "base":
-        if rec["base_policy_sha256"] != base_sha:
+        # Another base cannot vouch for the snapshot — unless the current base
+        # row still holds this very id, which it then re-snapshots.
+        if rec["base_policy_sha256"] != base_sha and row["id"] != mid:
             return "history_base_changed"
     else:
         s = summary(rec["probe_summary_sha256"])
         if s is None or s.get("id") != mid or s.get("key") != rec["key"]:
             return "history_unprobed"
     return None
+
+
+def _base_snapshot(base: dict, key: str, base_sha: str) -> dict:
+    row = base["models"][key]
+    return {"key": key, "family": row["family"], "capability_tier": row["capability_tier"],
+            "effort_ceiling": row.get("effort_ceiling"),
+            "effort_map": dict(row.get("effort_map") or {}),
+            "source": "base", "base_policy_sha256": base_sha}
 
 
 def effective_config(base: dict, generation: dict | None, *, apply_entries: bool,
@@ -420,6 +466,12 @@ def effective_config(base: dict, generation: dict | None, *, apply_entries: bool
     models = dict(base["models"])
     changed = False
 
+    # Entries that did not replace their row but whose own probe summary still
+    # names them: the router may have seated that id, so it stays valid
+    # history input (rule 7) even though it is not dispatchable now.
+    unseated: list[tuple[str, dict]] = []
+    if not apply_entries:
+        unseated = [(k, generation["entries"][k]) for k in sorted(generation["entries"])]
     if apply_entries:
         for key in sorted(generation["entries"]):
             e = generation["entries"][key]
@@ -434,9 +486,11 @@ def effective_config(base: dict, generation: dict | None, *, apply_entries: bool
                 continue
             if lineage.compare(_gen(template, base_id), _gen(template, e["id"])) > 0:
                 prov.noop.append({"key": key, "reason": "base_newer"})       # 3
+                unseated.append((key, e))
                 continue
             if base_id != e["from_id"]:                                       # 4
                 prov.rejected.append({"key": key, "reason": "from_id_mismatch"})
+                unseated.append((key, e))
                 continue
             if e["id"] in blocked:                                            # 5
                 prov.rejected.append({"key": key, "reason": "blocked"})
@@ -444,6 +498,8 @@ def effective_config(base: dict, generation: dict | None, *, apply_entries: bool
             reason = _summary_reason(key, e, base, summary)
             if reason:
                 prov.rejected.append({"key": key, "reason": reason})
+                if reason == "stale_probe":
+                    unseated.append((key, e))
                 continue
             row = copy.deepcopy(base["models"][key])                          # 6
             row["id"] = e["id"]
@@ -459,14 +515,9 @@ def effective_config(base: dict, generation: dict | None, *, apply_entries: bool
             changed = True
 
     live_ids = {m["id"] for m in models.values()}
-    for mid in sorted(generation["history"]):                                 # 7
-        rec = generation["history"][mid]
-        if mid in live_ids:
-            continue            # already valid input as a live or base-history row
-        reason = _history_reason(mid, rec, base, base_sha, summary)
-        if reason:
-            prov.rejected.append({"key": rec["key"], "reason": reason})
-            continue
+
+    def synthesize(mid: str, rec: dict) -> None:
+        nonlocal changed
         row = {"id": mid, "history_of": rec["key"], "history_source": rec["source"],
                "family": rec["family"], "capability_tier": rec["capability_tier"],
                "dispatchable": False, "verified": True,
@@ -479,6 +530,30 @@ def effective_config(base: dict, generation: dict | None, *, apply_entries: bool
         live_ids.add(mid)
         prov.history_ids_synthesized += 1
         changed = True
+
+    for mid in sorted(generation["history"]):                                 # 7
+        rec = generation["history"][mid]
+        if mid in live_ids:
+            continue            # already valid input as a live or base-history row
+        reason = _history_reason(mid, rec, base, base_sha, summary)
+        if reason:
+            prov.rejected.append({"key": rec["key"], "reason": reason})
+            continue
+        if rec["source"] == "base" and base["models"][rec["key"]]["id"] == mid:
+            rec = _base_snapshot(base, rec["key"], base_sha)   # the row's own id: re-snapshot
+        synthesize(mid, rec)
+    for key, e in unseated:
+        mid = e["id"]
+        if mid in live_ids or _entry_structural_reason(key, e, base, generation):
+            continue
+        s = summary(e["probe_summary_sha256"])
+        if not isinstance(s, dict) or s.get("id") != mid or s.get("key") != key:
+            continue
+        row = base["models"][key]
+        synthesize(mid, {"key": key, "family": row["family"],
+                         "capability_tier": row["capability_tier"],
+                         "effort_ceiling": e["effort_ceiling"],
+                         "effort_map": dict(e["effort_map"]), "source": "probe"})
 
     prov.blocked_ids = len(blocked)
     if not changed and not blocked:

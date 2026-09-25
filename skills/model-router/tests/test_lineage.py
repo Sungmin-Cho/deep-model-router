@@ -25,6 +25,7 @@ HAIKU = "demo-claude-haiku-{gen}[-{date}]"
 
 def test_dated_id_splits_generation_and_date():
     assert parse(HAIKU, "demo-claude-haiku-4-5-20251001") == Generation((4, 5), 20251001)
+    assert parse(HAIKU, "demo-claude-haiku-4-5-20251001-20251002") is None
 
 
 def test_longer_generation_outranks_a_dated_shorter_one():
@@ -71,9 +72,20 @@ def test_undated_sorts_below_dated_at_equal_generation():
     assert compare(Generation((4, 5), 20250101), dated) == -1
 
 
-def test_template_without_date_does_not_strip_a_date_shaped_suffix():
-    assert parse("demo-claude-haiku-{gen}", "demo-claude-haiku-4-5-20251001") == \
-        Generation((4, 5, 20251001), None)
+def test_template_without_date_rejects_a_dated_snapshot():
+    """A template without `[-{date}]` does not rank a dated snapshot: read as
+    a generation part, `-20261101` would sort above every real generation
+    (`…-5-20261101` > `…-5-9`). It is not a spelling of that lineage."""
+    assert parse("demo-claude-haiku-{gen}", "demo-claude-haiku-4-5-20251001") is None
+    assert parse("demo-claude-opus-{gen}", "demo-claude-opus-5-20261101") is None
+    assert parse("demo-gpt-{gen}-sol", "demo-gpt-6-20261101-sol") is None
+    assert not is_successor("demo-claude-opus-{gen}", "demo-claude-opus-5-9",
+                            "demo-claude-opus-5-20261101")
+    # Negative: ordinary multi-part generations and the dated template still parse.
+    assert parse("demo-claude-opus-{gen}", "demo-claude-opus-5-5") == Generation((5, 5), None)
+    assert parse("demo-claude-opus-{gen}", "demo-claude-opus-5-1234567") == \
+        Generation((5, 1234567), None)
+    assert parse(HAIKU, "demo-claude-haiku-4-5-20251001") == Generation((4, 5), 20251001)
 
 
 def test_date_is_stripped_only_when_the_rest_still_matches():

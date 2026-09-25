@@ -510,11 +510,100 @@ def test_rule7_a_probe_record_without_its_summary_is_refused():
 
 
 def test_rule7_a_base_record_from_another_base_is_refused():
+    """Unverifiable: another base, and the current base row does not hold the
+    id either, so nothing today vouches for the snapshot."""
+    gen, sums = one_step()
+    ghost = spelled(KEY, "1")
+    gen["history"][ghost] = dict(base_record(KEY), base_policy_sha256="e" * 64)
+    cfg, prov = merge(gen, sums)
+    assert {"key": KEY, "reason": "history_base_changed"} in prov.rejected
+    assert f"{KEY}@{ghost}" not in cfg["models"]
+    assert ghost not in Policy.of(cfg).model_ids
+
+
+def test_rule7_a_base_record_of_the_base_rows_own_id_survives_a_base_bump():
+    """i1r1 opus F2: a plugin update that does not promote the key changes the
+    base digest; the replaced from_id is still the base row's own id, so its
+    record is re-snapshotted from the current row instead of rejected."""
     gen, sums = one_step()
     gen["history"][ID(KEY)]["base_policy_sha256"] = "e" * 64
     cfg, prov = merge(gen, sums)
-    assert {"key": KEY, "reason": "history_base_changed"} in prov.rejected
-    assert f"{KEY}@{ID(KEY)}" not in cfg["models"]
+    assert prov.applied == [KEY] and not prov.rejected, prov.rejected
+    hist = cfg["models"][f"{KEY}@{ID(KEY)}"]
+    assert hist["dispatchable"] is False
+    assert hist["capability_tier"] == BASE["models"][KEY]["capability_tier"]
+    assert ID(KEY) in Policy.of(cfg).model_ids
+
+
+def _is_history_input(cfg, mid):
+    rows = [m for m in cfg["models"].values() if m["id"] == mid]
+    return bool(rows) and all(m.get("dispatchable") is False for m in rows) \
+        and mid in Policy.of(cfg).model_ids
+
+
+def _debug_with_prior(cfg, mid):
+    return route(Task(task_class="DEBUGGING", complexity=1, uncertainty=2, blast_radius=1,
+                      reversibility=1, prior_failures=1, prior_models=[mid]), cfg)
+
+
+def test_rule7_an_entry_id_stays_history_input_under_overlay_off():
+    """i1r1 opus F2: the emergency switch must not turn a seated id into an
+    exit-2 input."""
+    gen, sums = one_step()
+    cfg, prov = merge(gen, sums, apply_entries=False)
+    assert cfg["models"][KEY]["id"] == ID(KEY)
+    assert _is_history_input(cfg, successor(KEY))
+    assert prov.history_ids_synthesized == 1
+    assert _debug_with_prior(cfg, successor(KEY))["selected_model"] != successor(KEY)
+
+
+def test_rule7_an_entry_id_stays_history_input_when_the_base_is_newer():
+    gen, sums = one_step()
+    newer = copy.deepcopy(BASE)
+    newer["models"][KEY]["id"] = successor(KEY, 2)
+    cfg, prov = merge(gen, sums, base=newer)
+    assert prov.noop == [{"key": KEY, "reason": "base_newer"}]
+    assert _is_history_input(cfg, successor(KEY))
+    _debug_with_prior(cfg, successor(KEY))
+
+
+def test_rule7_an_entry_id_stays_history_input_on_a_from_id_mismatch():
+    e = entry_for(KEY, successor(KEY, 2))
+    s = summary_for(KEY, e)
+    e["probe_summary_sha256"] = sha_of(s)
+    gen = generation({KEY: e}, {ID(KEY): base_record(KEY)})
+    moved = copy.deepcopy(BASE)
+    moved["models"][KEY]["id"] = successor(KEY)
+    cfg, prov = merge(gen, {sha_of(s): s}, base=moved)
+    assert {"key": KEY, "reason": "from_id_mismatch"} in prov.rejected
+    assert _is_history_input(cfg, successor(KEY, 2))
+
+
+def test_rule7_an_entry_id_stays_history_input_after_its_probe_went_stale():
+    gen, _ = one_step()
+    e = gen["entries"][KEY]
+    s = summary_for(KEY, e, base_row_sha256="f" * 64)
+    e["probe_summary_sha256"] = sha_of(s)
+    cfg, prov = merge(gen, {sha_of(s): s})
+    assert reasons(prov) == {KEY: "stale_probe"}
+    assert _is_history_input(cfg, successor(KEY))
+
+
+@pytest.mark.parametrize("damage", ["unprobed", "summary_mismatch"])
+def test_rule7_an_entry_without_a_matching_summary_is_not_history_input(damage):
+    """Negative: only a summary that names the entry's own id and key vouches
+    for it."""
+    gen, sums = one_step()
+    if damage == "unprobed":
+        sums = {}
+    else:
+        e = gen["entries"][KEY]
+        s = summary_for(KEY, e, id=successor(KEY, 3))
+        e["probe_summary_sha256"] = sha_of(s)
+        sums = {sha_of(s): s}
+    for off in (False, True):
+        cfg, _ = merge(gen, sums, apply_entries=not off)
+        assert successor(KEY) not in Policy.of(cfg).model_ids, (damage, off)
 
 
 def test_rule7_a_reverted_overlay_id_is_still_history_input():
@@ -560,9 +649,11 @@ def test_overlay_off_skips_entries_but_keeps_history_and_revocations():
     cfg, prov = merge(gen, sums, apply_entries=False)
     assert cfg["models"][KEY]["id"] == ID(KEY) and prov.applied == []
     assert cfg["local_state"]["blocked_ids"] == [ID("claude_senior")]
-    # the from_id record's id is the live id again, so nothing to synthesize;
-    # a reverted overlay id's record would still be synthesized:
-    assert prov.history_ids_synthesized == 0
+    # the from_id record's id is the live id again, so nothing to synthesize
+    # for it; the entry's own id, vouched for by its summary, stays valid
+    # history input (i1r1 opus F2):
+    assert prov.history_ids_synthesized == 1
+    assert cfg["models"][f"{KEY}@{successor(KEY)}"]["dispatchable"] is False
 
 
 def test_no_state_and_an_all_noop_generation_keep_the_base_digest():

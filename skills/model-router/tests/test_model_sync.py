@@ -313,8 +313,10 @@ def test_cli_versions_are_read_from_the_cli_on_path(tmp_path, monkeypatch):
     for cli, fixture in (("codex", "codex"), ("claude", "claude"), ("grok", "grok")):
         exe = bindir / cli
         banner = (CATALOGS / fixture / "version.txt").read_text()
+        # grok runs offline only with --no-auto-update (it self-updates on start)
+        want = ["--no-auto-update", "--version"] if cli == "grok" else ["--version"]
         exe.write_text(f"#!{sys.executable}\nimport sys\n"
-                       f"assert sys.argv[1:] == ['--version'], sys.argv\n"
+                       f"assert sys.argv[1:] == {want!r}, sys.argv\n"
                        f"sys.stdout.write({banner!r})\n")
         exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(bindir))
@@ -562,12 +564,93 @@ def test_gate_p4_top_token_and_one_step_down():
                               CTX) == {"gate": "P4", "outcome": "pass",
                                        "reason": None, "effort_ceiling": None,
                                        "retry_after": None}
-    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False},
-                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": True}], CTX)
+    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False,
+                               "rejected": True},
+                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": True,
+                               "rejected": False}], CTX)
     assert got["outcome"] == "pass" and got["effort_ceiling"] == "VERY_HIGH"
-    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False},
-                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": False}], CTX)
+    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False,
+                               "rejected": True},
+                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": False,
+                               "rejected": True}], CTX)
     assert got["outcome"] == "failed" and got["reason"] == "top_token"
+
+
+def test_gate_p4_a_failure_without_a_rejection_is_transient_not_a_ceiling():
+    """i1r1 opus F6: a timeout or a 5xx on the top token is no vendor verdict
+    on the effort — lowering the ceiling from it would publish a policy clamp."""
+    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False,
+                               "rejected": False}], CTX)
+    assert (got["outcome"], got["reason"], got["effort_ceiling"]) == \
+        ("failed", "transient", None)
+    assert got["retry_after"] == {"kind": "time",
+                                  "at": (NOW + _dt.timedelta(hours=6)).isoformat()}
+    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False,
+                               "rejected": True},
+                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": False,
+                               "rejected": False}], CTX)
+    assert (got["outcome"], got["reason"]) == ("failed", "transient")
+
+
+class _ScriptedRun:
+    """Stands in for `_Run`: each call pops (receipt, text, output)."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def call(self, gate, model_id, effort_native, *, codex_mode="text"):
+        self.calls.append((gate, model_id, effort_native, codex_mode))
+        return self.answers.pop(0)
+
+
+def _p4_row():
+    key = next(k for k, r in BASE["models"].items()
+               if r.get("family") == "claude" and "lineage" in r and "history_of" not in r
+               and not r.get("effort_ceiling"))
+    return BASE["models"][key]
+
+
+@pytest.mark.parametrize("failure,output,expect", [
+    ("TIMED_OUT", "", ("failed", "transient", None, 1)),
+    ("FAILED", "error: upstream returned 503 Service Unavailable\n", ("failed", "transient", None, 1)),
+    # the metadata warning mentions "not found" but is no error line
+    ("FAILED", "warning: Model metadata for demo not found; effort not supported?\n",
+     ("failed", "transient", None, 1)),
+    ("FAILED", "error: invalid value 'max' for '--effort <EFFORT>'\n",
+     ("pass", None, "VERY_HIGH", 2)),
+    ("FAILED", '{"type":"result","is_error":true,"result":"effort level max is not supported for this model"}\n',
+     ("pass", None, "VERY_HIGH", 2)),
+])
+def test_p4_lowers_the_ceiling_only_on_an_effort_rejection(failure, output, expect):
+    row = _p4_row()
+    top = model_sync.native_token(BASE, row, "MAX")
+    ok = receipt()
+    run = _ScriptedRun((receipt(failure), None, output), (ok, "pong", ""))
+    record = {}
+    got = model_sync._p4(run, BASE, row, "demo-id", None, CTX, record)
+    assert (got["outcome"], got["reason"], got["effort_ceiling"], len(run.calls)) == expect
+    assert run.calls[0][2] == top
+
+
+@pytest.mark.parametrize("output,unsupported", [
+    ("warning: Model metadata for demo-current not found, using defaults\n", False),
+    ("the model said: not found anywhere\n", False),
+    ('{"type":"error","message":"The requested model is not supported"}\n', True),
+    ("ERROR: model demo-current not found\n", True),
+])
+def test_p3_reads_unsupported_markers_on_error_lines_only(output, unsupported):
+    row = _p4_row()
+    cand = receipt(fmt="claude-print-json-v1",
+                   envelope={"usage": {"input_tokens": 10}})
+    run = _ScriptedRun((receipt("FAILED"), None, output))
+    record = {}
+    got = model_sync._p3(run, "claude", "demo-cand", "demo-current", "low", cand,
+                         None, 60_000, CTX, record)
+    if unsupported:
+        assert (got["outcome"], got["p3_basis"]) == ("pass", "absolute_only")
+    else:
+        assert (got["outcome"], got["reason"]) == ("failed", "smoke")
 
 
 def test_retry_after_per_reason():
@@ -884,12 +967,13 @@ name = {name!r}
 fx = Path({fixtures!r})
 d = Path({fakedir!r})
 args = sys.argv[1:]
-if args == ["--version"]:
+plain = args[1:] if name == "grok" and args[:1] == ["--no-auto-update"] else args
+if plain == ["--version"]:
     v = d / (name + ".version")
     sys.stdout.write(v.read_text() if v.exists()
                      else (fx / "catalogs" / {vfix!r} / "version.txt").read_text())
     sys.exit(0)
-if name == "grok" and args == ["models"]:
+if name == "grok" and plain == ["models"]:
     sys.stdout.write((fx / "catalogs" / "grok" / "grok-models.txt").read_text()); sys.exit(0)
 if name == "codex" and args[:2] == ["debug", "models"]:
     sys.stdout.write((fx / "catalogs" / "codex" / "debug-models-bundled.json").read_text())
@@ -904,6 +988,21 @@ if mode == "trap":
 prompt = sys.stdin.read()
 if mode == "sleep":
     time.sleep(120)
+    sys.exit(0)
+if mode == "alias":
+    # The contained reviewer recipe or nothing (i1r1 grok F2).
+    if "--strict-mcp-config" not in args or "plan" not in args:
+        sys.exit(98)
+    model = args[args.index("--model") + 1]
+    serve = d / "claude.serve"
+    served = (json.loads(serve.read_text()) if serve.exists() else {{}}).get(model, model)
+    answers = d / "claude.answers"
+    answer = (json.loads(answers.read_text()) if answers.exists() else {{}}).get(model, "pong")
+    sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
+        "is_error": False, "stop_reason": "end_turn", "result": answer,
+        "session_id": "s", "num_turns": 1,
+        "usage": {{"input_tokens": 100, "output_tokens": 1}},
+        "modelUsage": {{served: {{"inputTokens": 100}}}}}}))
     sys.exit(0)
 if mode == "maker":
     token = re.search(r"MADE-[0-9a-f]{{16}}", prompt).group(0)
@@ -964,9 +1063,11 @@ def rollout(home, used, ts, resets):
     return path
 
 
-def fake_home(tmp_path, *, claude=False, grok=False, codex_mutate=None):
-    """Catalogs where the CLIs keep them. Codex only by default: the claude
-    catalog is then absent (alias probe — not executed) and grok unavailable."""
+def fake_home(tmp_path, *, claude=True, grok=False, codex_mutate=None):
+    """Catalogs where the CLIs keep them. Codex and claude by default (the
+    captured claude catalog proposes nothing against the live registry), grok
+    unavailable; `claude=False` leaves the claude catalog absent, which makes
+    every claude lineage row an alias probe (DD-A4)."""
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True, exist_ok=True)
     doc = json.loads((CATALOGS / "codex" / "models_cache.json").read_text())
@@ -1341,11 +1442,64 @@ def test_repair_never_picks_a_generation_on_a_damaged_pointer(tmp_path):
     assert got["generation_sha256"] == g1
     assert got["disappearing_revocations"] == [successor(key)]
     assert read_gen(root)[1] == g1
-    got = model_sync.repair(root, to=g2)
+    got = model_sync.repair(root, to=g2, force=True)     # g1 is sound now: --force
     assert read_gen(root)[2]["blocked_ids"] == gen2["blocked_ids"] == [successor(key)]
     assert got["disappearing_revocations"] == []
     with pytest.raises(model_sync.SyncError):
-        model_sync.repair(root, to="f" * 64)
+        model_sync.repair(root, to="f" * 64, force=True)
+
+
+def test_repair_to_replaces_a_sound_pointer_only_with_force(tmp_path):
+    """i1r1 opus F8: `--to` on a sound pointer is a rollback the operator
+    must confirm."""
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    _, g1, _ = read_gen(root)
+    model_sync.revert(root, key, base=BASE)
+    _, g2, _ = read_gen(root)
+    with pytest.raises(model_sync.SyncError, match="--force"):
+        model_sync.repair(root, to=g1)
+    assert read_gen(root)[1] == g2
+    proc = cli_sync(env_for(root), "repair", "--to", g1)
+    assert proc.returncode == 1 and "--force" in proc.stderr
+    assert read_gen(root)[1] == g2
+    proc = cli_sync(env_for(root), "repair", "--to", g1, "--force")
+    assert proc.returncode == 0, proc.stderr
+    assert read_gen(root)[1] == g1
+
+
+def test_repair_flags_an_orphan_generation_and_needs_force_for_it(tmp_path):
+    """i1r1 opus F8: a generation no pointer history reaches (left by a crash,
+    or by a publication the recheck refused after `disable`) is listed as an
+    orphan and never adopted without --force."""
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    _, g1, gen1 = read_gen(root)
+    model_sync.revert(root, key, base=BASE)
+    _, g2, _ = read_gen(root)
+    stray = copy.deepcopy(gen1)
+    stray["parent_generation_sha256"] = g2
+    stray["blocked_ids"] = []
+    with secure_io.StateRoot.open(root) as r:
+        orphan = model_state.write_generation(r, stray)      # no pointer ever named it
+    pointer = root / "committed" / "current.json"
+    pointer.write_text('{"generation_sha256": "nope"}')
+    os.chmod(pointer, 0o600)
+    with pytest.raises(model_sync.SyncError) as exc:
+        model_sync.repair(root)
+    listing = str(exc.value)
+    orphan_line = next(l for l in listing.splitlines() if orphan in l)
+    assert "orphan" in orphan_line
+    assert "orphan" not in next(l for l in listing.splitlines() if g1 in l and "parent" in l
+                                and l.strip().startswith(g1))
+    with pytest.raises(model_sync.SyncError, match="orphan"):
+        model_sync.repair(root, to=orphan)
+    assert pointer.read_text() == '{"generation_sha256": "nope"}'
+    got = model_sync.repair(root, to=g1)          # reachable as g2's parent: no --force
+    assert got["generation_sha256"] == g1
+    assert model_sync.repair(root, to=orphan, force=True)["generation_sha256"] == orphan
 
 
 def test_deleting_the_pointer_fails_closed_and_deleting_work_state_does_not(tmp_path):
@@ -1364,6 +1518,32 @@ def test_deleting_the_pointer_fails_closed_and_deleting_work_state_does_not(tmp_
 
 
 # --- quota ----------------------------------------------------------------------
+
+def test_quota_takes_the_fullest_window(tmp_path):
+    """opus uncertainty: where `primary` is the short window, weekly
+    exhaustion lives in `secondary` — the fullest window decides, with its
+    own reset time. A null or absent secondary leaves primary alone."""
+    home = tmp_path / "home"
+    ts = NOW - _dt.timedelta(minutes=5)
+    path = rollout(home, 5.0, ts, NOW + _dt.timedelta(hours=3))
+    ev = json.loads(path.read_text())
+    weekly_reset = int((NOW + _dt.timedelta(days=4)).timestamp())
+    ev["payload"]["rate_limits"]["secondary"] = {"used_percent": 97.0, "window_minutes": 10080,
+                                                 "resets_at": weekly_reset}
+    path.write_text(json.dumps(ev) + "\n")
+    q = model_sync.read_quota(home / ".codex" / "sessions", NOW)
+    assert (q["status"], q["used_percent"], q["resets_at"], q["window"]) == \
+        ("ok", 97.0, weekly_reset, "secondary")
+    assert model_sync.quota_defers(q)
+    ev["payload"]["rate_limits"]["secondary"]["used_percent"] = 1.0
+    path.write_text(json.dumps(ev) + "\n")
+    q = model_sync.read_quota(home / ".codex" / "sessions", NOW)
+    assert (q["used_percent"], q["window"]) == (5.0, "primary")
+    ev["payload"]["rate_limits"]["secondary"] = {"used_percent": "x", "resets_at": 1}
+    path.write_text(json.dumps(ev) + "\n")
+    q = model_sync.read_quota(home / ".codex" / "sessions", NOW)
+    assert (q["status"], q["reason"]) == ("unknown", "shape")
+
 
 def test_quota_reads_the_last_token_count_event_and_never_runs_codex(tmp_path):
     bindir, fakedir = fake_bin(tmp_path)
@@ -1497,6 +1677,128 @@ def test_tick_recomputes_when_only_a_cli_version_changes(tmp_path):
     assert model_sync.tick(env=env, home=home, now=NOW,
                            spawn=spawned.append)["status"] != "unchanged"
     assert spawned == []
+
+
+def test_a_tick_whose_run_never_completed_is_due_again(tmp_path):
+    """i1r1 grok F3: the hash advances only when the run it started completes.
+    A detached run that died before recording anything leaves the same
+    catalogs due, not `unchanged`."""
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.enable(root)
+    spawned = []
+    first = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert first["status"] == "spawned"
+    assert work_state(root)["tick_hash"] is None
+    # the spawned run died: nothing recorded, so the next tick spawns again
+    again = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert again["status"] == "spawned" and again["tick_hash"] == first["tick_hash"]
+    rep = model_sync.run(env=env, home=home, now=NOW, probe=recorder(inferences=1),
+                         tick_hash=first["tick_hash"])
+    assert rep["status"] == "ok" and not rep["over_budget"], rep
+    assert work_state(root)["tick_hash"] == first["tick_hash"]
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "unchanged"
+    assert len(spawned) == 2
+
+
+def test_a_run_cut_short_by_the_budget_does_not_complete_the_tick(tmp_path):
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.enable(root)
+    got = model_sync.tick(env=env, home=home, now=NOW, spawn=lambda keys: None)
+    rep = model_sync.run(env=env, home=home, now=NOW, probe=recorder(), budget=1,
+                         tick_hash=got["tick_hash"])
+    assert rep["over_budget"], rep
+    assert work_state(root)["tick_hash"] is None
+
+
+def test_a_tick_while_a_run_holds_the_lock_is_busy_and_stores_nothing(tmp_path):
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.enable(root)
+    spawned = []
+    with secure_io.StateRoot.open(root) as r, r.lock(timeout=0, relpath=model_sync.RUN_LOCK):
+        got = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert got["status"] == "busy" and spawned == []
+    assert work_state(root)["tick_hash"] is None
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "spawned"
+
+
+def _alias_setup(tmp_path, *, serve_step=1, answers=None):
+    """No claude catalog, a fake claude in `alias` mode that serves the row's
+    alias as the id `serve_step` generations above the live one."""
+    key = next(k for k, r in sorted(BASE["models"].items())
+               if r.get("family") == "claude" and (r.get("lineage") or {}).get("catalog_name")
+               and "history_of" not in r and r.get("dispatchable", True))
+    alias = BASE["models"][key]["lineage"]["catalog_name"].lower()
+    served = successor(key, serve_step) if serve_step else BASE["models"][key]["id"]
+    bindir, fakedir = fake_bin(tmp_path, claude="alias")
+    (fakedir / "claude.serve").write_text(json.dumps({alias: served}))
+    if answers:
+        (fakedir / "claude.answers").write_text(json.dumps(answers(alias, served)))
+    home = fake_home(tmp_path, claude=False)
+    rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    return key, alias, served, fakedir, home, root, sync_env(tmp_path, root, home, bindir)
+
+
+def test_an_absent_claude_catalog_runs_the_alias_probe_and_publishes_after_the_gates(tmp_path):
+    """i1r1 opus F7 / grok F1-F2: with no `*-cc.json`, tick plans the alias
+    probe and run EXECUTES it — through dispatch_agent, on the contained
+    read-only reviewer argv — and publishes the served successor only after
+    P1..P4 pass on the concrete id."""
+    key, alias, served, fakedir, home, root, env = _alias_setup(tmp_path)
+    spawned = []
+    got = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert got["status"] == "spawned" and key in spawned[-1]
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[key])
+    calls = calls_of(fakedir, "claude")
+    assert calls, "the alias probe never ran"
+    assert calls[0]["args"][calls[0]["args"].index("--model") + 1] == alias
+    assert all("--strict-mcp-config" in c["args"] and "plan" in c["args"] for c in calls)
+    assert {c["args"][c["args"].index("--model") + 1] for c in calls[1:]} >= {served}
+    assert rep["aliases"] == {key: "candidate"} and rep["passed"] == [key], rep
+    assert rep["inferences"] == len(calls) <= model_sync.MAX_INFERENCES["claude"] + 1
+    shape, _, gen = read_gen(root)
+    assert shape == "ok" and gen["entries"][key]["id"] == served
+
+
+@pytest.mark.parametrize("case", ["alias_not_pong", "no_successor", "candidate_not_pong"])
+def test_an_alias_probe_publishes_nothing_unless_every_gate_passes(tmp_path, case):
+    answers = {"alias_not_pong": lambda a, s: {a: "nope"},
+               "candidate_not_pong": lambda a, s: {s: "nope"}}.get(case)
+    key, alias, served, fakedir, home, root, env = _alias_setup(
+        tmp_path, serve_step=0 if case == "no_successor" else 1, answers=answers)
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[key])
+    calls = calls_of(fakedir, "claude")
+    assert all("--strict-mcp-config" in c["args"] for c in calls)
+    assert read_gen(root)[0] == "absent", rep
+    assert rep["passed"] == [] and rep["generation_sha256"] is None
+    if case == "candidate_not_pong":
+        assert rep["aliases"] == {key: "candidate"} and len(calls) == 2
+        assert work_state(root)["negatives"][key]["id"] == served
+    else:
+        assert len(calls) == 1
+        assert rep["aliases"] == {key: "failed" if case == "alias_not_pong" else "none"}
+    if case == "alias_not_pong":
+        neg = work_state(root)["negatives"][key]
+        assert neg["alias"] == alias and neg["id"] is None and neg["reason"] == "smoke"
+        # the deferral holds the alias back until it expires
+        assert model_sync.plan(view=model_sync.committed_view(root, BASE),
+                               catalogs=model_sync.load_catalogs(home, {"claude": None}),
+                               versions={}, work=work_state(root), now=NOW,
+                               keys=[key], interval=False)[1][key] == "deferred:smoke"
 
 
 def test_tick_is_a_no_op_when_auto_upgrade_is_off(tmp_path):
@@ -1803,17 +2105,44 @@ def test_openai_maker_is_the_ledger_write_recipe_without_a_guard(tmp_path):
 def test_only_the_attended_command_imports_the_maker_module():
     """The automatic path (tick/run) cannot reach a write recipe: the one
     import of probe_maker sits in the `probe-maker` branch of main()."""
+    assert _maker_import_owners(SYNC.read_text()) == (["main"], [])
+
+
+def _maker_import_owners(source: str):
+    """(functions importing probe_maker, module-level imports of it). Both
+    spellings count: `import probe_maker` and `from probe_maker import …`
+    (i1r1 grok: the ImportFrom form used to slip past this guard)."""
     import ast
-    tree = ast.parse(SYNC.read_text())
-    owners = []
-    for fn in ast.walk(tree):
-        if isinstance(fn, ast.FunctionDef):
-            for node in ast.walk(fn):
-                if isinstance(node, ast.Import) and any(a.name == "probe_maker" for a in node.names):
-                    owners.append(fn.name)
-    top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
-           and "probe_maker" in ast.dump(n)]
-    assert owners == ["main"] and top == []
+    tree = ast.parse(source)
+
+    def imports_maker(node) -> bool:
+        if isinstance(node, ast.Import):
+            return any(a.name.split(".")[0] == "probe_maker" for a in node.names)
+        if isinstance(node, ast.ImportFrom):
+            return (node.module or "").split(".")[0] == "probe_maker" or (
+                node.module is None and any(a.name == "probe_maker" for a in node.names))
+        return False
+    owners = [fn.name for fn in ast.walk(tree)
+              if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+              for node in ast.walk(fn) if imports_maker(node)]
+    top = [n for n in tree.body if imports_maker(n)]
+    return owners, top
+
+
+@pytest.mark.parametrize("planted", [
+    "    from probe_maker import maker_argv\n",
+    "    import probe_maker\n",
+    "    from probe_maker import *\n",
+])
+def test_the_maker_import_guard_sees_every_import_spelling(planted):
+    """Negative verification of the guard above: planting either spelling
+    inside `run` is caught."""
+    source = SYNC.read_text()
+    anchor = "    if autoupgrade_env_off(env):\n        return {\"status\": \"disabled\", \"reason\": \"DEEP_MODEL_ROUTER_AUTOUPGRADE=0\"}\n    home, now = _home(env, home), _utcnow(now)\n    state_path = model_state.state_root_path(env, home)\n    with StateRoot.open(state_path, create=True) as root:\n        lock"
+    assert source.count(anchor) == 1
+    planted_src = source.replace(anchor, planted.replace("    ", "    ", 1) + anchor)
+    owners, top = _maker_import_owners(planted_src)
+    assert "run" in owners, owners
 
 
 # ---------------------------------------------------------------------------

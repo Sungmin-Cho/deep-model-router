@@ -188,7 +188,7 @@ execute:
 | `TERMINATION_UNCONFIRMED` | a previous process may still write; confirm termination and reroute before another attempt |
 | `SUPPLY_EXHAUSTED` | no usable model remains for a role the route needs — an operational shortage, not a bad request |
 | `UNSATISFIABLE_LOCAL_POLICY` | `local_policy` cannot be met (empty `allowed_families`, empty intersection, or a floor the binding cannot seat) |
-| `MODEL_STATE_UNAVAILABLE` | local model state is unreadable, or a `policy_pin` cannot be reproduced — no model is named |
+| `MODEL_STATE_UNAVAILABLE` | local model state is unreadable or its root fails admission, or a `policy_pin` cannot be reproduced — no model is named |
 
 `judge_unavailable` is deliberately **not** terminal: independence failing means
 the review cannot happen as specified, so nothing is safe to dispatch, whereas a

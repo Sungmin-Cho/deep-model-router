@@ -9,7 +9,10 @@ Grammar
   ``{gen}``      exactly once; matches ``\\d+(?:[.-]\\d+)*`` and becomes a tuple
                  of integers split on ``.``/``-``
   ``[-{date}]``  optional, only at the very end; an 8-digit ``-YYYYMMDD``
-                 suffix, stripped only when what remains still matches
+                 suffix, stripped only when what remains still matches.
+                 Without it, a ``{gen}`` whose last ``-`` part is 8 digits
+                 is a dated snapshot, not a generation: the id does not
+                 parse (ranked as a part it would outrank every release)
   anything else  a literal (regex-escaped); any other ``{…}``, ``[`` or ``]``
                  is a template error (``ValueError``)
 
@@ -26,6 +29,7 @@ from functools import lru_cache
 GEN_PATTERN = r"(\d+(?:[.-]\d+)*)"
 DATE_SUFFIX = "[-{date}]"
 _DATE_RE = re.compile(r"^(.*)-(\d{8})$")
+_UNDECLARED_DATE = re.compile(r"-\d{8}$")
 
 
 @dataclass(frozen=True)
@@ -68,9 +72,13 @@ def parse(template: str, model_id: str) -> Generation | None:
         if m:
             g = regex.match(m.group(1))
             if g:
+                if _UNDECLARED_DATE.search(g.group(1)):
+                    return None          # two date suffixes: not a spelling
                 return Generation(_split(g.group(1)), int(m.group(2)))
     g = regex.match(model_id)
     if g is None:
+        return None
+    if not dated and _UNDECLARED_DATE.search(g.group(1)):
         return None
     return Generation(_split(g.group(1)), None)
 

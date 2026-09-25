@@ -978,9 +978,10 @@ def _interned(cfg: dict, digest: str) -> dict:
     return cfg
 
 
-def _unavailable(base_sha: str, reason: str) -> EffectivePolicy:
+def _unavailable(base_sha: str, reason: str, detail: str | None = None) -> EffectivePolicy:
     return EffectivePolicy(None, model_state.Provenance(
-        status="unavailable", base_policy_sha256=base_sha, state_reason=reason))
+        status="unavailable", base_policy_sha256=base_sha, state_reason=reason,
+        state_detail=detail))
 
 
 def resolve_effective_policy(env: Mapping[str, str], home: Path,
@@ -995,7 +996,11 @@ def resolve_effective_policy(env: Mapping[str, str], home: Path,
     base = default_config()
     base_sha = canonical_policy_sha256(base)
     off = model_state.overlay_off(env)
-    with model_state.read_state(model_state.state_root_path(env, home)) as state:
+    root_path = model_state.state_root_path(env, home)
+    with model_state.read_state(root_path) as state:
+        if state.shape == "unreadable" and state.root_unadmitted:
+            return _unavailable(base_sha, "root_unadmitted",
+                                f"{state.detail}; fix: {model_state.root_fix(root_path)}")
         if state.shape == "unreadable":
             return _unavailable(base_sha, "unreadable")
         if state.shape == "absent":
@@ -1020,7 +1025,9 @@ def _resolve_pin(pin: str, base: dict, base_sha: str, state: "model_state.StateR
     """Walk `parent_generation_sha256` from the current generation (at most
     MAX_PIN_CHAIN steps) and recompute each one as current base + that
     generation's entries (unless off) and history + the CURRENT generation's
-    revocations. The first digest equal to the pin is the policy. Only
+    revocations; the null parent at the end of the chain is the stateless
+    policy (base + the current revocations). The first digest equal to the
+    pin is the policy. Only
     committed generations are on the chain, so an unpublished one is
     unreachable; a later revocation changes the recomputed digest, so revert
     beats pin.
@@ -1054,6 +1061,16 @@ def _resolve_pin(pin: str, base: dict, base_sha: str, state: "model_state.StateR
             base_changed = True
         sha = gen["parent_generation_sha256"]
         if sha is None:
+            # The chain's end is the stateless policy the first generation
+            # replaced: base + nothing, still under the CURRENT revocations. A
+            # route taken before any `committed/` existed pinned exactly this.
+            empty = model_state.empty_generation(base_sha)
+            cfg, prov, d = digest(empty, None, True, current_blocked)
+            if d == pin:
+                prov.status = "pinned"
+                return EffectivePolicy(cfg if cfg is base else _interned(cfg, d), prov)
+            if digest(empty, None, True, [])[2] == pin:
+                revoked = True
             break
         try:
             gen = state.generation_at(sha)
@@ -1071,40 +1088,66 @@ OVERLAY_SEAT_NOTE = ("{key}: id from local model overlay; capability tier inheri
 
 STATE_UNAVAILABLE_MESSAGES = {
     "unreadable": ("local model state under committed/ cannot be read; no seat is "
-                   "named while revocations are unknown — run model_sync.py repair, "
-                   "or delete committed/ to start from the bundled policy"),
+                   "named while revocations are unknown — run model_sync.py repair "
+                   "(model_sync.py status shows the detail), or delete committed/ to "
+                   "start from the bundled policy"),
+    "root_unadmitted": ("the local model state root failed admission ({detail}); no "
+                        "seat is named while revocations are unknown"),
 }
+
+# The "Every route emits" inventory (references/control-loop.md), as the
+# values a route that decided nothing carries: null for a scalar, [] for a
+# list. The terminal below emits every key so a consumer indexing a
+# documented field never raises.
+_NULL_ROUTE_LISTS = frozenset({
+    "selected_families", "band_overrides_applied", "critical_flags",
+    "band_overrides_redundant", "fallbacks_applied", "effort_ceiling_applied",
+    "fallback_compensations_applied", "unavailable_models", "excluded_prior_failures",
+    "human_control_causes"})
+_NULL_ROUTE_SCALARS = (
+    "task_class", "complexity", "uncertainty", "blast_radius", "reversibility",
+    "effective_policy", "selected_capability_tier", "local_policy_applied",
+    "reasoning_centric", "risk_score", "risk_band", "execution_score", "execution_band",
+    "route_path", "selected_role", "selected_model", "selected_effort",
+    "selected_effort_effective", "selected_effort_native", "cross_family_review",
+    "escalation_count", "retry_count", "routing_confidence", "routing_confidence_kind",
+    "worker_seat", "host_seat_advisory")
+_NULL_REVIEW_LISTS = frozenset({"reviewers", "reviewer_models", "review_depth_reduced",
+                                "self_review_avoided", "required_checks"})
+_NULL_REVIEW_SCALARS = ("band", "effort", "independence_required", "review_independence",
+                        "independence_compromised", "judge_unavailable",
+                        "band_floor_unsatisfiable", "compensating_reviewers", "judge",
+                        "judge_model")
 
 
 def _state_unavailable_route(prov: "model_state.Provenance") -> dict:
     """The MODEL_STATE_UNAVAILABLE terminal. Built before any request is
-    validated, so it carries no request digest and names no model at all."""
+    validated, so it carries no request digest, no request echo and names no
+    model at all — every documented key is present, holding null or []."""
     terminal = "MODEL_STATE_UNAVAILABLE"
-    message = STATE_UNAVAILABLE_MESSAGES.get(
-        prov.state_reason,
+    template = STATE_UNAVAILABLE_MESSAGES.get(prov.state_reason)
+    message = template.format(detail=prov.state_detail) if template else (
         f"the pinned policy cannot be reproduced ({prov.state_reason}) — start the "
         f"loop afresh or drop the pin")
-    return {
+    out: dict = {k: None for k in _NULL_ROUTE_SCALARS}
+    out.update({k: [] for k in _NULL_ROUTE_LISTS})
+    review: dict = {k: None for k in _NULL_REVIEW_SCALARS}
+    review.update({k: [] for k in _NULL_REVIEW_LISTS})
+    out.update({
         "route_schema_version": ROUTE_SCHEMA_VERSION,
         "router_plugin_version": plugin_manifest_version(),
         "policy_sha256": None,
         "request_sha256": None,
         "decision_fingerprint": None,
         "terminal": terminal,
-        "selected_role": None,
-        "selected_model": None,
-        "selected_effort": None,
-        "selected_effort_effective": None,
-        "selected_effort_native": None,
-        "review": {"band": None, "reviewers": [], "reviewer_models": [], "effort": None,
-                   "judge": None, "judge_model": None},
+        "review": review,
         "requires_human_confirmation": False,
         "human_confirmation_deferred": False,
-        "human_control_causes": [],
         "model_overlay": prov.to_json(),
         "notes": [message],
         "rationale": f"TERMINAL {terminal}: {message}",
-    }
+    })
+    return out
 
 
 # --------------------------------------------------------------------------

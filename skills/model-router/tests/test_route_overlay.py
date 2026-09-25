@@ -208,3 +208,58 @@ def test_the_policy_cache_is_bounded(tmp_path):
         cfg["router"]["confidence"]["escalate_below"] = 0.5 + i * 0.001
         Policy.of(cfg)
     assert len(Policy._cache) <= 8
+
+
+# ---------------------------------------------------------------------------
+# i1r1 opus F2 (route level) and F3 — the emergency switch and a root that
+# fails admission
+# ---------------------------------------------------------------------------
+
+def test_overlay_off_keeps_a_seated_overlay_id_valid_retry_history(tmp_path, applied):
+    key, root, _ = applied
+    on = route(Task(**TASK), env=env_for(root), home=home(tmp_path))
+    assert on["selected_model"] == successor(key)
+    proc = cli(env_for(root, off=True), "--prior-failures", "1",
+               "--prior-models", successor(key))
+    assert proc.returncode != 2, proc.stderr
+    assert json.loads(proc.stdout)["selected_model"] != successor(key)
+
+
+def test_a_root_that_fails_admission_names_the_chmod_fix(tmp_path):
+    """No committed/ at all, but a pre-existing root at 0755: every route is
+    the terminal, and the note says what is wrong and how to fix it — never
+    "repair or delete committed/", which cannot help."""
+    root = tmp_path / "state"
+    root.mkdir()
+    os.chmod(root, 0o755)
+    out = route(Task(**TASK), env=env_for(root), home=home(tmp_path))
+    _assert_state_unavailable(out, "root_unadmitted")
+    note = " ".join(out["notes"])
+    assert "mode 755" in note and f"chmod 700 {root}" in note, note
+    assert "delete committed/" not in note
+    proc = cli(env_for(root))
+    assert proc.returncode == 1
+    assert f"chmod 700 {root}" in proc.stdout
+    os.chmod(root, 0o700)
+    assert route(Task(**TASK), env=env_for(root), home=home(tmp_path))["terminal"] is None
+
+
+def test_status_and_repair_report_root_admission(tmp_path):
+    import model_sync
+    root = tmp_path / "state"
+    root.mkdir()
+    os.chmod(root, 0o755)
+    env = {**env_for(root), "PATH": "/usr/bin:/bin", "HOME": str(home(tmp_path))}
+    st = model_sync.status(env=env, home=home(tmp_path),
+                           versions={"codex": None, "claude": None, "grok": None})
+    assert st["state_root"]["admitted"] is False
+    assert f"chmod 700 {root}" in st["state_root"]["fix"]
+    with pytest.raises(model_sync.SyncError, match=r"chmod 700"):
+        model_sync.repair(root)
+    with pytest.raises(model_sync.SyncError, match=r"chmod 700"):
+        model_sync.repair(root, to="a" * 64)
+    os.chmod(root, 0o700)
+    st = model_sync.status(env=env, home=home(tmp_path),
+                           versions={"codex": None, "claude": None, "grok": None})
+    assert st["state_root"] == {"path": str(root), "admitted": True, "detail": None,
+                                "fix": None}

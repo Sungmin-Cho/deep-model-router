@@ -279,3 +279,39 @@ def test_pinned_routes_never_see_an_unpublished_combination(tmp_path):
     finally:
         stop.set()
         t.join()
+
+
+# ---------------------------------------------------------------------------
+# i1r1 opus F1 — the null-parent end of the chain is the stateless policy
+# ---------------------------------------------------------------------------
+
+def test_a_pin_of_the_stateless_policy_survives_the_first_publication(tmp_path):
+    """A route taken before any `committed/` existed pinned the base digest.
+    The first publication must not make it unreproducible: the end of the
+    parent chain is base + the CURRENT revocations."""
+    key = worker_key()
+    root = state_root(tmp_path)
+    env, h = env_for(root), home(tmp_path)
+    before = route(Task(**TASK), env=env, home=h)
+    assert before["policy_sha256"] == BASE_SHA and before["model_overlay"] is None
+    publish(root, *replacing(key))
+    assert route(Task(**TASK), env=env, home=h)["policy_sha256"] != BASE_SHA
+    again = route(pinned(before["policy_sha256"]), env=env, home=h)
+    for k in DECISION:
+        assert again[k] == before[k], k
+    assert again["model_overlay"]["status"] == "pinned"
+    assert again["model_overlay"]["generation_sha256"] is None
+    proc = cli(env, "--policy-pin", before["policy_sha256"])
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["decision_fingerprint"] == before["decision_fingerprint"]
+
+
+def test_a_stateless_pin_is_revoked_by_a_later_revocation_of_a_base_id(tmp_path):
+    """Negative: the null-parent candidate carries the current revocations, so
+    a base id revoked after the pin makes it `pin_revoked`, not a match."""
+    key = worker_key()
+    root = state_root(tmp_path)
+    env, h = env_for(root), home(tmp_path)
+    p0 = route(Task(**TASK), env=env, home=h)["policy_sha256"]
+    publish(root, generation(blocked=[ID(key)]), {})
+    assert_state_terminal(route(pinned(p0), env=env, home=h), "pin_revoked")
