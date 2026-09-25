@@ -1805,3 +1805,187 @@ def test_only_the_attended_command_imports_the_maker_module():
     top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
            and "probe_maker" in ast.dump(n)]
     assert owners == ["main"] and top == []
+
+
+# ---------------------------------------------------------------------------
+# A12 — promote an overlay entry into the repository (design DD-A7). Always
+# on a temporary copy of the repo's config and succession fixture.
+# ---------------------------------------------------------------------------
+
+import difflib  # noqa: E402
+
+import yaml  # noqa: E402
+
+REL_CONFIG = Path("skills/model-router/config/model-routing.yaml")
+REL_SUCCESSION = Path("skills/model-router/tests/fixtures/id-succession.json")
+PRICE = ("input=4.00,output=20.00,cached_input=0.20,"
+         "source=https://example.invalid/pricing,verified_on=2026-09-25")
+
+
+def repo_copy(tmp_path) -> Path:
+    repo = tmp_path / "repo"
+    for rel in (REL_CONFIG, REL_SUCCESSION):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        _shutil.copy(SKILL.parent.parent / rel, repo / rel)
+    return repo
+
+
+def probed(key, **entry_kw):
+    """A passing probe summary the way the harness records one."""
+    new = successor(key)
+    e = ov_entry(key, new, **entry_kw)
+    s = ov_summary(key, e)
+    child = ["cli", "-m", new]
+    s.update(outcome="pass", reason=None, retry_after=None,
+             family=BASE["models"][key]["family"], date="2026-09-25", cli_version="9.9.9",
+             served_basis="id_accepted" if BASE["models"][key]["family"] == "openai" else "served",
+             served_models=[new], input_tokens={"current": 100, "candidate": 110},
+             p3_basis="paired",
+             effort_results=[{"effort": "MAX", "native": "max", "accepted": True}],
+             probes=[{"gate": "P1", "attempt_id": "p-1", "model_id": new,
+                      "effort_native": "low", "argv": ["sup", "--", *child],
+                      "receipt_sha256": "a" * 64, "state": "SUCCEEDED"},
+                     {"gate": "P4", "attempt_id": "p-4", "model_id": new,
+                      "effort_native": "max", "argv": ["sup", "--", *child],
+                      "receipt_sha256": "b" * 64, "state": "SUCCEEDED"}])
+    return (key, s, sha_of(s))
+
+
+def promote(repo, root, key, price=PRICE):
+    return model_sync.promote(repo=repo, key=key, price=price, state_path=root)
+
+
+def _block(lines, key):
+    """Line range of `key`'s row block in the original config (test's own
+    reading: header to the next two-space-indented line)."""
+    head = next(i for i, l in enumerate(lines) if l.rstrip() in (f"  {key}:", f'  "{key}":'))
+    end = next(i for i in range(head + 1, len(lines)) if re.match(r"^  \S", lines[i]))
+    return head, end
+
+
+import re  # noqa: E402
+
+
+@pytest.mark.parametrize("key", ["claude_senior", "openai_reasoning"])
+def test_promote_rewrites_the_row_and_appends_history_ledger_and_chain(tmp_path, key):
+    repo = repo_copy(tmp_path)
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [probed(key)])
+    before = (repo / REL_CONFIG).read_text()
+    succ_before = json.loads((repo / REL_SUCCESSION).read_text())
+    rep = promote(repo, root, key)
+    after = (repo / REL_CONFIG).read_text()
+    cfg = yaml.safe_load(after)
+    Policy.of(cfg)                                              # the Policy checks pass
+    new, old = successor(key), ID_(key)
+    row = cfg["models"][key]
+    assert row["id"] == new
+    assert row["price_per_mtok"] == {"input": 4.0, "output": 20.0, "cached_input": 0.2,
+                                     "source": "https://example.invalid/pricing",
+                                     "verified_on": "2026-09-25"}
+    hist = cfg["models"][f"{key}@{old}"]
+    rec = base_record(key)
+    assert hist["id"] == old and hist["history_of"] == key and hist["dispatchable"] is False
+    assert (hist["family"], hist["capability_tier"]) == (rec["family"], rec["capability_tier"])
+    assert hist.get("effort_ceiling") == rec["effort_ceiling"]
+    assert hist.get("effort_map", {}) == rec["effort_map"]
+    # Bytes outside the row block (and its appended rows) are untouched.
+    a, b = before.splitlines(), after.splitlines()
+    head, end = _block(a, key)
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag in ("replace", "delete"):
+            assert head <= i1 and i2 <= end, (tag, a[i1:i2])
+    assert [l for l in a if l.lstrip().startswith("#")] == \
+        [l for l in b if l.lstrip().startswith("#") and l in a]
+    # Ledger rows.
+    items = {e["item"]: e for e in cfg["verification_ledger"]["entries"]}
+    assert items[f"{new} model id"]["status"] == "verified"
+    efforts = items[f"{new} reasoning-effort values"]
+    assert efforts["status"] == "verified" and "low" in efforts["evidence"] \
+        and "max" in efforts["evidence"]
+    price_row = items[f"{new} pricing and context window"]
+    assert price_row["status"] == "documented"
+    assert price_row["source"] == "https://example.invalid/pricing"
+    quality = items[f"{key} quality evidence after the {new} id bump"]
+    assert quality["status"] == "quality_inherited_not_remeasured"
+    assert quality["supersedes"] == old
+    assert items[f"{new} maker seat"]["status"] == "maker_not_reprobed"
+    if BASE["models"][key]["family"] == "openai":
+        assert "id accepted" in items[f"{new} model id"]["evidence"]
+    # Succession chain appended; prior_failure_exit left to a person.
+    succ = json.loads((repo / REL_SUCCESSION).read_text())
+    assert succ["chains"][key][-2:] == [old, new]
+    assert succ["prior_failure_exit"] == succ_before["prior_failure_exit"]
+    assert f"{key}@{old}" in rep["prior_failure_exit_hint"]
+    assert rep["checklist"]
+    # The state entry is now a promoted no-op.
+    _, _, gen = read_gen(root)
+    with model_state.read_state(root) as st:
+        _, prov = model_state.effective_config(cfg, gen, apply_entries=True, summary=st.summary)
+    assert {"key": key, "reason": "promoted"} in prov.noop
+
+
+def test_promote_without_a_price_stops(tmp_path):
+    repo = repo_copy(tmp_path)
+    root = new_root(tmp_path)
+    key = "claude_senior"
+    model_sync.publish_results(root, BASE, [probed(key)])
+    before = (repo / REL_CONFIG).read_bytes()
+    for bad in (None, "", "input=1,output=2,cached_input=0.1,verified_on=2026-09-25",
+                "input=1,output=2,cached_input=0.1,source=http://x,verified_on=2026-09-25",
+                "input=x,output=2,cached_input=0.1,source=https://x,verified_on=2026-09-25",
+                "input=1,output=2,source=https://x,verified_on=2026-09-25",
+                "input=1,output=2,cached_input=0.1,source=https://x,verified_on=today"):
+        with pytest.raises(model_sync.SyncError):
+            promote(repo, root, key, price=bad)
+    assert (repo / REL_CONFIG).read_bytes() == before
+    env = env_for(root)
+    proc = cli_sync(env, "promote", "--repo", str(repo), "--key", key)
+    assert proc.returncode == 2 and "--price" in proc.stderr
+
+
+def test_promote_refuses_an_effort_change_in_this_release(tmp_path):
+    repo = repo_copy(tmp_path)
+    root = new_root(tmp_path)
+    key = "claude_senior"
+    assert BASE["models"][key].get("effort_ceiling") is None
+    model_sync.publish_results(root, BASE, [probed(key, ceiling="HIGH")])
+    before = (repo / REL_CONFIG).read_bytes()
+    with pytest.raises(model_sync.SyncError, match="effort"):
+        promote(repo, root, key)
+    assert (repo / REL_CONFIG).read_bytes() == before
+
+
+def test_promote_refuses_a_key_without_an_applied_entry(tmp_path):
+    repo = repo_copy(tmp_path)
+    root = new_root(tmp_path)
+    with pytest.raises(model_sync.SyncError):
+        promote(repo, root, "claude_senior")
+
+
+def test_promote_writes_a_verified_maker_row_from_an_attended_summary(tmp_path):
+    repo = repo_copy(tmp_path)
+    root = new_root(tmp_path)
+    key = "claude_senior"
+    model_sync.publish_results(root, BASE, [probed(key)])
+    maker = {"kind": "maker", "attended": True, "key": key, "family": "claude",
+             "id": successor(key), "transport_id": "codex.to_claude", "recipe_key": "mechanism",
+             "argv": ["sup", "--", "claude", "-p"], "attempt_id": "m-1",
+             "receipt_sha256": "c" * 64, "state": "SUCCEEDED", "outcome": "pass",
+             "artifact": {"sha256": "d" * 64, "expected_sha256": "d" * 64},
+             "cli_version": "9.9.9", "date": "2026-09-25"}
+    with secure_io.StateRoot.open(root) as r:
+        sha = model_state.write_addressed(r, model_sync.MAKERS_PREFIX, maker)
+    model_sync.update_work_state(root, lambda st: st["makers"].__setitem__(
+        key, {"id": successor(key), "summary_sha256": sha, "outcome": "pass"}))
+    promote(repo, root, key)
+    cfg = yaml.safe_load((repo / REL_CONFIG).read_text())
+    row = next(e for e in cfg["verification_ledger"]["entries"]
+               if e["item"] == f"{successor(key)} maker seat")
+    assert row["status"] == "verified" and row["attempt_id"] == "m-1"
+    assert "codex.to_claude" in row["evidence"]
+
+
+def test_the_succession_fixture_round_trips_through_its_writer():
+    text = (SKILL / "tests" / "fixtures" / "id-succession.json").read_text()
+    assert model_sync.dump_succession(json.loads(text)) == text

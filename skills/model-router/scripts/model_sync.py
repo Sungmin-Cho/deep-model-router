@@ -1926,12 +1926,393 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# ==========================================================================
+# promote (DD-A7): one overlay entry -> a repository id bump
+# ==========================================================================
+
+import shlex  # noqa: E402
+
+REPO_CONFIG = Path("skills/model-router/config/model-routing.yaml")
+REPO_SUCCESSION = Path("skills/model-router/tests/fixtures/id-succession.json")
+PRICE_RATES = ("input", "output", "cached_input", "cache_write")
+RUNTIME_OF_FAMILY = {"claude": "claude_code", "openai": "codex", "xai": "grok"}
+
+
+def parse_price(spec: str | None) -> dict:
+    """`input=…,output=…,cached_input=…,source=https://…,verified_on=YYYY-MM-DD`
+    (+ optional `cache_write=…`, `max_age_days=N`). Nothing is ever guessed:
+    a missing or malformed field stops promote."""
+    if not spec:
+        raise SyncError("--price is required (input=,output=,cached_input=,source=,"
+                        "verified_on=) — promote never invents a price")
+    out: dict[str, Any] = {}
+    for part in spec.split(","):
+        k, sep, v = part.partition("=")
+        k, v = k.strip(), v.strip()
+        if not sep or not k or k in out:
+            raise SyncError(f"--price: malformed or repeated field {part!r}")
+        if k in PRICE_RATES:
+            try:
+                num = float(v)
+            except ValueError:
+                raise SyncError(f"--price: {k} must be a number") from None
+            if not num >= 0 or num == float("inf"):
+                raise SyncError(f"--price: {k} must be a finite number >= 0")
+            out[k] = num
+        elif k == "source":
+            if not v.startswith("https://"):
+                raise SyncError("--price: source must be an https:// URL")
+            out[k] = v
+        elif k == "verified_on":
+            try:
+                dt.date.fromisoformat(v)
+            except ValueError:
+                raise SyncError("--price: verified_on must be YYYY-MM-DD") from None
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                raise SyncError("--price: verified_on must be YYYY-MM-DD")
+            out[k] = v
+        elif k == "max_age_days":
+            if not v.isdigit() or not 0 <= int(v) <= 30:
+                raise SyncError("--price: max_age_days must be an integer 0..30")
+            out[k] = int(v)
+        else:
+            raise SyncError(f"--price: unknown field {k!r}")
+    missing = [k for k in ("input", "output", "cached_input", "source", "verified_on")
+               if k not in out]
+    if missing:
+        raise SyncError(f"--price: missing {', '.join(missing)}")
+    return out
+
+
+def _q(value: Any) -> str:
+    """A YAML scalar: JSON strings are YAML double-quoted strings."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return json.dumps(value)
+
+
+def _flow(mapping: Mapping) -> str:
+    return "{ " + ", ".join(f"{k}: {_q(v)}" for k, v in mapping.items()) + " }"
+
+
+def _folded(text: str, indent: int) -> list[str]:
+    pad = " " * indent
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > 76 - indent:
+            lines.append(pad + cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}" if cur else w
+    if cur:
+        lines.append(pad + cur)
+    return lines
+
+
+def _row_block(lines: list[str], key: str) -> tuple[int, int]:
+    """[header, end) of `key`'s row in `models:` (end = the next two-space-
+    indented line, trailing blank lines excluded)."""
+    top = next((i for i, l in enumerate(lines) if l.rstrip() == "models:"), None)
+    if top is None:
+        raise SyncError("config has no models: section")
+    head = next((i for i in range(top + 1, len(lines))
+                 if lines[i].rstrip() in (f"  {key}:", f'  "{key}":')), None)
+    if head is None:
+        raise SyncError(f"config has no row block for {key!r}")
+    end = next((i for i in range(head + 1, len(lines)) if re.match(r"^\S", lines[i])
+                or re.match(r"^  \S", lines[i])), len(lines))
+    while end > head + 1 and not lines[end - 1].strip():
+        end -= 1
+    return head, end
+
+
+def _sub_block(block: list[str], field_: str) -> tuple[int, int] | None:
+    """[start, end) of a four-space field and its deeper continuation lines."""
+    start = next((i for i, l in enumerate(block) if re.match(rf"^    {field_}:", l)), None)
+    if start is None:
+        return None
+    end = start + 1
+    while end < len(block) and (not block[end].strip()
+                                or len(block[end]) - len(block[end].lstrip()) > 4):
+        end += 1
+    return start, end
+
+
+def _ledger_end(lines: list[str]) -> int:
+    top = next((i for i, l in enumerate(lines) if l.rstrip() == "verification_ledger:"), None)
+    if top is None:
+        raise SyncError("config has no verification_ledger: section")
+    end = next((i for i in range(top + 1, len(lines)) if re.match(r"^\S", lines[i])),
+               len(lines))
+    while end > top + 1 and not lines[end - 1].strip():
+        end -= 1
+    return end
+
+
+def dump_succession(doc: Mapping) -> str:
+    """tests/fixtures/id-succession.json in its own layout: two-space
+    nesting, id lists inline."""
+    def val(v, indent):
+        if isinstance(v, dict):
+            if not v:
+                return "{}"
+            pad = " " * (indent + 2)
+            body = ",\n".join(f"{pad}{json.dumps(k)}: {val(x, indent + 2)}" for k, x in v.items())
+            return "{\n" + body + "\n" + " " * indent + "}"
+        if isinstance(v, list):
+            return "[" + ", ".join(json.dumps(x) for x in v) + "]"
+        return json.dumps(v)
+    return val(dict(doc), 0) + "\n"
+
+
+def _history_row(key: str, mid: str, rec: Mapping, price_lines: list[str] | None) -> list[str]:
+    out = ["",
+           "  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,",
+           "  # DD-A7): a superseded id of this key, valid history input, never seated.",
+           f'  "{key}@{mid}":', f"    id: {mid}", f"    history_of: {key}",
+           f"    family: {rec['family']}", f"    capability_tier: {rec['capability_tier']}"]
+    if rec.get("effort_ceiling") is not None:
+        out.append(f"    effort_ceiling: {rec['effort_ceiling']}")
+    if rec.get("effort_map"):
+        out.append(f"    effort_map: {_flow(rec['effort_map'])}")
+    out += ["    dispatchable: false", "    verified: true"]
+    return out + (price_lines or [])
+
+
+def _ledger_row(item: str, fields: list[tuple[str, Any]], evidence: str) -> list[str]:
+    out = ["", f"    - item: {_q(item)}"]
+    out += [f"      {k}: {v if k == 'status' else _q(v)}" for k, v in fields if v is not None]
+    return out + ["      evidence: >", *_folded(evidence, 8)]
+
+
+def _child_argv_text(argv: list[str] | None) -> str | None:
+    if not argv:
+        return None
+    return shlex.join(argv[argv.index("--") + 1:] if "--" in argv else argv)
+
+
+def _ledger_rows(key: str, e: Mapping, summary: Mapping, price: Mapping,
+                 maker: Mapping | None, base_row: Mapping) -> list[str]:
+    new, old = e["id"], e["from_id"]
+    probes = list(summary.get("probes") or [])
+    p1 = next((p for p in probes if p.get("gate") == "P1"), {})
+    codex = summary.get("served_basis") == "id_accepted"
+    served = ("the CLI header reported the requested id (id accepted, not served-model "
+              "attestation)" if codex else
+              f"served_models {summary.get('served_models')} are served forms of the id")
+    tokens = []
+    for p in probes:
+        if p.get("model_id") == new and p.get("state") == "SUCCEEDED" \
+                and p.get("effort_native") not in tokens:
+            tokens.append(p["effort_native"])
+    it = summary.get("input_tokens") or {}
+    rows = _ledger_row(f"{new} model id", [
+        ("status", "verified"), ("probed_on", summary.get("date")),
+        ("attempt_id", p1.get("attempt_id")), ("cli_version", summary.get("cli_version")),
+        ("argv", _child_argv_text(p1.get("argv")))],
+        f"model_sync contained read-only probe of {key} ({old} -> {new}): P1 smoke "
+        f"answered pong with termination confirmed; P2 {served}; P3 boot input "
+        f"{it.get('candidate')} vs {it.get('current')} for the current id "
+        f"({summary.get('p3_basis')}). Quality is not measured by this row.")
+    rows += _ledger_row(f"{new} reasoning-effort values", [
+        ("status", "verified"), ("probed_on", summary.get("date"))],
+        f"Live-probed tokens for {new}: {', '.join(tokens) or 'none'} (accepted). "
+        f"Other levels were not live-probed for this id; the ceiling is unchanged "
+        f"from {old} ({base_row.get('effort_ceiling') or 'none'}).")
+    rates = ", ".join(f"{k} {price[k]}" for k in PRICE_RATES if k in price)
+    rows += _ledger_row(f"{new} pricing and context window", [
+        ("status", "documented"), ("probed_on", price["verified_on"]),
+        ("source", price["source"])],
+        f"Reference API rates per MTok read from the source on {price['verified_on']}: "
+        f"{rates}. A reference record, not the marginal cost of a subscription "
+        f"dispatch. The context window was not re-recorded by promote.")
+    rows += _ledger_row(f"{key} quality evidence after the {new} id bump", [
+        ("status", "quality_inherited_not_remeasured"), ("supersedes", old)],
+        f"capability_tier {base_row['capability_tier']} is inherited from the {key} "
+        f"lineage; no quality measurement of {new} has been run. Earlier quality "
+        f"rows about {old} describe that id, not this one.")
+    if maker and maker.get("outcome") == "pass" and maker.get("id") == new:
+        art = maker.get("artifact") or {}
+        rows += _ledger_row(f"{new} maker seat", [
+            ("status", "verified"), ("probed_on", maker.get("date")),
+            ("attempt_id", maker.get("attempt_id")), ("cli_version", maker.get("cli_version")),
+            ("argv", _child_argv_text(maker.get("argv")))],
+            f"Attended model_sync probe-maker through {maker.get('transport_id')} "
+            f"({maker.get('recipe_key')}): the maker recipe with -m {new}, in a disposable "
+            f"single-linked child cwd, ended {maker.get('state')}; the written file's "
+            f"content hash {art.get('sha256')} equals the expected token's. Receipt "
+            f"sha256 {maker.get('receipt_sha256')}.")
+    else:
+        rows += _ledger_row(f"{new} maker seat", [("status", "maker_not_reprobed")],
+                            f"No attended probe-maker summary for {new}. Containment of the "
+                            f"write seat is the transport recipe's and does not depend on the "
+                            f"id; whether this id's maker seat works was not re-probed.")
+    return rows
+
+
+def _maker_summary(state_path: Path, key: str, model_id: str) -> dict | None:
+    try:
+        work = _peek_work_state(state_path)
+        rec = work["makers"].get(key) or {}
+        if rec.get("id") != model_id or not model_state.is_hex64(rec.get("summary_sha256")):
+            return None
+        with StateRoot.open(Path(state_path)) as root:
+            value, got = root.read_json_with_sha(
+                f"{MAKERS_PREFIX}/{rec['summary_sha256']}.json")
+        return value if got == rec["summary_sha256"] and isinstance(value, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, path.stat().st_mode & 0o777)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _prior_failure_hint(cfg: dict, history_keys: list[str]) -> dict:
+    from route_task import Policy, Task, route
+    policy = Policy.of(cfg)
+    out = {}
+    for hk in history_keys:
+        row = cfg["models"][hk]
+        task = Task(task_class="IMPLEMENTATION", complexity=1, uncertainty=1, blast_radius=1,
+                    reversibility=1, runtime=RUNTIME_OF_FAMILY.get(row["family"], "claude_code"),
+                    prior_failures=1, prior_models=[row["id"]])
+        r = route(task, cfg)
+        code = 1 if r["terminal"] else policy.human_gate_exit_status \
+            if r["requires_human_confirmation"] else 4 if r["human_confirmation_deferred"] else 0
+        out[hk] = {"router_exit_now": code, "terminal": r["terminal"]}
+    return out
+
+
+def promote(*, repo: Path, key: str, price: str | None, state_path: Path) -> dict:
+    """Move the applied overlay entry for `key` into the repository: the row's
+    id and price, history rows from the generation's snapshots, ledger rows
+    from the summaries, the id-succession chain. Refuses an effort change
+    (1.16.0), a missing price, and an entry that does not apply. Never writes
+    `prior_failure_exit` (hint only). Comments and every byte outside the row
+    block, its appended history rows and the appended ledger rows stay."""
+    import yaml
+    from route_task import Policy
+    price_rec = parse_price(price)
+    repo = Path(repo)
+    cfg_path, succ_path = repo / REPO_CONFIG, repo / REPO_SUCCESSION
+    text = cfg_path.read_text()
+    base = yaml.safe_load(text)
+    base_sha = canonical_policy_sha256(base)
+    with model_state.read_state(Path(state_path)) as st:
+        if st.shape != "ok":
+            raise SyncError(f"no committed generation to promote from ({st.shape})")
+        gen = st.generation
+        _, prov = model_state.effective_config(base, gen, apply_entries=True,
+                                               summary=st.summary, base_sha=base_sha)
+        if key not in prov.applied:
+            why = next((f"noop:{n['reason']}" for n in prov.noop if n["key"] == key),
+                       next((f"rejected:{r['reason']}" for r in prov.rejected
+                             if r["key"] == key), "no entry"))
+            raise SyncError(f"{key!r} has no applied overlay entry against this repo ({why})")
+        e = gen["entries"][key]
+        summary = st.summary(e["probe_summary_sha256"])
+    row = base["models"][key]
+    if dict(e["effort_map"]) != dict(row.get("effort_map") or {}) \
+            or e["effort_ceiling"] != row.get("effort_ceiling"):
+        raise SyncError(f"{key}: the overlay changes effort_map/effort_ceiling; promote in "
+                        f"1.16.0 moves ids only (an effort change is a policy change)")
+    chain = [e["from_id"], *e["superseded"]]
+    missing = [m for m in chain if m not in gen["history"]]
+    if missing:
+        raise SyncError(f"{key}: no history snapshot for {missing}")
+
+    lines = text.split("\n")
+    head, end = _row_block(lines, key)
+    block = lines[head:end]
+    idl = next((i for i, l in enumerate(block) if re.match(r"^    id: ", l)), None)
+    if idl is None:
+        raise SyncError(f"{key}: row block has no id line")
+    old_price = _sub_block(block, "price_per_mtok")
+    old_price_lines = block[old_price[0]:old_price[1]] if old_price else None
+    while old_price_lines and not old_price_lines[-1].strip():
+        old_price_lines.pop()
+    new_block = list(block)
+    new_block[idl] = f"    id: {e['id']}"
+    price_lines = ["    price_per_mtok:"] + [
+        f"      {k}: {_q(price_rec[k])}" for k in ("verified_on", "max_age_days", "source",
+                                                   *PRICE_RATES) if k in price_rec]
+    if old_price:
+        new_block[old_price[0]:old_price[0] + len(old_price_lines)] = price_lines
+    else:
+        new_block += price_lines
+    history_keys, added = [], []
+    for mid in chain:
+        hk = f"{key}@{mid}"
+        if hk in base["models"]:
+            continue
+        added += _history_row(key, mid, gen["history"][mid],
+                              old_price_lines if mid == e["from_id"] else None)
+        history_keys.append(hk)
+    new_lines = lines[:head] + new_block + added + lines[end:]
+    maker = _maker_summary(Path(state_path), key, e["id"])
+    at = _ledger_end(new_lines)
+    new_lines[at:at] = _ledger_rows(key, e, summary or {}, price_rec, maker, row)
+    new_text = "\n".join(new_lines)
+
+    new_cfg = yaml.safe_load(new_text)
+    try:
+        Policy.of(new_cfg)
+    except Exception as exc:  # noqa: BLE001 — refuse, never write a config Policy rejects
+        raise SyncError(f"the promoted config fails the Policy checks: {exc}") from None
+    if new_cfg["models"][key]["id"] != e["id"]:
+        raise SyncError("row rewrite did not take")
+    succ = json.loads(succ_path.read_text())
+    ids = succ.setdefault("chains", {}).setdefault(key, [])
+    for mid in [*chain, e["id"]]:
+        if mid not in ids:
+            ids.append(mid)
+    _atomic_write_text(cfg_path, new_text)
+    _atomic_write_text(succ_path, dump_succession(succ))
+    return {
+        "status": "promoted", "key": key, "from_id": e["from_id"], "id": e["id"],
+        "history_rows": history_keys, "maker_row": "verified" if maker and
+        maker.get("outcome") == "pass" else "maker_not_reprobed",
+        "prior_failure_exit_hint": _prior_failure_hint(new_cfg, history_keys),
+        "checklist": [
+            f"set prior_failure_exit for {', '.join(history_keys) or '(none)'} in "
+            f"{REPO_SUCCESSION} (a person decides; the hint is today's router exit)",
+            "add key_renames/test expectations the new history rows need",
+            f"references/model-profiles.md: an 'inherited, not current' paragraph for {key}",
+            "check context_window and served_model_caveats of the row for the new id",
+            "CHANGELOG (en/ko), version sync (plugin.json x2, package.json)",
+            "deep-suite marketplace pin (after the release; user approval)",
+        ]}
+
+
 def _add_promote_parser(sub) -> None:
-    """Task A12 adds `promote`."""
+    pr = sub.add_parser("promote", help="move an applied overlay entry into a repo checkout")
+    pr.add_argument("--repo", required=True, help="repository root to edit")
+    pr.add_argument("--key", required=True)
+    pr.add_argument("--price", required=True,
+                    help="input=…,output=…,cached_input=…,source=https://…,"
+                         "verified_on=YYYY-MM-DD[,cache_write=…][,max_age_days=N]")
 
 
-def _promote_cli(args, **kw) -> int:  # pragma: no cover - replaced in A12
-    return 2
+def _promote_cli(args, *, env, home, state_path) -> int:
+    _print(promote(repo=Path(args.repo), key=args.key, price=args.price,
+                   state_path=state_path))
+    return 0
 
 
 if __name__ == "__main__":
