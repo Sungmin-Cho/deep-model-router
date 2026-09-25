@@ -385,6 +385,14 @@ class Policy:
                     f"{mid!r}; an id must name exactly one registry row")
             seen_ids[mid] = key
         self.lineage_of: dict[str, dict] = self._validate_lineages(cfg)
+        # Local revocations merged in from model state (design 2026-09-25
+        # DD-A2 rule 8): never a seat candidate, from any source.
+        local_state = cfg.get("local_state", {})
+        if (not isinstance(local_state, Mapping) or set(local_state) - {"blocked_ids"}
+                or not isinstance(local_state.get("blocked_ids", []), list)
+                or not all(isinstance(b, str) and b for b in local_state.get("blocked_ids", []))):
+            raise ConfigError("local_state must be {blocked_ids: [model id, ...]}")
+        self.local_blocked_ids: frozenset[str] = frozenset(local_state.get("blocked_ids", []))
         self._validate_history_rows(cfg, self.lineage_of)
         self.model_ids: frozenset[str] = frozenset(m["id"] for m in cfg["models"].values())
         self.id_to_key: dict[str, str] = {m["id"]: k for k, m in cfg["models"].items()}
@@ -674,7 +682,15 @@ class Policy:
                 raise ConfigError(
                     f"models.{key}.id {mid!r} does not match the lineage template "
                     f"{template!r} of {live_key!r}")
-            if lineage.compare(past, current) >= 0:
+            source = model.get("history_source")
+            if source is not None and source not in ("base", "probe"):
+                raise ConfigError(
+                    f"models.{key}.history_source is {source!r}; only rows "
+                    f"synthesized from local model state carry it (base|probe)")
+            # A row synthesized from a local generation's history record may be
+            # NEWER than the live id: a reverted overlay id stays valid history
+            # input while the live row is back on its base id (DD-A2 rule 7).
+            if source is None and lineage.compare(past, current) >= 0:
                 raise ConfigError(
                     f"models.{key}.id {mid!r} is not an older generation than "
                     f"{live_key!r}'s {live['id']!r}")
@@ -1963,7 +1979,11 @@ class Resolver:
         # exclusion set removed another, and the model that actually ran came
         # straight back out of `peek`. One function answers it now.
         self.failed = task.failed_models(policy)
-        self.unusable = self.blocked | self.failed
+        # Kept apart from `blocked`: that set is the CALLER's withholding and is
+        # echoed on every route, terminal ones included. A local revocation is
+        # not caller input, so it filters seats without being echoed.
+        self.local_blocked = set(policy.local_blocked_ids)
+        self.unusable = self.blocked | self.failed | self.local_blocked
 
         # Does THIS route's worker seat have to write? Set by `route()`.
         #

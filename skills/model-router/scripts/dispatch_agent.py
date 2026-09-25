@@ -90,6 +90,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import receipt_guard
+from secure_io import NotARegularFile, open_regular as _open_regular
 
 STATES = (
     "STARTING", "RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT",
@@ -744,42 +745,6 @@ def _validate_output(stdout_path: Path,
         return True, digest, None, False
     verdict, recovered = _verdict_of(data.decode(errors="replace"))
     return verdict is not None, digest, verdict, recovered
-
-
-class NotARegularFile(OSError):
-    """An evidence path resolved to something that is not a regular file.
-
-    Distinct from a plain OSError so callers can tell "this is a FIFO,
-    device or symlink" (a containment/blocking hazard) from "this is
-    missing" (an ordinary absent artifact) — the two get different
-    `invalid_reasons`.
-    """
-
-
-def _open_regular(path: Path) -> tuple[int, os.stat_result]:
-    """Open an evidence file for reading, refusing anything that is not a
-    regular file — and refusing it WITHOUT blocking.
-
-    Three flags carry the whole rule. O_NOFOLLOW refuses a symlink hop, so
-    a link planted at an artifact path cannot make this process read (or
-    attest to) a file outside the root. O_NONBLOCK means a FIFO planted
-    there opens immediately instead of waiting for a writer that never
-    comes — an ordinary open() would hold the terminal receipt past the
-    deadline, which is exactly the hazard the deadline exists to prevent.
-    The fstat is on the SAME fd that was opened, not a second stat of the
-    pathname: a path checked and then reopened is a TOCTOU window, an fd
-    checked and then read is not.
-    """
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        st = os.fstat(fd)
-    except OSError:
-        os.close(fd)
-        raise
-    if not stat.S_ISREG(st.st_mode):
-        os.close(fd)
-        raise NotARegularFile(f"{path} is not a regular file")
-    return fd, st
 
 
 def _contained(path: Path, root: Path) -> bool:
