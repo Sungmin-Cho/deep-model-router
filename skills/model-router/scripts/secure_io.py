@@ -106,7 +106,11 @@ def _check_file(st: os.stat_result, label: str, max_bytes: int) -> None:
         raise StateError(f"{label} is not owned by this user")
     if stat.S_IMODE(st.st_mode) != FILE_MODE:
         raise StateError(f"{label} has mode {stat.S_IMODE(st.st_mode):o}, want 600")
-    if st.st_nlink != 1:
+    # A second link is refused (the same inode reachable from elsewhere).
+    # Zero is not: it means a writer renamed a newer file over this path after
+    # we opened it, and the fd still holds the complete previous version —
+    # atomic replacement never edits a published file in place.
+    if st.st_nlink > 1:
         raise StateError(f"{label} has {st.st_nlink} links, want 1")
     if st.st_size > max_bytes:
         raise StateError(f"{label} exceeds {max_bytes} bytes")

@@ -64,6 +64,7 @@ REQUEST_V1_KEYS = frozenset({
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
     "host_seat", "worker_seat", "review_context", "attempt_outcomes",
+    "policy_pin",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -1009,8 +1010,58 @@ def resolve_effective_policy(env: Mapping[str, str], home: Path,
         return _resolve_pin(pin, base, base_sha, state, off)
 
 
-def _resolve_pin(pin, base, base_sha, state, off) -> EffectivePolicy:  # Task A6
-    return _unavailable(base_sha, "pin_generation_missing")
+def _check_pin(pin) -> None:
+    if not model_state.is_hex64(pin):
+        raise ValidationError("policy_pin must be a lowercase 64-hex policy_sha256")
+
+
+def _resolve_pin(pin: str, base: dict, base_sha: str, state: "model_state.StateRead",
+                 off: bool) -> EffectivePolicy:
+    """Walk `parent_generation_sha256` from the current generation (at most
+    MAX_PIN_CHAIN steps) and recompute each one as current base + that
+    generation's entries (unless off) and history + the CURRENT generation's
+    revocations. The first digest equal to the pin is the policy. Only
+    committed generations are on the chain, so an unpublished one is
+    unreachable; a later revocation changes the recomputed digest, so revert
+    beats pin.
+
+    No match: one reason, in a fixed order — off (entries back on would
+    match), revoked (the generation's OWN revocations would match), base
+    changed (a generation on the chain recorded another base), missing.
+    """
+    if state.shape != "ok":
+        return _unavailable(base_sha, "pin_generation_missing")
+    current_blocked = state.generation["blocked_ids"]
+    suppressed = revoked = base_changed = False
+    sha, gen = state.generation_sha256, state.generation
+
+    def digest(g, g_sha, apply, blocked):
+        cfg, prov = model_state.effective_config(
+            base, g, apply_entries=apply, summary=state.summary, blocked_ids=blocked,
+            generation_sha256=g_sha, base_sha=base_sha)
+        return cfg, prov, (base_sha if cfg is base else canonical_policy_sha256(cfg))
+
+    for _ in range(model_state.MAX_PIN_CHAIN):
+        cfg, prov, d = digest(gen, sha, not off, current_blocked)
+        if d == pin:
+            prov.status = "pinned"
+            return EffectivePolicy(cfg if cfg is base else _interned(cfg, d), prov)
+        if off and digest(gen, sha, True, current_blocked)[2] == pin:
+            suppressed = True
+        if digest(gen, sha, not off, gen["blocked_ids"])[2] == pin:
+            revoked = True
+        if gen["base_policy_sha256"] != base_sha:
+            base_changed = True
+        sha = gen["parent_generation_sha256"]
+        if sha is None:
+            break
+        try:
+            gen = state.generation_at(sha)
+        except (OSError, ValueError):
+            break
+    reason = ("pin_suppressed_by_off" if suppressed else "pin_revoked" if revoked
+              else "pin_base_changed" if base_changed else "pin_generation_missing")
+    return _unavailable(base_sha, reason)
 
 
 # The per-model disclosure for a seat whose id came from the local overlay.
@@ -1100,6 +1151,9 @@ class Task:
     _host_seat: dict | None = field(default=None, repr=False, compare=False)
     _review_context: dict | None = field(default=None, repr=False, compare=False)
     _attempt_outcomes: list[dict] | None = field(default=None, repr=False, compare=False)
+    # RouteRequestV1 / --policy-pin: the policy digest to reproduce (DD-A9). A
+    # policy SELECTOR, not request content — never part of request_sha256.
+    _policy_pin: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def total_prior_attempts(self) -> int:
@@ -2652,9 +2706,18 @@ def route(task: Task, cfg: dict | None = None, *,
     local model state, read from `env`/`home`, default the process's); an
     explicit `cfg` is used as given and never reads state."""
     overlay = None
+    if task._policy_pin is not None:
+        _check_pin(task._policy_pin)
+        if cfg is not None:
+            # Dropping the pin would emit a route whose fingerprint is not the
+            # pinned one at exit 0 (DD-A2).
+            raise ValidationError(
+                "policy_pin needs the router's own effective policy; an explicit "
+                "cfg cannot honour it")
     if cfg is None:
         eff = resolve_effective_policy(os.environ if env is None else env,
-                                       Path.home() if home is None else Path(home))
+                                       Path.home() if home is None else Path(home),
+                                       pin=task._policy_pin)
         if eff.config is None:
             return _state_unavailable_route(eff.provenance)
         cfg, overlay = eff.config, eff.provenance
@@ -3796,6 +3859,9 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                         "worker needs a write-capable dispatch recipe")
     p.add_argument("--host-model", default=None)
     p.add_argument("--host-effort", default=None)
+    p.add_argument("--policy-pin", dest="policy_pin", default=None,
+                   help="policy_sha256 of an earlier route to reproduce from the "
+                        "committed local model state (64 lowercase hex)")
     p.add_argument("--format", default="text", choices=["text", "json"])
     return p
 
@@ -3871,6 +3937,9 @@ def task_from_request_v1(payload: dict) -> Task:
     if isinstance(flags, str):
         flags = _split(flags)
     flags = string_list(flags, "flags")
+    pin = payload.get("policy_pin")
+    if pin is not None:
+        _check_pin(pin)
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
@@ -3891,6 +3960,7 @@ def task_from_request_v1(payload: dict) -> Task:
         _host_seat=hs,
         _review_context=payload.get("review_context"),
         _attempt_outcomes=payload.get("attempt_outcomes"),
+        _policy_pin=pin,
     )
 
 
@@ -3955,6 +4025,9 @@ def main(argv: list[str] | None = None) -> int:
                     "model": args.host_model,
                     "effort": args.host_effort,
                 }
+        if args.policy_pin is not None:
+            _check_pin(args.policy_pin)
+            task._policy_pin = args.policy_pin
         result = route(task)
 
         if args.format == "json":
