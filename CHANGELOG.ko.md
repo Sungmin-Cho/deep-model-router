@@ -9,6 +9,31 @@
 
 ## [Unreleased]
 
+## [1.16.0] — 2026-09-25
+
+### Added
+
+- 디스패치 가능한 모든 레지스트리 행에 벤더 계열(lineage)을 선언하고, 행의 id가 계열 템플릿을 어기거나 다른 행이 이미 가진 id인 정책을 거부합니다.
+- 각 계열을 이 기계에서 따라갑니다. 로컬 모델 오버레이가 CLI 모델 카탈로그에서 후속 id를 오프라인으로 찾고, 격리된 읽기 전용 프로브로 검증한 뒤 발행하므로, 라우터는 그 행을 새 id로 앉히며 tier는 승계, 가격은 unavailable, maker 좌석은 재프로브되지 않았다는 안내를 붙입니다.
+- 모든 라우트에 오버레이 출처를 `model_overlay`로 보고하고, 커밋된 로컬 상태가 손상되면 `MODEL_STATE_UNAVAILABLE`로 fail-closed 합니다.
+- `model_sync.py` 명령 `status`, `revert`, `unblock`, `disable`, `enable`, `repair`, `quota`, `probe-maker`, `promote`를 추가하고, `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`과 `DEEP_MODEL_ROUTER_OVERLAY=off`를 끄는 스위치로 제공합니다.
+- 보관된 오버레이 세대의 라우팅 정책을 재현하는 `policy_pin`(`--policy-pin`)을 받습니다. 어떤 보관 세대와도 일치하지 않거나 이후의 폐기로 무효가 된 pin은 거부합니다.
+- 오프라인 틱을 돌리고 후속 모델이 도래했을 때만 분리된 프로브 실행을 시작하는 SessionStart 훅을 함께 배포합니다.
+- codex의 텍스트·JSON 출력을 CLI가 보고한 모델과 토큰 사용량을 기록하는 응답 엔벨로프로 읽으며, 실패했거나 끝나지 않은 턴은 fail-closed 합니다.
+
+### Changed
+
+- 격리·effort·maker 좌석 프로브를 거쳐 Claude Opus 5.5를 senior engineer 모델로 앉혔습니다. 공표 가격은 입력/출력 백만 토큰당 $4 / $20으로, 이전의 $5 / $25보다 낮습니다. `capability_tier`는 Opus 계열에서 승계했고 품질은 재측정하지 않았으며, 모델 프로파일과 검증 원장이 이를 명시합니다. Claude Opus 5는 이력 입력으로 계속 유효합니다.
+- 대체된 모델 행을 `_retired` 키 대신 `<좌석>@<id>` 이름의 이력 행으로 둡니다. 그 id는 이력 입력으로 계속 유효하며 좌석에는 앉지 않습니다.
+- codex 자식이 자체 sandbox를 쓰는 `--receipt-guard` 디스패치는 호출자가 `--allow-nested-sandbox no-file-access`로 명시하지 않으면 거부합니다.
+- OpenAI 추론 좌석과 빠른 워커 좌석의 후속 모델인 GPT-6 Sol과 GPT-6 Luna는 이번 릴리스에 포함되지 않습니다. Codex 사용량 한도로 프로브가 보류됐으며 이후 패치 릴리스에서 반영합니다.
+- 업데이트하면 진행 중인 deep-loop 실행이 정책 다이제스트 변경으로 멈춥니다. 업데이트 전에 진행 중인 루프를 마무리하고, 멈춘 루프는 새 실행으로 다시 시작하며, 오버레이 발행도 같은 효과를 내므로 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하십시오.
+
+### Security
+
+- 로컬 모델 상태를 검증된 디렉터리 핸들 하나를 기준으로 열고, 현재 사용자가 소유하며 소유자 전용 권한을 가진 단일 링크 일반 파일만 크기 상한 안에서 받아 엄격한 JSON으로 파싱합니다.
+- SessionStart 훅의 신뢰 경계를 문서화했습니다. Codex의 훅 승인은 명령 문자열만 다루며, 훅이 실행하는 스크립트는 설치된 플러그인 코드로서 신뢰됩니다.
+
 ## [1.15.0] — 2026-09-22
 
 ### Added
