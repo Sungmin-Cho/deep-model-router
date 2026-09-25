@@ -385,6 +385,7 @@ class Policy:
                     f"{mid!r}; an id must name exactly one registry row")
             seen_ids[mid] = key
         self.lineage_of: dict[str, dict] = self._validate_lineages(cfg)
+        self._validate_history_rows(cfg, self.lineage_of)
         self.model_ids: frozenset[str] = frozenset(m["id"] for m in cfg["models"].values())
         self.id_to_key: dict[str, str] = {m["id"]: k for k, m in cfg["models"].items()}
         self.family_of: dict[str, str] = {m["id"]: m["family"] for m in cfg["models"].values()}
@@ -622,6 +623,65 @@ class Policy:
                         f"list of strings each containing {{id}}")
             out[key] = {"line": line, "template": template}
         return out
+
+    @staticmethod
+    def _validate_history_rows(cfg: dict, lineage_of: dict[str, dict]) -> None:
+        """History rows (design 2026-09-25 DD-A3): a superseded id kept as
+        valid HISTORY input and never seated.
+
+        The key is `<history_of>@<id>` with the id verbatim — a slug would fold
+        `gpt-6.0-sol` and `gpt-6-0-sol` into one key and turn one of them into
+        invalid input. The live row must carry a lineage whose template the
+        history id matches at a strictly LOWER generation, in the same family;
+        the row is non-dispatchable and no binding or fallback list names it.
+        The router still reads only `dispatchable` at route time.
+        """
+        bound = {k for binding in cfg["role_bindings"].values() for k in binding.values()}
+        in_fallback = {k for per_role in cfg["fallbacks"].values()
+                       for keys in per_role.values() for k in keys}
+        for key, model in cfg["models"].items():
+            live_key = model.get("history_of")
+            if live_key is None:
+                if "@" in key:
+                    raise ConfigError(
+                        f"models.{key}: a `<live key>@<id>` key is reserved for "
+                        f"history rows, and this row declares no history_of")
+                continue
+            mid = model["id"]
+            if key != f"{live_key}@{mid}":
+                raise ConfigError(
+                    f"models.{key} is a history row of {live_key!r}; its key must "
+                    f"be exactly {live_key}@{mid}")
+            live = cfg["models"].get(live_key) if isinstance(live_key, str) else None
+            if live is None or "history_of" in live:
+                raise ConfigError(
+                    f"models.{key}.history_of names {live_key!r}, which is not a "
+                    f"live registry row")
+            if live_key not in lineage_of:
+                raise ConfigError(
+                    f"models.{key}.history_of names {live_key!r}, which declares no "
+                    f"lineage to order the two ids by")
+            if model["family"] != live["family"]:
+                raise ConfigError(
+                    f"models.{key} is family {model['family']!r} but its live row "
+                    f"{live_key!r} is {live['family']!r}")
+            if model.get("dispatchable") is not False:
+                raise ConfigError(
+                    f"models.{key} is a history row and must be dispatchable: false")
+            template = lineage_of[live_key]["template"]
+            past, current = lineage.parse(template, mid), lineage.parse(template, live["id"])
+            if past is None:
+                raise ConfigError(
+                    f"models.{key}.id {mid!r} does not match the lineage template "
+                    f"{template!r} of {live_key!r}")
+            if lineage.compare(past, current) >= 0:
+                raise ConfigError(
+                    f"models.{key}.id {mid!r} is not an older generation than "
+                    f"{live_key!r}'s {live['id']!r}")
+            if key in bound:
+                raise ConfigError(f"models.{key} is a history row and a role binding names it")
+            if key in in_fallback:
+                raise ConfigError(f"models.{key} is a history row and a fallback list names it")
 
     def _validate_native_families(self, cfg: dict) -> None:
         """`local_family` and `transports` must answer "which family is native

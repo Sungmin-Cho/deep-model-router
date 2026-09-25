@@ -546,8 +546,16 @@ models:
   # that crosses the release boundary keeps working; never a candidate for
   # any seat: dispatchable: false, bound to no role, named in no fallback
   # list. Same mechanism as gemini_flash.
-  claude_architect_retired:
+  #
+  # History rows (design 2026-09-25 DD-A3) are keyed `<live key>@<id>` — the
+  # id verbatim, never a slug, so two spellings of one generation cannot
+  # collapse into one key — and name their live row with `history_of`.
+  # Policy refuses a history row whose live row is missing or has no lineage,
+  # whose family differs, whose id is not an OLDER generation of the live
+  # row's template, or that a binding or fallback list names.
+  "claude_architect@claude-fable-5":
     id: claude-fable-5
+    history_of: claude_architect
     family: claude
     capability_tier: 3
     dispatchable: false
@@ -686,9 +694,10 @@ models:
   # non-dispatchable history row." Valid as HISTORY input (--prior-models,
   # --unavailable-models, --host-model) so a control loop holding a 1.14.0
   # failure keeps working across the release boundary; never a candidate for
-  # any seat. Same mechanism as claude_architect_retired.
-  xai_frontier_retired:
+  # any seat. Same mechanism as the claude_architect history row.
+  "xai_frontier@grok-4.6":
     id: grok-4.6
+    history_of: xai_frontier
     family: xai
     capability_tier: 1
     effort_ceiling: VERY_HIGH
