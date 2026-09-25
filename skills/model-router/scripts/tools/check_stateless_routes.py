@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decision-field baseline for stateless routes (plan §0.2, model-lineage tranche).
 
-Routes a FIXED set of 52 requests through the real CLI entry point
+Routes a FIXED set of 54 requests through the real CLI entry point
 (`route_task.main`) with the overlay switched off and an empty state
 directory, and keeps only the decision fields of each route. Written once
 against a release, the file is the oracle a later change is compared with:
@@ -17,14 +17,21 @@ two runs by two implementers compare the same routes:
   x flags {none, security_sensitive, production_hotfix, bridge_down} = 48
 * REVIEW (2,2,2,1) on claude_code, without and with a complete
   `review_context` whose author is the `claude_senior` registry row = 2
-* DEBUGGING (1,2,1,1) on claude_code and codex, with one prior failure on
-  that route's own selected model = 2
+* DEBUGGING (1,2,1,1) on claude_code and codex, history-free and then with
+  one prior failure on the history-free route's selected model = 4
 
-Ignored by the comparison: `policy_sha256`, `decision_fingerprint` (neither is
-extracted) and a `model_overlay` of null (only a non-null overlay is kept as a
-decision field). `--id-succession` rewrites every id in a chain to the chain's
-last id on both sides before comparing, so a promoted id bump is not reported
-as a difference while any other movement still is.
+Each route's `request` is compared as well as its decision (the DEBUGGING
+prior id is part of the request). Ignored: `policy_sha256`,
+`decision_fingerprint` (neither is extracted) and a `model_overlay` of null
+(only a non-null overlay is kept as a decision field). `--id-succession`
+rewrites every superseded id of a chain to the chain's last id on the
+BASELINE side only, so a promoted id bump is not reported as a difference
+while a current route that still seats a superseded id is.
+
+Tool version 2 added the two history-free DEBUGGING routes. A version-1
+baseline does not hold them; they are then listed as not compared rather than
+as differences — their outcome still reaches the comparison through the
+prior-failure requests that baseline recorded.
 
 Model ids never appear in this file: the one id a request needs is read off the
 registry by key.
@@ -55,7 +62,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import route_task  # noqa: E402
 
-TOOL_VERSION = 1
+TOOL_VERSION = 2
 DECISION_FIELDS = (
     "selected_role", "selected_model",
     "selected_effort", "selected_effort_effective", "selected_effort_native",
@@ -108,10 +115,14 @@ def _decision(code: int, result: dict | None, stderr: str) -> dict:
     return record
 
 
+HISTORY_FREE_SINCE = {"DEBUGGING/claude_code/history_free": 2,
+                      "DEBUGGING/codex/history_free": 2}
+
+
 def requests() -> list[tuple[str, dict]]:
-    """The 52 named requests, in a fixed order. DEBUGGING's prior model is
-    the selected model of the same request without history, so it is resolved
-    by routing that request first (not itself recorded)."""
+    """The 54 named requests, in a fixed order. DEBUGGING's prior model is
+    the selected model of the same request without history, so that
+    history-free route is routed first and recorded too."""
     out: list[tuple[str, dict]] = []
     for band, dims in BANDS:
         for runtime in RUNTIMES:
@@ -133,9 +144,10 @@ def requests() -> list[tuple[str, dict]]:
         if result is None or not result.get("selected_model"):
             raise SystemExit(f"DEBUGGING/{runtime}: the history-free route selected "
                              f"no model (exit {code}): {err.strip()}")
+        out.append((f"DEBUGGING/{runtime}/history_free", base))
         out.append((f"DEBUGGING/{runtime}/prior_failure_on_selected",
                     {**base, "prior_failures": [result["selected_model"]]}))
-    assert len(out) == 52, len(out)
+    assert len(out) == 54, len(out)
     return out
 
 
@@ -192,14 +204,21 @@ def _diff(a, b, path="") -> list[str]:
     return []
 
 
-def compare(baseline: dict, current: dict, table: dict[str, str]) -> list[str]:
-    old = {r["name"]: _rewrite(r["decision"], table) for r in baseline["routes"]}
-    new = {r["name"]: _rewrite(r["decision"], table) for r in current["routes"]}
+def compare(baseline: dict, current: dict, table: dict[str, str]) -> tuple[list[str], list[str]]:
+    """(problems, not_compared). Only the baseline is rewritten: a current
+    route seating a superseded id must differ from the rewritten baseline."""
+    def view(r, rewrite):
+        rec = {"request": r["request"], "decision": r["decision"]}
+        return _rewrite(rec, table) if rewrite else rec
+    old = {r["name"]: view(r, True) for r in baseline["routes"]}
+    new = {r["name"]: view(r, False) for r in current["routes"]}
+    version = baseline.get("tool_version", 1)
     problems = [f"{n}: missing from current run" for n in old if n not in new]
-    problems += [f"{n}: not in baseline" for n in new if n not in old]
+    skipped = [n for n in new if n not in old and HISTORY_FREE_SINCE.get(n, 0) > version]
+    problems += [f"{n}: not in baseline" for n in new if n not in old and n not in skipped]
     for name in (n for n in old if n in new):
         problems.extend(f"{name}: {d}" for d in _diff(old[name], new[name]))
-    return problems
+    return problems, skipped
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -219,9 +238,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"wrote {len(current['routes'])} routes, policy_sha256 {current['policy_sha256']}")
         return 0
     baseline = json.loads(args.compare.read_text(encoding="utf-8"))
-    problems = compare(baseline, current, _substitution(args.id_succession))
+    problems, skipped = compare(baseline, current, _substitution(args.id_succession))
     print(f"routes: {len(current['routes'])}; policy_sha256 {baseline['policy_sha256']} -> "
           f"{current['policy_sha256']}")
+    for name in skipped:
+        print(f"  not compared (baseline tool_version {baseline.get('tool_version', 1)} "
+              f"predates it): {name}")
     if problems:
         print(f"{len(problems)} decision-field difference(s):")
         for line in problems:
