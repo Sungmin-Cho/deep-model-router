@@ -324,3 +324,527 @@ def test_cli_versions_are_read_from_the_cli_on_path(tmp_path, monkeypatch):
             (CATALOGS / fixture / "version.txt").read_text())
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
     assert model_sync.cli_versions() == {"codex": None, "claude": None, "grok": None}
+
+
+# ---------------------------------------------------------------------------
+# A9 — probe gates (DD-A5). Pure functions over receipt-shaped evidence.
+# ---------------------------------------------------------------------------
+
+import datetime as _dt  # noqa: E402
+import subprocess  # noqa: E402
+import urllib.parse  # noqa: E402
+
+import model_state  # noqa: E402
+import secure_io  # noqa: E402
+from policy_digest import canonical_policy_sha256  # noqa: E402
+
+CODEX = SKILL / "tests" / "fixtures" / "codex"
+NOW = _dt.datetime(2026, 9, 25, 12, 0, tzinfo=_dt.timezone.utc)
+CTX = model_sync.ProbeContext(now=NOW, cli_version="0.157.0", catalog_sha256="c" * 64)
+CANDIDATE_FAST = EXPECTED["candidates"]["openai_worker_fast"]
+
+
+def receipt(state="SUCCEEDED", *, confirmed=True, fmt=None, envelope=None,
+            model_id="demo-model", session_summary=None):
+    return {"attempt_id": "a1", "model_id": model_id, "output_envelope": fmt,
+            "session_evidence": ({"summary": session_summary}
+                                 if session_summary is not None else None),
+            "result": {"state": state, "termination_confirmed": confirmed,
+                       "envelope": envelope}}
+
+
+@pytest.mark.parametrize("stdout", ["pong", "pong\n", "  pong  \n", "\npong"])
+def test_gate_p1_passes_exactly_pong(stdout):
+    assert model_sync.gate_p1(receipt(), stdout, CTX)["outcome"] == "pass"
+
+
+@pytest.mark.parametrize("rec,stdout", [
+    (receipt(), "pong."),
+    (receipt(), "Pong"),
+    (receipt(), "pong\nmore"),
+    (receipt(), ""),
+    (receipt(), None),
+    (receipt(state="INVALID_OUTPUT"), "pong"),
+    (receipt(state="FAILED"), "pong"),
+    (receipt(state="TIMED_OUT"), "pong"),
+    (receipt(confirmed=None), "pong"),
+    (receipt(confirmed=False), "pong"),
+])
+def test_gate_p1_fails_closed_on_any_mismatch(rec, stdout):
+    """A SUCCEEDED receipt is not enough: output and confirmed termination
+    must both hold, and any one miss is `failed: smoke` retried in 6 hours."""
+    got = model_sync.gate_p1(rec, stdout, CTX)
+    assert got["outcome"] == "failed" and got["reason"] == "smoke"
+    assert got["retry_after"] == {"kind": "time",
+                                  "at": (NOW + _dt.timedelta(hours=6)).isoformat()}
+
+
+def _efforts(*tokens):
+    return list(tokens)
+
+
+def test_gate_p0_passes_with_full_vocabulary_and_cli_metadata():
+    got = model_sync.gate_p0(
+        family="openai", candidate_id=CANDIDATE_FAST,
+        row=BASE["models"]["openai_worker_fast"], base=BASE,
+        catalog_efforts=_efforts("low", "medium", "high", "xhigh", "max"),
+        cli_metadata_ids=[CANDIDATE_FAST], ctx=CTX)
+    assert got["outcome"] == "pass" and got["effort_ceiling"] is None
+
+
+@pytest.mark.parametrize("efforts,ceiling", [
+    (("low", "medium", "high", "xhigh"), "VERY_HIGH"),
+    (("low", "medium", "high"), "HIGH"),
+])
+def test_gate_p0_plans_an_effort_override(efforts, ceiling):
+    got = model_sync.gate_p0(
+        family="openai", candidate_id=CANDIDATE_FAST,
+        row=BASE["models"]["openai_worker_fast"], base=BASE,
+        catalog_efforts=list(efforts), cli_metadata_ids=[CANDIDATE_FAST], ctx=CTX)
+    assert got["outcome"] == "pass" and got["effort_ceiling"] == ceiling
+
+
+def test_gate_p0_respects_an_existing_row_ceiling():
+    """xai maps MAX to xhigh and caps at VERY_HIGH: `max` is never needed."""
+    row = BASE["models"]["xai_frontier"]
+    got = model_sync.gate_p0(
+        family="xai", candidate_id="demo", row=row, base=BASE,
+        catalog_efforts=_efforts("xhigh", "high", "medium", "low"),
+        cli_metadata_ids=None, ctx=CTX)
+    assert got["outcome"] == "pass"
+    assert got["effort_ceiling"] == row["effort_ceiling"]
+
+
+def test_gate_p0_fails_when_a_routine_token_is_missing():
+    got = model_sync.gate_p0(
+        family="openai", candidate_id=CANDIDATE_FAST,
+        row=BASE["models"]["openai_worker_fast"], base=BASE,
+        catalog_efforts=_efforts("low", "medium"), cli_metadata_ids=[CANDIDATE_FAST],
+        ctx=CTX)
+    assert got["outcome"] == "failed" and got["reason"] == "effort_vocabulary"
+
+
+@pytest.mark.parametrize("ids", [None, []])
+def test_gate_p0_defers_openai_without_cli_metadata(ids):
+    """`codex debug models` without the slug, or the command failing, is
+    `deferred: cli_metadata` until the CLI version changes."""
+    got = model_sync.gate_p0(
+        family="openai", candidate_id=CANDIDATE_FAST,
+        row=BASE["models"]["openai_worker_fast"], base=BASE,
+        catalog_efforts=_efforts("low", "medium", "high", "xhigh", "max"),
+        cli_metadata_ids=ids, ctx=CTX)
+    assert (got["outcome"], got["reason"]) == ("deferred", "cli_metadata")
+    assert got["retry_after"] == {"kind": "cli_version_change", "cli_version": "0.157.0"}
+
+
+def test_bundled_cli_metadata_fixture_lists_the_candidates():
+    doc = json.loads((CATALOGS / "codex" / "debug-models-bundled.json").read_text())
+    ids = model_sync.parse_codex_debug_models(json.dumps(doc))
+    assert CANDIDATE_FAST in ids
+    assert model_sync.parse_codex_debug_models("not json") is None
+
+
+def _codex_text_envelope(header_model, warning=False):
+    return {"parse_ok": True, "stop_reason": None, "session_id": None,
+            "served_models": None, "error_type": None, "usage": None,
+            "header_model": header_model, "header_model_basis": "header-reported",
+            "metadata_warning": warning, "footer_tokens_uncached": 1,
+            "cli_version": "0.157.0"}
+
+
+def test_gate_p2_codex_header_equal_to_request_is_id_accepted():
+    rec = receipt(fmt="codex-exec-text-v1", model_id=CANDIDATE_FAST,
+                  envelope=_codex_text_envelope(CANDIDATE_FAST))
+    got = model_sync.gate_p2(rec, BASE["models"]["openai_worker_fast"]["lineage"], CTX)
+    assert got["outcome"] == "pass" and got["basis"] == "id_accepted"
+    assert got["observed"] == [CANDIDATE_FAST]
+
+
+@pytest.mark.parametrize("env,outcome,reason,retry", [
+    (_codex_text_envelope(None), "deferred", "served_unproven", "cli_version_change"),
+    (_codex_text_envelope("other-model"), "failed", "served_mismatch", "catalog_change"),
+    (_codex_text_envelope(CANDIDATE_FAST, warning=True), "deferred", "cli_metadata",
+     "cli_version_change"),
+])
+def test_gate_p2_codex_failures(env, outcome, reason, retry):
+    rec = receipt(fmt="codex-exec-text-v1", model_id=CANDIDATE_FAST, envelope=env)
+    got = model_sync.gate_p2(rec, BASE["models"]["openai_worker_fast"]["lineage"], CTX)
+    assert (got["outcome"], got["reason"], got["retry_after"]["kind"]) == (outcome, reason, retry)
+
+
+def test_gate_p2_codex_json_mode_cannot_prove_serving():
+    rec = receipt(fmt="codex-exec-json-v1", model_id=CANDIDATE_FAST,
+                  envelope={"parse_ok": True, "served_models": None})
+    got = model_sync.gate_p2(rec, BASE["models"]["openai_worker_fast"]["lineage"], CTX)
+    assert (got["outcome"], got["reason"]) == ("deferred", "served_unproven")
+
+
+def test_gate_p2_grok_accepts_a_served_form():
+    lin = BASE["models"]["xai_frontier"]["lineage"]
+    served = [f.replace("{id}", "demo-9") for f in lin["served_forms"]][-1]
+    rec = receipt(fmt="grok-headless-json-v1", model_id="demo-9",
+                  envelope={"served_models": [served]},
+                  session_summary={"current_model_id": served})
+    got = model_sync.gate_p2(rec, lin, CTX)
+    assert got["outcome"] == "pass" and got["basis"] == "served"
+    rec = receipt(fmt="grok-headless-json-v1", model_id="demo-9",
+                  envelope={"served_models": ["demo-8"]},
+                  session_summary={"current_model_id": "demo-8"})
+    assert model_sync.gate_p2(rec, lin, CTX)["reason"] == "served_mismatch"
+
+
+def test_gate_p2_claude_served_models_must_be_the_id():
+    lin = BASE["models"]["claude_senior"]["lineage"]
+    ok = receipt(fmt="claude-print-json-v1", model_id="demo-9",
+                 envelope={"served_models": ["demo-9"]})
+    assert model_sync.gate_p2(ok, lin, CTX)["outcome"] == "pass"
+    bad = receipt(fmt="claude-print-json-v1", model_id="demo-9",
+                  envelope={"served_models": ["demo-9", "demo-small"]})
+    assert model_sync.gate_p2(bad, lin, CTX)["reason"] == "served_mismatch"
+    none = receipt(fmt="claude-print-json-v1", model_id="demo-9",
+                   envelope={"served_models": None})
+    assert model_sync.gate_p2(none, lin, CTX)["reason"] == "served_unproven"
+
+
+def test_boot_input_tokens_is_the_total_including_cache():
+    events = [json.loads(l) for l in (CODEX / "codex-0.157.0-json.jsonl").read_text().splitlines()]
+    usage = [e for e in events if e["type"] == "turn.completed"][-1]["usage"]
+    rec = receipt(fmt="codex-exec-json-v1", envelope={"usage": usage})
+    assert model_sync.boot_input_tokens(rec) == usage["input_tokens"]
+    claude = receipt(fmt="claude-print-json-v1", envelope={"usage": {
+        "input_tokens": 2, "cache_read_input_tokens": 5, "cache_creation_input_tokens": 7}})
+    assert model_sync.boot_input_tokens(claude) == 14
+    assert model_sync.boot_input_tokens(receipt(fmt="codex-exec-text-v1",
+                                                envelope={"usage": None})) is None
+
+
+@pytest.mark.parametrize("pair,prior,cap,outcome,basis", [
+    ({"current": 20000, "candidate": 29000}, None, 60000, "pass", "paired"),
+    ({"current": 20000, "candidate": 31000}, None, 60000, "deferred", "paired"),
+    ({"current": 50000, "candidate": 61000}, None, 60000, "deferred", "paired"),
+    ({"current": None, "candidate": 29000, "current_unsupported": True}, 20000, 60000,
+     "pass", "prior_baseline"),
+    ({"current": None, "candidate": 31000, "current_unsupported": True}, 20000, 60000,
+     "deferred", "prior_baseline"),
+    ({"current": None, "candidate": 59000, "current_unsupported": True}, None, 60000,
+     "pass", "absolute_only"),
+    ({"current": None, "candidate": 61000, "current_unsupported": True}, None, 60000,
+     "deferred", "absolute_only"),
+])
+def test_gate_p3_pairs_and_falls_back(pair, prior, cap, outcome, basis):
+    got = model_sync.gate_p3(pair, prior, cap, CTX)
+    assert (got["outcome"], got["p3_basis"]) == (outcome, basis)
+    if outcome == "deferred":
+        assert got["reason"] == "overhead"
+
+
+def test_gate_p3_cap_applies_to_the_cached_total():
+    """The real capture: 26,068 input of which 11,008 cached. A cap between the
+    uncached and the total must fail — cache lowers the bill, not the count."""
+    events = [json.loads(l) for l in (CODEX / "codex-0.157.0-json.jsonl").read_text().splitlines()]
+    usage = [e for e in events if e["type"] == "turn.completed"][-1]["usage"]
+    total, uncached = usage["input_tokens"], usage["input_tokens"] - usage["cached_input_tokens"]
+    cap = (total + uncached) // 2
+    rec = receipt(fmt="codex-exec-json-v1", envelope={"usage": usage})
+    pair = {"current": model_sync.boot_input_tokens(rec),
+            "candidate": model_sync.boot_input_tokens(rec)}
+    assert model_sync.gate_p3(pair, None, cap, CTX)["outcome"] == "deferred"
+
+
+def test_gate_p3_without_a_candidate_measurement_fails():
+    got = model_sync.gate_p3({"current": 1, "candidate": None}, None, 60000, CTX)
+    assert got["outcome"] == "failed" and got["reason"] == "smoke"
+
+
+def test_gate_p4_top_token_and_one_step_down():
+    assert model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": True}],
+                              CTX) == {"gate": "P4", "outcome": "pass",
+                                       "reason": None, "effort_ceiling": None,
+                                       "retry_after": None}
+    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False},
+                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": True}], CTX)
+    assert got["outcome"] == "pass" and got["effort_ceiling"] == "VERY_HIGH"
+    got = model_sync.gate_p4([{"effort": "MAX", "native": "max", "accepted": False},
+                              {"effort": "VERY_HIGH", "native": "xhigh", "accepted": False}], CTX)
+    assert got["outcome"] == "failed" and got["reason"] == "top_token"
+
+
+def test_retry_after_per_reason():
+    later = int((NOW + _dt.timedelta(hours=30)).timestamp())
+    assert model_sync.retry_after_for("quota", CTX._replace(quota_resets_at=later)) == \
+        {"kind": "time", "at": _dt.datetime.fromtimestamp(later, _dt.timezone.utc).isoformat()}
+    assert model_sync.retry_after_for("quota", CTX) == \
+        {"kind": "time", "at": (NOW + _dt.timedelta(hours=24)).isoformat()}
+    assert model_sync.retry_after_for("smoke", CTX)["at"] == \
+        (NOW + _dt.timedelta(hours=6)).isoformat()
+    assert model_sync.retry_after_for("served_unproven", CTX) == \
+        {"kind": "cli_version_change", "cli_version": "0.157.0"}
+    assert model_sync.retry_after_for("served_mismatch", CTX) == \
+        {"kind": "catalog_change", "catalog_sha256": "c" * 64}
+
+
+# ---------------------------------------------------------------------------
+# A9 — contained probe argv (DD-A0). Read-only reviewer recipes only.
+# ---------------------------------------------------------------------------
+
+def _argv(family, **kw):
+    params = dict(family=family, model_id="demo-9", effort_native="low",
+                  attempt_id="p-demo", receipt_dir=Path("/r"),
+                  child_cwd=Path("/c"), prompt_file=Path("/p/prompt.txt"),
+                  deadline_seconds=120, grok_home=Path("/g"),
+                  session_id="11111111-2222-3333-4444-555555555555",
+                  receipt_guard=True)
+    params.update(kw)
+    return model_sync.probe_argv(**params)
+
+
+def _split(argv):
+    at = argv.index("--")
+    return argv[:at], argv[at + 1:]
+
+
+def test_claude_probe_argv_is_the_contained_reviewer_recipe():
+    sup, child = _split(_argv("claude"))
+    assert sup[:3] == [sys.executable, str(model_sync.DISPATCH), "run"]
+    assert child[:2] == ["claude", "-p"]
+    assert "--strict-mcp-config" in child
+    assert child[child.index("--permission-mode") + 1] == "plan"
+    assert child[child.index("--output-format") + 1] == "json"
+    assert sup[sup.index("--output-envelope") + 1] == "claude-print-json-v1"
+    assert sup[sup.index("--receipt-guard") + 1] == "darwin-sandbox-v1"
+    assert sup[sup.index("--child-cwd") + 1] == "/c"
+    assert sup[sup.index("--prompt-file") + 1] == "/p/prompt.txt"
+
+
+@pytest.mark.parametrize("mode,envelope", [("text", "codex-exec-text-v1"),
+                                           ("json", "codex-exec-json-v1")])
+def test_codex_probe_argv_is_read_only_without_the_guard(mode, envelope):
+    sup, child = _split(_argv("openai", codex_mode=mode))
+    assert child[:2] == ["codex", "exec"]
+    assert child[child.index("-s") + 1] == "read-only"
+    assert ("--json" in child) == (mode == "json")
+    assert child[-1] == "-"
+    assert sup[sup.index("--output-envelope") + 1] == envelope
+    assert "--receipt-guard" not in sup
+    assert "--allow-nested-sandbox" not in sup
+
+
+def test_grok_probe_argv_carries_the_whole_evidence_set():
+    uuid = "11111111-2222-3333-4444-555555555555"
+    sup, child = _split(_argv("xai", child_cwd=Path("/c d")))
+    assert child[0] == "grok"
+    assert child[child.index("-s") + 1] == uuid
+    assert child[child.index("--sandbox") + 1] == "read-only"
+    assert child[child.index("--permission-mode") + 1] == "plan"
+    assert sup[sup.index("--output-envelope") + 1] == "grok-headless-json-v1"
+    assert sup[sup.index("--session-id") + 1] == uuid
+    assert sup[sup.index("--session-evidence") + 1] == (
+        "grok-session-v1:/g/sessions/" + urllib.parse.quote("/c d", safe="") + "/" + uuid)
+    assert sup[sup.index("--expect-sandbox-profile") + 1] == "read-only"
+    assert sup[sup.index("--receipt-guard") + 1] == "darwin-sandbox-v1"
+    assert sup[sup.index("--transport-id") + 1].endswith(".to_xai")
+
+
+WRITE_MARKERS = ("workspace-write", "danger-full-access", "acceptEdits",
+                 "bypassPermissions", "Write(", "Edit(", "search_replace",
+                 "dmr-maker-v1", "--seat-profile", "--require-artifact")
+
+
+@pytest.mark.parametrize("family,kw", [("claude", {}), ("openai", {"codex_mode": "text"}),
+                                       ("openai", {"codex_mode": "json"}), ("xai", {})])
+def test_no_probe_argv_is_a_write_recipe(family, kw):
+    argv = _argv(family, **kw)
+    assert not [a for a in argv if any(m in a for m in WRITE_MARKERS)]
+
+
+def test_model_sync_has_no_code_path_that_builds_a_write_recipe():
+    """The automatic probe never seats a writer (DD-A0): no write-recipe token
+    appears anywhere in the module, and the builder takes no seat/mode knob."""
+    import inspect
+    src = (SKILL / "scripts" / "model_sync.py").read_text()
+    assert not [m for m in WRITE_MARKERS if m in src]
+    params = set(inspect.signature(model_sync.probe_argv).parameters)
+    assert not params & {"seat", "permission_mode", "sandbox", "write", "maker"}
+
+
+def test_child_cwd_is_fresh_empty_and_private(tmp_path):
+    a = model_sync.new_child_cwd(tmp_path)
+    b = model_sync.new_child_cwd(tmp_path)
+    assert a != b and list(a.iterdir()) == [] and (a.stat().st_mode & 0o777) == 0o700
+
+
+def _trap(bindir: Path, name: str, marker: Path) -> None:
+    exe = bindir / name
+    exe.write_text(f"#!{sys.executable}\nopen({str(marker)!r}, 'a').write('ran\\n')\n")
+    exe.chmod(0o755)
+
+
+def test_grok_argv_without_session_evidence_is_refused_by_dispatch(tmp_path):
+    """Not inferred: the real dispatch_agent refuses before spawn, and the
+    fake grok first on PATH is never reached."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    marker = tmp_path / "grok-ran"
+    _trap(bindir, "grok", marker)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("Reply with exactly: pong\n")
+    argv = _argv("xai", receipt_dir=tmp_path / "receipts",
+                 child_cwd=model_sync.new_child_cwd(tmp_path), prompt_file=prompt)
+    at = argv.index("--session-evidence")
+    del argv[at:at + 2]
+    env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ["PATH"]}
+    proc = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60)
+    assert proc.returncode == 2, proc.stderr
+    assert "--session-evidence" in proc.stderr
+    assert not marker.exists()
+    assert not (tmp_path / "receipts" / "p-demo.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# A9 — the harness: dispatch_agent subprocesses, one id per process, a
+# content-addressed summary under work/probes/summaries/.
+# ---------------------------------------------------------------------------
+
+FAKE_CODEX = r'''#!{python}
+import json, os, sys
+from pathlib import Path
+fx = Path({fixtures!r})
+log = Path(os.environ["FAKE_CODEX_LOG"])
+args = sys.argv[1:]
+if args == ["--version"]:
+    sys.stdout.write((fx / "catalogs" / "codex" / "version.txt").read_text()); sys.exit(0)
+if args[:2] == ["debug", "models"]:
+    assert "--bundled" in args, args
+    sys.stdout.write((fx / "catalogs" / "codex" / "debug-models-bundled.json").read_text()); sys.exit(0)
+assert args[0] == "exec", args
+assert os.listdir(".") == [], "probe cwd is not empty"
+model = args[args.index("-m") + 1]
+effort = [a for a in args if a.startswith("model_reasoning_effort=")][0].split("=", 1)[1]
+with log.open("a") as f:
+    f.write(json.dumps({{"model": model, "effort": effort, "json": "--json" in args,
+                        "pid": os.getpid()}}) + "\n")
+sys.stdin.read()
+if "--json" in args:
+    sys.stdout.write((fx / "codex" / "codex-0.157.0-json.jsonl").read_text())
+else:
+    sys.stdout.write((fx / "codex" / "codex-0.157.0-plain.stdout").read_text())
+    sys.stderr.write((fx / "codex" / "codex-0.157.0-plain.stderr").read_text())
+'''
+
+
+def _fake_codex(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    exe = bindir / "codex"
+    exe.write_text(FAKE_CODEX.format(python=sys.executable,
+                                     fixtures=str(SKILL / "tests" / "fixtures")))
+    exe.chmod(0o755)
+    for trap in ("claude", "grok"):
+        _trap(bindir, trap, tmp_path / f"{trap}-ran")
+    log = tmp_path / "codex.log"
+    env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
+           "FAKE_CODEX_LOG": str(log)}
+    return env, log
+
+
+def _state(tmp_path):
+    root = tmp_path / "state"
+    root.mkdir(mode=0o700)
+    return root
+
+
+def test_harness_probes_a_codex_candidate_end_to_end(tmp_path):
+    env, log = _fake_codex(tmp_path)
+    key = "openai_worker_fast"
+    cats = catalogs()
+    cand = model_sync.find_candidates(rows(), cats)[key]
+    assert cand["id"] == _banner_model_of_fixture()
+    base = copy.deepcopy(BASE)
+    base["models"][key]["id"] = cand["from_id"]
+    state = _state(tmp_path)
+    result = model_sync.probe_candidate(
+        key=key, candidate=cand, base=base, state_root=state, env=env,
+        catalog=cats["openai"], current_id=cand["from_id"], superseded=[],
+        scratch=tmp_path / "scratch", ctx=CTX)
+    assert result["summary"]["outcome"] == "pass", result["summary"]
+    calls = [json.loads(l) for l in log.read_text().splitlines()]
+    # P1 (plain), P3 pair (json, current then candidate), P4 (plain, top token).
+    assert [(c["model"], c["json"]) for c in calls] == [
+        (cand["id"], False), (cand["from_id"], True), (cand["id"], True),
+        (cand["id"], False)]
+    assert len({c["pid"] for c in calls}) == 4
+    assert calls[0]["effort"] == "low"
+    assert calls[-1]["effort"] == BASE["effort_map"]["openai"]["MAX"]
+    assert result["inferences"] == 4
+    assert not (tmp_path / "claude-ran").exists() and not (tmp_path / "grok-ran").exists()
+
+    summary = result["summary"]
+    sha = result["summary_sha256"]
+    with secure_io.StateRoot.open(state) as root:
+        stored, got = root.read_json_with_sha(f"work/probes/summaries/{sha}.json")
+    assert got == sha and stored == summary
+    for k in model_state.SUMMARY_MATCH_KEYS:
+        assert k in summary, k
+    assert summary["base_row_sha256"] == model_state.base_row_sha256(base, key)
+    assert summary["recipe_sha256"] == model_state.recipe_sha256(base, "openai")
+    assert summary["guard"] == "omitted: nested Seatbelt"
+    assert summary["served_basis"] == "id_accepted"
+    assert summary["p3_basis"] == "paired"
+    assert summary["input_tokens"]["candidate"] == summary["input_tokens"]["current"] > 0
+    assert summary["catalog"]["sha256"] == cats["openai"].sha256
+    assert summary["cli_version"] == "0.157.0"
+    assert summary["base_policy_sha256"] == canonical_policy_sha256(base)
+    assert len(summary["probes"]) == 4
+    assert all(len(p["receipt_sha256"]) == 64 and p["argv"] for p in summary["probes"])
+
+    # The summary is exactly what model_state admits for an entry built from it.
+    entry = {k: summary[k] for k in ("line", "from_id", "id", "superseded",
+                                     "effort_map", "effort_ceiling")}
+    entry["probe_summary_sha256"] = sha
+    gen = {"overlay_schema_version": 1, "entries": {key: entry}, "history": {},
+           "blocked_ids": [], "parent_generation_sha256": None,
+           "base_policy_sha256": canonical_policy_sha256(base)}
+    cfg, prov = model_state.effective_config(
+        base, gen, apply_entries=True, summary=lambda s: summary if s == sha else None)
+    assert prov.applied == [key] and cfg["models"][key]["id"] == cand["id"]
+
+
+def _banner_model_of_fixture():
+    import re
+    return re.search(r"^model: (\S+)$", (CODEX / "codex-0.157.0-plain.stderr").read_text(),
+                     re.M).group(1)
+
+
+def test_harness_stops_at_a_served_mismatch(tmp_path):
+    """The fixture banner names one model; probing another id through it is a
+    served mismatch — recorded, retried only when the catalog changes, and no
+    further inference is spent."""
+    env, log = _fake_codex(tmp_path)
+    key = "openai_reasoning"
+    cats = catalogs()
+    cand = model_sync.find_candidates(rows(), cats)[key]
+    assert cand["id"] != _banner_model_of_fixture()
+    base = copy.deepcopy(BASE)
+    base["models"][key]["id"] = cand["from_id"]
+    result = model_sync.probe_candidate(
+        key=key, candidate=cand, base=base, state_root=_state(tmp_path), env=env,
+        catalog=cats["openai"], current_id=cand["from_id"], superseded=[],
+        scratch=tmp_path / "scratch", ctx=CTX)
+    s = result["summary"]
+    assert (s["outcome"], s["reason"]) == ("failed", "served_mismatch")
+    assert s["retry_after"] == {"kind": "catalog_change", "catalog_sha256": cats["openai"].sha256}
+    assert result["inferences"] == 1 and len(log.read_text().splitlines()) == 1
+
+
+def test_harness_defers_without_cli_metadata_and_spends_nothing(tmp_path):
+    env, log = _fake_codex(tmp_path)
+    key = "openai_worker_fast"
+    cats = catalogs()
+    cand = model_sync.find_candidates(rows(), cats)[key]
+    result = model_sync.probe_candidate(
+        key=key, candidate=cand, base=BASE, state_root=_state(tmp_path), env=env,
+        catalog=cats["openai"], current_id=cand["from_id"], superseded=[],
+        scratch=tmp_path / "scratch", ctx=CTX, cli_metadata_ids=[])
+    assert (result["summary"]["outcome"], result["summary"]["reason"]) == \
+        ("deferred", "cli_metadata")
+    assert result["inferences"] == 0 and not log.exists()
