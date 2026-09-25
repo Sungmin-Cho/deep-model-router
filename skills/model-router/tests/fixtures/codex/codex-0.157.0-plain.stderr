@@ -1,14 +1,14 @@
 Reading additional input from stdin...
 OpenAI Codex v0.157.0
 --------
-workdir: /private/tmp/claude-501/-Users-sungmin-Dev-claude-plugins-deep-model-router--worktrees-deep-model-router-frogfish/210fa01c-287a-4e03-a83c-f1c23bd0d323/scratchpad/probe/empty
+workdir: /tmp/dmr-probe/empty
 model: gpt-6-luna
 provider: openai
 approval: never
 sandbox: read-only
 reasoning effort: low
 reasoning summaries: none
-session id: 01a0d919-e451-7222-8793-4f6bfaf33d2c
+session id: 00000000-0000-7000-8000-000000000000
 --------
 user
 Reply with exactly the word: pong
