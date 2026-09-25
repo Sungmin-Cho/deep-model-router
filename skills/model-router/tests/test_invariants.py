@@ -485,25 +485,70 @@ def test_a_terminal_route_withholds_every_execution_binding():
         if not out["terminal"]:
             continue
         seen += 1
-        rv = out["review"]
-        assert out["selected_model"] is None
-        assert out["selected_effort"] is None
-        assert rv["reviewer_models"] == []
-        assert rv["judge_model"] is None
-        assert rv["effort"] is None
-        echoed = set().union(*(set(out[k]) for k in _ECHOES_CALLER_INPUT))
-        # The one nested caller echo: exactly host_seat_advisory.declared.model.
-        # Scrub that single path, then scan — a global exemption set would excuse
-        # the same id leaking anywhere else in the route.
-        scrubbed = copy.deepcopy(out)
-        declared = (scrubbed.get("host_seat_advisory") or {}).get("declared")
-        if declared:
-            declared["model"] = None
-        named = {i for i in ids if _whole_token(i, json.dumps(scrubbed))} - echoed
-        assert not named, (
-            f"terminal route ({out['terminal']}) still names {sorted(named)} — "
-            f"a consumer can dispatch it")
+        _assert_terminal_withholds(out, ids)
     assert seen, "no terminal route in the sweep"
+
+
+def _assert_terminal_withholds(out, ids):
+    rv = out["review"]
+    assert out["selected_model"] is None
+    assert out["selected_effort"] is None
+    assert rv["reviewer_models"] == []
+    assert rv["judge_model"] is None
+    assert rv["effort"] is None
+    echoed = set().union(*(set(out[k]) for k in _ECHOES_CALLER_INPUT))
+    # The one nested caller echo: exactly host_seat_advisory.declared.model.
+    # Scrub that single path, then scan — a global exemption set would excuse
+    # the same id leaking anywhere else in the route.
+    scrubbed = copy.deepcopy(out)
+    declared = (scrubbed.get("host_seat_advisory") or {}).get("declared")
+    if declared:
+        declared["model"] = None
+    named = {i for i in ids if _whole_token(i, json.dumps(scrubbed))} - echoed
+    assert not named, (
+        f"terminal route ({out['terminal']}) still names {sorted(named)} — "
+        f"a consumer can dispatch it")
+
+
+def test_a_terminal_route_on_an_overlay_withholds_overlay_and_history_ids():
+    """Design 2026-09-25 DD-A2. The scan above knows the BASE registry only; a
+    route on a local overlay seats ids the registry has never held, so a leak
+    of one would pass it in silence. Every dispatchable row is replaced here,
+    and the scan covers the effective config's ids — overlay and synthesized
+    history alike — as well as the base ones."""
+    import model_state
+    from _overlay import all_dispatchable_keys, replacing
+    gen, sums = replacing(*all_dispatchable_keys())
+    cfg, prov = model_state.effective_config(CFG, gen, apply_entries=True, summary=sums.get)
+    assert sorted(prov.applied) == all_dispatchable_keys()
+    over = {m["id"] for m in cfg["models"].values()}
+    ids = over | {m["id"] for m in CFG["models"].values()}
+    live = sorted(cfg["models"][k]["id"] for k in all_dispatchable_keys())
+    scarcity = [[], [cfg["models"]["claude_architect"]["id"]],
+                [i for i in live if i not in (cfg["models"]["claude_senior"]["id"],
+                                              cfg["models"]["xai_frontier"]["id"])],
+                live[:-1]]
+    history = [([], 0), ([ID("claude_senior")], 1), (["senior_engineer"], 1)]
+    # A slice of the main sweep (~5 s): the terminals come from scarcity and
+    # history, which are swept in full; three corners and four flag sets keep
+    # every band, the disagreement judge and the degraded binding in reach.
+    dims_slice = [(0, 0, 0, 0), (2, 2, 2, 0), (3, 3, 3, 3)]
+    flag_slice = [[], ["review_disagreement"], ["bridge_down"], ["auth_sensitive", "bridge_down"]]
+    seen = 0
+    for task_class, dims, flags, runtime, scarce, (prior, failures) in itertools.product(
+            TASK_CLASSES, dims_slice, flag_slice, RUNTIMES, scarcity, history):
+        c, u, b, rev = dims
+        try:
+            out = route(Task(task_class=task_class, complexity=c, uncertainty=u,
+                             blast_radius=b, reversibility=rev, flags=list(flags),
+                             runtime=runtime, unavailable_models=list(scarce),
+                             prior_models=list(prior), prior_failures=failures), cfg)
+        except ValidationError:
+            continue
+        if out["terminal"]:
+            seen += 1
+            _assert_terminal_withholds(out, ids)
+    assert seen, "no terminal route on the overlay"
 
 
 def test_a_reduced_depth_route_is_not_dispatchable_without_a_human():
@@ -1151,6 +1196,7 @@ def test_t3b_claude_only_frontier_worker_yields_and_matches_plan_legacy():
                       execution_score=15, execution_band="VERY_HARD")
     expected = rt._plan(task, policy, CFG, pre, resolver, legacy)
     expected["notes"] = expected["notes"] + _yielded(out)
+    expected["model_overlay"] = None       # route-level; an explicit cfg reads no state
     expected["rationale"] = rt.explain(task, expected, policy)
     assert out == expected
 

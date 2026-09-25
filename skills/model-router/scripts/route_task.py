@@ -40,13 +40,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import traceback
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 
 import lineage
+import model_state
 from policy_digest import canonical_policy_sha256, policy_sha256
 from strict_json import loads as strict_json_loads, ensure_json_value
 from pathlib import Path
@@ -106,6 +109,7 @@ TERMINAL_STATES = (
     "HUMAN_REQUIRED", "ESCALATE_ROUTING", "INDEPENDENCE_UNAVAILABLE",
     "RETRY_HISTORY_REQUIRED", "SUPPLY_EXHAUSTED", "UNSATISFIABLE_LOCAL_POLICY",
     "OPERATIONAL_RECOVERY_REQUIRED", "TERMINATION_UNCONFIRMED",
+    "MODEL_STATE_UNAVAILABLE",
 )
 
 MAX_PROMOTION_PASSES = 4   # bounded fixed point; the band ladder is only 4 deep
@@ -285,7 +289,13 @@ class Policy:
     # the cache is unbounded in the number of distinct config OBJECTS, so a
     # process routing against many of them retains all of them — but no longer
     # unbounded in how often any one of them is edited.
-    _cache: dict[int, tuple[str | None, "Policy"]] = {}
+    #
+    # Bounded since 2026-09-25 (DD-A2): effective policies are built per state
+    # generation, so a long-lived process would otherwise keep one per
+    # generation it ever routed on. Eviction keeps the identity guarantee: an
+    # entry still in the cache holds its cfg alive, and an evicted id that is
+    # later recycled simply misses and rebuilds.
+    _cache: "_LRU" = None  # set below the class (needs _LRU)
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -888,6 +898,28 @@ class Policy:
     def at_ceiling(self, r): return self.roles.index(r) == len(self.roles) - 1
 
 
+class _LRU(OrderedDict):
+    """A dict that keeps its `maxsize` most recently used entries."""
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self.maxsize = maxsize
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
+
+
+Policy._cache = _LRU(8)
+
 _DEFAULT_CFG: dict | None = None
 
 
@@ -917,6 +949,111 @@ def __getattr__(name: str):
     if name in mapping:
         return mapping[name]
     raise AttributeError(name)
+
+
+# --------------------------------------------------------------------------
+# Effective policy — base config + local model state (design 2026-09-25 DD-A2)
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EffectivePolicy:
+    """The config a route runs on and where it came from. `config` is None
+    exactly when the state cannot be used: the route is then the
+    MODEL_STATE_UNAVAILABLE terminal, whose reason `provenance` carries."""
+    config: dict | None
+    provenance: "model_state.Provenance | None"
+
+
+# digest -> effective config: one object per content, so `Policy.of` (keyed
+# on identity + digest) hits its cache for every route on the same generation.
+_EFFECTIVE_CACHE = _LRU(8)
+
+
+def _interned(cfg: dict, digest: str) -> dict:
+    cached = _EFFECTIVE_CACHE.get(digest)
+    if cached is not None:
+        return cached
+    _EFFECTIVE_CACHE[digest] = cfg
+    return cfg
+
+
+def _unavailable(base_sha: str, reason: str) -> EffectivePolicy:
+    return EffectivePolicy(None, model_state.Provenance(
+        status="unavailable", base_policy_sha256=base_sha, state_reason=reason))
+
+
+def resolve_effective_policy(env: Mapping[str, str], home: Path,
+                             pin: str | None = None) -> EffectivePolicy:
+    """Base config + the committed generation, read afresh on every call.
+
+    Reads exactly `committed/current.json`, the generation it names, and the
+    probe summary of each entry that reaches the summary check — no directory
+    scan. `DEEP_MODEL_ROUTER_OVERLAY=off` drops the entries only; history and
+    revocations still apply, and a damaged state fails closed either way.
+    """
+    base = default_config()
+    base_sha = canonical_policy_sha256(base)
+    off = model_state.overlay_off(env)
+    with model_state.read_state(model_state.state_root_path(env, home)) as state:
+        if state.shape == "unreadable":
+            return _unavailable(base_sha, "unreadable")
+        if state.shape == "absent":
+            cfg, prov = base, None
+        else:
+            cfg, prov = model_state.effective_config(
+                base, state.generation, apply_entries=not off, summary=state.summary,
+                generation_sha256=state.generation_sha256, base_sha=base_sha)
+        digest = base_sha if cfg is base else canonical_policy_sha256(cfg)
+        if pin is None or pin == digest:
+            return EffectivePolicy(cfg if cfg is base else _interned(cfg, digest), prov)
+        return _resolve_pin(pin, base, base_sha, state, off)
+
+
+def _resolve_pin(pin, base, base_sha, state, off) -> EffectivePolicy:  # Task A6
+    return _unavailable(base_sha, "pin_generation_missing")
+
+
+# The per-model disclosure for a seat whose id came from the local overlay.
+OVERLAY_SEAT_NOTE = ("{key}: id from local model overlay; capability tier inherited "
+                     "from the lineage (not re-measured); price unavailable; maker seat "
+                     "not re-probed for this id (containment is the transport recipe's)")
+
+STATE_UNAVAILABLE_MESSAGES = {
+    "unreadable": ("local model state under committed/ cannot be read; no seat is "
+                   "named while revocations are unknown — run model_sync.py repair, "
+                   "or delete committed/ to start from the bundled policy"),
+}
+
+
+def _state_unavailable_route(prov: "model_state.Provenance") -> dict:
+    """The MODEL_STATE_UNAVAILABLE terminal. Built before any request is
+    validated, so it carries no request digest and names no model at all."""
+    terminal = "MODEL_STATE_UNAVAILABLE"
+    message = STATE_UNAVAILABLE_MESSAGES.get(
+        prov.state_reason,
+        f"the pinned policy cannot be reproduced ({prov.state_reason}) — start the "
+        f"loop afresh or drop the pin")
+    return {
+        "route_schema_version": ROUTE_SCHEMA_VERSION,
+        "router_plugin_version": plugin_manifest_version(),
+        "policy_sha256": None,
+        "request_sha256": None,
+        "decision_fingerprint": None,
+        "terminal": terminal,
+        "selected_role": None,
+        "selected_model": None,
+        "selected_effort": None,
+        "selected_effort_effective": None,
+        "selected_effort_native": None,
+        "review": {"band": None, "reviewers": [], "reviewer_models": [], "effort": None,
+                   "judge": None, "judge_model": None},
+        "requires_human_confirmation": False,
+        "human_confirmation_deferred": False,
+        "human_control_causes": [],
+        "model_overlay": prov.to_json(),
+        "notes": [message],
+        "rationale": f"TERMINAL {terminal}: {message}",
+    }
 
 
 # --------------------------------------------------------------------------
@@ -2509,8 +2646,18 @@ class _Prelude:
     execution_band: str
 
 
-def route(task: Task, cfg: dict | None = None) -> dict:
-    cfg = cfg if cfg is not None else default_config()
+def route(task: Task, cfg: dict | None = None, *,
+          env: Mapping[str, str] | None = None, home: Path | None = None) -> dict:
+    """Route `task`. With no `cfg`, on the effective policy (base + committed
+    local model state, read from `env`/`home`, default the process's); an
+    explicit `cfg` is used as given and never reads state."""
+    overlay = None
+    if cfg is None:
+        eff = resolve_effective_policy(os.environ if env is None else env,
+                                       Path.home() if home is None else Path(home))
+        if eff.config is None:
+            return _state_unavailable_route(eff.provenance)
+        cfg, overlay = eff.config, eff.provenance
     policy = Policy.of(cfg)
     task.validate(policy)
     request_sha = request_sha256_of(task)
@@ -2628,6 +2775,13 @@ def route(task: Task, cfg: dict | None = None) -> dict:
             "unconfirmed_terminations": sum(row["kind"] == "termination_unconfirmed" for row in history),
         }
         result["notes"].append("typed attempt history separates capability escalation from operational recovery; evidence hashes are caller declarations")
+    result["model_overlay"] = overlay.to_json() if overlay is not None else None
+    if overlay is not None and overlay.applied and result["terminal"] is None:
+        seated = {result["selected_model"], result["review"]["judge_model"],
+                  *result["review"]["reviewer_models"],
+                  *(seat["model_id"] for seat in result.get("dispatch_seats", []))}
+        keys = {policy.id_to_key[m] for m in seated if m} & set(overlay.applied)
+        result["notes"].extend(OVERLAY_SEAT_NOTE.format(key=k) for k in sorted(keys))
     result["rationale"] = explain(task, result, policy)
     return result
 
@@ -3835,6 +3989,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_text(r: dict) -> None:
+    if r["terminal"] == "MODEL_STATE_UNAVAILABLE":
+        print(f"TERMINAL:    {r['terminal']}  — no executable bindings emitted")
+        print(f"reason:      {r['model_overlay']['state_reason']}")
+        for note in r["notes"]:
+            print(f"  note: {note}")
+        return
     print(f"risk_score:  {r['risk_score']}")
     print(f"risk_band:   {r['risk_band']}")
     print(f"exec_score:  {r['execution_score']}")

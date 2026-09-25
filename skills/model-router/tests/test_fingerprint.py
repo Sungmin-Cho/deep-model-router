@@ -137,11 +137,14 @@ def test_repeated_mutation_of_one_cfg_keeps_the_policy_cache_bounded():
     from route_task import Policy
     task = Task(**BASE)
     cfg = load_config()
-    before = len(Policy._cache)
     for i in range(1, 26):
         cfg["router"]["confidence"]["escalate_below"] = 0.5 + i * 0.001
         route(task, cfg)
-    assert len(Policy._cache) - before == 1, (
+    # Counted per config object, not as a length delta: the cache is also
+    # bounded overall (LRU, design 2026-09-25 DD-A2), so a full cache stays
+    # the same length while still admitting this object's one entry.
+    held = [p for _, p in Policy._cache.values() if p.cfg is cfg]
+    assert len(held) == 1, (
         "25 revisions of one config object must not leave 25 cached policies")
     # Bounded, and still correct: the last revision routes like a fresh load.
     fresh = load_config()

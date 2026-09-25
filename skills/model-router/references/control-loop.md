@@ -178,6 +178,7 @@ These situations stop or gate rather than proceeding:
 | Independence could not be established | **Terminal.** Disclosure is not a control — a route whose reviewers cannot hold distinct models is one where the implementer reviews itself |
 | No adjudicator could be seated | **Human confirmation.** The route is still dispatchable; what a human takes over is adjudicating a disagreement, should one arise |
 | Routing confidence below 0.60 | The router does not trust its own classification, and classification errors propagate everywhere downstream |
+| Local model state cannot be used | **Terminal** `MODEL_STATE_UNAVAILABLE` (exit 1, no model named). `committed/` exists but its pointer or generation fails admission, hashing or the schema (`state_reason: unreadable`) — seating anything while revocations are unknown could revive a revoked id. `DEEP_MODEL_ROUTER_OVERLAY=off` does not bypass it; `model_sync.py repair` or deleting `committed/` does |
 
 ## Routing JSON inputs
 
@@ -302,6 +303,15 @@ human_control_causes: []       # which human_in_the_loop controls fired, by
 notes: []                      # every promotion, floor, compensation and
                                # policy decision the route actually made
 rationale:   # names the band, the triggering flags, and every fallback
+model_overlay:                 # null without committed local model state; else
+                               # {status (applied | partial | noop | pinned |
+                               # unavailable), base_policy_sha256,
+                               # generation_sha256, applied (registry keys),
+                               # noop and rejected ([{key, reason}]),
+                               # history_ids_synthesized, blocked_ids (a
+                               # count), state_reason}. Keys and counts only,
+                               # never a model id. Not a RouteObservationV1
+                               # decision key
 ```
 
 ### Fields the router cannot know
