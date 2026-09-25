@@ -46,6 +46,7 @@ import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 
+import lineage
 from policy_digest import canonical_policy_sha256, policy_sha256
 from strict_json import loads as strict_json_loads, ensure_json_value
 from pathlib import Path
@@ -371,6 +372,19 @@ class Policy:
         self.max_risk_score: int = max_risk
         self.known_flags: frozenset[str] = frozenset(f for g in cfg["flags"].values() for f in g)
         self.runtimes: frozenset[str] = frozenset(cfg["runtimes"])
+        # Before any id-keyed table is built: a dict comprehension over two
+        # rows holding one id keeps the LAST row and drops the first without
+        # a word, so every table below would describe a registry that does
+        # not exist (design 2026-09-25 DD-A1).
+        seen_ids: dict[str, str] = {}
+        for key, model in cfg["models"].items():
+            mid = model["id"]
+            if mid in seen_ids:
+                raise ConfigError(
+                    f"models.{seen_ids[mid]} and models.{key} hold the same id "
+                    f"{mid!r}; an id must name exactly one registry row")
+            seen_ids[mid] = key
+        self.lineage_of: dict[str, dict] = self._validate_lineages(cfg)
         self.model_ids: frozenset[str] = frozenset(m["id"] for m in cfg["models"].values())
         self.id_to_key: dict[str, str] = {m["id"]: k for k, m in cfg["models"].items()}
         self.family_of: dict[str, str] = {m["id"]: m["family"] for m in cfg["models"].values()}
@@ -551,6 +565,63 @@ class Policy:
         }
         self._validate_native_families(cfg)
         self._validate_write_seats(cfg)
+
+    @staticmethod
+    def _validate_lineages(cfg: dict) -> dict[str, dict]:
+        """Every dispatchable row declares its lineage, and the declaration is
+        well-formed (design 2026-09-25 DD-A1): `line` globally unique, the
+        template parses, and the row's own id is a spelling of it. Returns
+        registry key -> lineage for the rows that have one.
+
+        `catalog_name` and `served_forms` are shape-checked here but consumed
+        by model_sync; the router routes on `id` alone.
+        """
+        allowed = {"line", "template", "catalog_name", "served_forms"}
+        lines: dict[str, str] = {}
+        out: dict[str, dict] = {}
+        for key, model in cfg["models"].items():
+            lin = model.get("lineage")
+            if lin is None:
+                if model.get("dispatchable", True) is not False:
+                    raise ConfigError(
+                        f"models.{key} is dispatchable and declares no lineage; "
+                        f"a seat whose successor cannot be recognised is a seat "
+                        f"that silently falls behind its vendor")
+                continue
+            if not isinstance(lin, Mapping):
+                raise ConfigError(f"models.{key}.lineage must be a mapping")
+            if (unknown := set(lin) - allowed) or not {"line", "template"} <= set(lin):
+                raise ConfigError(
+                    f"models.{key}.lineage must hold line and template (optional "
+                    f"catalog_name, served_forms); unknown {sorted(unknown)}")
+            line, template = lin["line"], lin["template"]
+            if not isinstance(line, str) or not line.strip():
+                raise ConfigError(f"models.{key}.lineage.line must be a non-empty string")
+            if line in lines:
+                raise ConfigError(
+                    f"models.{lines[line]} and models.{key} declare the same "
+                    f"lineage line {line!r}; a line names one registry row")
+            lines[line] = key
+            try:
+                gen = lineage.parse(template, model["id"])
+            except ValueError as exc:
+                raise ConfigError(f"models.{key}.lineage.template: {exc}") from None
+            if gen is None:
+                raise ConfigError(
+                    f"models.{key}.id {model['id']!r} does not match its own "
+                    f"lineage template {template!r}")
+            if "catalog_name" in lin and not (
+                    isinstance(lin["catalog_name"], str) and lin["catalog_name"].strip()):
+                raise ConfigError(f"models.{key}.lineage.catalog_name must be a non-empty string")
+            if "served_forms" in lin:
+                forms = lin["served_forms"]
+                if (not isinstance(forms, list) or not forms
+                        or not all(isinstance(f, str) and "{id}" in f for f in forms)):
+                    raise ConfigError(
+                        f"models.{key}.lineage.served_forms must be a non-empty "
+                        f"list of strings each containing {{id}}")
+            out[key] = {"line": line, "template": template}
+        return out
 
     def _validate_native_families(self, cfg: dict) -> None:
         """`local_family` and `transports` must answer "which family is native

@@ -99,11 +99,15 @@ def test_the_floor_tables_did_not_move():
     # named in its own: reverting `xai_frontier` to grok-4.6, or pointing it
     # at grok-4.5, would have passed both guards. Naming each move closes
     # that — an id that moves anywhere this table does not say fails here.
+    #
+    # `lineage` is exempt as an ADDITION (design 2026-09-25 DD-A1): 1.12.1 had
+    # no such field, and the router routes on `id`, never on the template.
+    exempt = ("price_per_mtok", "id", "lineage")
     for key, historical in old["models"].items():
         assert {k: v for k, v in new["models"][key].items()
-                if k not in ("price_per_mtok", "id")} == {
+                if k not in exempt} == {
                     k: v for k, v in historical.items()
-                    if k not in ("price_per_mtok", "id")
+                    if k not in exempt
                 }, key
         move = ID_SUCCESSION.get(key)
         if move is None:

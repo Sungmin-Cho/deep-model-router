@@ -496,8 +496,17 @@ models:
   # role ordinals rank the assignment backwards. Peers share a tier: the two
   # frontier models are interchangeable in strength and differ only in what
   # they are good at, which `reasoning_centric` decides, not this number.
+  #
+  # `lineage` (every dispatchable row; design 2026-09-25 DD-A1) names the
+  # vendor's id spelling across generations: `line` is globally unique,
+  # `template` holds `{gen}` once and optionally a trailing `[-{date}]`, and
+  # the row's own `id` must match it. Policy refuses a row that breaks any of
+  # these, and two rows holding the same id. `catalog_name` (the Claude model
+  # catalog's short_name) and `served_forms` (the spellings a CLI may serve the
+  # id under) are read by model_sync, not by the router.
   claude_worker_fast:
     id: claude-haiku-4-5-20251001
+    lineage: { line: claude/haiku, template: "claude-haiku-{gen}[-{date}]", catalog_name: Haiku }
     family: claude
     capability_tier: 0
     verified: true
@@ -505,6 +514,7 @@ models:
 
   claude_worker_balanced:
     id: claude-sonnet-5
+    lineage: { line: claude/sonnet, template: "claude-sonnet-{gen}", catalog_name: Sonnet }
     family: claude
     capability_tier: 1
     verified: true
@@ -512,6 +522,7 @@ models:
 
   claude_senior:
     id: claude-opus-5
+    lineage: { line: claude/opus, template: "claude-opus-{gen}", catalog_name: Opus }
     family: claude
     capability_tier: 2
     verified: true
@@ -519,6 +530,7 @@ models:
 
   claude_architect:
     id: claude-fable-5-1
+    lineage: { line: claude/fable, template: "claude-fable-{gen}", catalog_name: Fable }
     family: claude
     capability_tier: 3
     verified: true
@@ -544,6 +556,7 @@ models:
 
   openai_worker_fast:
     id: gpt-5.6-luna
+    lineage: { line: openai/luna, template: "gpt-{gen}-luna" }
     family: openai
     capability_tier: 0
     verified: true
@@ -561,6 +574,7 @@ models:
 
   openai_worker_balanced:
     id: gpt-5.6-terra
+    lineage: { line: openai/terra, template: "gpt-{gen}-terra" }
     family: openai
     capability_tier: 1
     verified: true
@@ -578,6 +592,7 @@ models:
 
   openai_reasoning:
     id: gpt-5.6-sol
+    lineage: { line: openai/sol, template: "gpt-{gen}-sol" }
     family: openai
     capability_tier: 2
     verified: true
@@ -599,6 +614,7 @@ models:
   # seat; routine volume continues through Luna and the balanced workers.
   openai_frontier:
     id: gpt-6-astra
+    lineage: { line: openai/astra, template: "gpt-{gen}-astra" }
     family: openai
     capability_tier: 3
     verified: true
@@ -635,6 +651,7 @@ models:
   # stays 1 on inherited evidence rather than a fresh measurement.
   xai_frontier:
     id: grok-4.7
+    lineage: { line: xai/grok, template: "grok-{gen}", served_forms: ["{id}", "{id}-build"] }
     family: xai
     capability_tier: 1
     effort_ceiling: VERY_HIGH   # probed: the CLI rejects `max`
