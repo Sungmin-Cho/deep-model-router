@@ -2083,7 +2083,13 @@ def _history_row(key: str, mid: str, rec: Mapping, price_lines: list[str] | None
 
 def _ledger_row(item: str, fields: list[tuple[str, Any]], evidence: str) -> list[str]:
     out = ["", f"    - item: {_q(item)}"]
-    out += [f"      {k}: {v if k == 'status' else _q(v)}" for k, v in fields if v is not None]
+    for k, v in fields:
+        if v is None:
+            continue
+        if isinstance(v, list):
+            out += [f"      {k}:", *(f"        - {_q(x)}" for x in v)]
+        else:
+            out.append(f"      {k}: {v if k == 'status' else _q(v)}")
     return out + ["      evidence: >", *_folded(evidence, 8)]
 
 
@@ -2093,8 +2099,31 @@ def _child_argv_text(argv: list[str] | None) -> str | None:
     return shlex.join(argv[argv.index("--") + 1:] if "--" in argv else argv)
 
 
+def _superseded_items(key: str, ids: list[str], ledger: list) -> list[str]:
+    """The existing ledger rows the quality disclosure points back at: every
+    row whose item names a superseded id as a whole token, and an earlier
+    disclosure for this key (a second bump chains to the first). The docs
+    guard requires a non-empty list of items that exist; an empty one means
+    there is nothing on record to call inherited, which promote does not
+    invent."""
+    def names(mid: str, text: str) -> bool:
+        return re.search(r"(^|[^A-Za-z0-9._-])" + re.escape(mid)
+                         + r"([^A-Za-z0-9._-]|$)", text) is not None
+    out = []
+    for row in ledger:
+        item = str(row.get("item", ""))
+        if any(names(mid, item) for mid in ids) or (
+                row.get("status") == "quality_inherited_not_remeasured" and key in item):
+            if item not in out:
+                out.append(item)
+    if not out:
+        raise SyncError(f"{key}: no ledger row names {ids}; the quality disclosure would "
+                        f"point at nothing — record the superseded evidence first")
+    return out
+
+
 def _ledger_rows(key: str, e: Mapping, summary: Mapping, price: Mapping,
-                 maker: Mapping | None, base_row: Mapping) -> list[str]:
+                 maker: Mapping | None, base_row: Mapping, ledger: list) -> list[str]:
     new, old = e["id"], e["from_id"]
     probes = list(summary.get("probes") or [])
     p1 = next((p for p in probes if p.get("gate") == "P1"), {})
@@ -2129,7 +2158,8 @@ def _ledger_rows(key: str, e: Mapping, summary: Mapping, price: Mapping,
         f"{rates}. A reference record, not the marginal cost of a subscription "
         f"dispatch. The context window was not re-recorded by promote.")
     rows += _ledger_row(f"{key} quality evidence after the {new} id bump", [
-        ("status", "quality_inherited_not_remeasured"), ("supersedes", old)],
+        ("status", "quality_inherited_not_remeasured"),
+        ("supersedes", _superseded_items(key, [old, *e.get("superseded", [])], ledger))],
         f"capability_tier {base_row['capability_tier']} is inherited from the {key} "
         f"lineage; no quality measurement of {new} has been run. Earlier quality "
         f"rows about {old} describe that id, not this one.")
@@ -2267,7 +2297,8 @@ def promote(*, repo: Path, key: str, price: str | None, state_path: Path) -> dic
     new_lines = lines[:head] + new_block + added + lines[end:]
     maker = _maker_summary(Path(state_path), key, e["id"])
     at = _ledger_end(new_lines)
-    new_lines[at:at] = _ledger_rows(key, e, summary or {}, price_rec, maker, row)
+    new_lines[at:at] = _ledger_rows(key, e, summary or {}, price_rec, maker, row,
+                                 (base.get("verification_ledger") or {}).get("entries") or [])
     new_text = "\n".join(new_lines)
 
     new_cfg = yaml.safe_load(new_text)

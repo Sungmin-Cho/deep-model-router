@@ -81,7 +81,12 @@ def test_every_history_key_names_a_distinct_id_and_is_verified():
 
 def test_the_fixture_names_exactly_the_history_rows():
     assert sorted(PRIOR_FAILURE_EXIT) == HISTORY_KEYS
-    assert sorted(SUCCESSION["key_renames"].values()) == HISTORY_KEYS
+    # Every history row is a superseded link of a succession chain. A rename
+    # names only the pre-DD-A3 `_retired` keys; a row that `promote` added
+    # never had one, so the renames cover a subset of the rows, not all.
+    assert sorted(f"{key}@{was}" for key, chain in SUCCESSION["chains"].items()
+                  for was in chain[:-1]) == HISTORY_KEYS
+    assert set(SUCCESSION["key_renames"].values()) <= set(HISTORY_KEYS)
 
 
 @pytest.mark.parametrize("key", HISTORY_KEYS)

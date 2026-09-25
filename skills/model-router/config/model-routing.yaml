@@ -524,10 +524,27 @@ models:
     price_per_mtok: { input: 2.00, output: 10.00, cached_input: 0.20 }
 
   claude_senior:
-    id: claude-opus-5
+    id: claude-opus-5-5
     lineage: { line: claude/opus, template: "claude-opus-{gen}", catalog_name: Opus }
     family: claude
     capability_tier: 2
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-09-25"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      input: 4.0
+      output: 20.0
+      cached_input: 0.2
+      cache_write: 5.0
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "claude_senior@claude-opus-5":
+    id: claude-opus-5
+    history_of: claude_senior
+    family: claude
+    capability_tier: 2
+    dispatchable: false
     verified: true
     price_per_mtok: { input: 5.00, output: 25.00, cached_input: 0.50 }
 
@@ -1842,3 +1859,58 @@ verification_ledger:
         identity of a claude_architect seat is declared_only, and the
         substitute (Opus 4.8) may not be in this registry.
         `served_model_caveats` on claude_architect discloses this per route.
+
+    - item: "claude-opus-5-5 model id"
+      status: verified
+      probed_on: "2026-09-25"
+      attempt_id: "p20260925T191511-1189f59c-1"
+      cli_version: "2.1.282"
+      argv: "claude -p --model claude-opus-5-5 --effort low --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config --output-format json"
+      evidence: >
+        model_sync contained read-only probe of claude_senior (claude-opus-5
+        -> claude-opus-5-5): P1 smoke answered pong with termination
+        confirmed; P2 served_models ['claude-opus-5-5'] are served forms of
+        the id; P3 boot input 35724 vs 36724 for the current id (paired).
+        Quality is not measured by this row.
+
+    - item: "claude-opus-5-5 reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-25"
+      evidence: >
+        Live-probed tokens for claude-opus-5-5: low, max (accepted). Other
+        levels were not live-probed for this id; the ceiling is unchanged
+        from claude-opus-5 (none).
+
+    - item: "claude-opus-5-5 pricing and context window"
+      status: documented
+      probed_on: "2026-09-25"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-09-25:
+        input 4.0, output 20.0, cached_input 0.2, cache_write 5.0. A
+        reference record, not the marginal cost of a subscription dispatch.
+        The context window was not re-recorded by promote.
+
+    - item: "claude_senior quality evidence after the claude-opus-5-5 id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
+      evidence: >
+        capability_tier 2 is inherited from the claude_senior lineage; no
+        quality measurement of claude-opus-5-5 has been run. Earlier quality
+        rows about claude-opus-5 describe that id, not this one.
+
+    - item: "claude-opus-5-5 maker seat"
+      status: verified
+      probed_on: "2026-09-25"
+      attempt_id: "m20260925T192607-2e405ac7-1"
+      cli_version: "2.1.282"
+      argv: "claude -p --model claude-opus-5-5 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
+      evidence: >
+        Attended model_sync probe-maker through grok.to_claude (mechanism):
+        the maker recipe with -m claude-opus-5-5, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        ea85c5c6baac918362017d1c2dbc017428638b60a7752f99006d307b7af1c068
+        equals the expected token's. Receipt sha256
+        d80d69bf330ea74ddb6933431c72950bc39bbf1fad05fee543c8ad875caa3455.

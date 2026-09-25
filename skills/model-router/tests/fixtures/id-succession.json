@@ -1,7 +1,8 @@
 {
   "chains": {
     "claude_architect": ["claude-fable-5", "claude-fable-5-1"],
-    "xai_frontier": ["grok-4.6", "grok-4.7"]
+    "xai_frontier": ["grok-4.6", "grok-4.7"],
+    "claude_senior": ["claude-opus-5", "claude-opus-5-5"]
   },
   "key_renames": {
     "claude_architect_retired": "claude_architect@claude-fable-5",
@@ -9,6 +10,7 @@
   },
   "prior_failure_exit": {
     "claude_architect@claude-fable-5": 1,
-    "xai_frontier@grok-4.6": 0
+    "xai_frontier@grok-4.6": 0,
+    "claude_senior@claude-opus-5": 0
   }
 }

@@ -1419,13 +1419,22 @@ def test_run_enforces_the_inference_budget_before_each_candidate(tmp_path):
     rollout(home, 10.0, NOW - _dt.timedelta(hours=1), NOW + _dt.timedelta(days=1))
     root = new_root(tmp_path)
     probe = recorder()
+    # Candidates against the LIVE registry: a key already promoted to its
+    # captured successor has nothing left to find. The budget is set one short
+    # of probing them all, so the pre-candidate check has to cut one — however
+    # many candidates remain after a promotion.
+    live = sorted(k for k, v in EXPECTED["candidates"].items()
+                  if BASE["models"][k]["id"] == EXPECTED["from_ids"][k])
+    assert len(live) >= 2, live
+    budget = min(model_sync.INFERENCE_BUDGET,
+                 sum(model_sync.MAX_INFERENCES[BASE["models"][k]["family"]] for k in live) - 1)
     rep = model_sync.run(env=sync_env(tmp_path, root, home, bindir), home=home, now=NOW,
-                         probe=probe)
+                         probe=probe, budget=budget)
     fams = [BASE["models"][k]["family"] for k in probe.calls]
-    assert sum(model_sync.MAX_INFERENCES[f] for f in fams) <= model_sync.INFERENCE_BUDGET
-    assert sorted(probe.calls + rep["over_budget"]) == sorted(EXPECTED["candidates"])
+    assert sum(model_sync.MAX_INFERENCES[f] for f in fams) <= budget
+    assert sorted(probe.calls + rep["over_budget"]) == live
     assert rep["over_budget"], rep
-    assert rep["inferences"] <= model_sync.INFERENCE_BUDGET
+    assert rep["inferences"] <= budget
 
 
 def test_run_defers_openai_on_quota_and_retries_after_the_reset(tmp_path):
@@ -1866,6 +1875,11 @@ def _block(lines, key):
 import re  # noqa: E402
 
 
+def _whole(needle, text):
+    return re.search(r"(^|[^A-Za-z0-9._-])" + re.escape(needle) + r"([^A-Za-z0-9._-]|$)",
+                     text) is not None
+
+
 @pytest.mark.parametrize("key", ["claude_senior", "openai_reasoning"])
 def test_promote_rewrites_the_row_and_appends_history_ledger_and_chain(tmp_path, key):
     repo = repo_copy(tmp_path)
@@ -1895,8 +1909,13 @@ def test_promote_rewrites_the_row_and_appends_history_ledger_and_chain(tmp_path,
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if tag in ("replace", "delete"):
             assert head <= i1 and i2 <= end, (tag, a[i1:i2])
-    assert [l for l in a if l.lstrip().startswith("#")] == \
-        [l for l in b if l.lstrip().startswith("#") and l in a]
+    # No comment is lost. Counted, not filtered by membership: once the repo
+    # holds a promoted history row, the appended row's comment lines already
+    # occur in `a`, so a membership filter would count them twice.
+    from collections import Counter
+    ca = Counter(l for l in a if l.lstrip().startswith("#"))
+    cb = Counter(l for l in b if l.lstrip().startswith("#"))
+    assert not (ca - cb), ca - cb
     # Ledger rows.
     items = {e["item"]: e for e in cfg["verification_ledger"]["entries"]}
     assert items[f"{new} model id"]["status"] == "verified"
@@ -1908,7 +1927,11 @@ def test_promote_rewrites_the_row_and_appends_history_ledger_and_chain(tmp_path,
     assert price_row["source"] == "https://example.invalid/pricing"
     quality = items[f"{key} quality evidence after the {new} id bump"]
     assert quality["status"] == "quality_inherited_not_remeasured"
-    assert quality["supersedes"] == old
+    # A list of rows that exist and name the superseded id — the shape the
+    # docs guard (test_docs) follows, not a bare id it would iterate by char.
+    sup = quality["supersedes"]
+    assert isinstance(sup, list) and sup
+    assert all(item in items and _whole(old, item) for item in sup), sup
     assert items[f"{new} maker seat"]["status"] == "maker_not_reprobed"
     if BASE["models"][key]["family"] == "openai":
         assert "id accepted" in items[f"{new} model id"]["evidence"]
