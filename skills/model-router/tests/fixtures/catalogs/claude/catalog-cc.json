@@ -1,0 +1,252 @@
+{
+ "version": 2,
+ "fetchedAt": 1790332162052,
+ "staleAt": 1790335711612,
+ "catalog": {
+  "surface": "cc",
+  "config": {
+   "id": "cc",
+   "models": [
+    {
+     "id": "claude-opus-5-5",
+     "name": "Opus 5.5",
+     "short_name": "Opus",
+     "section": "main",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     },
+     "min_claude_code_version": "2.1.280"
+    },
+    {
+     "id": "claude-fable-5-1",
+     "name": "Fable 5.1",
+     "short_name": "Fable",
+     "section": "main",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     },
+     "min_claude_code_version": "2.1.251"
+    },
+    {
+     "id": "claude-sonnet-5",
+     "name": "Sonnet 5",
+     "short_name": "Sonnet",
+     "section": "main",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claude-haiku-4-5-20251001",
+     "name": "Haiku 4.5",
+     "short_name": "Haiku",
+     "section": "main",
+     "thinking": {
+      "type": "none"
+     }
+    },
+    {
+     "id": "claude-opus-5",
+     "name": "Opus 5",
+     "short_name": "Opus",
+     "section": "overflow",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claude-fable-5",
+     "name": "Fable 5",
+     "short_name": "Fable",
+     "section": "overflow",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claude-opus-4-8",
+     "name": "Opus 4.8",
+     "short_name": "Opus",
+     "section": "overflow",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claude-opus-4-7",
+     "name": "Opus 4.7",
+     "short_name": "Opus",
+     "section": "overflow",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "xhigh"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claude-opus-4-6",
+     "name": "Opus 4.6",
+     "short_name": "Opus",
+     "section": "overflow",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claude-sonnet-4-6",
+     "name": "Sonnet 4.6",
+     "short_name": "Sonnet",
+     "section": "overflow",
+     "thinking": {
+      "type": "effort",
+      "effort_options": [
+       {
+        "id": "low"
+       },
+       {
+        "id": "medium"
+       },
+       {
+        "id": "high"
+       },
+       {
+        "id": "max"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

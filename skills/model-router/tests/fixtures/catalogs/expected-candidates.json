@@ -1,0 +1,21 @@
+{
+  "_comment": "What the 2026-09-25 captures in this directory imply (design 2026-09-25 §1.1). from_ids are the registry ids the captures were taken against (1.15.0); candidates are the successors the adapters must find from them. Literal ids live here, not in test code, so the registry guard in test_docs.py keeps holding after the ids are promoted.",
+  "from_ids": {
+    "claude_worker_fast": "claude-haiku-4-5-20251001",
+    "claude_worker_balanced": "claude-sonnet-5",
+    "claude_senior": "claude-opus-5",
+    "claude_architect": "claude-fable-5-1",
+    "openai_worker_fast": "gpt-5.6-luna",
+    "openai_worker_balanced": "gpt-5.6-terra",
+    "openai_reasoning": "gpt-5.6-sol",
+    "openai_frontier": "gpt-6-astra",
+    "xai_frontier": "grok-4.7"
+  },
+  "candidates": {
+    "claude_senior": "claude-opus-5-5",
+    "openai_reasoning": "gpt-6-sol",
+    "openai_worker_fast": "gpt-6-luna"
+  },
+  "xai_older_from_id": "grok-4.6",
+  "xai_excluded_variant": "grok-4.7-build-fast"
+}
