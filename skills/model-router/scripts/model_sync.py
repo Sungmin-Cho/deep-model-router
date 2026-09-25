@@ -20,6 +20,14 @@ This file so far holds:
   `dispatch_agent.py run` subprocess, one id per process; the result is a
   content-addressed summary under `work/probes/summaries/` (publication
   copies it into `committed/summaries/`).
+* publication and the CLI (DD-A2, DD-A6) — `publish_results`,
+  `publish_generation` (summaries -> generation -> fsync -> in-lock recheck
+  -> pointer renameat; an atomic `committed.tmp-*` bootstrap first), `tick`,
+  `run` (12-inference budget, codex quota gate), `revert`, `unblock`,
+  `repair`, `disable`/`enable`, `status`, `read_quota`, and `main`
+  (`tick|run|status|revert|unblock|repair|disable|enable|quota|probe-maker`).
+  The attended maker probe lives in `probe_maker.py`, imported only by the
+  `probe-maker` command: the automatic path never builds a write recipe.
 
 Every catalog is an INTERNAL, undocumented vendor format. A catalog that
 cannot be read, or any entry missing a key a filter depends on
@@ -719,9 +727,11 @@ RECEIPTS_RELPATH = "work/probes/receipts"
 class _Run:
     """One candidate's probe run: its scratch, receipts and call log."""
 
-    def __init__(self, *, family, lin, state_root, scratch, env, deadline, run_id):
+    def __init__(self, *, family, lin, state_root, scratch, env, deadline, run_id,
+                 on_attempt=None):
         self.family, self.lin, self.env, self.deadline = family, lin, env, deadline
         self.run_id = run_id
+        self.on_attempt = on_attempt
         with StateRoot.open(Path(state_root)) as root:
             root.mkdir(f"{RECEIPTS_RELPATH}/{run_id}")
         self.receipt_dir = Path(state_root) / RECEIPTS_RELPATH / run_id
@@ -741,6 +751,10 @@ class _Run:
                           receipt_dir=self.receipt_dir, child_cwd=self.child_cwd,
                           prompt_file=self.prompt, deadline_seconds=self.deadline,
                           codex_mode=codex_mode)
+        if self.on_attempt is not None:
+            # Recorded BEFORE spawn so `disable` can cancel it by attempt id;
+            # the callback raises to stop the run instead.
+            self.on_attempt(attempt, self.receipt_dir)
         try:
             subprocess.run(argv, env=dict(self.env), stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -801,7 +815,8 @@ def probe_candidate(*, key: str, candidate: Mapping, base: dict, state_root: Pat
                     superseded: list[str], scratch: Path, ctx: ProbeContext,
                     cli_metadata_ids: list[str] | None | object = ...,
                     prior_baseline: Mapping | None = None,
-                    cap: int = P3_ABSOLUTE_CAP, deadline_seconds: float = 300) -> dict:
+                    cap: int = P3_ABSOLUTE_CAP, deadline_seconds: float = 300,
+                    on_attempt=None) -> dict:
     """Probe one candidate for one registry key: P0 -> P1/P2 -> P3 pair -> P4.
 
     Every inference is its own `dispatch_agent.py run` subprocess over the
@@ -831,7 +846,7 @@ def probe_candidate(*, key: str, candidate: Mapping, base: dict, state_root: Pat
     final = p0
     if p0["outcome"] == "pass":
         run = _Run(family=family, lin=lin, state_root=state_root, scratch=scratch,
-                   env=env, deadline=deadline_seconds,
+                   env=env, deadline=deadline_seconds, on_attempt=on_attempt,
                    run_id=f"p{ctx.now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}")
         low = native_token(base, row, "LOW")
         p1_receipt, p1_text, _ = run.call("P1", cand_id, low)
@@ -951,3 +966,973 @@ def build_summary(*, key: str, base: dict, candidate: Mapping, superseded: list[
         "router_version": router_version,
         "date": ctx.now.date().isoformat(),
     }
+
+
+# ==========================================================================
+# Publication, tick, disable/enable, revert/unblock, repair, status, quota
+# (DD-A2, DD-A6). Probes run outside every lock; only reflecting their
+# result into committed/ and work/state.json happens under
+# `work/publish.lock`, and the one linearisation point of a publication is
+# the renameat of `committed/current.json` (of `committed/` itself on the
+# first, bootstrap, publication).
+# ==========================================================================
+
+import argparse  # noqa: E402
+import copy  # noqa: E402
+import secrets  # noqa: E402
+
+from secure_io import StateError  # noqa: E402
+
+WORK_STATE = "work/state.json"
+RUN_LOCK = "work/run.lock"
+MAKERS_PREFIX = "work/probes/makers"
+INFERENCE_BUDGET = 12
+# Upper bound per candidate, checked BEFORE it is probed: P1 + the P3 pair
+# (codex measures both ids in --json mode; claude/grok reuse the P1 call as
+# the candidate half) + P4 top token and one step down.
+MAX_INFERENCES = {"openai": 5, "claude": 4, "xai": 4}
+LINEAGE_INTERVAL = dt.timedelta(hours=24)
+QUOTA_DEFER_PERCENT = 90
+QUOTA_STALE_AFTER = dt.timedelta(hours=6)
+# DD-A6: an UNKNOWN quota (no fresh record) defers for 6 h; a known one
+# until its reset. (retry_after_for's 24 h is a probe-reported quota without a
+# reset time, DD-A5.)
+QUOTA_UNKNOWN_DEFER = dt.timedelta(hours=6)
+QUOTA_TAIL_BYTES = 4 * 1024 * 1024
+QUOTA_MAX_FILES = 50
+RECENT_KEEP = 20
+CANCEL_GRACE_SECONDS = "5"
+ENTRY_FIELDS = ("line", "from_id", "id", "superseded", "effort_map", "effort_ceiling")
+
+
+class SyncError(Exception):
+    """A refusal the operator must act on (CLI exit 1, reason on stderr)."""
+
+
+class Disabled(Exception):
+    """Auto-upgrade was turned off while a run was probing."""
+
+
+def _fault(stage: str) -> None:
+    """Crash-injection seam between publication steps (tests only)."""
+
+
+def _utcnow(now: dt.datetime | None = None) -> dt.datetime:
+    return now if now is not None else dt.datetime.now(dt.timezone.utc)
+
+
+def _parse_time(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def autoupgrade_env_off(env: Mapping[str, str]) -> bool:
+    return env.get("DEEP_MODEL_ROUTER_AUTOUPGRADE") == "0"
+
+
+def _home(env: Mapping[str, str], home: Path | None) -> Path:
+    return Path(home) if home is not None else Path(env.get("HOME") or Path.home())
+
+
+# --- work/state.json (model_sync's own; the router never reads it) ---------
+
+def default_work_state() -> dict:
+    return {"schema": 1, "auto_upgrade": "enabled", "tick_hash": None, "negatives": {},
+            "last_probe": {}, "in_flight": [], "recent": [], "makers": {}}
+
+
+def read_work_state(root: StateRoot) -> dict:
+    try:
+        value = root.read_json(WORK_STATE)
+    except FileNotFoundError:
+        return default_work_state()
+    if not isinstance(value, dict) or value.get("schema") != 1:
+        raise StateError("work/state.json has an unknown shape")
+    st = default_work_state()
+    st.update(value)
+    return st
+
+
+def update_work_state(state_path: Path, fn, *, tolerate_unreadable: bool = False):
+    """Read-modify-write under the publication lock. `fn(state)` mutates in
+    place and may raise to abort without writing."""
+    with StateRoot.open(Path(state_path), create=True) as root, root.lock():
+        try:
+            st = read_work_state(root)
+        except StateError:
+            if not tolerate_unreadable:
+                raise
+            st = default_work_state()
+        out = fn(st)
+        root.write_json_atomic(WORK_STATE, st)
+        return out
+
+
+def _peek_work_state(state_path: Path) -> dict:
+    try:
+        with StateRoot.open(Path(state_path)) as root:
+            return read_work_state(root)
+    except FileNotFoundError:
+        return default_work_state()
+
+
+def auto_upgrade_recheck(env: Mapping[str, str]):
+    """The in-lock recheck right before the pointer swap (DD-A6)."""
+    def recheck(root: StateRoot) -> bool:
+        if autoupgrade_env_off(env):
+            return False
+        try:
+            return read_work_state(root)["auto_upgrade"] != "disabled"
+        except (OSError, ValueError):
+            return False
+    return recheck
+
+
+# --- the committed view ----------------------------------------------------
+
+@dataclass
+class CommittedView:
+    shape: str
+    generation: dict | None = None
+    generation_sha256: str | None = None
+    config: dict | None = None
+    provenance: Any = None
+
+
+def committed_view(state_path: Path, base: dict, *, base_sha: str | None = None) -> CommittedView:
+    """The committed generation merged onto `base` with its entries ON
+    (whether the router applies them is DEEP_MODEL_ROUTER_OVERLAY's
+    business). Unreadable committed state is a refusal, never "absent"."""
+    with model_state.read_state(Path(state_path)) as st:
+        if st.shape == "unreadable":
+            raise SyncError(f"committed state is unreadable ({st.detail}); "
+                            f"see `model_sync.py repair`")
+        if st.shape == "absent":
+            return CommittedView("absent", config=base)
+        cfg, prov = model_state.effective_config(
+            base, st.generation, apply_entries=True, summary=st.summary,
+            generation_sha256=st.generation_sha256, base_sha=base_sha)
+        return CommittedView("ok", st.generation, st.generation_sha256, cfg, prov)
+
+
+def superseded_for(generation: dict | None, key: str, base: dict) -> list[str]:
+    """The ids a new entry for `key` supersedes, from the CURRENT generation:
+    the live overlay entry's chain plus its id (6 -> 7 gives [6])."""
+    e = ((generation or {}).get("entries") or {}).get(key)
+    if not e or e["from_id"] != base["models"][key]["id"] or e["id"] == e["from_id"]:
+        return []
+    return [*e["superseded"], e["id"]]
+
+
+def _base_history_record(base: dict, key: str, base_sha: str) -> dict:
+    row = base["models"][key]
+    return {"key": key, "family": row["family"], "capability_tier": row["capability_tier"],
+            "effort_ceiling": row.get("effort_ceiling"),
+            "effort_map": dict(row.get("effort_map") or {}),
+            "source": "base", "base_policy_sha256": base_sha}
+
+
+def _probe_history_record(base: dict, key: str, e: Mapping) -> dict:
+    """The id as it was live: the base row's family and tier, the ENTRY's
+    effort fields (a history row never inherits a successor's ceiling)."""
+    row = base["models"][key]
+    return {"key": key, "family": row["family"], "capability_tier": row["capability_tier"],
+            "effort_ceiling": e["effort_ceiling"], "effort_map": dict(e["effort_map"]),
+            "source": "probe", "probe_summary_sha256": e["probe_summary_sha256"]}
+
+
+def _next_generation(cur: dict | None, cur_sha: str | None, base_sha: str) -> dict:
+    cur = cur or {}
+    return {"overlay_schema_version": model_state.OVERLAY_SCHEMA_VERSION,
+            "entries": copy.deepcopy(cur.get("entries") or {}),
+            "history": copy.deepcopy(cur.get("history") or {}),
+            "blocked_ids": list(cur.get("blocked_ids") or []),
+            "parent_generation_sha256": cur_sha if cur else None,
+            "base_policy_sha256": base_sha}
+
+
+# --- publication -------------------------------------------------------------
+
+def publish_generation(state_path: Path, build, *, recheck=None) -> str | None:
+    """Publish what `build(current StateRead)` returns — `(generation,
+    {summary_sha: summary})` or None for nothing to do — under the lock:
+    summaries -> generation -> fsync -> recheck -> pointer renameat -> fsync.
+    A crash anywhere before the pointer moves leaves the old generation
+    current and the new file unreachable (no pointer names it)."""
+    state_path = Path(state_path)
+    with StateRoot.open(state_path, create=True) as root, root.lock():
+        with model_state.read_state(state_path) as st:
+            if st.shape == "unreadable":
+                raise SyncError(f"committed state is unreadable ({st.detail}); "
+                                f"see `model_sync.py repair`")
+            built = build(st)
+        if built is None:
+            return None
+        gen, installs = built
+        model_state.validate_generation(gen)
+        if not root.lexists(model_state.COMMITTED):
+            return _bootstrap(root, state_path, gen, installs, recheck)
+        for s in installs.values():
+            model_state.write_summary(root, s)
+        _fault("after_summaries")
+        sha = model_state.write_generation(root, gen)
+        root.fsync_dir(f"{model_state.COMMITTED}/generations")
+        _fault("after_generation")
+        if recheck is not None and not recheck(root):
+            return None
+        _fault("before_pointer")
+        model_state.write_pointer(root, sha)
+        root.fsync_dir(model_state.COMMITTED)
+        _fault("after_pointer")
+        return sha
+
+
+def _bootstrap(root: StateRoot, state_path: Path, gen: dict, installs: dict,
+               recheck) -> str | None:
+    """First publication: everything under `committed.tmp-<rand>/`, then ONE
+    renameat to `committed/`. Interrupted, only the tmp directory remains —
+    which the router reads as `absent`."""
+    tmp = f"committed.tmp-{secrets.token_hex(8)}"
+    root.mkdir(tmp)
+    for s in installs.values():
+        model_state.write_summary(root, s, prefix=tmp)
+    sha = model_state.write_generation(root, gen, prefix=tmp)
+    model_state.write_pointer(root, sha, prefix=tmp)
+    root.fsync_dir(tmp)
+    _fault("before_bootstrap_rename")
+    if recheck is not None and not recheck(root):
+        shutil.rmtree(Path(state_path) / tmp, ignore_errors=True)
+        return None
+    root.rename(tmp, model_state.COMMITTED)
+    root.fsync_dir()
+    return sha
+
+
+def _apply_results(cur: dict | None, cur_sha: str | None, base: dict, base_sha: str,
+                   results: list) -> tuple[dict, dict]:
+    gen = _next_generation(cur, cur_sha, base_sha)
+    installs: dict[str, dict] = {}
+    for key, summary, sha in results:
+        e = {k: copy.deepcopy(summary[k]) for k in ENTRY_FIELDS}
+        e["probe_summary_sha256"] = sha
+        prev = gen["entries"].get(key)
+        if prev == e:
+            continue
+        if prev and prev["from_id"] == e["from_id"] \
+                and prev["id"] not in (e["id"], base["models"][key]["id"]):
+            gen["history"][prev["id"]] = _probe_history_record(base, key, prev)
+        if e["from_id"] != e["id"]:
+            gen["history"][e["from_id"]] = _base_history_record(base, key, base_sha)
+        gen["history"].pop(e["id"], None)
+        gen["entries"][key] = e
+        installs[sha] = summary
+    return gen, installs
+
+
+def publish_results(state_path: Path, base: dict, results: list, *, recheck=None) -> str | None:
+    """Publish passing probe results `[(key, summary, summary_sha256)]`.
+
+    Re-derived under the lock from whatever is current THEN: a result whose
+    `superseded` no longer matches the current chain was measured against
+    another generation and is dropped; an entry that would not apply
+    against today's base (rule 1-5, e.g. a second spelling of a generation
+    already in history) is dropped; nothing left is a no-op (None). So of
+    two writers publishing the same result, the second does nothing.
+    """
+    base_sha = canonical_policy_sha256(base)
+
+    def build(st):
+        cur = st.generation if st.shape == "ok" else None
+        cur_sha = st.generation_sha256 if cur else None
+        todo = [r for r in results if r[1].get("superseded") == superseded_for(cur, r[0], base)]
+        while todo:
+            gen, installs = _apply_results(cur, cur_sha, base, base_sha, todo)
+            if not installs:
+                return None
+            _, prov = model_state.effective_config(
+                base, gen, apply_entries=True, base_sha=base_sha,
+                summary=lambda s: installs.get(s) or st.summary(s))
+            new_keys = {k for k, _, sha in todo if sha in installs}
+            bad = new_keys - set(prov.applied)
+            if not bad:
+                return gen, installs
+            todo = [r for r in todo if r[0] not in bad]
+        return None
+    return publish_generation(state_path, build, recheck=recheck)
+
+
+def revert(state_path: Path, key: str, *, base: dict | None = None) -> dict:
+    """Drop `key`'s entry and revoke its id in one new generation; the id's
+    history record (and its summary) stays, so it remains valid input."""
+    from route_task import load_config
+    base = base if base is not None else load_config()
+    base_sha = canonical_policy_sha256(base)
+    out: dict = {}
+
+    def build(st):
+        if st.shape != "ok" or key not in st.generation["entries"]:
+            raise SyncError(f"no overlay entry for {key!r} in the committed generation")
+        gen = _next_generation(st.generation, st.generation_sha256, base_sha)
+        e = gen["entries"].pop(key)
+        if e["id"] not in gen["blocked_ids"]:
+            gen["blocked_ids"] = sorted([*gen["blocked_ids"], e["id"]])
+        if e["id"] != base["models"][key]["id"]:
+            gen["history"][e["id"]] = _probe_history_record(base, key, e)
+        out.update(key=key, blocked_id=e["id"])
+        return gen, {}
+    sha = publish_generation(state_path, build)
+    return {"status": "reverted", "generation_sha256": sha, **out}
+
+
+def unblock(state_path: Path, model_id: str, *, base: dict | None = None) -> dict:
+    """Lift a revocation. A reverted overlay id whose probe still applies is
+    re-seated as its entry (and leaves history — an entry id may not also be
+    a history id); a base id simply sits again."""
+    from route_task import load_config
+    base = base if base is not None else load_config()
+    base_sha = canonical_policy_sha256(base)
+    out: dict = {"readded": None}
+
+    def build(st):
+        if st.shape != "ok" or model_id not in st.generation["blocked_ids"]:
+            raise SyncError(f"{model_id!r} is not revoked in the committed generation")
+        gen = _next_generation(st.generation, st.generation_sha256, base_sha)
+        gen["blocked_ids"] = [b for b in gen["blocked_ids"] if b != model_id]
+        rec = gen["history"].get(model_id)
+        if rec and rec["source"] == "probe" and rec["key"] not in gen["entries"] \
+                and rec["key"] in base["models"] \
+                and base["models"][rec["key"]]["id"] != model_id:
+            s = st.summary(rec["probe_summary_sha256"])
+            if s and s.get("id") == model_id and s.get("key") == rec["key"] \
+                    and all(k in s for k in ENTRY_FIELDS):
+                trial = copy.deepcopy(gen)
+                e = {k: copy.deepcopy(s[k]) for k in ENTRY_FIELDS}
+                e["probe_summary_sha256"] = rec["probe_summary_sha256"]
+                trial["entries"][rec["key"]] = e
+                trial["history"].pop(model_id)
+                _, prov = model_state.effective_config(base, trial, apply_entries=True,
+                                                       summary=st.summary, base_sha=base_sha)
+                if rec["key"] in prov.applied:
+                    gen = trial
+                    out["readded"] = rec["key"]
+        return gen, {}
+    sha = publish_generation(state_path, build)
+    return {"status": "unblocked", "model_id": model_id, "generation_sha256": sha, **out}
+
+
+def _admitted_generations(state_path: Path) -> list[dict]:
+    found = []
+    try:
+        with StateRoot.open(Path(state_path)) as root:
+            names = root.listdir(f"{model_state.COMMITTED}/generations")
+            for name in names:
+                sha = name[:-5] if name.endswith(".json") else ""
+                if not model_state.is_hex64(sha):
+                    continue
+                try:
+                    gen = model_state.load_generation(root, sha)
+                except (OSError, ValueError):
+                    continue
+                found.append({"generation_sha256": sha,
+                              "parent_generation_sha256": gen["parent_generation_sha256"],
+                              "entries": sorted(gen["entries"]),
+                              "blocked_ids": list(gen["blocked_ids"])})
+    except (OSError, ValueError):
+        pass
+    return found
+
+
+def repair(state_path: Path, *, to: str | None = None) -> dict:
+    """A sound pointer is left alone. A damaged one is NEVER repaired by
+    choice of this tool — an older generation would silently drop later
+    replacements and revocations — only by `--to <generation_sha256>`,
+    which restores that generation's revocations and names the ones that
+    disappear."""
+    state_path = Path(state_path)
+    if to is None:
+        with model_state.read_state(state_path) as st:
+            if st.shape != "unreadable":
+                return {"status": st.shape, "generation_sha256": st.generation_sha256}
+            detail = st.detail
+        listing = "\n".join(
+            f"  {g['generation_sha256']}  parent={g['parent_generation_sha256']}  "
+            f"entries={','.join(g['entries']) or '-'}  blocked={','.join(g['blocked_ids']) or '-'}"
+            for g in _admitted_generations(state_path)) or "  (none admitted)"
+        raise SyncError(
+            f"the committed pointer is damaged ({detail}). Nothing was chosen "
+            f"automatically. Pick a generation with `model_sync.py repair --to "
+            f"<generation_sha256>`; admitted generations:\n{listing}")
+    if not model_state.is_hex64(to):
+        raise SyncError("--to must be a lowercase 64-hex generation sha256")
+    with StateRoot.open(state_path) as root, root.lock():
+        if not root.lexists(model_state.COMMITTED):
+            raise SyncError("there is no committed state to repair")
+        try:
+            target = model_state.load_generation(root, to)
+        except (OSError, ValueError) as exc:
+            raise SyncError(f"generation {to} is not admitted: {exc}") from None
+        with model_state.read_state(state_path) as st:
+            current = set(st.generation["blocked_ids"]) if st.shape == "ok" else None
+        if current is None:
+            current = {b for g in _admitted_generations(state_path) for b in g["blocked_ids"]}
+        disappearing = sorted(current - set(target["blocked_ids"]))
+        model_state.write_pointer(root, to)
+        root.fsync_dir(model_state.COMMITTED)
+    return {"status": "repaired", "generation_sha256": to,
+            "blocked_ids": list(target["blocked_ids"]),
+            "disappearing_revocations": disappearing}
+
+
+def disable(state_path: Path) -> dict:
+    """Persistently off, then cancel every recorded in-flight probe attempt
+    through `dispatch_agent.py cancel` — which confirms the process identity
+    itself. No pid is ever signalled from here (pids are reused)."""
+    def off(st):
+        st["auto_upgrade"] = "disabled"
+        return list(st["in_flight"])
+    attempts = update_work_state(state_path, off, tolerate_unreadable=True)
+    cancelled = []
+    for a in attempts:
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(DISPATCH), "cancel", "--attempt-id", a["attempt_id"],
+                 "--receipt-dir", a["receipt_dir"], "--grace-seconds", CANCEL_GRACE_SECONDS],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+            code = proc.returncode
+        except (OSError, subprocess.SubprocessError):
+            code = None
+        cancelled.append({"attempt_id": a["attempt_id"], "cancel_exit": code})
+    return {"status": "disabled", "cancelled": cancelled}
+
+
+def enable(state_path: Path) -> dict:
+    def on(st):
+        st["auto_upgrade"] = "enabled"
+    update_work_state(state_path, on, tolerate_unreadable=True)
+    return {"status": "enabled"}
+
+
+# --- quota (local codex rollout records; codex is never run) ----------------
+
+def codex_sessions_dir(home: Path, env: Mapping[str, str]) -> Path:
+    codex_home = env.get("CODEX_HOME")
+    return (Path(codex_home) if codex_home else Path(home) / ".codex") / "sessions"
+
+
+def _last_token_count(path: Path) -> dict | None:
+    try:
+        fd, st = open_regular(path)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        if st.st_size > QUOTA_TAIL_BYTES:
+            f.seek(st.st_size - QUOTA_TAIL_BYTES)
+        data = f.read(QUOTA_TAIL_BYTES)
+    for line in reversed(data.decode("utf-8", errors="replace").splitlines()):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        payload = ev.get("payload") if isinstance(ev, dict) else None
+        if ev.get("type") == "event_msg" and isinstance(payload, dict) \
+                and payload.get("type") == "token_count" \
+                and isinstance((payload.get("rate_limits") or {}).get("primary"), dict) \
+                and isinstance(ev.get("timestamp"), str):
+            return ev
+    return None
+
+
+def read_quota(sessions_dir: Path, now: dt.datetime | None = None) -> dict:
+    """`rate_limits.primary` of the last `token_count` event in the newest
+    rollout that has one (`sessions/YYYY/MM/DD/rollout-*.jsonl`). A record
+    older than 6 hours, or none at all, is `unknown` — and unknown defers."""
+    now = _utcnow(now)
+    pattern = os.path.join(glob.escape(str(sessions_dir)), "[0-9]" * 4, "[0-9]" * 2,
+                           "[0-9]" * 2, "rollout-*.jsonl")
+    files = sorted(glob.glob(pattern), reverse=True)[:QUOTA_MAX_FILES]
+    for name in files:
+        ev = _last_token_count(Path(name))
+        if ev is None:
+            continue
+        primary = ev["payload"]["rate_limits"]["primary"]
+        used, resets = primary.get("used_percent"), primary.get("resets_at")
+        try:
+            ts = _parse_time(ev["timestamp"])
+        except ValueError:
+            continue
+        if not isinstance(used, (int, float)) or isinstance(used, bool) \
+                or not isinstance(resets, int) or isinstance(resets, bool):
+            return {"status": "unknown", "reason": "shape", "source": name}
+        out = {"source": name, "event_timestamp": ev["timestamp"], "used_percent": used,
+               "resets_at": resets,
+               "resets_at_iso": dt.datetime.fromtimestamp(resets, dt.timezone.utc).isoformat()}
+        if now - ts > QUOTA_STALE_AFTER:
+            return {"status": "unknown", "reason": "stale", **out}
+        return {"status": "ok", "reason": None, **out}
+    return {"status": "unknown", "reason": "no_record", "source": str(sessions_dir)}
+
+
+def quota_defers(q: Mapping) -> bool:
+    return q.get("status") != "ok" or q.get("used_percent", 100) >= QUOTA_DEFER_PERCENT
+
+
+def quota_retry_after(q: Mapping, now: dt.datetime) -> dict:
+    if q.get("status") == "ok" and isinstance(q.get("resets_at"), int):
+        return {"kind": "time",
+                "at": dt.datetime.fromtimestamp(q["resets_at"], dt.timezone.utc).isoformat()}
+    return {"kind": "time", "at": (now + QUOTA_UNKNOWN_DEFER).isoformat()}
+
+
+# --- candidates this machine may probe now ------------------------------------
+
+def grok_models_text(env: Mapping[str, str]) -> str | None:
+    exe = shutil.which("grok", path=env.get("PATH"))
+    if exe is None:
+        return None
+    try:
+        proc = subprocess.run([exe, "models"], capture_output=True, text=True,
+                              timeout=CLI_VERSION_TIMEOUT * 2, env=dict(env),
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def load_catalogs(home: Path, versions: Mapping[str, str | None], *,
+                  grok_text: str | None = None) -> dict[str, Catalog]:
+    paths = default_catalog_paths(home)
+    return {"openai": read_codex_catalog(paths["openai"]),
+            "xai": read_grok_catalog(paths["xai"], grok_text),
+            "claude": read_claude_catalog(paths["claude"], versions.get("claude"))}
+
+
+def tick_hash(base_sha: str, generation_sha: str | None, catalogs: Mapping[str, Catalog],
+              versions: Mapping[str, str | None]) -> str:
+    """Lineage-relevant catalog content + the three CLI banners (+ the base
+    and the committed generation): a CLI update alone re-runs the tick."""
+    return canonical_policy_sha256({
+        "base": base_sha, "generation": generation_sha, "versions": dict(versions),
+        "catalogs": {f: {"status": c.status, "reason": c.reason, "models": c.models,
+                         "retirements": c.retirements} for f, c in sorted(catalogs.items())}})
+
+
+def _negative_expired(neg: Mapping, versions: Mapping, catalogs: Mapping,
+                      now: dt.datetime) -> bool:
+    ra = neg.get("retry_after") or {}
+    kind = ra.get("kind")
+    try:
+        if kind == "time":
+            return now >= _parse_time(ra["at"])
+        if kind == "cli_version_change":
+            return versions.get(FAMILY_CLI.get(neg.get("family"))) != ra.get("cli_version")
+        if kind == "catalog_change":
+            cat = catalogs.get(neg.get("family"))
+            return cat is None or cat.sha256 != ra.get("catalog_sha256")
+    except (KeyError, ValueError, TypeError):
+        return True
+    return True
+
+
+def _expired_time_deferrals(work: Mapping, now: dt.datetime) -> bool:
+    for neg in (work.get("negatives") or {}).values():
+        ra = neg.get("retry_after") or {}
+        if ra.get("kind") == "time":
+            try:
+                if now >= _parse_time(ra["at"]):
+                    return True
+            except (KeyError, ValueError, TypeError):
+                return True
+    return False
+
+
+def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapping,
+         work: Mapping, now: dt.datetime, keys=None, interval: bool = True):
+    """Candidates to probe now, and why every other lineage row is skipped
+    (no candidate, revoked, a live deferral, the 24-hour lineage interval)."""
+    found = find_candidates(view.config["models"], catalogs)
+    blocked = set((view.generation or {}).get("blocked_ids") or [])
+    eligible, skipped = [], {}
+    for key in sorted(found):
+        c = found[key]
+        if keys is not None and key not in keys:
+            continue
+        if c["status"] != "candidate":
+            skipped[key] = c["status"]
+            continue
+        if c["id"] in blocked:
+            skipped[key] = "blocked"
+            continue
+        neg = (work.get("negatives") or {}).get(key)
+        if neg and neg.get("id") == c["id"] and not _negative_expired(neg, versions, catalogs, now):
+            skipped[key] = f"deferred:{neg.get('reason')}"
+            continue
+        last = (work.get("last_probe") or {}).get(key)
+        if interval and last and now - _parse_time(last) < LINEAGE_INTERVAL:
+            skipped[key] = "interval"
+            continue
+        eligible.append({**c, "key": key})
+    return eligible, skipped
+
+
+# --- tick ------------------------------------------------------------------------
+
+def _spawn_detached(env: Mapping[str, str]) -> None:
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "run"],
+                     env=dict(env), cwd="/", stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True, close_fds=True)
+
+
+def tick(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime | None = None,
+         detach: bool = True, spawn=None, versions=None) -> dict:
+    """Offline and inference-free. Same catalogs + CLI banners as last time
+    and no expired deferral -> return at once. Otherwise, when a candidate
+    is eligible, start `run` (detached: a new session, stdio on /dev/null)
+    and return."""
+    if autoupgrade_env_off(env):
+        return {"status": "disabled", "reason": "DEEP_MODEL_ROUTER_AUTOUPGRADE=0"}
+    from route_task import load_config
+    home, now = _home(env, home), _utcnow(now)
+    state_path = model_state.state_root_path(env, home)
+    with StateRoot.open(state_path, create=True) as root:
+        work = read_work_state(root)
+    if work["auto_upgrade"] == "disabled":
+        return {"status": "disabled", "reason": "model_sync.py disable"}
+    base = load_config()
+    base_sha = canonical_policy_sha256(base)
+    view = committed_view(state_path, base, base_sha=base_sha)
+    versions = versions if versions is not None else cli_versions(env)
+    catalogs = load_catalogs(home, versions)
+    digest = tick_hash(base_sha, view.generation_sha256, catalogs, versions)
+    if digest == work["tick_hash"] and not _expired_time_deferrals(work, now):
+        return {"status": "unchanged"}
+    eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work,
+                             now=now)
+
+    def store(st):
+        st["tick_hash"] = digest
+    update_work_state(state_path, store)
+    if not eligible:
+        return {"status": "no_candidates", "skipped": skipped}
+    keys = [c["key"] for c in eligible]
+    if spawn is not None:
+        spawn(keys)
+    elif detach:
+        _spawn_detached(env)
+    else:
+        return {"status": "ran", "run": run(env=env, home=home, now=now)}
+    return {"status": "spawned", "keys": keys}
+
+
+# --- run -------------------------------------------------------------------------
+
+def _disabled_now(state_path: Path, env: Mapping[str, str]) -> bool:
+    if autoupgrade_env_off(env):
+        return True
+    try:
+        return _peek_work_state(state_path)["auto_upgrade"] == "disabled"
+    except (OSError, ValueError):
+        return True
+
+
+def _clear_in_flight(state_path: Path) -> None:
+    def clear(st):
+        st["in_flight"] = []
+    try:
+        update_work_state(state_path, clear, tolerate_unreadable=True)
+    except (OSError, ValueError):
+        pass
+
+
+def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: str | None,
+            retry_after: Mapping | None, summary_sha: str | None, inferences: int,
+            now: dt.datetime) -> None:
+    def rec(st):
+        if inferences:
+            st["last_probe"][key] = now.isoformat()
+        st["recent"] = ([{"key": key, "id": cand["id"], "outcome": outcome, "reason": reason,
+                          "summary_sha256": summary_sha, "at": now.isoformat()}]
+                        + list(st["recent"]))[:RECENT_KEEP]
+        if outcome == "pass":
+            st["negatives"].pop(key, None)
+        else:
+            st["negatives"][key] = {"id": cand["id"], "family": cand["family"],
+                                    "outcome": outcome, "reason": reason,
+                                    "retry_after": retry_after, "summary_sha256": summary_sha,
+                                    "at": now.isoformat()}
+    update_work_state(state_path, rec)
+
+
+def run(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime | None = None,
+        keys=None, budget: int = INFERENCE_BUDGET, probe=None, versions=None,
+        grok_text: Any = ...) -> dict:
+    """Probe every eligible candidate within the inference budget and
+    publish the passing ones. One run at a time (`work/run.lock`); an
+    explicit `keys` list is a manual request and skips the 24-hour lineage
+    interval (never a deferral or a revocation)."""
+    if autoupgrade_env_off(env):
+        return {"status": "disabled", "reason": "DEEP_MODEL_ROUTER_AUTOUPGRADE=0"}
+    home, now = _home(env, home), _utcnow(now)
+    state_path = model_state.state_root_path(env, home)
+    with StateRoot.open(state_path, create=True) as root:
+        lock = root.lock(timeout=0, relpath=RUN_LOCK)
+        try:
+            lock.__enter__()
+        except StateError:
+            return {"status": "busy"}
+        try:
+            return _run_locked(root, state_path, env=env, home=home, now=now, keys=keys,
+                               budget=budget, probe=probe or probe_candidate,
+                               versions=versions, grok_text=grok_text)
+        finally:
+            lock.__exit__(None, None, None)
+
+
+def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versions,
+                grok_text) -> dict:
+    from route_task import load_config
+    if read_work_state(root)["auto_upgrade"] == "disabled":
+        return {"status": "disabled", "reason": "model_sync.py disable"}
+    work = read_work_state(root)
+    base = load_config()
+    base_sha = canonical_policy_sha256(base)
+    view = committed_view(state_path, base, base_sha=base_sha)
+    versions = versions if versions is not None else cli_versions(env)
+    text = grok_models_text(env) if grok_text is ... else grok_text
+    catalogs = load_catalogs(home, versions, grok_text=text)
+    eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work,
+                             now=now, keys=keys, interval=keys is None)
+    rep = {"status": "ok", "probed": [], "passed": [], "deferred": [], "failed": [],
+           "over_budget": [], "interval": sorted(k for k, r in skipped.items() if r == "interval"),
+           "skipped": skipped, "inferences": 0, "generation_sha256": None}
+
+    def register(attempt: str, receipt_dir: Path) -> None:
+        if autoupgrade_env_off(env):
+            raise Disabled()
+
+        def add(st):
+            if st["auto_upgrade"] == "disabled":
+                raise Disabled()
+            st["in_flight"].append({"attempt_id": attempt, "receipt_dir": str(receipt_dir)})
+        update_work_state(state_path, add)
+
+    passing = []
+    quota = None
+    scratch = Path(tempfile.mkdtemp(prefix="dmr-probe-"))
+    try:
+        for cand in eligible:
+            key, fam = cand["key"], cand["family"]
+            if rep["inferences"] + MAX_INFERENCES[fam] > budget:
+                rep["over_budget"].append(key)
+                continue
+            ctx = ProbeContext(now=now, cli_version=versions.get(FAMILY_CLI[fam]))
+            if fam == "openai":
+                if quota is None:
+                    quota = read_quota(codex_sessions_dir(home, env), now)
+                    rep["quota"] = quota
+                if quota["status"] == "ok":
+                    ctx = ctx._replace(quota_resets_at=quota["resets_at"])
+                if quota_defers(quota):
+                    _record(state_path, key, cand, outcome="deferred", reason="quota",
+                            retry_after=quota_retry_after(quota, now), summary_sha=None,
+                            inferences=0, now=now)
+                    rep["deferred"].append(key)
+                    continue
+            result = probe(key=key, candidate=cand, base=base, state_root=state_path,
+                           env=env, catalog=catalogs[fam], current_id=cand["from_id"],
+                           superseded=superseded_for(view.generation, key, base),
+                           scratch=scratch, ctx=ctx, on_attempt=register)
+            _clear_in_flight(state_path)
+            if _disabled_now(state_path, env):
+                raise Disabled()
+            s = result["summary"]
+            rep["inferences"] += result["inferences"]
+            rep["probed"].append(key)
+            _record(state_path, key, cand, outcome=s["outcome"], reason=s.get("reason"),
+                    retry_after=s.get("retry_after"), summary_sha=result["summary_sha256"],
+                    inferences=result["inferences"], now=now)
+            if s["outcome"] == "pass":
+                passing.append((key, s, result["summary_sha256"]))
+                rep["passed"].append(key)
+            else:
+                rep["deferred" if s["outcome"] == "deferred" else "failed"].append(key)
+        if passing:
+            rep["generation_sha256"] = publish_results(
+                state_path, base, passing, recheck=auto_upgrade_recheck(env))
+    except Disabled:
+        rep["status"] = "disabled_during_run"
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        _clear_in_flight(state_path)
+    return rep
+
+
+# --- status ------------------------------------------------------------------------
+
+def status(*, env: Mapping[str, str], home: Path | None = None,
+           now: dt.datetime | None = None, versions=None) -> dict:
+    from route_task import load_config
+    home, now = _home(env, home), _utcnow(now)
+    state_path = model_state.state_root_path(env, home)
+    base = load_config()
+    base_sha = canonical_policy_sha256(base)
+    try:
+        work = _peek_work_state(state_path)
+    except (OSError, ValueError) as exc:
+        work = default_work_state()
+        work["unreadable"] = str(exc)
+    out: dict[str, Any] = {
+        "state_dir": str(state_path),
+        "auto_upgrade": "disabled" if autoupgrade_env_off(env)
+        or work["auto_upgrade"] == "disabled" else "enabled",
+        "auto_upgrade_env_off": autoupgrade_env_off(env)}
+    try:
+        view = committed_view(state_path, base, base_sha=base_sha)
+    except SyncError as exc:
+        view = CommittedView("unreadable", config=base)
+        out["committed"] = {"shape": "unreadable", "detail": str(exc)}
+    if view.shape != "unreadable":
+        entries = {}
+        prov = view.provenance
+        for key, e in sorted(((view.generation or {}).get("entries") or {}).items()):
+            state = "applied" if prov and key in prov.applied else next(
+                (f"noop:{n['reason']}" for n in (prov.noop if prov else []) if n["key"] == key),
+                next((f"rejected:{r['reason']}" for r in (prov.rejected if prov else [])
+                      if r["key"] == key), "unknown"))
+            entries[key] = {"id": e["id"], "from_id": e["from_id"],
+                            "superseded": e["superseded"], "state": state,
+                            "probe_summary_sha256": e["probe_summary_sha256"]}
+        out["committed"] = {"shape": view.shape, "generation_sha256": view.generation_sha256,
+                            "entries": entries,
+                            "blocked_ids": list((view.generation or {}).get("blocked_ids") or []),
+                            "history_ids": sorted((view.generation or {}).get("history") or {})}
+    versions = versions if versions is not None else cli_versions(env)
+    catalogs = load_catalogs(home, versions)
+    out["cli_versions"] = dict(versions)
+    out["catalogs"] = {f: {"status": c.status, "reason": c.reason, "sha256": c.sha256}
+                       for f, c in sorted(catalogs.items())}
+    out["retirement_notices"] = retirement_notices(view.config["models"], catalogs)
+    eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work, now=now)
+    out["candidates"] = {c["key"]: c["id"] for c in eligible}
+    out["skipped"] = skipped
+    out["deferred"] = {k: {**n, "expired": _negative_expired(n, versions, catalogs, now)}
+                       for k, n in sorted(work["negatives"].items())}
+    summaries = Path(state_path) / SUMMARY_PREFIX / "summaries"
+    out["recent"] = [{**r, "summary_path": str(summaries / f"{r['summary_sha256']}.json")
+                      if r.get("summary_sha256") else None} for r in work["recent"]]
+    out["makers"] = work["makers"]
+    out["in_flight"] = work["in_flight"]
+    return out
+
+
+# --- CLI ---------------------------------------------------------------------------
+
+def _print(obj) -> None:
+    print(json.dumps(obj, indent=2, sort_keys=True))
+
+
+def _confirm_on_tty(plan_: Mapping) -> bool:
+    print("probe-maker is ATTENDED: it seats a write-capable CLI once, in a "
+          "disposable directory, to re-verify the maker seat for one id.")
+    for line in plan_.get("lines", []):
+        print(f"  {line}")
+    try:
+        answer = input("Type y to run this maker probe: ")
+    except EOFError:
+        return False
+    return answer.strip() == "y"
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="model_sync.py",
+        description="Follow model lineages: detect, probe, publish, revert (design 2026-09-25).")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    t = sub.add_parser("tick", help="offline check; starts `run` when a candidate is due")
+    t.add_argument("--detach", action="store_true", help="start run in a new session and return")
+    t.add_argument("--json", action="store_true", help="print the tick result")
+    r = sub.add_parser("run", help="probe eligible candidates and publish passing ones")
+    r.add_argument("--key", action="append", dest="keys", metavar="KEY",
+                   help="only this registry key (repeatable); skips the 24h interval")
+    sub.add_parser("status", help="committed generation, deferrals, notices, recent summaries")
+    rv = sub.add_parser("revert", help="drop a key's overlay entry and revoke its id")
+    rv.add_argument("key")
+    ub = sub.add_parser("unblock", help="lift a revocation")
+    ub.add_argument("model_id")
+    rp = sub.add_parser("repair", help="check the pointer; --to moves it to a named generation")
+    rp.add_argument("--to", metavar="GENERATION_SHA256")
+    sub.add_parser("disable", help="turn auto-upgrade off and cancel in-flight probes")
+    sub.add_parser("enable", help="turn auto-upgrade back on")
+    sub.add_parser("quota", help="codex rate-limit usage from local rollout records")
+    pm = sub.add_parser("probe-maker", help="ATTENDED maker-seat probe for one key (needs a TTY)")
+    pm.add_argument("key")
+    pm.add_argument("--runtime", default=None, help="host runtime whose write_verified "
+                    "direction to probe (default: the first that has one)")
+    _add_promote_parser(sub)
+    args = p.parse_args(argv)
+
+    env = dict(os.environ)
+    home = _home(env, None)
+    state_path = model_state.state_root_path(env, home)
+    if args.cmd == "tick":
+        try:
+            out = tick(env=env, home=home, detach=args.detach)
+        except Exception as exc:  # noqa: BLE001 — a session hook never fails the session
+            out = {"status": "error", "detail": f"{exc.__class__.__name__}: {exc}"}
+        if args.json:
+            _print(out)
+        return 0
+    if args.cmd == "probe-maker" and not sys.stdin.isatty():
+        print("model_sync: probe-maker is attended and needs a TTY on stdin to "
+              "confirm; refusing", file=sys.stderr)
+        return 2
+    try:
+        if args.cmd == "run":
+            from route_task import load_config
+            base = load_config()
+            for k in args.keys or []:
+                if "lineage" not in base["models"].get(k, {}):
+                    print(f"model_sync: {k!r} is not a lineage row", file=sys.stderr)
+                    return 2
+            _print(run(env=env, home=home, keys=args.keys))
+        elif args.cmd == "status":
+            _print(status(env=env, home=home))
+        elif args.cmd == "revert":
+            _print(revert(state_path, args.key))
+        elif args.cmd == "unblock":
+            _print(unblock(state_path, args.model_id))
+        elif args.cmd == "repair":
+            _print(repair(state_path, to=args.to))
+        elif args.cmd == "disable":
+            _print(disable(state_path))
+        elif args.cmd == "enable":
+            _print(enable(state_path))
+        elif args.cmd == "quota":
+            _print(read_quota(codex_sessions_dir(home, env)))
+        elif args.cmd == "probe-maker":
+            import probe_maker
+            res = probe_maker.probe_maker(key=args.key, env=env, home=home, now=None,
+                                          state_path=state_path, confirm=_confirm_on_tty,
+                                          runtime=args.runtime)
+            _print(res)
+            return {"pass": 0, "aborted": 1, "failed": 1}.get(res["status"], 2)
+        elif args.cmd == "promote":
+            return _promote_cli(args, env=env, home=home, state_path=state_path)
+    except SyncError as exc:
+        print(f"model_sync: {exc}", file=sys.stderr)
+        return 1
+    except (StateError, OSError) as exc:
+        print(f"model_sync: state error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _add_promote_parser(sub) -> None:
+    """Task A12 adds `promote`."""
+
+
+def _promote_cli(args, **kw) -> int:  # pragma: no cover - replaced in A12
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

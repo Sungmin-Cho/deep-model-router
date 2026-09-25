@@ -332,12 +332,24 @@ class StateRoot:
             os.fsync(fd)
 
     @contextmanager
-    def lock(self, *, timeout: float = 10.0) -> Iterator[None]:
-        """Exclusive publication lock on `work/publish.lock`. A stable inode
-        serialises cooperating writers; the file is never unlinked."""
-        with self._parent(LOCK_RELPATH, create=True) as (dfd, name):
-            fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                         FILE_MODE, dir_fd=dfd)
+    def lock(self, *, timeout: float = 10.0,
+             relpath: str = LOCK_RELPATH) -> Iterator[None]:
+        """Exclusive lock on `relpath` (default the publication lock,
+        `work/publish.lock`). A stable inode serialises cooperating writers;
+        the file is never unlinked. `timeout=0` tries once."""
+        with self._parent(relpath, create=True) as (dfd, name):
+            # Darwin: two openat(O_CREAT) racing on one new name can fail the
+            # loser with ENOENT (measured, 2026-09-25); the file exists by the
+            # time it retries.
+            for attempt in range(5):
+                try:
+                    fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 FILE_MODE, dir_fd=dfd)
+                    break
+                except FileNotFoundError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.01)
         try:
             info = os.fstat(fd)
             if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1

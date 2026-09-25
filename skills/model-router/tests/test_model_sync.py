@@ -334,6 +334,7 @@ import datetime as _dt  # noqa: E402
 import subprocess  # noqa: E402
 import urllib.parse  # noqa: E402
 
+import lineage  # noqa: E402
 import model_state  # noqa: E402
 import secure_io  # noqa: E402
 from policy_digest import canonical_policy_sha256  # noqa: E402
@@ -848,3 +849,959 @@ def test_harness_defers_without_cli_metadata_and_spends_nothing(tmp_path):
     assert (result["summary"]["outcome"], result["summary"]["reason"]) == \
         ("deferred", "cli_metadata")
     assert result["inferences"] == 0 and not log.exists()
+
+
+# ---------------------------------------------------------------------------
+# A10 — publication, tick, disable, revert, unblock, repair, status, quota,
+# attended probe-maker (design DD-A2, DD-A6, DD-A7).
+#
+# Every CLI a test reaches is a fake first on PATH (FAKE_CLI below), and the
+# PATH handed to model_sync holds nothing else a model CLI could resolve from.
+# ---------------------------------------------------------------------------
+
+import shutil as _shutil  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+sys.path.insert(0, str(SKILL / "tests"))
+from _overlay import (  # noqa: E402
+    BASE_SHA, base_record, entry as ov_entry, env_for, generation as ov_generation,
+    probe_record, publish as ov_publish, sha_of, successor, summary as ov_summary,
+)
+from route_task import Policy, Task, resolve_effective_policy, route  # noqa: E402
+
+FIXTURES = SKILL / "tests" / "fixtures"
+SYNC = SKILL / "scripts" / "model_sync.py"
+ROUTE = SKILL / "scripts" / "route_task.py"
+TASK = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, blast_radius=1,
+            reversibility=1)
+ROLLOUT_EVENT = json.loads((CODEX / "codex-rollout-token_count.jsonl").read_text().splitlines()[0])
+
+FAKE_CLI = r'''#!{python}
+import json, os, re, sys, time
+from pathlib import Path
+name = {name!r}
+fx = Path({fixtures!r})
+d = Path({fakedir!r})
+args = sys.argv[1:]
+if args == ["--version"]:
+    v = d / (name + ".version")
+    sys.stdout.write(v.read_text() if v.exists()
+                     else (fx / "catalogs" / {vfix!r} / "version.txt").read_text())
+    sys.exit(0)
+if name == "grok" and args == ["models"]:
+    sys.stdout.write((fx / "catalogs" / "grok" / "grok-models.txt").read_text()); sys.exit(0)
+if name == "codex" and args[:2] == ["debug", "models"]:
+    sys.stdout.write((fx / "catalogs" / "codex" / "debug-models-bundled.json").read_text())
+    sys.exit(0)
+mode_file = d / (name + ".mode")
+mode = mode_file.read_text().strip() if mode_file.exists() else "trap"
+with (d / (name + ".calls")).open("a") as f:
+    f.write(json.dumps({{"args": args, "cwd": os.getcwd(), "pid": os.getpid(),
+                        "mode": mode}}) + "\n")
+if mode == "trap":
+    sys.exit(97)
+prompt = sys.stdin.read()
+if mode == "sleep":
+    time.sleep(120)
+    sys.exit(0)
+if mode == "maker":
+    token = re.search(r"MADE-[0-9a-f]{{16}}", prompt).group(0)
+    tmp = Path("made.txt.tmp")
+    tmp.write_text(token + "\n")
+    os.replace(tmp, "made.txt")          # a NEW inode, the way claude writes
+    if name == "claude":
+        model = args[args.index("--model") + 1]
+        sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
+            "is_error": False, "stop_reason": "end_turn", "result": "done",
+            "session_id": "s", "num_turns": 1,
+            "usage": {{"input_tokens": 1, "output_tokens": 1}},
+            "modelUsage": {{model: {{"inputTokens": 1}}}}}}))
+    else:
+        sys.stdout.write("done\n")
+        sys.stderr.write((fx / "codex" / "codex-0.157.0-plain.stderr").read_text())
+    sys.exit(0)
+# mode == "codex": the recorded plain / JSON outputs
+if "--json" in args:
+    sys.stdout.write((fx / "codex" / "codex-0.157.0-json.jsonl").read_text())
+else:
+    sys.stdout.write((fx / "codex" / "codex-0.157.0-plain.stdout").read_text())
+    sys.stderr.write((fx / "codex" / "codex-0.157.0-plain.stderr").read_text())
+'''
+
+
+def fake_bin(tmp_path, **modes):
+    """codex/claude/grok fakes (default: trap) and a PATH holding nothing else
+    a model CLI could resolve from. Returns (bindir, fakedir)."""
+    bindir = tmp_path / "fakebin"
+    fakedir = tmp_path / "fakes"
+    bindir.mkdir(exist_ok=True)
+    fakedir.mkdir(exist_ok=True)
+    for name, vfix in (("codex", "codex"), ("claude", "claude"), ("grok", "grok")):
+        exe = bindir / name
+        exe.write_text(FAKE_CLI.format(python=sys.executable, name=name, vfix=vfix,
+                                       fixtures=str(FIXTURES), fakedir=str(fakedir)))
+        exe.chmod(0o755)
+        if name in modes:
+            (fakedir / f"{name}.mode").write_text(modes[name])
+    return bindir, fakedir
+
+
+def calls_of(fakedir, name):
+    path = fakedir / f"{name}.calls"
+    return [json.loads(l) for l in path.read_text().splitlines()] if path.exists() else []
+
+
+def rollout(home, used, ts, resets):
+    day = home / ".codex" / "sessions" / ts.strftime("%Y/%m/%d")
+    day.mkdir(parents=True, exist_ok=True)
+    ev = copy.deepcopy(ROLLOUT_EVENT)
+    ev["timestamp"] = ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    ev["payload"]["rate_limits"]["primary"].update(used_percent=used,
+                                                   resets_at=int(resets.timestamp()))
+    path = day / f"rollout-{ts.strftime('%Y-%m-%dT%H-%M-%S')}-fixture.jsonl"
+    path.write_text(json.dumps(ev) + "\n")
+    return path
+
+
+def fake_home(tmp_path, *, claude=False, grok=False, codex_mutate=None):
+    """Catalogs where the CLIs keep them. Codex only by default: the claude
+    catalog is then absent (alias probe — not executed) and grok unavailable."""
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True, exist_ok=True)
+    doc = json.loads((CATALOGS / "codex" / "models_cache.json").read_text())
+    if codex_mutate:
+        codex_mutate(doc)
+    (home / ".codex" / "models_cache.json").write_text(json.dumps(doc))
+    if claude:
+        d = home / ".claude" / "cache" / "model-catalog"
+        d.mkdir(parents=True, exist_ok=True)
+        _shutil.copy(CATALOGS / "claude" / "catalog-cc.json", d / "catalog-cc.json")
+    if grok:
+        (home / ".grok").mkdir(exist_ok=True)
+        _shutil.copy(CATALOGS / "grok" / "models_cache.json", home / ".grok" / "models_cache.json")
+    return home
+
+
+def sync_env(tmp_path, root, home, bindir, **extra):
+    env = env_for(root)
+    env.update(HOME=str(home), PATH=f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+               DEEP_MODEL_ROUTER_AUTOUPGRADE="1")
+    env.update(extra)
+    env.pop("CODEX_HOME", None)
+    return env
+
+
+def new_root(tmp_path, name="state"):
+    root = tmp_path / name
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    return root
+
+
+def worker_key() -> str:
+    return Policy.of(BASE).id_to_key[route(Task(**TASK), BASE)["selected_model"]]
+
+
+def passing(key, step=1, superseded=(), new_id=None):
+    e = ov_entry(key, new_id or successor(key, step), superseded=list(superseded))
+    s = ov_summary(key, e)
+    s.update(outcome="pass", reason=None, retry_after=None)
+    return (key, s, sha_of(s))
+
+
+def routed(root, home, **task):
+    return route(Task(**{**TASK, **task}), env=env_for(root), home=home)
+
+
+def read_gen(root):
+    with model_state.read_state(root) as st:
+        return st.shape, st.generation_sha256, st.generation
+
+
+def work_state(root):
+    with secure_io.StateRoot.open(root) as r:
+        return r.read_json("work/state.json")
+
+
+def cli_sync(env, *args, **kw):
+    return subprocess.run([sys.executable, str(SYNC), *args], capture_output=True, text=True,
+                          env=env, timeout=kw.pop("timeout", 120), **kw)
+
+
+# --- publication order, crash points, bootstrap ----------------------------
+
+@pytest.mark.parametrize("stage,moved", [("after_summaries", False),
+                                         ("after_generation", False),
+                                         ("before_pointer", False),
+                                         ("after_pointer", True)])
+def test_a_crash_between_publication_steps_leaves_old_or_new_never_a_mixture(
+        tmp_path, monkeypatch, stage, moved):
+    key = worker_key()
+    root = new_root(tmp_path)
+    h = tmp_path / "h"
+    model_sync.publish_results(root, BASE, [passing(key)])
+    shape, g1, _ = read_gen(root)
+    before = routed(root, h)
+
+    class Crash(Exception):
+        pass
+
+    def fault(name):
+        if name == stage:
+            raise Crash(name)
+    monkeypatch.setattr(model_sync, "_fault", fault)
+    k2, s2, sha2 = passing(key, 2, superseded=[successor(key)])
+    with pytest.raises(Crash):
+        model_sync.publish_results(root, BASE, [(k2, s2, sha2)])
+    after = routed(root, h)
+    shape, g, gen = read_gen(root)
+    assert shape == "ok"
+    if moved:
+        assert g != g1 and after["selected_model"] == successor(key, 2)
+    else:
+        assert g == g1 and after == before
+        # The generation written before the crash is unreachable, even by pin.
+        stray = [n[:-5] for n in os.listdir(root / "committed" / "generations")
+                 if n[:-5] != g1]
+        for sha in stray:
+            with model_state.read_state(root) as st:
+                sgen = st.generation_at(sha)
+                cfg, _ = model_state.effective_config(BASE, sgen, apply_entries=True,
+                                                      summary=st.summary)
+            t = Task(**TASK)
+            t._policy_pin = canonical_policy_sha256(cfg)
+            out = route(t, env=env_for(root), home=h)
+            assert out["terminal"] == "MODEL_STATE_UNAVAILABLE"
+            assert out["model_overlay"]["state_reason"] == "pin_generation_missing"
+
+
+def test_publication_installs_the_summary_before_the_pointer(tmp_path, monkeypatch):
+    key = worker_key()
+    root = new_root(tmp_path)
+    seen = []
+
+    def fault(name):
+        seen.append((name, sorted(os.listdir(root))))
+    monkeypatch.setattr(model_sync, "_fault", fault)
+    model_sync.publish_results(root, BASE, [passing(key)])      # bootstrap
+    model_sync.publish_results(root, BASE, [passing(key, 2, superseded=[successor(key)])])
+    names = [n for n, _ in seen]
+    assert names[0] == "before_bootstrap_rename"
+    assert names[1:] == ["after_summaries", "after_generation", "before_pointer",
+                         "after_pointer"]
+    # Nothing but committed/ and work/ is left behind by the bootstrap.
+    assert sorted(os.listdir(root)) == ["committed", "work"]
+    shape, g, gen = read_gen(root)
+    with model_state.read_state(root) as st:
+        assert st.summary(gen["entries"][key]["probe_summary_sha256"]) is not None
+
+
+def test_first_publication_is_an_atomic_bootstrap(tmp_path, monkeypatch):
+    key = worker_key()
+    root = new_root(tmp_path)
+    h = tmp_path / "h"
+
+    def fault(name):
+        if name == "before_bootstrap_rename":
+            raise RuntimeError("crash")
+    monkeypatch.setattr(model_sync, "_fault", fault)
+    with pytest.raises(RuntimeError):
+        model_sync.publish_results(root, BASE, [passing(key)])
+    assert not (root / "committed").exists()
+    assert any(n.startswith("committed.tmp-") for n in os.listdir(root))
+    assert read_gen(root)[0] == "absent"
+    assert routed(root, h)["model_overlay"] is None
+    monkeypatch.setattr(model_sync, "_fault", lambda name: None)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    assert routed(root, h)["selected_model"] == successor(key)
+
+
+def test_two_writers_publish_once(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    result = passing(key)
+    out = []
+    barrier = threading.Barrier(2)
+
+    def writer():
+        barrier.wait()
+        out.append(model_sync.publish_results(root, BASE, [result]))
+    threads = [threading.Thread(target=writer) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len([o for o in out if o]) == 1
+    assert len(os.listdir(root / "committed" / "generations")) == 1
+
+
+def test_a_successor_accumulates_history_six_to_seven(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    k1, s1, sha1 = passing(key)
+    model_sync.publish_results(root, BASE, [(k1, s1, sha1)])
+    _, g1, gen1 = read_gen(root)
+    sup = model_sync.superseded_for(gen1, key, BASE)
+    assert sup == [successor(key)]
+    model_sync.publish_results(root, BASE, [passing(key, 2, superseded=sup)])
+    _, g2, gen2 = read_gen(root)
+    e = gen2["entries"][key]
+    assert (e["from_id"], e["id"], e["superseded"]) == (ID_(key), successor(key, 2),
+                                                        [successor(key)])
+    assert gen2["history"][successor(key)] == probe_record(key, sha1)
+    assert gen2["history"][ID_(key)] == base_record(key)
+    assert gen2["parent_generation_sha256"] == g1
+    out = routed(tmp_path / "state", tmp_path / "h", prior_failures=1,
+                 prior_models=[successor(key)])
+    assert out["selected_model"] not in (successor(key),)
+
+
+def ID_(key):
+    return BASE["models"][key]["id"]
+
+
+def test_a_summary_measured_against_another_chain_is_not_published(tmp_path):
+    """The probe recorded `superseded` from the generation it saw; a writer
+    that moved the chain meanwhile makes it stale — nothing is published."""
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    _, g1, _ = read_gen(root)
+    assert model_sync.publish_results(root, BASE, [passing(key, 2)]) is None
+    assert read_gen(root)[1] == g1
+
+
+# --- revert / unblock / concurrency with routes ------------------------------
+
+def test_revert_blocks_the_id_and_keeps_its_history(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    k, s, sha = passing(key)
+    model_sync.publish_results(root, BASE, [(k, s, sha)])
+    _, g1, _ = read_gen(root)
+    model_sync.revert(root, key, base=BASE)
+    _, g2, gen = read_gen(root)
+    assert key not in gen["entries"]
+    assert gen["blocked_ids"] == [successor(key)]
+    assert gen["history"][successor(key)] == probe_record(key, sha)
+    assert gen["parent_generation_sha256"] == g1
+    h = tmp_path / "h"
+    assert routed(root, h)["selected_model"] == ID_(key)
+    # the reverted id is valid history input everywhere
+    env = env_for(root)
+    rid = successor(key)
+    for extra in (["--prior-failures", "1", "--prior-models", rid],
+                  ["--host-model", rid, "--host-effort", "HIGH", "--runtime",
+                   {"openai": "codex", "claude": "claude_code",
+                    "xai": "grok"}[BASE["models"][key]["family"]]]):
+        proc = subprocess.run([sys.executable, str(ROUTE), "--class", "IMPLEMENTATION",
+                               "--complexity", "2", "--uncertainty", "1", "--blast-radius",
+                               "1", "--reversibility", "1", "--format", "json", *extra],
+                              capture_output=True, text=True, env=env)
+        assert proc.returncode in (0, 1), (extra, proc.stderr)
+    req = tmp_path / "req.json"
+    req.write_text(json.dumps({"route_schema_version": 1, **TASK, "attempt_outcomes": [
+        {"attempt_id": "a-1", "model_id": rid, "kind": "capability_failure",
+         "evidence_sha256": "a" * 64}]}))
+    proc = subprocess.run([sys.executable, str(ROUTE), "--request-json", str(req),
+                           "--format", "json"], capture_output=True, text=True, env=env)
+    assert proc.returncode in (0, 1), proc.stderr
+
+
+def test_unblock_reseats_a_reverted_overlay_id(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    model_sync.revert(root, key, base=BASE)
+    model_sync.unblock(root, successor(key), base=BASE)
+    _, _, gen = read_gen(root)
+    assert gen["blocked_ids"] == []
+    assert gen["entries"][key]["id"] == successor(key)
+    assert successor(key) not in gen["history"]
+    assert routed(root, tmp_path / "h")["selected_model"] == successor(key)
+
+
+def test_unblock_reseats_a_revoked_base_id(tmp_path):
+    """After promote the overlay id IS the base id: revert blocks the base
+    id itself, unblock lets it sit again."""
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    promoted = copy.deepcopy(BASE)
+    promoted["models"][key]["id"] = successor(key)
+    model_sync.revert(root, key, base=promoted)
+    _, _, gen = read_gen(root)
+    with model_state.read_state(root) as st:
+        cfg, _ = model_state.effective_config(promoted, gen, apply_entries=True,
+                                              summary=st.summary)
+    out = route(Task(**TASK), cfg)
+    assert successor(key) not in {out["selected_model"], *out["review"]["reviewer_models"]}
+    model_sync.unblock(root, successor(key), base=promoted)
+    _, _, gen = read_gen(root)
+    with model_state.read_state(root) as st:
+        cfg, _ = model_state.effective_config(promoted, gen, apply_entries=True,
+                                              summary=st.summary)
+    assert route(Task(**TASK), cfg)["selected_model"] == successor(key)
+
+
+def test_revert_and_routes_run_concurrently_without_an_unpublished_view(tmp_path):
+    """The REAL writers (revert/unblock) against unpinned and pinned routes:
+    every answer is a published policy, or the pin's named revocation."""
+    key = worker_key()
+    root = new_root(tmp_path)
+    h = tmp_path / "h"
+    model_sync.publish_results(root, BASE, [passing(key)])
+    p1 = routed(root, h)["policy_sha256"]
+    model_sync.revert(root, key, base=BASE)
+    p2 = routed(root, h)["policy_sha256"]
+    model_sync.unblock(root, successor(key), base=BASE)
+    assert routed(root, h)["policy_sha256"] == p1
+    stop = threading.Event()
+    errors = []
+
+    def flip():
+        try:
+            for _ in range(12):
+                if stop.is_set():
+                    break
+                model_sync.revert(root, key, base=BASE)
+                model_sync.unblock(root, successor(key), base=BASE)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+    t = threading.Thread(target=flip)
+    t.start()
+    try:
+        for _ in range(40):
+            assert routed(root, h)["policy_sha256"] in (p1, p2)
+            pt = Task(**TASK)
+            pt._policy_pin = p1
+            out = route(pt, env=env_for(root), home=h)
+            if out["terminal"] is None:
+                assert out["policy_sha256"] == p1
+            else:
+                assert out["model_overlay"]["state_reason"] == "pin_revoked"
+    finally:
+        stop.set()
+        t.join()
+    assert not errors
+
+
+def test_revert_without_an_entry_is_refused(tmp_path):
+    root = new_root(tmp_path)
+    with pytest.raises(model_sync.SyncError):
+        model_sync.revert(root, worker_key(), base=BASE)
+    with pytest.raises(model_sync.SyncError):
+        model_sync.unblock(root, "no-such-id", base=BASE)
+
+
+def test_a_same_generation_spelling_is_refused_and_the_old_id_stays_history(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    model_sync.revert(root, key, base=BASE)
+    _, g, _ = read_gen(root)
+    template = BASE["models"][key]["lineage"]["template"]
+    variant = template.replace("{gen}", str(
+        lineage.parse(template, successor(key)).parts[0]) + ".0")
+    assert variant != successor(key)
+    assert model_sync.publish_results(root, BASE, [passing(key, new_id=variant)]) is None
+    assert read_gen(root)[1] == g
+    out = routed(root, tmp_path / "h", prior_failures=1, prior_models=[successor(key)])
+    assert out["selected_model"] != variant
+
+
+# --- repair, fail closed -------------------------------------------------------
+
+def test_repair_leaves_a_sound_pointer_alone(tmp_path):
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(worker_key())])
+    _, g, _ = read_gen(root)
+    assert model_sync.repair(root)["status"] == "ok"
+    assert read_gen(root)[1] == g
+
+
+def test_repair_never_picks_a_generation_on_a_damaged_pointer(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    _, g1, _ = read_gen(root)
+    model_sync.revert(root, key, base=BASE)
+    _, g2, gen2 = read_gen(root)
+    pointer = root / "committed" / "current.json"
+    pointer.write_text('{"generation_sha256": "nope"}')
+    os.chmod(pointer, 0o600)
+    with pytest.raises(model_sync.SyncError) as exc:
+        model_sync.repair(root)
+    assert "--to" in str(exc.value)
+    assert pointer.read_text() == '{"generation_sha256": "nope"}'
+    proc = cli_sync(env_for(root), "repair")
+    assert proc.returncode == 1 and g1 in proc.stdout + proc.stderr
+    got = model_sync.repair(root, to=g1)
+    assert got["generation_sha256"] == g1
+    assert got["disappearing_revocations"] == [successor(key)]
+    assert read_gen(root)[1] == g1
+    got = model_sync.repair(root, to=g2)
+    assert read_gen(root)[2]["blocked_ids"] == gen2["blocked_ids"] == [successor(key)]
+    assert got["disappearing_revocations"] == []
+    with pytest.raises(model_sync.SyncError):
+        model_sync.repair(root, to="f" * 64)
+
+
+def test_deleting_the_pointer_fails_closed_and_deleting_work_state_does_not(tmp_path):
+    key = worker_key()
+    root = new_root(tmp_path)
+    h = tmp_path / "h"
+    model_sync.publish_results(root, BASE, [passing(key)])
+    model_sync.enable(root)                        # work/state.json exists
+    before = routed(root, h)
+    (root / "work" / "state.json").unlink()
+    assert routed(root, h) == before
+    (root / "committed" / "current.json").unlink()
+    out = routed(root, h)
+    assert out["terminal"] == "MODEL_STATE_UNAVAILABLE"
+    assert out["model_overlay"]["state_reason"] == "unreadable"
+
+
+# --- quota ----------------------------------------------------------------------
+
+def test_quota_reads_the_last_token_count_event_and_never_runs_codex(tmp_path):
+    bindir, fakedir = fake_bin(tmp_path)
+    home = tmp_path / "home"
+    ts = _dt.datetime(2026, 9, 25, 15, 47, 54, tzinfo=_dt.timezone.utc)
+    day = home / ".codex" / "sessions" / "2026" / "09" / "25"
+    day.mkdir(parents=True)
+    _shutil.copy(CODEX / "codex-rollout-token_count.jsonl",
+                 day / "rollout-2026-09-25T15-00-00-fixture.jsonl")
+    q = model_sync.read_quota(home / ".codex" / "sessions", ts + _dt.timedelta(minutes=5))
+    primary = ROLLOUT_EVENT["payload"]["rate_limits"]["primary"]
+    assert q["status"] == "ok" and q["used_percent"] == primary["used_percent"]
+    assert q["resets_at"] == primary["resets_at"]
+    assert model_sync.quota_defers(q)
+    stale = model_sync.read_quota(home / ".codex" / "sessions", ts + _dt.timedelta(hours=7))
+    assert stale["status"] == "unknown" and model_sync.quota_defers(stale)
+    assert model_sync.read_quota(tmp_path / "none", ts)["status"] == "unknown"
+    rollout(home, 12.0, ts + _dt.timedelta(minutes=1), ts + _dt.timedelta(days=2))
+    fresh = model_sync.read_quota(home / ".codex" / "sessions", ts + _dt.timedelta(minutes=5))
+    assert fresh["used_percent"] == 12.0 and not model_sync.quota_defers(fresh)
+    env = sync_env(tmp_path, new_root(tmp_path), home, bindir)
+    proc = cli_sync(env, "quota")
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["status"] in ("ok", "unknown")
+    assert calls_of(fakedir, "codex") == []
+
+
+def recorder(inferences=None, outcome="failed"):
+    calls = []
+
+    def probe(**kw):
+        key, cand = kw["key"], kw["candidate"]
+        calls.append(key)
+        fam = kw["base"]["models"][key]["family"]
+        n = model_sync.MAX_INFERENCES[fam] if inferences is None else inferences
+        if outcome == "pass":
+            e = ov_entry(key, cand["id"], superseded=kw["superseded"])
+            s = ov_summary(key, e)
+            s.update(outcome="pass", reason=None, retry_after=None)
+        else:
+            s = {"key": key, "id": cand["id"], "outcome": "failed", "reason": "smoke",
+                 "retry_after": model_sync.retry_after_for("smoke", kw["ctx"])}
+        with secure_io.StateRoot.open(kw["state_root"]) as r:
+            sha = model_state.write_summary(r, s, prefix=model_sync.SUMMARY_PREFIX)
+        return {"summary": s, "summary_sha256": sha, "inferences": n}
+    probe.calls = calls
+    return probe
+
+
+def test_run_enforces_the_inference_budget_before_each_candidate(tmp_path):
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path, claude=True)
+    rollout(home, 10.0, NOW - _dt.timedelta(hours=1), NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    probe = recorder()
+    rep = model_sync.run(env=sync_env(tmp_path, root, home, bindir), home=home, now=NOW,
+                         probe=probe)
+    fams = [BASE["models"][k]["family"] for k in probe.calls]
+    assert sum(model_sync.MAX_INFERENCES[f] for f in fams) <= model_sync.INFERENCE_BUDGET
+    assert sorted(probe.calls + rep["over_budget"]) == sorted(EXPECTED["candidates"])
+    assert rep["over_budget"], rep
+    assert rep["inferences"] <= model_sync.INFERENCE_BUDGET
+
+
+def test_run_defers_openai_on_quota_and_retries_after_the_reset(tmp_path):
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    resets = NOW + _dt.timedelta(hours=30)
+    rollout(home, 94.0, NOW - _dt.timedelta(hours=1), resets)
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    probe = recorder()
+    rep = model_sync.run(env=env, home=home, now=NOW, probe=probe)
+    assert probe.calls == []
+    openai = sorted(k for k in EXPECTED["candidates"] if BASE["models"][k]["family"] == "openai")
+    neg = work_state(root)["negatives"]
+    for key in openai:
+        assert neg[key]["reason"] == "quota"
+        assert neg[key]["retry_after"] == {
+            "kind": "time", "at": _dt.datetime.fromtimestamp(
+                int(resets.timestamp()), _dt.timezone.utc).isoformat()}
+    assert sorted(rep["deferred"]) == openai
+    # Catalogs and CLIs unchanged: the tick stores its hash, then idles…
+    spawned = []
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "no_candidates"
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "unchanged"
+    # …until the deferral expires.
+    later = resets + _dt.timedelta(minutes=1)
+    got = model_sync.tick(env=env, home=home, now=later, spawn=spawned.append)
+    assert got["status"] == "spawned" and sorted(spawned[-1]) == openai
+    # Unknown quota (a record older than 6 h) also defers — 6 h, not a guess.
+    rollout(home, 5.0, later - _dt.timedelta(hours=7), later + _dt.timedelta(days=1))
+    for p in (home / ".codex" / "sessions").rglob("*.jsonl"):
+        if "94" in p.read_text():
+            p.unlink()
+    rep = model_sync.run(env=env, home=home, now=later, probe=probe)
+    assert probe.calls == [] and sorted(rep["deferred"]) == openai
+    assert work_state(root)["negatives"][openai[0]]["retry_after"]["at"] == \
+        (later + _dt.timedelta(hours=6)).isoformat()
+    # A fresh record under the threshold probes.
+    rollout(home, 5.0, later, later + _dt.timedelta(days=1))
+    after = later + _dt.timedelta(hours=6, minutes=1)
+    rollout(home, 5.0, after - _dt.timedelta(minutes=1), after + _dt.timedelta(days=1))
+    model_sync.run(env=env, home=home, now=after, probe=probe)
+    assert sorted(probe.calls) == openai
+
+
+def test_tick_recomputes_when_only_a_cli_version_changes(tmp_path):
+    bindir, fakedir = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 94.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.run(env=env, home=home, now=NOW, probe=recorder())
+    spawned = []
+    model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "unchanged"
+    (fakedir / "claude.version").write_text("9.9.9 (Claude Code)\n")
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] != "unchanged"
+    assert spawned == []
+
+
+def test_tick_is_a_no_op_when_auto_upgrade_is_off(tmp_path):
+    bindir, fakedir = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    root = tmp_path / "state-never"
+    env = sync_env(tmp_path, root, home, bindir, DEEP_MODEL_ROUTER_AUTOUPGRADE="0")
+    spawned = []
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "disabled"
+    assert not root.exists() and spawned == [] and calls_of(fakedir, "codex") == []
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.disable(root)
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "disabled"
+    assert model_sync.run(env=env, home=home, now=NOW, probe=recorder())["status"] == "disabled"
+    model_sync.enable(root)
+    assert work_state(root)["auto_upgrade"] == "enabled"
+
+
+def test_a_lineage_is_probed_at_most_once_a_day(tmp_path):
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=2))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    probe = recorder(inferences=1)
+    model_sync.run(env=env, home=home, now=NOW, probe=probe)
+    first = list(probe.calls)
+    assert first
+    # The smoke retry (6 h) has expired, the lineage interval (24 h) has not.
+    later = NOW + _dt.timedelta(hours=7)
+    rollout(home, 5.0, later, later + _dt.timedelta(days=2))
+    rep = model_sync.run(env=env, home=home, now=later, probe=probe)
+    assert probe.calls == first and sorted(rep["interval"]) == sorted(first)
+    # An explicit --key is a manual request: the interval does not apply.
+    model_sync.run(env=env, home=home, now=later, probe=probe, keys=[first[0]])
+    assert probe.calls == first + [first[0]]
+
+
+def test_status_reports_state_deferrals_notices_and_summaries(tmp_path):
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 94.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.publish_results(root, BASE, [passing(worker_key())])
+    model_sync.run(env=env, home=home, now=NOW, probe=recorder())
+    st = model_sync.status(env=env, home=home, now=NOW)
+    _, g, _ = read_gen(root)
+    assert st["committed"]["shape"] == "ok" and st["committed"]["generation_sha256"] == g
+    assert st["committed"]["entries"][worker_key()]["id"] == successor(worker_key())
+    assert st["auto_upgrade"] == "enabled"
+    assert "retirement_notices" in st
+    deferred = st["deferred"]
+    assert deferred and all(d["retry_after"]["kind"] == "time" for d in deferred.values())
+    model_sync.disable(root)
+    assert model_sync.status(env=env, home=home, now=NOW)["auto_upgrade"] == "disabled"
+    proc = cli_sync(env, "status")
+    assert proc.returncode == 0 and json.loads(proc.stdout)["auto_upgrade"] == "disabled"
+
+
+# --- end to end through the CLI, fake codex -----------------------------------
+
+def test_run_publishes_a_passing_probe_and_copies_its_summary(tmp_path):
+    key = "openai_worker_fast"
+    bindir, fakedir = fake_bin(tmp_path, codex="codex")
+    home = fake_home(tmp_path)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    rollout(home, 5.0, now, now + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    proc = cli_sync(env, "run", "--key", key, timeout=600)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    shape, g, gen = read_gen(root)
+    assert shape == "ok" and gen["entries"][key]["id"] == _banner_model_of_fixture()
+    sha = gen["entries"][key]["probe_summary_sha256"]
+    assert (root / "committed" / "summaries" / f"{sha}.json").read_bytes() == \
+        (root / "work" / "probes" / "summaries" / f"{sha}.json").read_bytes()
+    eff = resolve_effective_policy(env, home)
+    assert key in eff.provenance.applied
+    assert calls_of(fakedir, "claude") == [] and calls_of(fakedir, "grok") == []
+    assert work_state(root)["in_flight"] == []
+
+
+def _wait(pred, timeout=60.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        got = pred()
+        if got:
+            return got
+        time.sleep(0.1)
+    raise AssertionError("timed out")
+
+
+def test_disable_during_a_run_cancels_the_attempt_and_publishes_nothing(tmp_path):
+    key = "openai_worker_fast"
+    bindir, fakedir = fake_bin(tmp_path, codex="sleep")
+    home = fake_home(tmp_path)
+    now = _dt.datetime.now(_dt.timezone.utc)
+    rollout(home, 5.0, now, now + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    proc = subprocess.Popen([sys.executable, str(SYNC), "run", "--key", key], env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        def running():
+            try:
+                flight = work_state(root)["in_flight"]
+            except (OSError, ValueError):
+                return None
+            if not flight:
+                return None
+            a = flight[0]
+            path = Path(a["receipt_dir"]) / f"{a['attempt_id']}.json"
+            try:
+                rec = json.loads(path.read_text())
+            except (OSError, ValueError):
+                return None
+            return a if rec["result"]["state"] == "RUNNING" else None
+        attempt = _wait(running)
+        got = cli_sync(env, "disable")
+        assert got.returncode == 0, got.stderr
+        assert attempt["attempt_id"] in got.stdout
+        out, err = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert not (root / "committed").exists()
+    rec = json.loads((Path(attempt["receipt_dir"]) / f"{attempt['attempt_id']}.json").read_text())
+    assert rec["result"]["state"] != "SUCCEEDED"
+    st = work_state(root)
+    assert st["auto_upgrade"] == "disabled" and st["in_flight"] == []
+    assert st["negatives"] == {}
+
+
+def test_disable_after_the_recheck_waits_for_an_atomic_publication(tmp_path, monkeypatch):
+    key = worker_key()
+    root = new_root(tmp_path)
+    model_sync.publish_results(root, BASE, [passing(key)])
+    _, g1, _ = read_gen(root)
+    done = threading.Event()
+    t = None
+
+    def fault(name):
+        nonlocal t
+        if name == "before_pointer":
+            t = threading.Thread(target=lambda: (model_sync.disable(root), done.set()))
+            t.start()
+            time.sleep(0.3)
+            assert not done.is_set(), "disable must wait for the publication lock"
+    monkeypatch.setattr(model_sync, "_fault", fault)
+    env = {"DEEP_MODEL_ROUTER_AUTOUPGRADE": "1"}
+    model_sync.publish_results(root, BASE, [passing(key, 2, superseded=[successor(key)])],
+                               recheck=model_sync.auto_upgrade_recheck(env))
+    t.join()
+    shape, g2, gen = read_gen(root)
+    assert shape == "ok" and g2 != g1 and gen["entries"][key]["id"] == successor(key, 2)
+    assert work_state(root)["auto_upgrade"] == "disabled"
+    # The recheck refuses once disabled: the pointer does not move.
+    monkeypatch.setattr(model_sync, "_fault", lambda name: None)
+    assert model_sync.publish_results(
+        root, BASE, [passing(key, 3, superseded=[successor(key), successor(key, 2)])],
+        recheck=model_sync.auto_upgrade_recheck(env)) is None
+    assert read_gen(root)[1] == g2
+
+
+def test_disable_never_signals_a_raw_pid():
+    src = SYNC.read_text()
+    assert "os.kill" not in src and "killpg" not in src and "import signal" not in src
+    assert '"cancel"' in src
+
+
+# --- attended probe-maker ----------------------------------------------------------
+
+import probe_maker  # noqa: E402
+
+GROK_KEY = next(k for k in EXPECTED["from_ids"] if BASE["models"][k]["family"] == "xai")
+
+
+def maker_env(tmp_path, **modes):
+    bindir, fakedir = fake_bin(tmp_path, **modes)
+    home = fake_home(tmp_path)
+    (home / ".grok").mkdir(exist_ok=True)
+    (home / ".grok" / "auth.json").write_text("{}")
+    root = new_root(tmp_path)
+    return sync_env(tmp_path, root, home, bindir), home, root, fakedir
+
+
+def test_probe_maker_refuses_without_a_tty(tmp_path):
+    env, home, root, fakedir = maker_env(tmp_path)
+    proc = subprocess.run([sys.executable, str(SYNC), "probe-maker", "openai_worker_fast"],
+                          env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert proc.returncode == 2 and "TTY" in proc.stderr
+    assert not (root / "work").exists()
+    assert calls_of(fakedir, "codex") == []
+
+
+def test_probe_maker_runs_nothing_without_a_typed_y(tmp_path):
+    import pty
+    env, home, root, fakedir = maker_env(tmp_path, codex="maker")
+    master, slave = pty.openpty()
+    proc = subprocess.Popen([sys.executable, str(SYNC), "probe-maker", "openai_worker_fast"],
+                            env=env, stdin=slave, stdout=slave, stderr=slave)
+    os.close(slave)
+    buf = b""
+    end = time.monotonic() + 60
+    while b"Type y" not in buf and time.monotonic() < end:
+        try:
+            buf += os.read(master, 4096)
+        except OSError:
+            break
+    assert b"work/probes" in buf, buf
+    os.write(master, b"n\n")
+    assert proc.wait(timeout=60) == 1
+    os.close(master)
+    assert calls_of(fakedir, "codex") == []
+
+
+def _maker(tmp_path, key, env, home, root, **kw):
+    return probe_maker.probe_maker(key=key, env=env, home=home, now=NOW, state_path=root,
+                                   confirm=lambda plan: True, receipt_guard=False, **kw)
+
+
+def test_grok_maker_argv_carries_every_required_supervisor_flag(tmp_path):
+    import dispatch_agent
+    argv = probe_maker.maker_argv(
+        cfg=BASE, family="xai", model_id="demo-9", effort_native="low", attempt_id="m-1",
+        receipt_dir=Path("/r"), child_cwd=Path("/c"), prompt_file=Path("/p"),
+        deadline_seconds=60, grok_home=Path("/gh"), auth_seed=Path("/a.json"),
+        session_id="11111111-2222-3333-4444-555555555555", receipt_guard=True)
+    sup, child = _split(argv)
+    for flag, _ in dispatch_agent.MAKER_SEAT_REQUIRED:
+        assert flag in sup, flag
+    assert sup[sup.index("--seat-profile") + 1] == dispatch_agent.MAKER_SEAT_PROFILE
+    assert sup[sup.index("--expect-sandbox-enforced") + 1] == dispatch_agent.MAKER_SANDBOX_PROFILE
+    assert not [a for a in argv if "<" in a and ">" in a], "an unsubstituted placeholder"
+    assert any("/gh/sessions/sandbox-events.jsonl" in a for a in child)
+    recipe = BASE["transports"]["claude_code"]["to_xai"]["mechanism_maker"]
+    assert child[child.index("--sandbox") + 1] == recipe.split("--sandbox ")[1].split()[0]
+
+
+@pytest.mark.parametrize("flag", [f for f, _ in __import__("dispatch_agent").MAKER_SEAT_REQUIRED])
+def test_grok_maker_missing_any_required_flag_is_refused_and_leaves_no_summary(
+        tmp_path, monkeypatch, flag):
+    env, home, root, fakedir = maker_env(tmp_path, grok="maker")
+    real = probe_maker.maker_argv
+
+    def dropped(**kw):
+        argv = real(**kw)
+        at = argv.index(flag)
+        takes_value = flag != "--require-single-linked-cwd"
+        del argv[at:at + (2 if takes_value else 1)]
+        return argv
+    monkeypatch.setattr(probe_maker, "maker_argv", dropped)
+    got = _maker(tmp_path, GROK_KEY, env, home, root)
+    assert got["status"] == "refused" and got["exit_code"] == 2
+    assert calls_of(fakedir, "grok") == []
+    assert not (root / "work" / "probes" / "makers").exists()
+
+
+def test_claude_maker_is_certified_by_content_hash_not_require_artifact(tmp_path):
+    env, home, root, fakedir = maker_env(tmp_path, claude="maker")
+    key = "claude_senior"
+    got = _maker(tmp_path, key, env, home, root)
+    s = got["summary"]
+    assert got["status"] == "pass", got
+    assert s["outcome"] == "pass" and s["id"] == ID_(key)
+    assert not [a for a in s["argv"] if a.startswith("--require-artifact")]
+    assert s["artifact"]["sha256"] == s["artifact"]["expected_sha256"]
+    child = s["argv"][s["argv"].index("--") + 1:]
+    ledger = next(e for e in BASE["verification_ledger"]["entries"]
+                  if "to_claude.write_verified" in e["item"])
+    mode = ledger["argv"].split("--permission-mode ")[1].split()[0]
+    assert child[child.index("--permission-mode") + 1] == mode
+    stored = (root / "work" / "probes" / "makers" / f"{got['summary_sha256']}.json")
+    assert json.loads(stored.read_text()) == s
+    assert work_state(root)["makers"][key]["summary_sha256"] == got["summary_sha256"]
+
+
+def test_openai_maker_is_the_ledger_write_recipe_without_a_guard(tmp_path):
+    env, home, root, fakedir = maker_env(tmp_path, codex="maker")
+    key = "openai_worker_fast"
+    got = probe_maker.probe_maker(key=key, env=env, home=home, now=NOW, state_path=root,
+                                  confirm=lambda plan: True)
+    assert got["status"] == "pass", got
+    argv = got["summary"]["argv"]
+    child = argv[argv.index("--") + 1:]
+    ledger = next(e for e in BASE["verification_ledger"]["entries"]
+                  if "to_openai.write_verified" in e["item"])
+    sandbox = ledger["argv"].split(" -s ")[1].split()[0]
+    assert child[child.index("-s") + 1] == sandbox
+    assert "--receipt-guard" not in argv
+    assert calls_of(fakedir, "codex")[-1]["args"] == child[1:]
+    if sys.platform == "darwin":
+        at = argv.index("--")
+        guarded = argv[:at] + ["--receipt-guard", "darwin-sandbox-v1"] + argv[at:]
+        guarded[guarded.index("--attempt-id") + 1] = "m-guarded"
+        proc = subprocess.run(guarded, capture_output=True, text=True, env=env, timeout=60)
+        assert proc.returncode == 2 and "--receipt-guard" in proc.stderr
+
+
+def test_only_the_attended_command_imports_the_maker_module():
+    """The automatic path (tick/run) cannot reach a write recipe: the one
+    import of probe_maker sits in the `probe-maker` branch of main()."""
+    import ast
+    tree = ast.parse(SYNC.read_text())
+    owners = []
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Import) and any(a.name == "probe_maker" for a in node.names):
+                    owners.append(fn.name)
+    top = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
+           and "probe_maker" in ast.dump(n)]
+    assert owners == ["main"] and top == []
