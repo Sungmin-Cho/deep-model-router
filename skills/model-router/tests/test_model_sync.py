@@ -1719,6 +1719,63 @@ def test_a_run_cut_short_by_the_budget_does_not_complete_the_tick(tmp_path):
     assert work_state(root)["tick_hash"] is None
 
 
+@pytest.mark.parametrize("when", ["between_probes", "at_the_recheck"])
+def test_a_pass_that_was_never_published_stays_due(tmp_path, monkeypatch, when):
+    """i1r2 opus F2: a pass recorded by `_record` but never published (the run
+    is disabled, or dies, before the pointer moves) must not start the
+    24-hour interval, and the tick it started must not complete — after
+    `enable`, the next tick spawns a run for that key again."""
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    model_sync.enable(root)
+    spawned = []
+    got = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert got["status"] == "spawned" and len(got["keys"]) >= 2, got
+    passer = recorder(inferences=1, outcome="pass")
+    if when == "between_probes":
+        def probe(**kw):
+            if passer.calls:
+                model_sync.disable(root)
+            return passer(**kw)
+    else:
+        probe = passer
+
+        def fault(name):
+            # inside the publication lock: `disable` would wait on it, so the
+            # env switch (read by the same recheck) stands in for it
+            if name in ("after_generation", "before_bootstrap_rename"):
+                env["DEEP_MODEL_ROUTER_AUTOUPGRADE"] = "0"
+        monkeypatch.setattr(model_sync, "_fault", fault)
+    rep = model_sync.run(env=env, home=home, now=NOW, probe=probe,
+                         tick_hash=got["tick_hash"])
+    first = passer.calls[0]
+    assert any(r["key"] == first and r["outcome"] == "pass"
+               for r in work_state(root)["recent"]), rep
+    assert read_gen(root)[0] == "absent", rep
+    assert first not in work_state(root)["last_probe"]
+    assert work_state(root)["tick_hash"] is None
+    monkeypatch.setattr(model_sync, "_fault", lambda name: None)
+    env.pop("DEEP_MODEL_ROUTER_AUTOUPGRADE", None)
+    model_sync.enable(root)
+    later = NOW + _dt.timedelta(hours=1)
+    again = model_sync.tick(env=env, home=home, now=later, spawn=spawned.append)
+    assert again["status"] == "spawned" and first in again["keys"], again
+    # Published, the pass starts the interval like any probe.
+    rep = model_sync.run(env=env, home=home, now=later, probe=recorder(
+        inferences=1, outcome="pass"), keys=[first])
+    assert rep["passed"] == [first] and rep["generation_sha256"], rep
+    assert work_state(root)["last_probe"][first] == later.isoformat()
+    eligible, skipped = model_sync.plan(
+        view=model_sync.committed_view(root, BASE),
+        catalogs=model_sync.load_catalogs(home, model_sync.cli_versions(env)),
+        versions=model_sync.cli_versions(env), work=work_state(root),
+        now=later + _dt.timedelta(hours=1), keys=[first])
+    assert first not in [c["key"] for c in eligible]
+
+
 def test_a_tick_while_a_run_holds_the_lock_is_busy_and_stores_nothing(tmp_path):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)

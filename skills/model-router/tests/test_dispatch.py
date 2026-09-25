@@ -4037,6 +4037,52 @@ def test_every_codex_child_counts_as_sandboxed_but_nothing_else_does(tmp_path):
     assert dispatch_agent._launches_codex(["claude", "-p", "--model", "x"]) is False
 
 
+@pytest.mark.parametrize("argv, launches", [
+    # i1r2 opus F1: only the launched executable counts, never an argument.
+    (["claude", "-p", "x", "--add-dir", "/x/codex"], False),
+    (["claude", "-p", "x", "--add-dir=/x/codex"], False),
+    (["python3", "review.py", "codex"], False),
+    (["env", "FOO=1", "claude", "-p", "--add-dir", "/x/codex"], False),
+    (["npx", "-y", "@anthropic-ai/claude-code", "codex"], False),
+    (["env", "FOO=1", "codex", "exec", "-"], True),
+    (["/usr/bin/env", "-i", "A=1", "B=2", "/opt/bin/codex", "exec"], True),
+    (["env", "-u", "HOME", "codex", "exec"], True),
+    (["npx", "-y", "codex", "exec"], True),
+    (["node", "/usr/lib/node_modules/codex", "exec"], True),
+    (["env"], False),
+    ([], False),
+])
+def test_launches_codex_reads_only_the_launched_executable(tmp_path, argv, launches):
+    dispatch_agent = _in_process(tmp_path)
+    assert dispatch_agent._launches_codex(argv) is launches
+
+
+def test_guarded_child_with_a_codex_path_argument_is_not_refused(tmp_path):
+    """i1r2 opus F1: `--add-dir /x/codex` names a checkout, not the program;
+    the guard must not refuse a claude child for it."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    claude = bindir / "claude"
+    claude.write_text(f"#!{sys.executable}\n" + textwrap.dedent(HAPPY))
+    claude.chmod(0o755)
+    proc, _ = run_dispatch(
+        tmp_path, [claude, "-p", "review", "--add-dir", "/x/codex"],
+        extra=GUARD_ARGS)
+    assert "codex child is refused" not in proc.stderr
+    if sys.platform == "darwin":
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_guarded_codex_behind_env_is_refused_without_opt_in(tmp_path):
+    codex = _fake_codex_bin(tmp_path)
+    proc, receipt = run_dispatch(
+        tmp_path, ["env", "FOO=1", codex, "exec", "-m", "x", "-"],
+        schema="none", extra=GUARD_ARGS + CODEX_TEXT_ARGS)
+    assert proc.returncode == 2, proc.stderr
+    assert receipt is None
+    assert "--allow-nested-sandbox no-file-access" in proc.stderr
+
+
 def test_nested_sandbox_opt_in_requires_a_guard(tmp_path):
     codex = _fake_codex_bin(tmp_path)
     proc, receipt = run_dispatch(

@@ -2145,17 +2145,64 @@ def _backfill_terminal_evidence(args, receipt: dict,
             _read_envelope(stdout_path, args.output_envelope))
 
 
+# Launchers whose first operand is the real program (i1r2 opus F1), with the
+# options of each that consume the following word as their value.
+_CODEX_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-P", "-S",
+                      "--split-string"}),
+    "npx": frozenset({"-p", "--package", "-c", "--call"}),
+    "node": frozenset({"-r", "--require", "--import", "--loader",
+                       "--experimental-loader"}),
+}
+
+
+def _launched_program(argv: list[str]) -> str | None:
+    """Basename of the program argv actually runs, looking through wrappers.
+
+    argv[0] is the program unless it is a known wrapper (env, npx, node), in
+    which case the program is the wrapper's first operand: the first word
+    that is neither an option (nor an option's value) nor, for env, a
+    VAR=val assignment. Wrappers may chain (`env A=1 npx codex`).
+    """
+    i = 0
+    while i < len(argv):
+        name = os.path.basename(argv[i])
+        takes_value = _CODEX_WRAPPERS.get(name)
+        if takes_value is None:
+            return name
+        i += 1
+        while i < len(argv):
+            word = argv[i]
+            if word == "--":
+                i += 1
+                break
+            if word.startswith("-"):
+                i += 2 if word in takes_value else 1
+                continue
+            if name == "env" and "=" in word:
+                i += 1
+                continue
+            break
+    return None
+
+
 def _launches_codex(argv: list[str]) -> bool:
-    """True when argv launches codex (by basename, anywhere in argv).
+    """True when the executable argv launches is codex.
 
     The one place this supervisor reads argv, and only to REFUSE (DD-B9):
     codex applies its own Seatbelt whether or not argv says so — an explicit
     `-s`/`--sandbox`, its `exec` default, a `--full-auto` preset, a `-c
     sandbox_mode=…` override or config.toml — so matching sandbox flags would
-    miss every implicit case (i1r1 opus F5). An over-match refuses a launch
-    the caller can still opt into; it never admits one.
+    miss every implicit case (i1r1 opus F5). Only the launched program counts
+    (i1r2 opus F1): an argument that merely names a path ending in `codex`
+    (`--add-dir ~/src/codex`) is not a codex child.
     """
-    return any(os.path.basename(arg) == "codex" for arg in argv)
+    program = _launched_program(argv)
+    if program is None:
+        return False
+    stem, ext = os.path.splitext(program)
+    return program == "codex" or (ext in (".js", ".mjs", ".cjs")
+                                  and stem == "codex")
 
 
 def cmd_run(args) -> int:

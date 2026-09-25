@@ -1723,11 +1723,22 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
             skipped[key] = f"deferred:{neg.get('reason')}"
             continue
         last = (work.get("last_probe") or {}).get(key)
-        if interval and last and now - _parse_time(last) < LINEAGE_INTERVAL:
+        if interval and last and now - _parse_time(last) < LINEAGE_INTERVAL \
+                and not _unpublished_pass(work, key):
             skipped[key] = "interval"
             continue
         eligible.append({**c, "key": key})
     return eligible, skipped
+
+
+def _unpublished_pass(work: Mapping, key: str) -> bool:
+    """The key's newest recorded outcome is a pass that no publication has
+    consumed yet (i1r2 opus F2): the run died, or was disabled, between
+    `_record` and `publish_results`. Such a key stays due."""
+    for r in work.get("recent") or []:
+        if r.get("key") == key:
+            return r.get("outcome") == "pass" and r.get("published") is False
+    return False
 
 
 # --- tick ------------------------------------------------------------------------
@@ -1825,11 +1836,15 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
             retry_after: Mapping | None, summary_sha: str | None, inferences: int,
             now: dt.datetime) -> None:
     def rec(st):
-        if inferences:
+        # A pass counts toward the lineage interval only once published
+        # (`_mark_published`); until then it is `published: False` and due.
+        if inferences and outcome != "pass":
             st["last_probe"][key] = now.isoformat()
-        st["recent"] = ([{"key": key, "id": cand["id"], "outcome": outcome, "reason": reason,
-                          "summary_sha256": summary_sha, "at": now.isoformat()}]
-                        + list(st["recent"]))[:RECENT_KEEP]
+        entry = {"key": key, "id": cand["id"], "outcome": outcome, "reason": reason,
+                 "summary_sha256": summary_sha, "at": now.isoformat()}
+        if outcome == "pass":
+            entry["published"] = False
+        st["recent"] = ([entry] + list(st["recent"]))[:RECENT_KEEP]
         if outcome in ("pass", "none"):
             st["negatives"].pop(key, None)
         elif outcome == "held":
@@ -1842,6 +1857,20 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
             if cand.get("alias"):
                 st["negatives"][key]["alias"] = cand["alias"]
     update_work_state(state_path, rec)
+
+
+def _mark_published(state_path: Path, passing: list, now: dt.datetime) -> None:
+    """The publication consumed these passes (installed, or dropped as a
+    no-op against the current chain): each now starts its lineage interval."""
+    shas = {(key, sha) for key, _, sha in passing}
+
+    def mark(st):
+        for key, _, _ in passing:
+            st["last_probe"][key] = now.isoformat()
+        for r in st["recent"]:
+            if r.get("published") is False and (r.get("key"), r.get("summary_sha256")) in shas:
+                r["published"] = True
+    update_work_state(state_path, mark)
 
 
 def run(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime | None = None,
@@ -1972,8 +2001,21 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
             else:
                 rep["deferred" if s["outcome"] == "deferred" else "failed"].append(key)
         if passing:
+            refused = []
+            allowed = auto_upgrade_recheck(env)
+
+            def recheck(r):
+                ok = allowed(r)
+                if not ok:
+                    refused.append(True)
+                return ok
             rep["generation_sha256"] = publish_results(
-                state_path, base, passing, recheck=auto_upgrade_recheck(env))
+                state_path, base, passing, recheck=recheck)
+            if refused:
+                # disabled at the pointer swap: nothing published, so the
+                # passes stay due and the tick stays incomplete
+                raise Disabled()
+            _mark_published(state_path, passing, now)
         if tick_hash is not None and not rep["over_budget"]:
             _store_tick_hash(state_path, tick_hash)
     except Disabled:
