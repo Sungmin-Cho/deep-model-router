@@ -150,7 +150,18 @@ HEX64_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 # is the same kind of knowledge `--output-schema review` already encodes
 # about verdict grammar.
 GROK_ENVELOPE_FORMAT = "grok-headless-json-v1"
-ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1")
+# 2026-09-25 DD-B9. Codex has no single-document output, so its two formats
+# are read line by line rather than through the JSON-document decoder below.
+# `codex-exec-text-v1` is plain mode: stdout carries the final answer, stderr a
+# banner whose `model:` line is the only place codex names the model (header-
+# reported, never `served_models`), and a `tokens used` footer that EXCLUDES
+# cached input. `codex-exec-json-v1` is `--json` mode: JSONL events whose
+# `turn.completed.usage` carries the total `input_tokens` — and no model name
+# anywhere (measured 2026-09-25, codex-cli 0.157.0).
+CODEX_TEXT_FORMAT = "codex-exec-text-v1"
+CODEX_JSON_FORMAT = "codex-exec-json-v1"
+CODEX_FORMATS = (CODEX_TEXT_FORMAT, CODEX_JSON_FORMAT)
+ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS)
 
 # Which document key carries each envelope field, per format. The shapes are
 # analogous, not identical: grok discriminates a failure with a top-level
@@ -165,6 +176,11 @@ ENVELOPE_FIELDS = {
     "claude-print-json-v1": {"stop_reason": "stop_reason",
                              "session_id": "session_id",
                              "text": "result", "error_type": "subtype"},
+    # The codex formats are not key-mapped documents; they are decoded by
+    # `_decode_codex_text` / `_decode_codex_json`. Present so the import-time
+    # agreement check below still covers every declared format.
+    CODEX_TEXT_FORMAT: {},
+    CODEX_JSON_FORMAT: {},
 }
 # The envelope is a GATE surface, so its read is bounded: an unbounded
 # JSON parse of a child-controlled file is a denial-of-service surface on
@@ -178,6 +194,22 @@ ENVELOPE_MAX_BYTES = 4 * 1024 * 1024
 # envelope VERSION name: a grok upgrade that changes it gets a new
 # envelope version, never a new meaning for this one.
 ENVELOPE_OK_STOP_REASON = "end_turn"
+# The finishing reason each format must show, None where the format has none
+# (plain codex output carries no turn-completion record at all). For
+# `codex-exec-json-v1` the "stop reason" is the last `turn.*` event's type.
+ENVELOPE_OK_STOP_REASONS = {
+    GROK_ENVELOPE_FORMAT: ENVELOPE_OK_STOP_REASON,
+    "claude-print-json-v1": ENVELOPE_OK_STOP_REASON,
+    CODEX_TEXT_FORMAT: None,
+    CODEX_JSON_FORMAT: "turn.completed",
+}
+# Codex plain-mode stderr reads: the banner and any metadata warning are at
+# the head, the `tokens used` footer at the tail. Both are bounded.
+CODEX_STDERR_HEAD_BYTES = 64 * 1024
+CODEX_STDERR_TAIL_BYTES = 4 * 1024
+CODEX_METADATA_WARNING_PREFIX = "warning: Model metadata for "
+# DD-B9: the one declared exception to the guard/codex-sandbox refusal.
+NESTED_SANDBOX_OPT_INS = ("no-file-access",)
 CLAUDE_RESULT_DOC_TYPE = "result"
 CLAUDE_OK_SUBTYPE = "success"
 
@@ -1462,7 +1494,8 @@ def _capped_bytes(path: Path, limit: int) -> tuple[bytes | None, bool]:
     return data, False
 
 
-def _read_envelope(stdout_path: Path, fmt: str) -> dict:
+def _read_envelope(stdout_path: Path, fmt: str,
+                   stderr_path: Path | None = None) -> dict:
     """Read one headless JSON document off a finished attempt's stdout.
 
     `fmt` selects the key names (ENVELOPE_FIELDS); everything below is shape,
@@ -1482,7 +1515,120 @@ def _read_envelope(stdout_path: Path, fmt: str) -> dict:
     tell an over-budget stdout from a merely malformed one.
     """
     data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
-    return _decode_envelope(data, fmt, oversized=oversized)
+    envelope = _decode_envelope(data, fmt, oversized=oversized)
+    if fmt == CODEX_TEXT_FORMAT:
+        envelope.update(_codex_stderr_view(
+            stderr_path if stderr_path is not None
+            else stdout_path.with_suffix(".stderr")))
+    return envelope
+
+
+def _finite_counts(counts: dict) -> dict:
+    # Finite and non-negative only. A child's document is untrusted input,
+    # Python parses `NaN`/`Infinity` happily, and json.dumps would then
+    # write a receipt no strict JSON reader (deep-loop among them) can
+    # parse — a malformed count must not cost the attempt its receipt.
+    return {k: v for k, v in counts.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) and v >= 0}
+
+
+def _read_head_tail(path: Path, head: int, tail: int) -> tuple[bytes, bytes] | None:
+    """Bounded head and tail of a regular file, refused like any gate read."""
+    try:
+        fd, st = _open_regular(path)
+        with os.fdopen(fd, "rb") as f:
+            first = f.read(head)
+            size = os.fstat(f.fileno()).st_size
+            if size <= head:
+                return first, first[-tail:]
+            f.seek(max(0, size - tail))
+            return first, f.read(tail)
+    except OSError:
+        return None
+
+
+def _codex_stderr_view(stderr_path: Path) -> dict:
+    """Plain-mode codex evidence, read from stderr. Records only; never gates.
+
+    The banner is the FIRST `OpenAI Codex v<version>` line followed by a block
+    between two `--------` lines; only that block's `model:` line counts, so a
+    `model:` line the conversation echoes later is not a claim. The metadata
+    warning is scanned for anywhere in the bounded head, at line start —
+    where codex prints it relative to the banner was not captured, and a
+    false positive only defers a probe (fail closed). The footer is the last
+    two non-empty lines: `tokens used` and a comma-grouped count.
+    """
+    view = {"header_model": None, "header_model_basis": "header-reported",
+            "metadata_warning": False, "footer_tokens_uncached": None,
+            "cli_version": None}
+    read = _read_head_tail(stderr_path, CODEX_STDERR_HEAD_BYTES,
+                           CODEX_STDERR_TAIL_BYTES)
+    if read is None:
+        return view
+    head = read[0].decode("utf-8", errors="replace").splitlines()
+    tail = read[1].decode("utf-8", errors="replace").splitlines()
+    view["metadata_warning"] = any(
+        line.startswith(CODEX_METADATA_WARNING_PREFIX) for line in head)
+    for i, line in enumerate(head):
+        match = re.fullmatch(r"OpenAI Codex v(\S+)", line.strip())
+        if not match:
+            continue
+        if i + 1 < len(head) and head[i + 1].strip() == "--------":
+            view["cli_version"] = match.group(1)
+            for entry in head[i + 2:]:
+                if entry.strip() == "--------":
+                    break
+                key, sep, value = entry.partition(": ")
+                if sep and key == "model" and value.strip() \
+                        and not any(c.isspace() for c in value.strip()):
+                    view["header_model"] = value.strip()
+                    break
+        break
+    lines = [line.strip() for line in tail if line.strip()]
+    if len(lines) >= 2 and lines[-2] == "tokens used" \
+            and re.fullmatch(r"\d{1,3}(?:,\d{3})*|\d+", lines[-1]):
+        view["footer_tokens_uncached"] = int(lines[-1].replace(",", ""))
+    return view
+
+
+def _decode_codex_json(envelope: dict, text: str) -> dict:
+    """`--json` JSONL, parsed line by line and by event NAME.
+
+    Every non-empty line must be a JSON object with a string `type`, or the
+    whole stream is unparseable. The finishing record is the last `turn.*`
+    terminal event; `turn.failed` and `error` events are the stream's own
+    failure report. The answer is the last completed `agent_message`.
+    """
+    events = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, RecursionError):
+            return envelope
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            return envelope
+        events.append(event)
+    envelope["parse_ok"] = True
+    for event in events:
+        kind = event["type"]
+        if kind in ("turn.completed", "turn.failed"):
+            envelope["stop_reason"] = kind
+            usage = event.get("usage")
+            if kind == "turn.completed" and isinstance(usage, dict):
+                envelope["usage"] = _finite_counts(usage)
+        if kind in ("turn.failed", "error"):
+            envelope["reported_error"] = True
+        if kind == "thread.started" and isinstance(event.get("thread_id"), str):
+            envelope["session_id"] = event["thread_id"]
+        item = event.get("item")
+        if kind == "item.completed" and isinstance(item, dict) \
+                and item.get("type") == "agent_message" \
+                and isinstance(item.get("text"), str):
+            envelope["text"] = item["text"]
+    return envelope
 
 
 def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -> dict:
@@ -1496,6 +1642,18 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
         return envelope
     if data is None:
         envelope["error_type"] = "envelope_unreadable"
+        return envelope
+    if fmt in CODEX_FORMATS:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return envelope
+        if fmt == CODEX_JSON_FORMAT:
+            return _decode_codex_json(envelope, text)
+        # Plain mode: stdout IS the answer. Its evidence lives on stderr and
+        # is merged in by `_read_envelope`, never graded.
+        envelope["parse_ok"] = True
+        envelope["text"] = text
         return envelope
     try:
         doc = json.loads(data.decode("utf-8"))
@@ -1519,14 +1677,7 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
         envelope["doc_type"] = doc_type
     counts = doc.get("usage")
     if isinstance(counts, dict):
-        # Finite and non-negative only. A child's document is untrusted input,
-        # Python parses `NaN`/`Infinity` happily, and json.dumps would then
-        # write a receipt no strict JSON reader (deep-loop among them) can
-        # parse — a malformed count must not cost the attempt its receipt.
-        envelope["usage"] = {
-            k: v for k, v in counts.items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-            and math.isfinite(v) and v >= 0}
+        envelope["usage"] = _finite_counts(counts)
     usage = doc.get("modelUsage")
     if isinstance(usage, dict):
         # DD-7: the SERVED model identifiers, recorded as observed and
@@ -1536,13 +1687,21 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
     return envelope
 
 
+CODEX_TEXT_RECEIPT_KEYS = ("header_model", "header_model_basis",
+                           "metadata_warning", "footer_tokens_uncached",
+                           "cli_version")
+
+
 def _receipt_envelope(envelope: dict) -> dict:
     """The six keys an envelope contributes to a receipt. `session_id` is
     here as the audit evidence for what the attempt-binding cross-proof
-    (DD-3) actually compared; `text` is deliberately absent."""
-    return {k: envelope[k] for k in
-            ("parse_ok", "stop_reason", "session_id", "served_models",
-             "error_type", "usage")}
+    (DD-3) actually compared; `text` is deliberately absent. Plain-mode codex
+    adds its stderr evidence (DD-B9) and nothing else."""
+    keys = ("parse_ok", "stop_reason", "session_id", "served_models",
+            "error_type", "usage")
+    if envelope.get("fmt") == CODEX_TEXT_FORMAT:
+        keys = keys + CODEX_TEXT_RECEIPT_KEYS
+    return {k: envelope.get(k) for k in keys}
 
 
 def _grade_envelope(envelope: dict) -> list[str]:
@@ -1566,8 +1725,11 @@ def _grade_envelope(envelope: dict) -> list[str]:
             reasons.append("envelope_invalid_error_discriminator")
     if envelope.get("reported_error"):
         reasons.append("envelope_reported_error")
+    if envelope["fmt"] == CODEX_TEXT_FORMAT:
+        # Plain codex output has no finishing record to grade.
+        return reasons
     stop_reason = envelope["stop_reason"]
-    if stop_reason != ENVELOPE_OK_STOP_REASON:
+    if stop_reason != ENVELOPE_OK_STOP_REASONS[envelope["fmt"]]:
         # Appended, never returned early: a turn that both declared an error
         # and ended on a non-end_turn reason must report both, because the
         # stop reason is what tells a recipe defect from a model failure
@@ -1693,6 +1855,10 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         "grok_home": args.grok_home,
         "seat_profile": args.seat_profile,
         "require_single_linked_cwd": bool(args.require_single_linked_cwd),
+        # 2026-09-25 DD-B9: the declared nested-sandbox opt-in, null when
+        # undeclared. Recorded so a guarded codex receipt says the caller
+        # vouched that its child reads no files.
+        "allow_nested_sandbox": args.allow_nested_sandbox,
         "process": {"pid": None, "process_group_id": None,
                     "supervisor_pid": os.getpid()},
         "timing": {"started_at": None, "deadline_at": None,
@@ -1979,6 +2145,22 @@ def _backfill_terminal_evidence(args, receipt: dict,
             _read_envelope(stdout_path, args.output_envelope))
 
 
+def _nested_codex_sandbox(argv: list[str]) -> bool:
+    """True when argv launches codex with its own sandbox flag.
+
+    The one place this supervisor reads argv, and only to REFUSE (DD-B9):
+    a codex executable (by basename) followed anywhere by `-s`, `-s<mode>`,
+    `--sandbox` or `--sandbox=<mode>`. An over-match refuses a launch the
+    caller can still opt into; it never admits one.
+    """
+    for i, arg in enumerate(argv):
+        if os.path.basename(arg) == "codex":
+            return any(a in ("-s", "--sandbox") or a.startswith("--sandbox=")
+                       or (a.startswith("-s") and not a.startswith("--"))
+                       for a in argv[i + 1:])
+    return False
+
+
 def cmd_run(args) -> int:
     """Own the artifact pins' lifetime, and nothing else.
 
@@ -2089,6 +2271,26 @@ def _run_attempt(args, pins: list[dict]) -> int:
                   f"declaration; see references/adapters.md \"Dispatch "
                   f"contract\".", file=sys.stderr)
             return 2
+
+    # --- Guard vs a nested codex sandbox (2026-09-25 DD-B9) -------------
+    # Seatbelt does not nest: a codex `-s <mode>` child inside the receipt
+    # guard cannot read the files it was asked to review and still exits 0 —
+    # a silent non-review that grades SUCCEEDED. Refused before spawn unless
+    # the caller declares the child reads no files at all.
+    guarded = getattr(args, "receipt_guard", "none") != "none"
+    if guarded and _nested_codex_sandbox(args.argv) \
+            and args.allow_nested_sandbox is None:
+        print("--receipt-guard with a codex child that runs its own "
+              "-s/--sandbox is refused: the nested Seatbelt cannot read files "
+              "and still exits 0, so a review would succeed without reading "
+              "anything. Drop the guard, or declare "
+              "--allow-nested-sandbox no-file-access when the child reads no "
+              "files (references/adapters.md).", file=sys.stderr)
+        return 2
+    if args.allow_nested_sandbox is not None and not guarded:
+        print("--allow-nested-sandbox without --receipt-guard constrains "
+              "nothing", file=sys.stderr)
+        return 2
 
     if args.seat_profile == MAKER_SEAT_PROFILE:
         missing = [name for name, attr in MAKER_SEAT_REQUIRED
@@ -2476,7 +2678,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         envelope = None
                         if args.output_envelope is not None:
                             envelope = _read_envelope(
-                                stdout_path, args.output_envelope)
+                                stdout_path, args.output_envelope, stderr_path)
                             receipt["result"]["envelope"] = _receipt_envelope(
                                 envelope)
                             receipt["result"]["output_sha256"] = _stdout_digest(
@@ -2925,12 +3127,15 @@ def cmd_verify_evidence(args) -> int:
         # it is for: it catches a hand-assembled evidence set, where the
         # state word was chosen rather than earned.
         envelope = receipt.get("result", {}).get("envelope")
-        if envelope is not None and \
-                envelope.get("stop_reason") != ENVELOPE_OK_STOP_REASON:
+        expected_stop = ENVELOPE_OK_STOP_REASONS.get(
+            receipt.get("output_envelope"), ENVELOPE_OK_STOP_REASON)
+        if envelope is not None and receipt.get("output_envelope") \
+                != CODEX_TEXT_FORMAT and \
+                envelope.get("stop_reason") != expected_stop:
             problems.append(
                 f"{attempt_id}: envelope stop_reason is "
                 f"{envelope.get('stop_reason')!r}, not "
-                f"{ENVELOPE_OK_STOP_REASON!r}")
+                f"{expected_stop!r}")
         # The second is the second net behind the pre-spawn preflight. That
         # preflight refuses a PARTIAL declaration before the attempt starts;
         # this refuses a COMPLETE absence at the moment such a receipt is
@@ -2994,6 +3199,11 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="supervise one attempt to a terminal state")
     run.add_argument("--attempt-id", required=True)
     run.add_argument("--receipt-dir", required=True)
+    run.add_argument("--allow-nested-sandbox", choices=list(NESTED_SANDBOX_OPT_INS),
+                     default=None,
+                     help="with --receipt-guard, allow a codex child that runs its "
+                          "own -s/--sandbox; the caller vouches the child reads "
+                          "no files (DD-B9). Recorded in the receipt")
     run.add_argument("--receipt-guard", choices=["none", receipt_guard.GUARD_NAME], default="none",
                      help="explicit kernel protection for this child's receipt store; no silent fallback")
     run.add_argument("--deadline-seconds", type=float, required=True)

@@ -895,6 +895,8 @@ Missing or non-boolean `is_error` is invalid; only literal false can pass.
 declare it failed — and every reason that applies is reported, because the stop
 reason is what tells a recipe defect from a model failure.
 
+**Codex has two line-based formats.** `codex-exec-text-v1` (plain mode) grades stdout as the answer and records stderr evidence: the banner's `model:` as `header_model` (header-reported, not `served_models`), a `Model metadata for` warning as `metadata_warning`, and the footer as `footer_tokens_uncached` (it excludes cached input); `codex-exec-json-v1` (`--json`) parses JSONL by event name, requires a final `turn.completed`, fails on `turn.failed`/`error`, and records `turn.completed.usage` (total `input_tokens`) — that mode names no model anywhere.
+
 **Both formats carry `usage`**, and the receipt's envelope carries it too, so a
 caller measuring boot or context cost reads the receipt instead of scraping the
 retained stdout. The key sets differ — grok adds `reasoning_tokens` and
@@ -1153,6 +1155,7 @@ are outside this direct-process-tree boundary. This is not workspace containment
 use a trusted verifier installation/runtime that the child cannot alter (or
 validate its pinned integrity through a trusted controller before invoking it).
 Existing maker-seat sandbox and `--require-single-linked-cwd` obligations remain.
+A guarded `run` whose argv launches codex with its own `-s`/`--sandbox` is refused before spawn (exit 2, no receipt) — the nested Seatbelt cannot read files yet exits 0 — unless `--allow-nested-sandbox no-file-access` declares the child reads no files (the model-evaluation collector does); the opt-in is recorded as the receipt's `allow_nested_sandbox`.
 
 Accepted cancellation optionally records `result.cancel_requested_at`; this
 control intent is owned by the supervisor/canceler, not the child output.

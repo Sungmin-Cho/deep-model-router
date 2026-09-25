@@ -29,6 +29,11 @@ HERE = Path(__file__).resolve().parent
 CASES = HERE.parent / 'evals' / 'diagnostic-cases.json'
 USAGE_FIELDS = ('input_tokens','cached_input_tokens','cache_write_input_tokens','output_tokens','reasoning_output_tokens')
 MAX_BYTES = 4 * 1024 * 1024
+# The collector's codex child runs `--sandbox read-only` inside the receipt
+# guard, which dispatch_agent refuses unless the caller opts in (DD-B9). Every
+# tool is disabled and the task travels in the prompt, so the child reads no
+# files — the one case the opt-in exists for; it keeps flat-guard-root-v1.
+NESTED_SANDBOX_OPT_IN = ('--allow-nested-sandbox', 'no-file-access')
 
 
 class MeasurementPublicationError(RuntimeError):
@@ -250,7 +255,7 @@ def run(args):
         cmd=[sys.executable,str(HERE/'dispatch_agent.py'),'run','--attempt-id',attempt,'--receipt-dir',str(receipts),
              '--deadline-seconds',str(args.deadline),'--grace-seconds','3','--seat','worker','--runtime','codex',
              '--model-id',model,'--effort-native',native,'--host-cli-version',version,'--child-cwd',str(scratch),'--prompt-file',str(prompt),
-             '--receipt-guard',receipt_guard.GUARD_NAME,'--','codex','exec','--ignore-user-config','--skip-git-repo-check',
+             '--receipt-guard',receipt_guard.GUARD_NAME,*NESTED_SANDBOX_OPT_IN,'--','codex','exec','--ignore-user-config','--skip-git-repo-check',
              '--ephemeral','--sandbox','read-only','--disable','shell_tool','--disable','unified_exec','--disable','multi_agent',
              '-c','project_doc_max_bytes=0','-c','web_search="disabled"','-c',f'model_reasoning_effort="{native}"',
              '--output-schema',str(shape),'--json','-m',model,'-']
