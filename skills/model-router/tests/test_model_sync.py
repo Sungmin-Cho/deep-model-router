@@ -1104,9 +1104,10 @@ def worker_key() -> str:
     return Policy.of(BASE).id_to_key[route(Task(**TASK), BASE)["selected_model"]]
 
 
-def passing(key, step=1, superseded=(), new_id=None):
-    e = ov_entry(key, new_id or successor(key, step), superseded=list(superseded))
-    s = ov_summary(key, e)
+def passing(key, step=1, superseded=(), new_id=None, base=BASE):
+    e = ov_entry(key, new_id or successor(key, step, base), superseded=list(superseded),
+                 base=base)
+    s = ov_summary(key, e, base)
     s.update(outcome="pass", reason=None, retry_after=None)
     return (key, s, sha_of(s))
 
@@ -1125,9 +1126,78 @@ def work_state(root):
         return r.read_json("work/state.json")
 
 
-def cli_sync(env, *args, **kw):
-    return subprocess.run([sys.executable, str(SYNC), *args], capture_output=True, text=True,
+def cli_sync(env, *args, argv=None, **kw):
+    return subprocess.run([*(argv or [sys.executable, str(SYNC)]), *args],
+                          capture_output=True, text=True,
                           env=env, timeout=kw.pop("timeout", 120), **kw)
+
+
+# --- the registry the codex capture was taken against ------------------------
+#
+# The codex catalog under `fixtures/catalogs/codex/` proposes a successor for
+# every OpenAI key in `expected-candidates.json`. Once the registry promotes a
+# key to exactly that successor, the capture proposes nothing for it, and a
+# test about probing, deferring or publishing an OpenAI candidate would have
+# nothing to probe. These tests therefore run against a copy of the registry
+# with those keys rewound to the id the capture saw — the promoted row with the
+# predecessor's id and price, and without the history row the promotion left
+# for that id. Claude keys stay live: `fake_home` documents that the claude
+# capture proposes nothing, and the quota tests rely on it.
+
+CAPTURE_REWOUND = tuple(sorted(
+    k for k in EXPECTED["candidates"] if BASE["models"][k]["family"] == "openai"))
+
+_LAUNCHER = """\
+import runpy, sys
+from pathlib import Path
+sys.path.insert(0, {scripts!r})
+import route_task
+real = route_task.load_config
+route_task.load_config = (
+    lambda path=route_task.CONFIG_PATH:
+    real(Path({cfg!r}) if path == route_task.CONFIG_PATH else path))
+sys.argv = [{sync!r}, *sys.argv[1:]]
+runpy.run_path({sync!r}, run_name="__main__")
+"""
+
+
+def captured_base() -> dict:
+    base = copy.deepcopy(BASE)
+    models = base["models"]
+    for key in CAPTURE_REWOUND:
+        was = EXPECTED["from_ids"][key]
+        if models[key]["id"] == was:
+            continue
+        # Promoted to exactly the captured successor, or the capture is stale
+        # and this rewind would hide it.
+        assert models[key]["id"] == EXPECTED["candidates"][key], key
+        hist = models.pop(f"{key}@{was}")
+        assert hist["history_of"] == key and hist["id"] == was, key
+        models[key]["id"] = was
+        models[key]["price_per_mtok"] = hist["price_per_mtok"]
+    return base
+
+
+@pytest.fixture
+def captured(tmp_path, monkeypatch):
+    """The capture-time registry, in process (`load_config`, the cached
+    default) and for a `model_sync.py` child (`captured.argv`)."""
+    import types
+    import route_task
+    import yaml
+    base = captured_base()
+    cfg = tmp_path / "captured-model-routing.yaml"
+    cfg.write_text(yaml.safe_dump(base, sort_keys=False))
+    assert route_task.load_config(cfg) == base
+    real = route_task.load_config
+    monkeypatch.setattr(route_task, "load_config",
+                        lambda path=route_task.CONFIG_PATH:
+                        real(cfg if path == route_task.CONFIG_PATH else path))
+    monkeypatch.setattr(route_task, "_DEFAULT_CFG", None)
+    launcher = tmp_path / "model_sync_captured.py"
+    launcher.write_text(_LAUNCHER.format(scripts=str(SKILL / "scripts"), cfg=str(cfg),
+                                         sync=str(SYNC)))
+    return types.SimpleNamespace(base=base, argv=[sys.executable, str(launcher)])
 
 
 # --- publication order, crash points, bootstrap ----------------------------
@@ -1580,8 +1650,8 @@ def recorder(inferences=None, outcome="failed"):
         fam = kw["base"]["models"][key]["family"]
         n = model_sync.MAX_INFERENCES[fam] if inferences is None else inferences
         if outcome == "pass":
-            e = ov_entry(key, cand["id"], superseded=kw["superseded"])
-            s = ov_summary(key, e)
+            e = ov_entry(key, cand["id"], superseded=kw["superseded"], base=kw["base"])
+            s = ov_summary(key, e, kw["base"])
             s.update(outcome="pass", reason=None, retry_after=None)
         else:
             s = {"key": key, "id": cand["id"], "outcome": "failed", "reason": "smoke",
@@ -1593,18 +1663,18 @@ def recorder(inferences=None, outcome="failed"):
     return probe
 
 
-def test_run_enforces_the_inference_budget_before_each_candidate(tmp_path):
+def test_run_enforces_the_inference_budget_before_each_candidate(tmp_path, captured):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path, claude=True)
     rollout(home, 10.0, NOW - _dt.timedelta(hours=1), NOW + _dt.timedelta(days=1))
     root = new_root(tmp_path)
     probe = recorder()
-    # Candidates against the LIVE registry: a key already promoted to its
-    # captured successor has nothing left to find. The budget is set one short
-    # of probing them all, so the pre-candidate check has to cut one — however
-    # many candidates remain after a promotion.
+    # Candidates against the registry the run loads (`captured`): a key
+    # already promoted to its captured successor has nothing left to find.
+    # The budget is set one short of probing them all, so the pre-candidate
+    # check has to cut one — however many candidates remain.
     live = sorted(k for k, v in EXPECTED["candidates"].items()
-                  if BASE["models"][k]["id"] == EXPECTED["from_ids"][k])
+                  if captured.base["models"][k]["id"] == EXPECTED["from_ids"][k])
     assert len(live) >= 2, live
     budget = min(model_sync.INFERENCE_BUDGET,
                  sum(model_sync.MAX_INFERENCES[BASE["models"][k]["family"]] for k in live) - 1)
@@ -1617,7 +1687,7 @@ def test_run_enforces_the_inference_budget_before_each_candidate(tmp_path):
     assert rep["inferences"] <= budget
 
 
-def test_run_defers_openai_on_quota_and_retries_after_the_reset(tmp_path):
+def test_run_defers_openai_on_quota_and_retries_after_the_reset(tmp_path, captured):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)
     resets = NOW + _dt.timedelta(hours=30)
@@ -1662,7 +1732,7 @@ def test_run_defers_openai_on_quota_and_retries_after_the_reset(tmp_path):
     assert sorted(probe.calls) == openai
 
 
-def test_quota_deferral_releases_as_soon_as_a_fresh_reading_has_room(tmp_path):
+def test_quota_deferral_releases_as_soon_as_a_fresh_reading_has_room(tmp_path, captured):
     """A limit can reset earlier than the recorded time (plan change, early
     reset). The recorded reset time must not keep a recovered family held:
     a fresh reading under the threshold releases the deferral on the next
@@ -1706,7 +1776,7 @@ def test_tick_recomputes_when_only_a_cli_version_changes(tmp_path):
     assert spawned == []
 
 
-def test_a_tick_whose_run_never_completed_is_due_again(tmp_path):
+def test_a_tick_whose_run_never_completed_is_due_again(tmp_path, captured):
     """i1r1 grok F3: the hash advances only when the run it started completes.
     A detached run that died before recording anything leaves the same
     catalogs due, not `unchanged`."""
@@ -1732,7 +1802,7 @@ def test_a_tick_whose_run_never_completed_is_due_again(tmp_path):
     assert len(spawned) == 2
 
 
-def test_a_run_cut_short_by_the_budget_does_not_complete_the_tick(tmp_path):
+def test_a_run_cut_short_by_the_budget_does_not_complete_the_tick(tmp_path, captured):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)
     rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
@@ -1747,7 +1817,7 @@ def test_a_run_cut_short_by_the_budget_does_not_complete_the_tick(tmp_path):
 
 
 @pytest.mark.parametrize("when", ["between_probes", "at_the_recheck"])
-def test_a_pass_that_was_never_published_stays_due(tmp_path, monkeypatch, when):
+def test_a_pass_that_was_never_published_stays_due(tmp_path, monkeypatch, when, captured):
     """i1r2 opus F2: a pass recorded by `_record` but never published (the run
     is disabled, or dies, before the pointer moves) must not start the
     24-hour interval, and the tick it started must not complete — after
@@ -1796,14 +1866,14 @@ def test_a_pass_that_was_never_published_stays_due(tmp_path, monkeypatch, when):
     assert rep["passed"] == [first] and rep["generation_sha256"], rep
     assert work_state(root)["last_probe"][first] == later.isoformat()
     eligible, skipped = model_sync.plan(
-        view=model_sync.committed_view(root, BASE),
+        view=model_sync.committed_view(root, captured.base),
         catalogs=model_sync.load_catalogs(home, model_sync.cli_versions(env)),
         versions=model_sync.cli_versions(env), work=work_state(root),
         now=later + _dt.timedelta(hours=1), keys=[first])
     assert first not in [c["key"] for c in eligible]
 
 
-def test_a_tick_while_a_run_holds_the_lock_is_busy_and_stores_nothing(tmp_path):
+def test_a_tick_while_a_run_holds_the_lock_is_busy_and_stores_nothing(tmp_path, captured):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)
     rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=1))
@@ -1904,7 +1974,7 @@ def test_tick_is_a_no_op_when_auto_upgrade_is_off(tmp_path):
     assert work_state(root)["auto_upgrade"] == "enabled"
 
 
-def test_a_lineage_is_probed_at_most_once_a_day(tmp_path):
+def test_a_lineage_is_probed_at_most_once_a_day(tmp_path, captured):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)
     rollout(home, 5.0, NOW, NOW + _dt.timedelta(days=2))
@@ -1924,31 +1994,33 @@ def test_a_lineage_is_probed_at_most_once_a_day(tmp_path):
     assert probe.calls == first + [first[0]]
 
 
-def test_status_reports_state_deferrals_notices_and_summaries(tmp_path):
+def test_status_reports_state_deferrals_notices_and_summaries(tmp_path, captured):
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)
     rollout(home, 94.0, NOW, NOW + _dt.timedelta(days=1))
     root = new_root(tmp_path)
     env = sync_env(tmp_path, root, home, bindir)
-    model_sync.publish_results(root, BASE, [passing(worker_key())])
+    model_sync.publish_results(root, captured.base,
+                               [passing(worker_key(), base=captured.base)])
     model_sync.run(env=env, home=home, now=NOW, probe=recorder())
     st = model_sync.status(env=env, home=home, now=NOW)
     _, g, _ = read_gen(root)
     assert st["committed"]["shape"] == "ok" and st["committed"]["generation_sha256"] == g
-    assert st["committed"]["entries"][worker_key()]["id"] == successor(worker_key())
+    assert st["committed"]["entries"][worker_key()]["id"] == \
+        successor(worker_key(), base=captured.base)
     assert st["auto_upgrade"] == "enabled"
     assert "retirement_notices" in st
     deferred = st["deferred"]
     assert deferred and all(d["retry_after"]["kind"] == "time" for d in deferred.values())
     model_sync.disable(root)
     assert model_sync.status(env=env, home=home, now=NOW)["auto_upgrade"] == "disabled"
-    proc = cli_sync(env, "status")
+    proc = cli_sync(env, "status", argv=captured.argv)
     assert proc.returncode == 0 and json.loads(proc.stdout)["auto_upgrade"] == "disabled"
 
 
 # --- end to end through the CLI, fake codex -----------------------------------
 
-def test_run_publishes_a_passing_probe_and_copies_its_summary(tmp_path):
+def test_run_publishes_a_passing_probe_and_copies_its_summary(tmp_path, captured):
     key = "openai_worker_fast"
     bindir, fakedir = fake_bin(tmp_path, codex="codex")
     home = fake_home(tmp_path)
@@ -1956,7 +2028,7 @@ def test_run_publishes_a_passing_probe_and_copies_its_summary(tmp_path):
     rollout(home, 5.0, now, now + _dt.timedelta(days=1))
     root = new_root(tmp_path)
     env = sync_env(tmp_path, root, home, bindir)
-    proc = cli_sync(env, "run", "--key", key, timeout=600)
+    proc = cli_sync(env, "run", "--key", key, argv=captured.argv, timeout=600)
     assert proc.returncode == 0, proc.stderr + proc.stdout
     shape, g, gen = read_gen(root)
     assert shape == "ok" and gen["entries"][key]["id"] == _banner_model_of_fixture()
@@ -1979,7 +2051,7 @@ def _wait(pred, timeout=60.0):
     raise AssertionError("timed out")
 
 
-def test_disable_during_a_run_cancels_the_attempt_and_publishes_nothing(tmp_path):
+def test_disable_during_a_run_cancels_the_attempt_and_publishes_nothing(tmp_path, captured):
     key = "openai_worker_fast"
     bindir, fakedir = fake_bin(tmp_path, codex="sleep")
     home = fake_home(tmp_path)
@@ -1987,7 +2059,7 @@ def test_disable_during_a_run_cancels_the_attempt_and_publishes_nothing(tmp_path
     rollout(home, 5.0, now, now + _dt.timedelta(days=1))
     root = new_root(tmp_path)
     env = sync_env(tmp_path, root, home, bindir)
-    proc = subprocess.Popen([sys.executable, str(SYNC), "run", "--key", key], env=env,
+    proc = subprocess.Popen([*captured.argv, "run", "--key", key], env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         def running():
@@ -2005,7 +2077,7 @@ def test_disable_during_a_run_cancels_the_attempt_and_publishes_nothing(tmp_path
                 return None
             return a if rec["result"]["state"] == "RUNNING" else None
         attempt = _wait(running)
-        got = cli_sync(env, "disable")
+        got = cli_sync(env, "disable", argv=captured.argv)
         assert got.returncode == 0, got.stderr
         assert attempt["attempt_id"] in got.stdout
         out, err = proc.communicate(timeout=120)

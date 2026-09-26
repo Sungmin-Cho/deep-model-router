@@ -583,10 +583,31 @@ models:
     price_per_mtok: { input: 10.00, output: 50.00, cached_input: 1.00 }
 
   openai_worker_fast:
-    id: gpt-5.6-luna
+    id: gpt-6-luna
     lineage: { line: openai/luna, template: "gpt-{gen}-luna" }
     family: openai
     capability_tier: 0
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-09-26"
+      max_age_days: 30
+      source: "https://developers.openai.com/api/docs/models/gpt-6-luna"
+      input: 0.1
+      output: 0.5
+      cached_input: 0.01
+      cache_write: 0.125
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      cache_write: .25,
+                      input: 0.20, output: 0.75, cached_input: 0.02 }
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "openai_worker_fast@gpt-5.6-luna":
+    id: gpt-5.6-luna
+    history_of: openai_worker_fast
+    family: openai
+    capability_tier: 0
+    dispatchable: false
     verified: true
     price_per_mtok:
       verified_on: "2026-09-06"
@@ -619,10 +640,31 @@ models:
                       input: 4.00, output: 18.00, cached_input: 0.40 }
 
   openai_reasoning:
-    id: gpt-5.6-sol
+    id: gpt-6-sol
     lineage: { line: openai/sol, template: "gpt-{gen}-sol" }
     family: openai
     capability_tier: 2
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-09-26"
+      max_age_days: 30
+      source: "https://developers.openai.com/api/docs/models/gpt-6-sol"
+      input: 2.0
+      output: 10.0
+      cached_input: 0.2
+      cache_write: 2.5
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      cache_write: 5.00,
+                      input: 4.00, output: 15.00, cached_input: 0.40 }
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "openai_reasoning@gpt-5.6-sol":
+    id: gpt-5.6-sol
+    history_of: openai_reasoning
+    family: openai
+    capability_tier: 2
+    dispatchable: false
     verified: true
     price_per_mtok:
       verified_on: "2026-09-06"
@@ -1914,3 +1956,118 @@ verification_ledger:
         ea85c5c6baac918362017d1c2dbc017428638b60a7752f99006d307b7af1c068
         equals the expected token's. Receipt sha256
         d80d69bf330ea74ddb6933431c72950bc39bbf1fad05fee543c8ad875caa3455.
+
+    - item: "gpt-6-sol model id"
+      status: verified
+      probed_on: "2026-09-26"
+      attempt_id: "p20260926T175659-5852e14e-1"
+      cli_version: "0.157.0"
+      argv: "codex exec -m gpt-6-sol -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
+      evidence: >
+        model_sync contained read-only probe of openai_reasoning
+        (gpt-5.6-sol -> gpt-6-sol): P1 smoke answered pong with termination
+        confirmed; P2 the CLI header reported the requested id (id accepted,
+        not served-model attestation); P3 boot input 27244 vs 26832 for the
+        current id (paired). Quality is not measured by this row.
+
+    - item: "gpt-6-sol reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-26"
+      evidence: >
+        Live-probed tokens for gpt-6-sol: low, max (accepted). Other levels
+        were not live-probed for this id; the ceiling is unchanged from
+        gpt-5.6-sol (none).
+
+    - item: "gpt-6-sol pricing and context window"
+      status: documented
+      probed_on: "2026-09-26"
+      source: "https://developers.openai.com/api/docs/models/gpt-6-sol"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-09-26:
+        input 2.0, output 10.0, cached_input 0.2, cache_write 2.5. A
+        reference record, not the marginal cost of a subscription dispatch.
+        The same source documents a 1,050,000-token context window. The row
+        leaves `context_window` unset: the predecessor row had none, and the
+        baseline snapshot pins that leaf across a generation refresh.
+
+    - item: "openai_reasoning quality evidence after the gpt-6-sol id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
+      evidence: >
+        capability_tier 2 is inherited from the openai_reasoning lineage; no
+        quality measurement of gpt-6-sol has been run. Earlier quality rows
+        about gpt-5.6-sol describe that id, not this one.
+
+    - item: "gpt-6-sol maker seat"
+      status: verified
+      probed_on: "2026-09-26"
+      attempt_id: "m20260926T175946-dbe9256d-1"
+      cli_version: "0.157.0"
+      argv: "codex exec -m gpt-6-sol -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check -"
+      evidence: >
+        Attended model_sync probe-maker through grok.to_openai (mechanism):
+        the maker recipe with -m gpt-6-sol, in a disposable single-linked
+        child cwd, ended SUCCEEDED; the written file's content hash
+        d58a52edc7e212ae6657e3eafdd2b4f42656b7409c68736b9be03a03126205eb
+        equals the expected token's. Receipt sha256
+        e8be2e54829121a4fad2cb77e913197d022097d374eafb1afe6c3698d23a3d93.
+
+    - item: "gpt-6-luna model id"
+      status: verified
+      probed_on: "2026-09-26"
+      attempt_id: "p20260926T175659-97c93fc0-1"
+      cli_version: "0.157.0"
+      argv: "codex exec -m gpt-6-luna -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
+      evidence: >
+        model_sync contained read-only probe of openai_worker_fast
+        (gpt-5.6-luna -> gpt-6-luna): P1 smoke answered pong with
+        termination confirmed; P2 the CLI header reported the requested id
+        (id accepted, not served-model attestation); P3 boot input 27067 vs
+        25299 for the current id (paired). Quality is not measured by this
+        row.
+
+    - item: "gpt-6-luna reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-26"
+      evidence: >
+        Live-probed tokens for gpt-6-luna: low, max (accepted). Other levels
+        were not live-probed for this id; the ceiling is unchanged from
+        gpt-5.6-luna (none).
+
+    - item: "gpt-6-luna pricing and context window"
+      status: documented
+      probed_on: "2026-09-26"
+      source: "https://developers.openai.com/api/docs/models/gpt-6-luna"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-09-26:
+        input 0.1, output 0.5, cached_input 0.01, cache_write 0.125. A
+        reference record, not the marginal cost of a subscription dispatch.
+        The same source documents a 1,050,000-token context window. The row
+        leaves `context_window` unset: the predecessor row had none, and the
+        baseline snapshot pins that leaf across a generation refresh.
+
+    - item: "openai_worker_fast quality evidence after the gpt-6-luna id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
+        - "worker_fast binding: gpt-5.6-luna over claude-haiku-4-5"
+        - "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
+      evidence: >
+        capability_tier 0 is inherited from the openai_worker_fast lineage;
+        no quality measurement of gpt-6-luna has been run. Earlier quality
+        rows about gpt-5.6-luna describe that id, not this one.
+
+    - item: "gpt-6-luna maker seat"
+      status: verified
+      probed_on: "2026-09-26"
+      attempt_id: "m20260926T180042-2fd03e04-1"
+      cli_version: "0.157.0"
+      argv: "codex exec -m gpt-6-luna -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check -"
+      evidence: >
+        Attended model_sync probe-maker through grok.to_openai (mechanism):
+        the maker recipe with -m gpt-6-luna, in a disposable single-linked
+        child cwd, ended SUCCEEDED; the written file's content hash
+        44c244a27c662ff76210bfe5f3a37270419bb8dc5298becd73e1561837460855
+        equals the expected token's. Receipt sha256
+        db607c44c9c1eb718f50441d501b452f38a859e0c93699950fd1b331235f6a5e.

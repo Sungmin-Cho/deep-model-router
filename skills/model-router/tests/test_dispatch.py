@@ -3814,10 +3814,11 @@ CODEX_TEXT_ARGS = ("--output-envelope", "codex-exec-text-v1")
 CODEX_JSON_ARGS = ("--output-envelope", "codex-exec-json-v1")
 # Quoted verbatim from the design's §1.3 measurement (codex-cli 0.155.1). Its
 # position inside a real stderr was not captured, so the tests below insert it
-# at more than one place and the parser does not depend on where it is.
+# at more than one place and the parser does not depend on where it is. It is
+# a fixture file rather than a literal because the id it names is now a live
+# registry id, and a captured line must not follow a later registry rename.
 CODEX_METADATA_WARNING = (
-    "warning: Model metadata for gpt-6-sol not found. "
-    "Defaulting to fallback metadata")
+    CODEX_FIXTURES / "codex-0.155.1-metadata-warning.stderr").read_text().rstrip("\n")
 
 
 def codex_replay(stdout: bytes, stderr: bytes, exit_code=0):
