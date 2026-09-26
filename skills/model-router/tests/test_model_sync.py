@@ -1662,6 +1662,33 @@ def test_run_defers_openai_on_quota_and_retries_after_the_reset(tmp_path):
     assert sorted(probe.calls) == openai
 
 
+def test_quota_deferral_releases_as_soon_as_a_fresh_reading_has_room(tmp_path):
+    """A limit can reset earlier than the recorded time (plan change, early
+    reset). The recorded reset time must not keep a recovered family held:
+    a fresh reading under the threshold releases the deferral on the next
+    tick and run, before the recorded time."""
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    resets = NOW + _dt.timedelta(days=2)
+    rollout(home, 99.0, NOW - _dt.timedelta(minutes=5), resets)
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    probe = recorder()
+    model_sync.run(env=env, home=home, now=NOW, probe=probe)
+    assert probe.calls == []
+    openai = sorted(k for k in EXPECTED["candidates"] if BASE["models"][k]["family"] == "openai")
+    spawned = []
+    assert model_sync.tick(env=env, home=home, now=NOW,
+                           spawn=spawned.append)["status"] == "no_candidates"
+    # an hour later — long before `resets` — a fresh reading shows room
+    soon = NOW + _dt.timedelta(hours=1)
+    rollout(home, 0.0, soon - _dt.timedelta(minutes=1), soon + _dt.timedelta(days=7))
+    got = model_sync.tick(env=env, home=home, now=soon, spawn=spawned.append)
+    assert got["status"] == "spawned" and sorted(spawned[-1]) == openai
+    model_sync.run(env=env, home=home, now=soon, probe=probe, keys=openai)
+    assert sorted(probe.calls) == openai
+
+
 def test_tick_recomputes_when_only_a_cli_version_changes(tmp_path):
     bindir, fakedir = fake_bin(tmp_path)
     home = fake_home(tmp_path)
