@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.1] — 2026-09-26
+
+### Changed
+
+- Seat GPT-6 Sol as the reasoning specialist model after contained, effort and maker-seat probes by the local overlay; its list price is lower, $2 / $10 per million input / output tokens against $4 / $20. Its `capability_tier` is inherited from the Sol lineage and its quality was not re-measured, which the model profile and verification ledger state; GPT-5.6 Sol stays valid as history input.
+- Seat GPT-6 Luna as the fast worker model after the same probes; its list price is lower, $0.10 / $0.50 per million input / output tokens against $0.20 / $1.20. Its `capability_tier` is inherited from the Luna lineage and its quality was not re-measured, which the model profile and verification ledger state; GPT-5.6 Luna stays valid as history input.
+
+### Fixed
+
+- Release a quota deferral as soon as a fresh usage reading has room, instead of holding the family until the recorded reset time.
+- Drop a deferral once its successor is already the live model, so a recovered quota no longer wakes the SessionStart tick on every session for nothing.
+
 ## [1.16.0] — 2026-09-25
 
 ### Added

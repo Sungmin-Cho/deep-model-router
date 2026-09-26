@@ -1662,7 +1662,12 @@ def tick_hash(base_sha: str, generation_sha: str | None, catalogs: Mapping[str, 
 
 
 def _negative_expired(neg: Mapping, versions: Mapping, catalogs: Mapping,
-                      now: dt.datetime) -> bool:
+                      now: dt.datetime, quota: Mapping | None = None) -> bool:
+    # A quota deferral is released as soon as a fresh local reading shows the
+    # limit has room again (a reset can come earlier than the recorded time,
+    # e.g. after a plan change); `unknown` or a full limit keeps it held.
+    if neg.get("reason") == "quota" and quota is not None and not quota_defers(quota):
+        return True
     ra = neg.get("retry_after") or {}
     kind = ra.get("kind")
     try:
@@ -1678,8 +1683,11 @@ def _negative_expired(neg: Mapping, versions: Mapping, catalogs: Mapping,
     return True
 
 
-def _expired_time_deferrals(work: Mapping, now: dt.datetime) -> bool:
+def _expired_time_deferrals(work: Mapping, now: dt.datetime,
+                            quota: Mapping | None = None) -> bool:
     for neg in (work.get("negatives") or {}).values():
+        if neg.get("reason") == "quota" and quota is not None and not quota_defers(quota):
+            return True
         ra = neg.get("retry_after") or {}
         if ra.get("kind") == "time":
             try:
@@ -1691,7 +1699,8 @@ def _expired_time_deferrals(work: Mapping, now: dt.datetime) -> bool:
 
 
 def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapping,
-         work: Mapping, now: dt.datetime, keys=None, interval: bool = True):
+         work: Mapping, now: dt.datetime, keys=None, interval: bool = True,
+         quota: Mapping | None = None):
     """Candidates to probe now, and why every other lineage row is skipped
     (no candidate, revoked, a live deferral, the 24-hour lineage interval)."""
     found = find_candidates(view.config["models"], catalogs)
@@ -1708,7 +1717,7 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
             c = {**c, "id": None, "alias": row["lineage"]["catalog_name"].lower()}
             neg = (work.get("negatives") or {}).get(key)
             if neg and neg.get("id") is None and neg.get("alias") == c["alias"] \
-                    and not _negative_expired(neg, versions, catalogs, now):
+                    and not _negative_expired(neg, versions, catalogs, now, quota):
                 skipped[key] = f"deferred:{neg.get('reason')}"
                 continue
         elif c["status"] != "candidate":
@@ -1719,7 +1728,7 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
             continue
         neg = (work.get("negatives") or {}).get(key)
         if c["id"] is not None and neg and neg.get("id") == c["id"] \
-                and not _negative_expired(neg, versions, catalogs, now):
+                and not _negative_expired(neg, versions, catalogs, now, quota):
             skipped[key] = f"deferred:{neg.get('reason')}"
             continue
         last = (work.get("last_probe") or {}).get(key)
@@ -1775,13 +1784,17 @@ def tick(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime |
     base = load_config()
     base_sha = canonical_policy_sha256(base)
     view = committed_view(state_path, base, base_sha=base_sha)
+    _prune_obsolete_negatives(state_path, view)
+    with StateRoot.open(state_path, create=True) as root:
+        work = read_work_state(root)
     versions = versions if versions is not None else cli_versions(env)
     catalogs = load_catalogs(home, versions)
     digest = tick_hash(base_sha, view.generation_sha256, catalogs, versions)
-    if digest == work["tick_hash"] and not _expired_time_deferrals(work, now):
+    quota = read_quota(codex_sessions_dir(home, env), now)
+    if digest == work["tick_hash"] and not _expired_time_deferrals(work, now, quota):
         return {"status": "unchanged"}
     eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work,
-                             now=now)
+                             now=now, quota=quota)
     if not eligible:
         _store_tick_hash(state_path, digest)
         return {"status": "no_candidates", "skipped": skipped}
@@ -1859,6 +1872,21 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
     update_work_state(state_path, rec)
 
 
+def _prune_obsolete_negatives(state_path: Path, view) -> None:
+    """Drop deferrals whose successor is already the live id (promoted into the
+    base, or applied by the overlay) or whose key left the registry: nothing is
+    left to retry, and a quota deferral would otherwise read as "expired" on
+    every tick with room and wake it for nothing (1.16.1 review, sol F1)."""
+    models = view.config["models"]
+
+    def prune(st):
+        for key, neg in list(st["negatives"].items()):
+            row = models.get(key)
+            if row is None or (neg.get("id") is not None and row.get("id") == neg["id"]):
+                st["negatives"].pop(key, None)
+    update_work_state(state_path, prune)
+
+
 def _mark_published(state_path: Path, passing: list, now: dt.datetime) -> None:
     """The publication consumed these passes (installed, or dropped as a
     no-op against the current chain): each now starts its lineage interval."""
@@ -1914,8 +1942,9 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
     versions = versions if versions is not None else cli_versions(env)
     text = grok_models_text(env) if grok_text is ... else grok_text
     catalogs = load_catalogs(home, versions, grok_text=text)
+    quota_now = read_quota(codex_sessions_dir(home, env), now)
     eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work,
-                             now=now, keys=keys, interval=keys is None)
+                             now=now, keys=keys, interval=keys is None, quota=quota_now)
     rep = {"status": "ok", "probed": [], "passed": [], "deferred": [], "failed": [],
            "over_budget": [], "interval": sorted(k for k, r in skipped.items() if r == "interval"),
            "skipped": skipped, "inferences": 0, "generation_sha256": None, "aliases": {}}
@@ -2072,10 +2101,12 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
     out["catalogs"] = {f: {"status": c.status, "reason": c.reason, "sha256": c.sha256}
                        for f, c in sorted(catalogs.items())}
     out["retirement_notices"] = retirement_notices(view.config["models"], catalogs)
-    eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work, now=now)
+    quota_now = read_quota(codex_sessions_dir(home, env), now)
+    eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work, now=now,
+                             quota=quota_now)
     out["candidates"] = {c["key"]: c["id"] or f"alias:{c['alias']}" for c in eligible}
     out["skipped"] = skipped
-    out["deferred"] = {k: {**n, "expired": _negative_expired(n, versions, catalogs, now)}
+    out["deferred"] = {k: {**n, "expired": _negative_expired(n, versions, catalogs, now, quota_now)}
                        for k, n in sorted(work["negatives"].items())}
     summaries = Path(state_path) / SUMMARY_PREFIX / "summaries"
     out["recent"] = [{**r, "summary_path": str(summaries / f"{r['summary_sha256']}.json")

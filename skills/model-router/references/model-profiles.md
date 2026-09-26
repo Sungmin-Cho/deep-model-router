@@ -174,6 +174,18 @@ This generation cannot turn thinking off, and its own default effort is
 medium. The router always passes an explicit `--effort` on this seat, so that
 default never takes effect on a routed dispatch.
 
+### The OpenAI reasoning seat
+
+**Its tier is inherited, not current.** On 2026-09-26 the `openai_reasoning`
+id moved to the next Sol generation. A contained probe confirmed that the id
+is accepted, the low and max effort tokens, and a write-seat run through the
+maker recipe. The CLI echoing the requested id is id acceptance, not proof of
+the served model. The published prices were re-read from the provider's
+documentation: the list price went down, $2 / $10 per million input / output
+tokens against the predecessor's $4 / $20. No quality comparison was run on
+the new generation. `capability_tier` 2 comes from the lineage, not from a
+measurement, and the ledger says so in its own row.
+
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
 Worth recording, because it is the one binding decision that rests on
@@ -198,6 +210,16 @@ against haiku 91.2s. One attempt per model and correlated node failures make
 this suggestive, not decisive; the ledger records it as
 `price_verified_quality_probed`. The binding still rests on the verified
 price advantage, now with the measured quality cost on record.
+
+**Those numbers are inherited, not current.** On 2026-09-26 the
+`openai_worker_fast` id moved to the next Luna generation. A contained probe
+confirmed that the id is accepted, the low and max effort tokens, and a
+write-seat run through the maker recipe. The published prices were re-read:
+$0.10 / $0.50 per million input / output tokens, half the input price and
+under half the output price quoted above, so the price argument is stronger
+than it was. The 446-node head-to-head was not re-run. Read its scores as the
+predecessor generation's; `capability_tier` 0 comes from the lineage, and the
+ledger says so in its own row.
 
 So the binding rests on the verified price advantage, not on a demonstrated
 quality advantage — which is exactly what the "cheapest capable model carries
