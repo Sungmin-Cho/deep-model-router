@@ -1759,6 +1759,29 @@ def test_quota_deferral_releases_as_soon_as_a_fresh_reading_has_room(tmp_path, c
     assert sorted(probe.calls) == openai
 
 
+def test_a_deferral_for_an_id_that_is_already_live_is_dropped_and_stops_waking_the_tick(tmp_path):
+    """1.16.1 review (sol F1): after a promotion makes the deferred successor
+    the live id, the old quota deferral must not keep reading as expired on
+    every tick with room — it is pruned and the tick settles to unchanged."""
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    rollout(home, 0.0, NOW - _dt.timedelta(minutes=1), NOW + _dt.timedelta(days=7))
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    live_key = next(k for k, r in BASE["models"].items()
+                    if r.get("family") == "openai" and "lineage" in r)
+    live_id = BASE["models"][live_key]["id"]
+    model_sync.update_work_state(root, lambda st: st["negatives"].__setitem__(live_key, {
+        "id": live_id, "family": "openai", "outcome": "deferred", "reason": "quota",
+        "retry_after": {"kind": "time", "at": (NOW + _dt.timedelta(days=2)).isoformat()},
+        "summary_sha256": None, "at": NOW.isoformat()}))
+    spawned = []
+    first = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert live_key not in work_state(root)["negatives"]
+    second = model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert second["status"] == "unchanged", (first, second)
+
+
 def test_tick_recomputes_when_only_a_cli_version_changes(tmp_path):
     bindir, fakedir = fake_bin(tmp_path)
     home = fake_home(tmp_path)

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Release a quota deferral as soon as a fresh usage reading has room, instead of holding the family until the recorded reset time.
+- Drop a deferral once its successor is already the live model, so a recovered quota no longer wakes the SessionStart tick on every session for nothing.
 
 ## [1.16.0] — 2026-09-25
 

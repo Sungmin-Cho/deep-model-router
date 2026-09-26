@@ -1784,6 +1784,9 @@ def tick(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime |
     base = load_config()
     base_sha = canonical_policy_sha256(base)
     view = committed_view(state_path, base, base_sha=base_sha)
+    _prune_obsolete_negatives(state_path, view)
+    with StateRoot.open(state_path, create=True) as root:
+        work = read_work_state(root)
     versions = versions if versions is not None else cli_versions(env)
     catalogs = load_catalogs(home, versions)
     digest = tick_hash(base_sha, view.generation_sha256, catalogs, versions)
@@ -1867,6 +1870,21 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
             if cand.get("alias"):
                 st["negatives"][key]["alias"] = cand["alias"]
     update_work_state(state_path, rec)
+
+
+def _prune_obsolete_negatives(state_path: Path, view) -> None:
+    """Drop deferrals whose successor is already the live id (promoted into the
+    base, or applied by the overlay) or whose key left the registry: nothing is
+    left to retry, and a quota deferral would otherwise read as "expired" on
+    every tick with room and wake it for nothing (1.16.1 review, sol F1)."""
+    models = view.config["models"]
+
+    def prune(st):
+        for key, neg in list(st["negatives"].items()):
+            row = models.get(key)
+            if row is None or (neg.get("id") is not None and row.get("id") == neg["id"]):
+                st["negatives"].pop(key, None)
+    update_work_state(state_path, prune)
 
 
 def _mark_published(state_path: Path, passing: list, now: dt.datetime) -> None:
