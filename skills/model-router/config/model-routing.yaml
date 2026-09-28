@@ -414,6 +414,14 @@ review:
       - test_adequacy
       - specification_compliance
 
+  # 1.17.0 (design 2026-09-25 DD-B7, user decision U-8): a REVIEW task's lead
+  # is reviewer-1 and counts toward the band's reviewers, with or without a
+  # declared review_context — the lead alone at LOW and MEDIUM, lead + 1 at HIGH
+  # and CRITICAL (+ judge). Until then a REVIEW task without context seated its
+  # worker AND the band's reviewers: a review of a review. `dispatch_seats` is
+  # the one dispatch list; source authors are excluded only when declared.
+  review_class_lead_counts: true
+
   disagreement:
     default_judge: principal_architect
     code_local_dispute_judge: senior_engineer

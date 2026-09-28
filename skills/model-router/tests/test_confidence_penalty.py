@@ -221,8 +221,17 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
         # terminalise the 0.10 side and seat a worker only on 0.06.
         if a["terminal"] is None and b["terminal"] is None:
             if a["selected_role"] != b["selected_role"]:
-                yielder, adopter = (a, b) if _yielded(a) else (b, a)
-                assert _yielded(yielder) and _raised(adopter), (inp, a["notes"], b["notes"])
+                yielder, adopter = (a, b) if _raised(b) else (b, a)
+                assert _raised(adopter), (inp, a["notes"], b["notes"])
+                if inp["task_class"] == "REVIEW" and not _yielded(yielder):
+                    # A REVIEW lead is searched with its reviewers (DD-B7): the
+                    # cell is kept only where the searched lead is strictly
+                    # stronger than ITS OWN side's table lead, and a no-raise is
+                    # not recorded as a yield. Across the two sides the bands
+                    # differ, so only "never weaker" is comparable.
+                    assert TIER_OF[adopter["selected_model"]] >= TIER_OF[yielder["selected_model"]], inp
+                    continue
+                assert _yielded(yielder), (inp, a["notes"], b["notes"])
                 # The yielding side is the one whose review the penalty promoted.
                 assert yielder["review"]["band"] != adopter["review"]["band"], inp
                 assert TIER_OF[adopter["selected_model"]] > TIER_OF[yielder["selected_model"]], inp

@@ -366,6 +366,10 @@ def test_no_reviewer_holds_the_implementer_model_where_independence_is_required(
         if out["terminal"] or not rv["independence_required"]:
             continue
         models = [m for m in rv["reviewer_models"] if m]
+        if out["task_class"] == "REVIEW":
+            # The lead reviews the source and IS reviewer-1 (DD-B7): once.
+            assert models.count(out["selected_model"]) == 1, (out["task_class"], rv["band"], models)
+            continue
         assert out["selected_model"] not in models, (
             f"{out['task_class']}/{rv['band']}: implementer {out['selected_model']} "
             f"is also a reviewer"
@@ -741,8 +745,11 @@ def test_a_promoted_review_band_still_passes_every_emit_boundary_check():
             assert TIER_OF[rv["judge_model"]] >= max(TIER_OF[m] for m in involved)
         if rv["independence_required"]:
             models = [m for m in rv["reviewer_models"] if m]
-            assert out["selected_model"] not in models or rv["independence_compromised"], (
-                "the implementer sits in its own review on a promoted route")
+            if out["task_class"] == "REVIEW":                   # the lead is reviewer-1 (DD-B7)
+                assert models.count(out["selected_model"]) == 1 or rv["independence_compromised"]
+            else:
+                assert out["selected_model"] not in models or rv["independence_compromised"], (
+                    "the implementer sits in its own review on a promoted route")
         # Not asserted: that the final confidence is still below the threshold.
         # A promotion can seat better models and lift it back to the threshold,
         # and the promotion is deliberately not reverted — `promoted_once`
@@ -1092,26 +1099,12 @@ def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
         else:
             still_low += 1
             assert not note, (out["routing_confidence"], note)
+    # Until 1.17.0 the recovered promotions were LOW's own reviewer seat, whose
+    # fallback the promotion retired. LOW seats no reviewer now (DD-B4); what
+    # recovers is a REVIEW task's lead, seated with the reviewers at the
+    # promoted band (DD-B7), where intentional seating is not an outage.
+    assert recovered, "the sweep no longer reaches a promotion whose confidence recovered"
     assert still_low, "the sweep no longer reaches an ordinary low-confidence promotion"
-    # Recovery needs a fallback that the promotion retires, and until 1.17.0
-    # that was LOW's own reviewer seat (the worker's model re-reading its
-    # work). LOW seats no reviewer now (DD-B4) and a MEDIUM reviewer is picked
-    # away from fallback roles (DD-B5), so no route in the sweep recovers — a
-    # census of 1-2 withheld models over six classes and three runtimes found
-    # none. The disclosure stays as depth; it is held to its words on the
-    # 1.16.1 LOW shape, where the path is still real.
-    assert not recovered, "a recovered promotion is reachable again: restore the sweep half"
-    import copy
-    cfg = copy.deepcopy(CFG)
-    cfg["review"]["LOW"] = {"reviewers": ["worker_fast"], "effort": "MEDIUM", "independent": False}
-    out = route(Task(task_class="MIGRATION", complexity=0, uncertainty=0, blast_radius=0,
-                     reversibility=0, flags=["unknown_root_cause"],
-                     unavailable_models=[ID("openai_worker_fast")]), cfg)
-    note = [n for n in out["notes"] if "promoted plan resolves at" in n]
-    assert out["review"]["band"] == "MEDIUM" and out["routing_confidence"] >= threshold
-    assert len(note) == 1 and f"resolves at {out['routing_confidence']:.2f} " in note[0], note
-    pre = float(note[0].split("pre-promotion confidence ")[1].split(";")[0])
-    assert pre < threshold <= out["routing_confidence"]
 
 
 # --- helpers for the paired (new vs 1.12.1) checks ----------------------------
@@ -1520,9 +1513,12 @@ def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
     for kw, new in _paired_population():
         old = _risk_only_current_policy(kw)
         historical = base.route(base.Task(**kw), bcfg)
-        if historical["terminal"] is None and old["terminal"] is None:
+        if (historical["terminal"] is None and old["terminal"] is None
+                and kw["task_class"] != "REVIEW"):
             # Allocation/compensation repairs must not secretly alter the
-            # historical risk-only worker choice on executable routes.
+            # historical risk-only worker choice on executable routes. A REVIEW
+            # task's worker is its lead reviewer since 1.17.0 (DD-B7), searched
+            # with the review seats rather than fixed by the table.
             assert old["selected_role"] == historical["selected_role"], kw
             assert old["selected_model"] == historical["selected_model"], kw
             historical_compatible += 1
@@ -1541,7 +1537,15 @@ def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
             continue
         # (f) no execution note: identical save the excluded fields; (g) effort-only delta accounted for
         floor_notes = [n for n in new["notes"] if n.startswith("execution band") and "floored effort" in n]
-        assert {k: v for k, v in new.items() if k not in EXCLUDED} == {k: v for k, v in old.items() if k not in EXCLUDED}, kw
+        # A REVIEW task's lead is reviewer-1 and carries the worker's effort
+        # (DD-B7), which the execution floor owns; every other seat must match.
+        def seats(route_out):
+            return [{k: v for k, v in seat.items()
+                     if not (seat["seat"] == "reviewer-1" and k.startswith("effort"))}
+                    for seat in route_out.get("dispatch_seats", [])]
+        assert seats(new) == seats(old), kw
+        excluded = EXCLUDED | {"dispatch_seats"}
+        assert {k: v for k, v in new.items() if k not in excluded} == {k: v for k, v in old.items() if k not in excluded}, kw
         assert [n for n in new["notes"] if not n.startswith("execution band")] == old["notes"], kw
         if new["terminal"]:
             assert new["selected_effort"] is None, kw

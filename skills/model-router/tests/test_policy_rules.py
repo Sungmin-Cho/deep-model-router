@@ -301,6 +301,27 @@ def _c5_check(req, prev, cur):
     return out
 
 
+REVIEW_SEATS_BY_BAND = {"LOW": 1, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}      # DD-B7's matrix
+
+
+def _review_lead_check(req, prev, cur):
+    if cur.get("terminal") or "error" in cur:
+        return []
+    rv = cur["review"]
+    seats = [s for s in cur["dispatch_seats"] if s["seat"].startswith("reviewer")]
+    judge = [s for s in cur["dispatch_seats"] if s["seat"] == "judge"]
+    out = []
+    if [s["model_id"] for s in seats] != rv["reviewer_models"]:
+        out.append("dispatch_seats and reviewer_models disagree")
+    if rv["reviewer_models"].count(cur["selected_model"]) != 1 or seats[0]["model_id"] != cur["selected_model"]:
+        out.append("the lead is not reviewer-1, exactly once")
+    if len(seats) != REVIEW_SEATS_BY_BAND[rv["band"]] + rv["compensating_reviewers"]:
+        out.append(f"{rv['band']} REVIEW seats {len(seats)} reviewers")
+    if judge and judge[0]["model_id"] in rv["reviewer_models"]:
+        out.append("the judge is a party")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -377,6 +398,21 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_c5_check, changed_sample=687, changed_full=7468),
+    # Every REVIEW route: the lead joins the reviewers (reviewer-1), the band
+    # seats the matrix's count including it, `dispatch_seats` is the one list,
+    # and a caller floor the smaller matrix cannot carry leaves the band.
+    "review_lead": Rule(
+        "review_lead", predicate=lambda req, prev: req["task_class"] == "REVIEW",
+        # `excluded_prior_failures` (ledger B6): C5 reads the failure-free
+        # plan, whose REVIEW lead this rule re-seats, so whether a REVIEW
+        # retry stays on the failed model can follow.
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "dispatch_seats", "review.band", "review.effort",
+                           "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal", "excluded_prior_failures"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_review_lead_check, changed_sample=1035, changed_full=8640),
 }
 
 
@@ -418,6 +454,7 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
     "c2": lambda cfg: cfg.__setitem__("effort_caps", {}),
     "c3": lambda cfg: cfg["review"].__setitem__(
         "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
+    "review_lead": lambda cfg: cfg["review"].__setitem__("review_class_lead_counts", False),
 }
 
 def _c4_off(stack: ExitStack) -> None:

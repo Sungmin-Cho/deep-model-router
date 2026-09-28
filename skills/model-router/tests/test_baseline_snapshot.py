@@ -187,6 +187,8 @@ REVIEW_EDITS = [
     ("c3", lambda rv: rv.__setitem__("LOW", {"reviewers": [], "effort": None,
                                              "independent": False,
                                              "required_checks": ["tests", "lint"]})),
+    # REVIEW lead (DD-B7): the lead is reviewer-1 of every REVIEW task.
+    ("review_lead", lambda rv: rv.__setitem__("review_class_lead_counts", True)),
 ]
 
 

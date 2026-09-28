@@ -583,3 +583,88 @@ def test_b5_a_declared_implementer_is_never_retried():
                        implementer={"model_id": ID("claude_senior")})
     assert out["selected_model"] == ID("claude_senior")
     assert not any(n.startswith("same-model retry") for n in out["notes"])
+
+
+# --------------------------------------------------------------------------
+# B6 — a REVIEW task's lead counts toward its reviewers (DD-B7, U-8)
+# --------------------------------------------------------------------------
+
+REVIEW_BANDS = {"LOW": (0, 0, 0, 0), "MEDIUM": (2, 1, 1, 0), "HIGH": (2, 2, 1, 1),
+                "CRITICAL": (2, 2, 2, 2)}
+
+
+def _seats(out, kind):
+    return [s for s in out["dispatch_seats"] if s["seat"].startswith(kind)]
+
+
+@pytest.mark.parametrize("band,reviewers", [("LOW", 1), ("MEDIUM", 1), ("HIGH", 2), ("CRITICAL", 2)])
+def test_b6_a_review_task_without_context_seats_the_matrix_and_the_lead_once(band, reviewers):
+    """Audit F9: a HIGH/CRITICAL REVIEW without `review_context` seated opus as
+    its worker AND fable + sol as reviewers of that review. The lead is the
+    review: reviewer-1, one of the band's seats."""
+    _, out = _route(_req("REVIEW", REVIEW_BANDS[band]))
+    rv = out["review"]
+    assert rv["band"] == band
+    assert len(rv["reviewers"]) == reviewers, rv["reviewers"]
+    lead = _seats(out, "reviewer-1")
+    assert lead and lead[0]["model_id"] == out["selected_model"]
+    assert [s["model_id"] for s in _seats(out, "reviewer")] == rv["reviewer_models"]
+    assert rv["reviewer_models"].count(out["selected_model"]) == 1
+    judge = _seats(out, "judge")
+    if band == "CRITICAL":
+        assert judge and judge[0]["model_id"] not in rv["reviewer_models"]
+        assert TIER[judge[0]["model_id"]] >= max(TIER[m] for m in rv["reviewer_models"])
+    else:
+        assert not judge
+
+
+def test_b6_the_class_by_band_seat_matrix():
+    """Design DD-B7's matrix, all eight cells: outside REVIEW the worker plus
+    its independent reviewers; REVIEW, the dispatch seats with the lead."""
+    expect = {"LOW": (0, 1), "MEDIUM": (1, 1), "HIGH": (2, 2), "CRITICAL": (2, 2)}
+    for band, dims in REVIEW_BANDS.items():
+        _, impl = _route(_req("IMPLEMENTATION", dims))
+        _, review = _route(_req("REVIEW", dims))
+        assert impl["review"]["band"] == review["review"]["band"] == band
+        assert "dispatch_seats" not in impl
+        assert len(impl["review"]["reviewers"]) == expect[band][0], band
+        assert len(_seats(review, "reviewer")) == expect[band][1], band
+        assert bool(impl["review"]["judge_model"]) == bool(_seats(review, "judge")) == (band == "CRITICAL")
+
+
+def test_b6_isolation_evidence_counts_the_lead():
+    _, out = _route(_req("REVIEW", REVIEW_BANDS["HIGH"],
+                         availability_snapshot={"isolation": "available",
+                                                "isolation_evidence": ["s1", "s2"]}))
+    assert out["review"]["review_independence"] == "enforced"
+
+
+def test_b6_authors_are_excluded_only_when_declared():
+    _, bare = _route(_req("REVIEW", REVIEW_BANDS["HIGH"]))
+    assert "review_context" not in bare
+    declared = _req("REVIEW", REVIEW_BANDS["HIGH"], review_context={
+        "target_sha256": "5" * 64, "author_model_ids": bare["review"]["reviewer_models"][:1],
+        "author_families": []})
+    _, out = _route(declared)
+    assert bare["review"]["reviewer_models"][0] not in out["review"]["reviewer_models"]
+
+
+def test_b6_a_two_family_floor_does_not_leave_a_review_on_one_seat():
+    """REVIEW MEDIUM seats one model now; a caller who asks for two provider
+    families gets the lowest band that seats two (HIGH), not a terminal."""
+    code, out = _route(_req("REVIEW", REVIEW_BANDS["MEDIUM"],
+                            local_policy={"minimum_provider_families": 2}))
+    assert out["terminal"] is None and out["review"]["band"] == "HIGH", out["band_overrides_applied"]
+    assert "review_lead_minimum_provider_families_raised_review_to_HIGH" in out["band_overrides_applied"]
+    assert len({FAMILY[m] for m in out["review"]["reviewer_models"]}) == 2
+
+
+def test_b6_the_rule_is_one_config_key():
+    cfg = copy.deepcopy(CFG)
+    cfg["review"]["review_class_lead_counts"] = False
+    _, out = _route(_req("REVIEW", REVIEW_BANDS["HIGH"]), cfg)
+    assert "dispatch_seats" not in out
+    assert out["selected_model"] not in out["review"]["reviewer_models"]
+    cfg["review"]["review_class_lead_counts"] = "yes"
+    with pytest.raises(rt.ConfigError):
+        rt.Policy(cfg)

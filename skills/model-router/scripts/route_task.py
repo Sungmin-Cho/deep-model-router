@@ -567,6 +567,14 @@ class Policy:
                 "router.confidence.skip_uncertainty_penalty_when_band_raised must be true or "
                 f"false, got {skip!r}")
         self.skip_uncertainty_penalty: bool = skip
+        # review.review_class_lead_counts (DD-B7, U-8): a REVIEW task's lead is
+        # reviewer-1 and one of the band's reviewers, with or without a
+        # declared review_context.
+        lead = cfg["review"].get("review_class_lead_counts")
+        if not isinstance(lead, bool):
+            raise ConfigError(
+                f"review.review_class_lead_counts must be true or false, got {lead!r}")
+        self.review_lead_counts: bool = lead
         # effort_caps: {band_<BAND>: level} (DD-B3, C2) — the class table's
         # effort for that risk band is capped before any floor applies.
         caps = cfg.get("effort_caps")
@@ -2023,13 +2031,26 @@ def _seat_medium_reviewer(spec: dict, worker: str, policy: Policy, resolver: "Re
     return ranked[0]
 
 
+def _is_source_review(task: Task, policy: Policy) -> bool:
+    """Does this route seat its worker as the lead REVIEWER — reviewer-1, one
+    of the band's reviewers — rather than as a worker the review checks?
+    Always for a REVIEW task since 1.17.0 (design 2026-09-25 DD-B7, U-8);
+    before, only when it declared a `review_context`."""
+    return task.task_class == "REVIEW" and (task._review_context is not None
+                                            or policy.review_lead_counts)
+
+
 def _review_seat_supply(policy: Policy, task: Task, band: str) -> tuple[int, int]:
     """(reviewer seats, seats that can hold distinct families) the class x band
-    seat matrix gives this band (design 2026-09-25 DD-B7): the worker plus the
-    band's reviewers, and a judge at the top band."""
+    seat matrix gives this band (design 2026-09-25 DD-B7). Outside REVIEW: the
+    worker plus the band's reviewers, and a judge at the top band. A REVIEW
+    task's lead IS a reviewer: max(1, the band's reviewers) seats, plus the
+    judge — the lead alone at LOW and MEDIUM, two at HIGH and CRITICAL."""
     spec = policy.cfg["review"][band]
     reviewers = len(spec["reviewers"]) if "reviewers" in spec else 1
     judge = 1 if band == policy.bands[-1] else 0
+    if _is_source_review(task, policy):
+        return max(1, reviewers), max(1, reviewers) + judge
     return reviewers, 1 + reviewers + judge
 
 
@@ -2043,27 +2064,33 @@ def _low_review_escape(task: Task, policy: Policy, band: str, route_path: str | 
     can meet the floor, which then ends where it always did, at
     UNSATISFIABLE_LOCAL_POLICY, without a detour through the bands."""
     low = policy.bands[0]
-    if band != low or policy.band_reviewer_floor[low] is not None:
+    here = policy.bands.index(band)
+    deterministic = band == low and policy.band_reviewer_floor[low] is None
+    # A REVIEW task's lead counts as its reviewer, so its MEDIUM seats one
+    # model where it used to seat two: a caller floor there leaves the band
+    # too (DD-B7 — a two-family REVIEW does not stay at one seat).
+    lead = _is_source_review(task, policy) and policy.review_lead_counts
+    if not deterministic and not lead:
         return None
-    target, reasons = 0, []
-    if route_path == "disagreement":
-        target, reasons = 1, ["review_disagreement"]
-    if task._checks_available is False:
-        target = max(target, 1)
+    target, reasons = here, []
+    if deterministic and route_path == "disagreement":
+        target, reasons = here + 1, ["review_disagreement"]
+    if deterministic and task._checks_available is False:
+        target = max(target, here + 1)
         reasons.append("checks_unavailable")
     need_reviewers = lp.get("minimum_reviewers") or 0
     need_families = lp.get("minimum_provider_families") or 0
     supply = [_review_seat_supply(policy, task, b) for b in policy.bands]
-    if need_reviewers > supply[0][0] or need_families > supply[0][1]:
+    if need_reviewers > supply[here][0] or need_families > supply[here][1]:
         fits = [i for i, (seats, families) in enumerate(supply)
-                if seats >= need_reviewers and families >= need_families]
+                if i > here and seats >= need_reviewers and families >= need_families]
         if fits:
             target = max(target, fits[0])
-            if need_reviewers > supply[0][0]:
+            if need_reviewers > supply[here][0]:
                 reasons.append("minimum_reviewers")
-            if need_families > supply[0][1]:
+            if need_families > supply[here][1]:
                 reasons.append("minimum_provider_families")
-    return (policy.bands[target], reasons) if target else None
+    return (policy.bands[target], reasons) if target > here else None
 
 
 def _deconflict(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -> dict:
@@ -2283,9 +2310,13 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
     """
     if any(row.get("with") not in review["reviewers"] for row in review.get("self_review_avoided", [])):
         raise RouterInvariantError("stale reviewer substitution before joint allocation")
-    source_review = resolver.task._review_context is not None
+    source_review = resolver.source_review
     def unavailable():
-        return ({**review, "independence_compromised": True} if source_review else review), judge
+        # Compromised independence is a fact about a band that asks for it: a
+        # REVIEW task's lone lead at LOW that cannot be seated is a shortage,
+        # which the final resolution reports as one.
+        compromised = source_review and review["independent"]
+        return ({**review, "independence_compromised": True} if compromised else review), judge
     worker_model = resolver.peek(worker, write=True)
     # What the band asks of a reviewer — at MEDIUM including the implementer's
     # tier (DD-B5), so a MEDIUM slate below its implementer is deficient here
@@ -2479,6 +2510,9 @@ class Resolver:
         # and no availability, family or write filter applies to it: those
         # constrain seats still to be dispatched, and this one has run.
         self.pinned_worker: tuple[str, str] | None = None
+        # The worker is the lead reviewer (DD-B7): its seat is searched with
+        # the reviewers' instead of fixed ahead of them.
+        self.source_review: bool = _is_source_review(task, policy)
 
     def _primary(self, role: str) -> str | None:
         """The registry key this role binds to FOR THIS TASK.
@@ -3225,7 +3259,17 @@ def route(task: Task, cfg: dict | None = None, *,
                 adopted, note = legacy, None                          # both terminal: nothing to gain
             else:
                 row = _contract_violation(policy, with_cell, without)
-                if row is None:
+                if (row is None and _is_source_review(task, policy) and policy.review_lead_counts
+                        and without["terminal"] is None
+                        and policy.tier_of[with_cell["selected_model"]]
+                        <= policy.tier_of[without["selected_model"]]):
+                    # A REVIEW task's lead is searched with its reviewers (DD-B7):
+                    # the stronger cell only raises the lead's FLOOR, and the
+                    # search can land on the same model or an equal or weaker
+                    # one than the table cell's lead. That is no raise, so the
+                    # table plan stands and nothing is recorded.
+                    adopted, note = legacy, None
+                elif row is None:
                     adopted, note = candidate, "raised"
                 else:
                     adopted, note = legacy, f"execution band {exec_band} yielded {candidate.role}: {row}"
@@ -3244,8 +3288,9 @@ def route(task: Task, cfg: dict | None = None, *,
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
         result["notes"].append("review_context excludes declared source authors from every REVIEW-task seat; target identity is caller-declared")
+    if _is_source_review(task, policy):
         result["dispatch_seats"] = _dispatch_seats(result, policy, lead=True)
-        result["notes"].append("For review_context dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer, not an extra worker")
+        result["notes"].append("REVIEW task: dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer (reviewer-1), not an extra worker")
     if task._implementer is not None:
         result["dispatch_seats"] = _dispatch_seats(result, policy, lead=False)
         result["notes"].append(
@@ -3365,7 +3410,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         escape = _low_review_escape(task, policy, band, route_path, lp)
         if escape is not None:
             review_band, reasons = escape
-            overrides.extend(f"low_band_{why}_raised_review_to_{review_band}" for why in reasons)
+            prefix = "low_band" if band == policy.bands[0] else "review_lead"
+            overrides.extend(f"{prefix}_{why}_raised_review_to_{review_band}" for why in reasons)
         promoted_once = False
         promotion_confidence = None
         supply_exhausted: str | None = None
@@ -3389,7 +3435,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             resolver.assignments = {}
             review = select_review(review_band, worker, policy, resolver)
             source_judge = None
-            if task._review_context is not None:
+            if resolver.source_review:
                 source_judge = disagreement["default_judge"] if (
                     review["band"] == "CRITICAL" or route_path == "disagreement") else None
                 review, source_judge = _joint_seats(review, worker, source_judge, policy, resolver)
@@ -3509,7 +3555,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # worker-reviews-itself is documented design. The judge is not covered by
             # that exemption: an adjudicator brought in to settle a dispute must not be
             # one of the parties, whatever the band.
-            if task._review_context is not None:
+            if resolver.source_review:
                 judge_role = source_judge
             else:
                 if review["independent"]:
@@ -3594,7 +3640,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # only a defect where independence was requested; a judge sharing any seat
         # is a defect always.
         seat_models = {
-            **({"worker": resolved.get(worker)} if task._review_context is None else {}),
+            **({"worker": resolved.get(worker)} if not resolver.source_review else {}),
             **{f"reviewer_{i}": resolved.get(x) for i, x in enumerate(review["reviewers"])},
         }
         if review["independent"]:
@@ -3663,12 +3709,12 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # gate that restoring one model would have cleared.
         worker_model = resolved.get(worker)
         seats = len(review["reviewers"]) + (
-            1 if task._review_context is None and review["independent"] and worker_model
+            1 if not resolver.source_review and review["independent"] and worker_model
             and policy.tier_of[worker_model] >= floor else 0)
         # Every id the binding can reach, including roles outside `role_tiers`
         # (`worker_balanced_alt`) that the fallback ladder can still seat.
         supply = {cfg["models"][key]["id"] for key in resolver.binding.values()}
-        if task._review_context is not None:
+        if resolver.source_review:
             supply = {cfg["models"][key]["id"] for role in policy.roles
                       for key in resolver._candidates(role)}
         unsatisfiable = bool(shortfall) and sum(
@@ -3684,9 +3730,12 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             len(review["reviewers"]) == 1 and review["reviewers"][0] in fams and worker in fams
             and fams[review["reviewers"][0]] != fams[worker]
         )
-        if task._review_context is not None and len(review["reviewers"]) == 1:
+        if resolver.source_review and len(review["reviewers"]) == 1:
+            # One seat reviews the source: cross-family means cross to its
+            # declared authors. With no authors declared there is nothing to
+            # be cross to, and one family is not two.
             source_families = {policy.family_of[m] for m in resolver.author_excluded}
-            cross_family = bool(reviewer_families - source_families)
+            cross_family = bool(source_families) and bool(reviewer_families - source_families)
 
 
         if resolver.allowed_families is not None and len(resolver.allowed_families) == 0:

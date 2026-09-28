@@ -47,7 +47,10 @@ def test_ordinary_disagreement_uses_hidden_frontier_without_losing_diversity():
     out = run(review_context=None, flags=['review_disagreement'])
     rv = out['review']
     assert out['terminal'] is None and not rv['judge_unavailable']
-    assert len({out['selected_model'], *rv['reviewer_models'], rv['judge_model']}) == 4
+    # Since 1.17.0 the lead is reviewer-1 (DD-B7): two reviewers and a judge,
+    # three distinct models, where 1.16 seated a worker beside two reviewers.
+    assert out['selected_model'] == rv['reviewer_models'][0]
+    assert len({*rv['reviewer_models'], rv['judge_model']}) == 3
     assert out['cross_family_review']
     assert not out['fallbacks_applied']
 

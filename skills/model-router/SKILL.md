@@ -380,9 +380,8 @@ more subtasks interlock, requirements conflict, routing confidence is below
 For a read-only REVIEW of existing work, pass RouteRequestV1 `review_context`
 with its target SHA-256 and known author model IDs or families. Do not infer
 source authorship from your host model. See `references/review-policy.md`.
-When this context is present, dispatch **only `dispatch_seats`**, once per entry.
-`selected_*` identifies its lead reviewer; it is not an additional worker to
-spawn. Keep peer contexts independent and collect one session ID per reviewer.
+Any REVIEW task: dispatch **only `dispatch_seats`**, once each; the lead is
+reviewer-1, one of the band's reviewers, and `selected_*` names it. Keep peer contexts independent and collect one session ID per reviewer.
 An empty dispatch list is not permission to invent a replacement route.
 
 ## Step 3 — Review, by band alone

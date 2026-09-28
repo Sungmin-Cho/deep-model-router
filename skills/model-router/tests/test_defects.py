@@ -327,7 +327,10 @@ def test_d11_no_seat_is_held_twice():
         rv = out["review"]
         if out["terminal"] or not rv["independence_required"]:
             continue
-        seats = [out["selected_model"], *rv["reviewer_models"], rv["judge_model"]]
+        # A REVIEW task's lead IS reviewer-1 (DD-B7): its worker seat and its
+        # first reviewer seat are one seat, listed once.
+        lead = [] if out["task_class"] == "REVIEW" else [out["selected_model"]]
+        seats = [*lead, *rv["reviewer_models"], rv["judge_model"]]
         filled = [x for x in seats if x]
         checked += 1
         assert len(filled) == len(set(filled)), (
@@ -761,6 +764,12 @@ def test_d10_worker_model_is_never_one_of_its_own_reviewers():
     for out in _sweep():
         rv = out["review"]
         if not rv["independence_required"] or out["terminal"]:
+            continue
+        if out["task_class"] == "REVIEW":
+            # The lead reviews the SOURCE, not its own output (DD-B7): it is
+            # reviewer-1, once — any second seat on its model is the defect.
+            if rv["reviewer_models"].count(out["selected_model"]) != 1:
+                offenders.append((out["task_class"], rv["band"], out["selected_model"]))
             continue
         if out["selected_model"] and out["selected_model"] in rv["reviewer_models"]:
             offenders.append((out["task_class"], rv["band"], out["selected_model"]))

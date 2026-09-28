@@ -175,15 +175,36 @@ host remains advisory and is never used to infer who wrote the source artifact.
 
 The context is normalized and included in request identity and the decision
 fingerprint. Changing the target or authors changes that identity. Omitted/null
-context retains worker-plus-review semantics and the same request identity. Invalid context, write-seat
+context keeps the same request identity and excludes no author; since 1.17.0 it
+no longer changes the seat semantics (below). Invalid context, write-seat
 overrides and other task classes are rejected. Exclusion is an eligibility rule,
 not a model outage; genuine outages of eligible replacements remain recorded.
 
 This is a caller declaration. The router does not read the artifact to verify
 its digest, authenticate authorship, or certify the served provider model.
-The context is echoed as input even on terminal routes. With this explicit
-context, the selected executor is the lead reviewer, included once in the
-band's reviewer count. Use `dispatch_seats` as the canonical execution list;
+The context is echoed as input even on terminal routes.
+
+### A REVIEW task's lead is one of its reviewers
+
+Since 1.17.0 every REVIEW task — with or without `review_context` — seats its
+executor as the **lead reviewer**, included once in the band's reviewer count
+(`review.review_class_lead_counts`, design 2026-09-25 DD-B7, user decision
+U-8). Before, a REVIEW task without context seated its worker AND the band's
+reviewers: a HIGH review was reviewed by two more models. The class × band
+seat matrix:
+
+| | LOW | MEDIUM | HIGH | CRITICAL |
+|---|---|---|---|---|
+| Other classes: worker + independent reviewers | 1 + 0 | 1 + 1 | 1 + 2 | 1 + 2 (+ judge) |
+| REVIEW: `dispatch_seats`, the lead included | 1 | 1 | 2 | 2 (+ judge) |
+
+A REVIEW route without context therefore has one independent seat fewer than
+in 1.16. The lead counts as independent because it is not the source's author
+— which only a declared `review_context` (or nothing) says — and because every
+seat runs isolated. A caller floor the smaller matrix cannot carry
+(`minimum_provider_families: 2` at MEDIUM) takes the lowest band that can,
+recorded as `review_lead_<floor>_raised_review_to_<band>`. For every REVIEW
+route `selected_*` names the lead reviewer. Use `dispatch_seats` as the canonical execution list;
 do not dispatch `selected_model` again alongside that list. Each entry gives
 `seat`, `role`, `model_id`, `effort`, and `effort_native`. Terminal routes return
 an empty list. Isolation evidence still needs one distinct session per reviewer.
