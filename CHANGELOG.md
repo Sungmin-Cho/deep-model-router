@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Weaker than 1.16: 7,408 retries keep the failed model one effort higher instead of climbing a tier (C5); 2,573 of them are reviewed by lower-tier seats, 164 one band lower (120 no longer `CRITICAL`), and 1,968 seat a judge where 1.16's stronger worker left no model to adjudicate (`no_adjudicator`).
 - Weaker than 1.16: a `REVIEW` route without context reviews with one seat fewer (REVIEW lead), so 1,977 routes lose `cross_family_review` (a lone lead has no second family) and 623 count a lower-tier lead as a reviewer.
 - Weaker than 1.16: with an `implementer` declared, 549 reviews share one family where only it supplies the band's tier; with a quota reading, an `exhausted` family thins the slate like withheld models (601 routes lose `cross_family_review`, 607 seat lower-tier reviewers, 31 a lower-tier worker).
-- A `LOW`-risk task's worker effort drops from the table's `HIGH` to `MEDIUM` on 3,132 routes (C2).
+- A `LOW`-risk task's worker effort drops from the table's `HIGH` to `MEDIUM` on 3,132 routes (C2); weaker than 1.16 on 24 of them, where that worker is a `LOW` `REVIEW` lead with `review_context`, so its review seat runs at `MEDIUM` instead of `HIGH`.
 - deep-loop does not enforce the `LOW` deterministic checks, as it did not dispatch the `LOW` reviewer before.
 - Updating stops an in-flight deep-loop run on the policy digest change; finish running loops first. A request using a 1.17 field gets exit 2 from 1.16.
 
