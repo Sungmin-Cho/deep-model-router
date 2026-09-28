@@ -435,6 +435,11 @@ review:
 
 retry:
   same_model_same_effort:            1
+  # Read by the router since 1.17.0 (design 2026-09-25 DD-B6, U-7): how many
+  # capability failures of ONE model may still be retried on that model at a
+  # higher effort before the ladder climbs a tier. With
+  # `require_new_evidence_on_same_tier` below, the failure's record must carry
+  # the effort it ran at and fresh `retry_evidence_sha256`.
   same_model_higher_effort:          1
   stronger_model:                    2
   max_total_implementation_attempts: 4

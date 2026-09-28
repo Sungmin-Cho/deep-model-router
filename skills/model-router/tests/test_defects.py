@@ -1030,12 +1030,12 @@ DOCUMENTED_BUT_UNREAD = {
     # purpose" from "forgotten".
     "retry.same_model_same_effort": "budget for the CALLING agent's loop; one "
                                     "route() call cannot count attempts",
-    "retry.same_model_higher_effort": "same",
-    "retry.stronger_model": "same",
+    # `retry.same_model_higher_effort` and `retry.require_new_evidence_on_same_tier`
+    # left this list in 1.17.0: the same-model retry rule reads both (DD-B6).
+    "retry.stronger_model": "budget for the CALLING agent's loop; one route() call "
+                            "cannot count attempts",
     "retry.max_review_rounds": "the caller runs the review loop, not the router",
     "retry.max_judge_invocations": "same",
-    "retry.require_new_evidence_on_same_tier": "states the rule the router "
-                                               "enforces by refusing same-tier retries",
     "review.disagreement.resolution": "verdict-combination table the caller "
                                       "applies after reviews return",
     "review.disagreement.code_local_dispute_judge": "REAL GAP, recorded not "
@@ -1205,6 +1205,15 @@ def test_d14_every_config_rule_has_a_consumer_or_a_recorded_reason():
         for pf, pm in ((0, []), (1, ["senior_engineer"]), (2, []), (5, []))
         for um in ([], [ARCHITECT_ID], [ID("claude_senior"), ID("openai_reasoning")])
         for iso in (None, True, False)
+    ]
+    # Typed history is the only door to the same-model retry rule (DD-B6), the
+    # reader of `retry.same_model_higher_effort` and its evidence switch.
+    probes += [
+        dict(task_class=c, complexity=2, uncertainty=1, blast_radius=1, reversibility=1,
+             _attempt_outcomes=[{"attempt_id": "a1", "model_id": ID("openai_worker_fast"),
+                                 "kind": "capability_failure", "evidence_sha256": "1" * 64,
+                                 "effort": "HIGH", "retry_evidence_sha256": "2" * 64}])
+        for c in TASK_CLASSES
     ]
     for kw in probes:
         try:

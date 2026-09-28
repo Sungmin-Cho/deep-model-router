@@ -211,8 +211,15 @@ def test_part_b_fields_present_move_the_request_hash():
     """The other half: a declared field is request content, so it must move
     the identity — a hash that ignores a field that changes the route lets two
     decisions share a fingerprint."""
+    def with_attempt(**fields):
+        return lambda r: {**r, "attempt_outcomes": [{**r["attempt_outcomes"][0], **fields}]}
+
     variants = {
         "implementer": lambda r: {**r, "implementer": {"model_id": ID("claude_senior")}},
+        "checks_available": lambda r: {**r, "availability_snapshot": {
+            **r["availability_snapshot"], "checks_available": False}},
+        "attempt effort": with_attempt(effort="HIGH"),
+        "attempt retry evidence": with_attempt(effort="HIGH", retry_evidence_sha256="2" * 64),
     }
     seen = {PART_B_GOLDEN}
     for name, build in variants.items():

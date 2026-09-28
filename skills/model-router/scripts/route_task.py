@@ -1250,6 +1250,9 @@ class Task:
     # availability_snapshot.checks_available (DD-B4): false when this repository
     # cannot run the deterministic checks a LOW review consists of. None = true.
     _checks_available: bool | None = field(default=None, repr=False, compare=False)
+    # Set by route() when the same-model retry rule holds (DD-B6): {"model": id,
+    # "effort": level}. Not caller input and never part of request_sha256.
+    _same_model_retry: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def total_prior_attempts(self) -> int:
@@ -1345,10 +1348,15 @@ class Task:
         except ValueError as exc:
             raise ValidationError(f"attempt_outcomes: {exc}") from None
         required = {"attempt_id", "model_id", "kind", "evidence_sha256"}
+        # `effort` and `retry_evidence_sha256` (1.17.0, design 2026-09-25
+        # DD-B6): the conceptual effort the attempt actually ran at, and fresh
+        # evidence for a same-model retry. Optional, and omitted from the
+        # normalised record when absent, so a 1.16 history hashes as it did.
+        optional = {"recovery_sha256", "effort", "retry_evidence_sha256"}
         seen, normalized = set(), []
         for item in history:
             if (not isinstance(item, dict) or not required <= set(item)
-                    or set(item) - (required | {"recovery_sha256"})):
+                    or set(item) - (required | optional)):
                 raise ValidationError("attempt_outcomes entry has missing or unknown fields")
             attempt_id = item["attempt_id"]
             if (not isinstance(attempt_id, str)
@@ -1369,7 +1377,30 @@ class Task:
                 raise ValidationError("recovery evidence cannot bypass capability failure or unconfirmed termination")
             if item.get("recovery_sha256") == item["evidence_sha256"]:
                 raise ValidationError("recovery evidence must differ from the failed attempt evidence")
+            if "effort" in item and item["effort"] not in policy.efforts:
+                raise ValidationError(
+                    f"attempt_outcomes.effort: {item['effort']!r} is not one of {policy.efforts}")
+            if "retry_evidence_sha256" in item:
+                value = item["retry_evidence_sha256"]
+                if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                    raise ValidationError("attempt_outcomes.retry_evidence_sha256 must be lowercase hex64")
+                if kind != "capability_failure":
+                    raise ValidationError(
+                        "retry_evidence_sha256 is evidence for a same-model retry after a "
+                        "capability_failure; it has no meaning on any other kind")
             normalized.append({**item, "recovery_sha256": item.get("recovery_sha256")})
+        # Fresh evidence has to be fresh: a retry hash that repeats any hash in
+        # the history — its own attempt's evidence included — proves nothing new.
+        for i, row in enumerate(normalized):
+            fresh = row.get("retry_evidence_sha256")
+            if fresh is None:
+                continue
+            others = {h for j, other in enumerate(normalized)
+                      for k, h in other.items() if k.endswith("sha256") and h is not None
+                      and not (j == i and k == "retry_evidence_sha256")}
+            if fresh in others:
+                raise ValidationError(
+                    "attempt_outcomes.retry_evidence_sha256 repeats a hash already in the history")
         self._attempt_outcomes = normalized
 
     def _validate_review_context(self, policy: Policy) -> None:
@@ -2409,6 +2440,10 @@ class Resolver:
         # exclusion set removed another, and the model that actually ran came
         # straight back out of `peek`. One function answers it now.
         self.failed = task.failed_models(policy)
+        if task._same_model_retry is not None:
+            # DD-B6: the one failed model this retry goes back to, at a higher
+            # effort. Every other seat still excludes it.
+            self.failed.discard(task._same_model_retry["model"])
         # Kept apart from `blocked`: that set is the CALLER's withholding and is
         # echoed on every route, terminal ones included. A local revocation is
         # not caller input, so it filters seats without being echoed.
@@ -2999,6 +3034,61 @@ def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
     return seats
 
 
+def _same_model_retry(task: Task, policy: Policy, cfg: dict, history_note: str | None,
+                      budget_spent: bool) -> tuple[str, str, str] | None:
+    """(role, model, effort) when a capability failure may be retried on the
+    SAME model at a higher effort (design 2026-09-25 DD-B6, U-7), else None
+    and the ladder climbs a tier as before. All of:
+
+    1. The history is typed and usable, nothing else stops the route (spent
+       budget, unconfirmed termination, unrecovered operational outcomes), no
+       implementer is declared, and every capability failure is on one model
+       — a stronger model having failed too is no case for the weaker again.
+    2. That model's capability failures number at most
+       `retry.same_model_higher_effort`: the integer is the real budget.
+    3. Its most recent capability failure declares the `effort` it ran at and,
+       while `retry.require_new_evidence_on_same_tier` holds, fresh
+       `retry_evidence_sha256` (validation refuses a repeated hash).
+    4. The failure-free plan seats that model, and one level above the higher
+       of every effort it failed at and the effort that plan gives it exists
+       and is within its ceiling — computed, never clamped: a model that
+       failed at its ceiling is not sent back at the same effort.
+
+    Caller-declared, like every attempt record: the router reads no receipt.
+    """
+    history = task._attempt_outcomes
+    if (history is None or history_note or budget_spent or task._implementer is not None
+            or task.has("termination_unconfirmed")
+            or any(row["kind"] in OPERATIONAL_OUTCOMES and row["recovery_sha256"] is None
+                   for row in history)):
+        return None
+    failures = [row for row in history if row["kind"] == "capability_failure"]
+    models = {row["model_id"] for row in failures}
+    if len(models) != 1:
+        return None
+    (model,) = models
+    retry_cfg = cfg["retry"]
+    if len(failures) > retry_cfg["same_model_higher_effort"]:
+        return None
+    last = failures[-1]
+    if "effort" not in last:
+        return None
+    if retry_cfg["require_new_evidence_on_same_tier"] and "retry_evidence_sha256" not in last:
+        return None
+    free = route(replace(task, prior_failures=0, prior_models=[], _attempt_outcomes=None,
+                         flags=[f for f in task.flags if f != "termination_unconfirmed"],
+                         _policy_pin=None, _policy=None), cfg)
+    if free["terminal"] is not None or free["selected_model"] != model:
+        return None
+    ran = [policy.efforts.index(row["effort"]) for row in failures if "effort" in row]
+    above = max(ran + [policy.efforts.index(free["selected_effort_effective"])]) + 1
+    ceiling = policy.ceiling_of.get(model)
+    if above >= len(policy.efforts) or (
+            ceiling is not None and above > policy.efforts.index(ceiling)):
+        return None
+    return free["selected_role"], model, policy.efforts[above]
+
+
 def route(task: Task, cfg: dict | None = None, *,
           env: Mapping[str, str] | None = None, home: Path | None = None) -> dict:
     """Route `task`. With no `cfg`, on the effective policy (base + committed
@@ -3099,48 +3189,57 @@ def route(task: Task, cfg: dict | None = None, *,
                    redundant_overrides=tuple(redundant_overrides), route_path=route_path,
                    execution_score=exec_score, execution_band=exec_band,
                    uncertainty_counted_in_band=counted)
-    candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
-    if task._implementer is not None:
-        # DD-B1: the worker seat already executed. One plan, for the REVIEW of
-        # that work: the role is the one the policy would have seated after the
-        # execution cell (the ladder and fallback code need a role), the model
-        # is the declared one, and the review is sized against the stronger of
-        # the two — a weaker implementer is gated, not silently accepted.
-        ref = resolver.peek(candidate.role, write=True)
-        pre = replace(pre, implementer_ref_tier=policy.tier_of[ref] if ref else None)
-        result = _plan(task, policy, cfg, pre, resolver, candidate)
-    elif candidate is legacy:
-        result = _plan(task, policy, cfg, pre, resolver, legacy)
+    retry = _same_model_retry(task, policy, cfg, history_note, budget_spent)
+    if retry is not None:
+        # DD-B6 (C5): the failed model again, one effort above every effort it
+        # failed at, in the role the failure-free plan seats it in. One plan:
+        # there is no ladder step to weigh an execution cell against.
+        role, model, effort = retry
+        task = replace(task, _same_model_retry={"model": model, "effort": effort})
+        result = _plan(task, policy, cfg, pre, resolver, WorkerChoice(role, (), False))
     else:
-        # DD-B2's guard. The two plans are weighed with the review promotion
-        # 1.16.1 made — uncertainty charged in full — and only the adopted
-        # plan is planned again without the double-counted penalty. Weighing
-        # them without it let a promotion the table plan no longer takes, while
-        # the execution-cell plan still took one on its own fallback, make the
-        # bands differ and yield the stronger worker: counting uncertainty once
-        # is a review rule, and must never cost the worker a tier.
-        weigh = replace(pre, uncertainty_counted_in_band=False)
-        with_cell = _plan(task, policy, cfg, weigh, resolver, candidate)
-        without = _plan(task, policy, cfg, weigh, resolver, legacy)
-        if with_cell["terminal"] and without["terminal"]:
-            adopted, note = legacy, None                          # both terminal: nothing to gain
+        candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
+        if task._implementer is not None:
+            # DD-B1: the worker seat already executed. One plan, for the REVIEW of
+            # that work: the role is the one the policy would have seated after the
+            # execution cell (the ladder and fallback code need a role), the model
+            # is the declared one, and the review is sized against the stronger of
+            # the two — a weaker implementer is gated, not silently accepted.
+            ref = resolver.peek(candidate.role, write=True)
+            pre = replace(pre, implementer_ref_tier=policy.tier_of[ref] if ref else None)
+            result = _plan(task, policy, cfg, pre, resolver, candidate)
+        elif candidate is legacy:
+            result = _plan(task, policy, cfg, pre, resolver, legacy)
         else:
-            row = _contract_violation(policy, with_cell, without)
-            if row is None:
-                adopted, note = candidate, "raised"
+            # DD-B2's guard. The two plans are weighed with the review promotion
+            # 1.16.1 made — uncertainty charged in full — and only the adopted
+            # plan is planned again without the double-counted penalty. Weighing
+            # them without it let a promotion the table plan no longer takes, while
+            # the execution-cell plan still took one on its own fallback, make the
+            # bands differ and yield the stronger worker: counting uncertainty once
+            # is a review rule, and must never cost the worker a tier.
+            weigh = replace(pre, uncertainty_counted_in_band=False)
+            with_cell = _plan(task, policy, cfg, weigh, resolver, candidate)
+            without = _plan(task, policy, cfg, weigh, resolver, legacy)
+            if with_cell["terminal"] and without["terminal"]:
+                adopted, note = legacy, None                          # both terminal: nothing to gain
             else:
-                adopted, note = legacy, f"execution band {exec_band} yielded {candidate.role}: {row}"
-        if pre.uncertainty_counted_in_band:
-            result = _plan(task, policy, cfg, pre, resolver, adopted)
-        else:
-            result = with_cell if adopted is candidate else without
-        if note == "raised":
-            capped = (f" at effective effort {result['selected_effort_effective']} (ceiling)"
-                      if result["selected_effort_effective"] != result["selected_effort"] else "")
-            result["notes"].append(
-                f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
-        elif note is not None:
-            result["notes"].append(note)
+                row = _contract_violation(policy, with_cell, without)
+                if row is None:
+                    adopted, note = candidate, "raised"
+                else:
+                    adopted, note = legacy, f"execution band {exec_band} yielded {candidate.role}: {row}"
+            if pre.uncertainty_counted_in_band:
+                result = _plan(task, policy, cfg, pre, resolver, adopted)
+            else:
+                result = with_cell if adopted is candidate else without
+            if note == "raised":
+                capped = (f" at effective effort {result['selected_effort_effective']} (ceiling)"
+                          if result["selected_effort_effective"] != result["selected_effort"] else "")
+                result["notes"].append(
+                    f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
+            elif note is not None:
+                result["notes"].append(note)
     if task._review_context is not None:
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
@@ -3231,6 +3330,14 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         if history_note:
             worker_notes.append(history_note)
         effort, effort_notes = select_effort(task, band, pre.execution_band, policy)
+        if task._same_model_retry is not None:
+            retry_effort = task._same_model_retry["effort"]
+            if policy.efforts.index(retry_effort) > policy.efforts.index(effort):
+                effort = retry_effort
+            effort_notes.append(
+                f"same-model retry: {policy.id_to_key[task._same_model_retry['model']]} again at "
+                f"{retry_effort}, above every effort it failed at "
+                f"(retry.same_model_higher_effort)")
         if lp.get("minimum_effort") is not None:
             asked = lp["minimum_effort"]
             if policy.efforts.index(asked) > policy.efforts.index(effort):

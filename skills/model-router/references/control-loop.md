@@ -51,6 +51,35 @@ require_new_evidence_on_same_tier: true    # "tier" = capability_tier of the
                                           # model that RAN
 ```
 
+### The same-model retry (1.17.0)
+
+The router reads `same_model_higher_effort` and
+`require_new_evidence_on_same_tier` (design 2026-09-25 DD-B6, user decision
+U-7). A capability failure is retried on the **same model at one effort
+higher** instead of a stronger model when all of these hold — otherwise the
+ladder climbs a tier as before:
+
+1. The history is typed (`attempt_outcomes`), nothing else stops the route
+   (budget, unconfirmed termination, unrecovered operational outcomes), no
+   `implementer` is declared, and every capability failure is on ONE model.
+2. That model has at most `same_model_higher_effort` capability failures — the
+   integer is the budget: `2` retries it twice, the third failure climbs.
+3. Its most recent capability failure declares `effort` (the conceptual level
+   it actually ran at) and, while `require_new_evidence_on_same_tier` holds,
+   `retry_evidence_sha256`: new evidence, different from every hash in the
+   history (a repeat is exit 2).
+4. The route without the history seats that model, and one level above the
+   higher of every effort it failed at and the effort that route gives it
+   exists and is within the model's ceiling. It is never clamped: a model that
+   failed at its ceiling is not sent back at it.
+
+The retry keeps the 0.05 failure penalty, lists the model as no longer
+excluded, and says `same-model retry: <registry key> again at <effort>` in
+`notes`. The fields are caller declarations like every attempt record — the
+router reads no receipt — and are omitted from the request identity when
+absent, so a 1.16 history still hashes as it did. Operational outcomes are
+never its target: effort does not fix a timeout.
+
 ### Accounting for silent seats
 
 Two questions the retry rules used to leave open, decided:
@@ -284,6 +313,8 @@ V1 optionally accepts `attempt_outcomes`, an ordered array for the executor
 lineage being routed (not sibling reviewer/judge attempts). Each record has a
 unique safe `attempt_id`, concrete registry/history `model_id`, `kind`, and
 hex64 `evidence_sha256`; `recovery_sha256` is optional/null or a different hex64.
+Since 1.17.0 a record may also carry `effort` (the level it ran at) and, on a
+`capability_failure`, `retry_evidence_sha256` — see The same-model retry.
 Do not combine it with nonempty legacy `prior_failures`.
 
 Only `capability_failure` feeds the existing model exclusion, tier escalation,

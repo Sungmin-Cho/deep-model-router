@@ -441,3 +441,145 @@ def test_b4_the_consumer_contract_is_written_down():
     text = " ".join((HERE.parent / "references" / "control-loop.md").read_text().split())
     assert "exit 0 with a non-empty `required_checks` means the consumer owes those checks" in text
     assert "deep-loop does not read `required_checks`" in text
+
+
+# --------------------------------------------------------------------------
+# B5 — a same-model retry at effort + 1 (DD-B6, C5, U-7)
+# --------------------------------------------------------------------------
+
+H1, H2, H3, H4 = "1" * 64, "2" * 64, "3" * 64, "4" * 64
+
+
+def _fail(model_key, effort=None, retry=None, attempt="a1", evidence=H1, kind="capability_failure",
+          recovery=None):
+    row = {"attempt_id": attempt, "model_id": ID(model_key), "kind": kind, "evidence_sha256": evidence}
+    if effort is not None:
+        row["effort"] = effort
+    if retry is not None:
+        row["retry_evidence_sha256"] = retry
+    if recovery is not None:
+        row["recovery_sha256"] = recovery
+    return row
+
+
+# MEDIUM (7), exec 8 EASY: luna at HIGH (multi-file feature) when nothing failed.
+LUNA_TASK = ("IMPLEMENTATION", (2, 1, 1, 1))
+
+
+def _retry(*rows, cfg=None, **extra):
+    return _route(_req(*LUNA_TASK, attempt_outcomes=list(rows), **extra), cfg)
+
+
+def test_b5_a_declared_failure_with_fresh_evidence_retries_the_same_model_one_effort_up():
+    _, free = _route(_req(*LUNA_TASK))
+    assert free["selected_model"] == ID("openai_worker_fast") and free["selected_effort"] == "HIGH"
+    code, out = _retry(_fail("openai_worker_fast", "HIGH", H2))
+    assert code == 0
+    assert out["selected_model"] == ID("openai_worker_fast")
+    assert out["selected_effort"] == "VERY_HIGH"
+    assert ID("openai_worker_fast") not in out["excluded_prior_failures"]
+    assert any(n.startswith("same-model retry: openai_worker_fast again at VERY_HIGH") for n in out["notes"])
+    assert out["routing_confidence"] == round(free["routing_confidence"] - 0.05, 2)   # the penalty stays
+    assert ID("openai_worker_fast") not in out["review"]["reviewer_models"]
+
+
+def _climbed(out):
+    return TIER[out["selected_model"]] > TIER[ID("openai_worker_fast")]
+
+
+@pytest.mark.parametrize("why,rows", [
+    ("no effort on the record", [_fail("openai_worker_fast", None, H2)]),
+    ("no fresh evidence", [_fail("openai_worker_fast", "HIGH", None)]),
+    ("two failures against a budget of one",
+     [_fail("openai_worker_fast", "MEDIUM", None, "a1", H1),
+      _fail("openai_worker_fast", "HIGH", H2, "a2", H3)]),
+    ("the failure-free plan seats another model", [_fail("claude_worker_fast", "HIGH", H2)]),
+    ("already at the top of the scale", [_fail("openai_worker_fast", "MAX", H2)]),
+])
+def test_b5_each_condition_false_climbs_a_tier_as_before(why, rows):
+    code, out = _retry(*rows)
+    assert code == 0, why
+    assert _climbed(out) or out["selected_model"] != ID("openai_worker_fast"), why
+    assert not any(n.startswith("same-model retry") for n in out["notes"]), why
+
+
+def test_b5_a_model_that_failed_at_its_ceiling_is_not_sent_back_at_it():
+    # grok's ceiling is VERY_HIGH: a failure there has no effort above it.
+    req = _req("IMPLEMENTATION", (3, 0, 1, 0),
+               attempt_outcomes=[_fail("xai_frontier", "VERY_HIGH", H2)])
+    _, out = _route(req)
+    assert out["selected_model"] != ID("xai_frontier")
+    assert TIER[out["selected_model"]] > TIER[ID("xai_frontier")]
+    # One level lower, and there is room.
+    req["attempt_outcomes"] = [_fail("xai_frontier", "HIGH", H2)]
+    _, out = _route(req)
+    assert out["selected_model"] == ID("xai_frontier") and out["selected_effort"] == "VERY_HIGH"
+
+
+def test_b5_the_retry_binds_to_the_models_latest_capability_failure():
+    """Not to any record that happens to carry the fields: an earlier failure
+    that declared its effort and evidence does not license a retry after a
+    later one that did not."""
+    cfg = copy.deepcopy(CFG)
+    cfg["retry"]["same_model_higher_effort"] = 2
+    code, out = _retry(_fail("openai_worker_fast", "HIGH", H2, "a1", H1),
+                       _fail("openai_worker_fast", None, None, "a2", H3), cfg=cfg)
+    assert _climbed(out)
+    # And an operational outcome is never the target, whatever it carries.
+    code, out = _retry(_fail("openai_worker_fast", "HIGH", None, "a1", H1, kind="timeout",
+                             recovery=H3))
+    assert out["selected_model"] == ID("openai_worker_fast")
+    assert not any(n.startswith("same-model retry") for n in out["notes"])
+
+
+def test_b5_the_budget_integer_is_the_real_limit():
+    cfg = copy.deepcopy(CFG)
+    cfg["retry"]["same_model_higher_effort"] = 2
+    two = [_fail("openai_worker_fast", "HIGH", None, "a1", H1),
+           _fail("openai_worker_fast", "VERY_HIGH", H2, "a2", H3)]
+    _, out = _retry(*two, cfg=cfg)
+    assert out["selected_model"] == ID("openai_worker_fast") and out["selected_effort"] == "MAX"
+    three = two[:1] + [_fail("openai_worker_fast", "HIGH", None, "a2", H3),
+                       _fail("openai_worker_fast", "VERY_HIGH", H2, "a3", H4)]
+    _, out = _retry(*three, cfg=cfg)
+    assert _climbed(out)
+
+
+def test_b5_an_under_declared_effort_cannot_pull_the_retry_below_what_the_router_assigned():
+    _, out = _retry(_fail("openai_worker_fast", "LOW", H2))
+    assert out["selected_effort"] == "VERY_HIGH"          # max(LOW, HIGH assigned) + 1
+    _, out = _retry(_fail("openai_worker_fast", "VERY_HIGH", H2))
+    assert out["selected_effort"] == "MAX"
+
+
+def test_b5_fresh_evidence_must_be_fresh_and_belongs_to_a_capability_failure():
+    for rows in ([_fail("openai_worker_fast", "HIGH", H1)],                   # its own evidence
+                 [_fail("openai_worker_fast", "HIGH", H2, "a1", H1),
+                  _fail("claude_worker_fast", None, None, "a2", H2)],         # another record's
+                 [_fail("openai_worker_fast", "HIGH", H2, kind="timeout", recovery=H3)]):
+        assert _retry(*rows)[0] == 2, rows
+    assert _retry(_fail("openai_worker_fast", "EXTREME", H2))[0] == 2
+
+
+def test_b5_evidence_is_optional_when_the_policy_does_not_ask_for_it():
+    cfg = copy.deepcopy(CFG)
+    cfg["retry"]["require_new_evidence_on_same_tier"] = False
+    _, out = _retry(_fail("openai_worker_fast", "HIGH", None), cfg=cfg)
+    assert out["selected_model"] == ID("openai_worker_fast") and out["selected_effort"] == "VERY_HIGH"
+
+
+def test_b5_a_pre_117_record_keeps_its_request_identity_and_the_ladder():
+    row = _fail("openai_worker_fast")
+    code, out = _retry(row)
+    assert code == 0 and _climbed(out)
+    normalized = rt.task_from_request_v1(_req(*LUNA_TASK, attempt_outcomes=[row]))
+    normalized.validate(rt.Policy.of(CFG))
+    assert "effort" not in normalized._attempt_outcomes[0]
+    assert "retry_evidence_sha256" not in normalized._attempt_outcomes[0]
+
+
+def test_b5_a_declared_implementer_is_never_retried():
+    code, out = _retry(_fail("openai_worker_fast", "HIGH", H2),
+                       implementer={"model_id": ID("claude_senior")})
+    assert out["selected_model"] == ID("claude_senior")
+    assert not any(n.startswith("same-model retry") for n in out["notes"])

@@ -66,9 +66,12 @@ FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 # named here cannot explain anything.
 ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7")
 
-# Keys that are not decisions: provenance, prose, and the explicit-cfg overlay.
+# Keys that are not decisions: provenance, prose, the explicit-cfg overlay, and
+# the typed history echoed back as declared (a rule switched off projects its
+# fields away, so the echo differs by the input and nothing else).
 NOT_DECISIONS = frozenset({"notes", "rationale", "policy_sha256", "request_sha256",
-                           "decision_fingerprint", "router_plugin_version", "model_overlay"})
+                           "decision_fingerprint", "router_plugin_version", "model_overlay",
+                           "attempt_outcomes"})
 
 
 # --------------------------------------------------------------------------
@@ -241,6 +244,63 @@ def _c3_check(req, prev, cur):
     return out
 
 
+OPERATIONAL = {"transport_failure", "launch_failure", "resolution_failure", "timeout",
+               "max_turns_partial", "no_artifact", "invalid_output", "authentication_failure",
+               "quota_exhausted", "publication_failure", "cancelled", "unknown"}
+
+
+def _c5_target(req):
+    """DD-B6's four conditions from the request and the replay state before
+    C5 — (model, effort) when all hold, else None. Written out here, not
+    taken from the router."""
+    history = req.get("attempt_outcomes")
+    if not history or "implementer" in req or "termination_unconfirmed" in req["flags"]:
+        return None
+    if any(r["kind"] == "termination_unconfirmed"
+           or (r["kind"] in OPERATIONAL and not r.get("recovery_sha256")) for r in history):
+        return None
+    if len(history) >= CFG["retry"]["max_total_implementation_attempts"]:
+        return None
+    failures = [r for r in history if r["kind"] == "capability_failure"]
+    if len({r["model_id"] for r in failures}) != 1:
+        return None
+    model = failures[0]["model_id"]
+    if len(failures) > CFG["retry"]["same_model_higher_effort"]:
+        return None
+    last = failures[-1]
+    if "effort" not in last or (CFG["retry"]["require_new_evidence_on_same_tier"]
+                                and "retry_evidence_sha256" not in last):
+        return None
+    before = frozenset(r for r in ORDER[:ORDER.index("c5")] if r in RULES)
+    free = route_live({k: v for k, v in req.items() if k != "attempt_outcomes"}, before)
+    if "error" in free or free["terminal"] or free["selected_model"] != model:
+        return None
+    ran = [EFFORTS.index(r["effort"]) for r in failures if "effort" in r]
+    above = max(ran + [EFFORTS.index(free["selected_effort_effective"])]) + 1
+    ceiling = CFG["models"][next(k for k, m in CFG["models"].items() if m["id"] == model)].get(
+        "effort_ceiling")
+    if above >= len(EFFORTS) or (ceiling and above > EFFORTS.index(ceiling)):
+        return None
+    return model, EFFORTS[above]
+
+
+def _c5_check(req, prev, cur):
+    target = _c5_target(req)
+    if target is None or cur.get("terminal"):
+        return []
+    model, effort = target
+    out = []
+    if cur["selected_model"] != model:
+        out.append(f"the retry seats {cur['selected_model']}, not the failed {model}")
+    if EFFORTS.index(cur["selected_effort"]) < EFFORTS.index(effort):
+        out.append(f"retry effort {cur['selected_effort']} below {effort}")
+    if model in cur["excluded_prior_failures"]:
+        out.append("the retried model is still listed as excluded")
+    if model in cur["review"]["reviewer_models"]:
+        out.append("the retried model reviews itself")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -303,6 +363,20 @@ RULES: dict[str, Rule] = {
                            "selected_role", "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_c3_check, changed_sample=1539, changed_full=6216),
+    # The four conditions, all of them (plan B0 Step 3): the ladder's step up
+    # is undone — role and model back to the failure-free plan's, the effort
+    # one above every effort that failed — and what follows from the worker:
+    # its de-conflicted reviewers, fallbacks, exclusions and gates. The worker
+    # tier may fall below 1.16.1's here and only here (DD-B11 invariant 4).
+    "c5": Rule(
+        "c5", predicate=lambda req, prev: _c5_target(req) is not None,
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_c5_check, changed_sample=687, changed_full=7468),
 }
 
 

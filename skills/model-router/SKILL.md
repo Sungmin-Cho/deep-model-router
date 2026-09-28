@@ -349,9 +349,8 @@ MINIMAL < LOW < MEDIUM < HIGH < VERY_HIGH < MAX
 | multi-system refactoring | `VERY_HIGH` |
 | complex architecture, unknown root cause, adversarial review | `MAX` |
 
-A `LOW`-risk task's table effort is capped at `MEDIUM` (`effort_caps`) unless it
-has an unknown root cause or a capability failure on record; the floors below
-still win.
+`LOW` risk caps it at `MEDIUM` (`effort_caps`) absent a failure or unknown
+root cause.
 
 Floors override the table, never the reverse:
 
@@ -462,15 +461,16 @@ Escalate on **evidence**: a failed acceptance check, a stated low confidence,
 an unstable plan, a reviewer finding. Not on a hunch, and not merely because a
 stronger model exists.
 
-A retry must reach a **strictly higher `capability_tier` than the model that
-ran**, and never a weaker one than the same task with no failures. **The router
-does not reconstruct what ran — it asks.** `--prior-failures N` requires
+A retry reaches a **strictly higher `capability_tier` than the model that
+ran**, never weaker than with no failures — unless a typed failure earns the
+same model one effort up (`references/control-loop.md`). **The router does not reconstruct what ran — it
+asks.** `--prior-failures N` requires
 `--prior-models` to name N concrete model ids (repeat one that failed twice);
 anything else is `RETRY_HISTORY_REQUIRED`. `route()` is stateless while this
 rule is historical, so the party that knows — the caller, which dispatched them
-— supplies it. Every route emits `selected_model`; keep it. The same-tier
-budgets below are real, but the router will not route one: it reports
-exhaustion and asks a human.
+— supplies it. Every route emits `selected_model`; keep it. The router routes
+`same_model_higher_effort` and the total cap below; at exhaustion it asks a
+human.
 
 ```
 same_model_same_effort:            1
