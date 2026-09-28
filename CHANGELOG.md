@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README: deep-loop 1.25.0 and later pass `policy_pin`, so an overlay publication no longer stops an in-flight deep-loop run; `DEEP_MODEL_ROUTER_AUTOUPGRADE=0` is now advised only for long runs on older deep-loop versions. A plugin update still needs a new run.
+
 ## [1.17.0] — 2026-09-28 (review sized to the band)
 
 ### Added

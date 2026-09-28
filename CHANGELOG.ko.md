@@ -9,6 +9,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- README: deep-loop 1.25.0 이상은 `policy_pin`을 넘기므로 오버레이 발행으로는 진행 중인 deep-loop 실행이 멈추지 않습니다. `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 이제 이전 deep-loop 버전에서 긴 실행을 돌릴 때만 권합니다. 플러그인 업데이트 뒤에는 여전히 새 실행이 필요합니다.
+
 ## [1.17.0] — 2026-09-28 (review sized to the band)
 
 ### Added
