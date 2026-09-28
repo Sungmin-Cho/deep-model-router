@@ -354,7 +354,7 @@ RULES: dict[str, Rule] = {
                            "dispatch_seats"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_implementer_check,
-        changed_sample=1863, changed_full=5184),
+        changed_sample=486, changed_full=5184),
     # One band lower on the inputs it admits, and everything that follows from
     # the band: the seats, their efforts and records, the judge, the gates,
     # and the worker EFFORT a reviewer-fallback compensation drags along. Never
@@ -368,7 +368,7 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "dispatch_seats", "terminal",
                            "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c1iii_check, changed_sample=2943, changed_full=7791),
+        check=_c1iii_check, changed_sample=891, changed_full=7791),
     # The settled MEDIUM reviewer and what follows from it: the seat, its
     # records, cross-family, the (implementer-inclusive) shortfall gate, and a
     # compensation's effort. The band is not declared: a reviewer choice made
@@ -381,7 +381,7 @@ RULES: dict[str, Rule] = {
         fields=(frozenset({"dispatch_seats", "selected_role", "selected_model",
                            "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c4_check, changed_sample=1235, changed_full=8911),
+        check=_c4_check, changed_sample=619, changed_full=8911),
     # The class table's effort for a LOW-risk task, capped at MEDIUM before
     # the floors: the worker's effort and nothing that does not read it.
     # `dispatch_seats`: a REVIEW task's lead is dispatched at the higher of
@@ -389,7 +389,7 @@ RULES: dict[str, Rule] = {
     "c2": Rule(
         "c2", predicate=_c2_admits,
         fields=EFFORT | frozenset({"effort_ceiling_applied", "dispatch_seats"}),
-        check=_c2_check, changed_sample=729, changed_full=3132),
+        check=_c2_check, changed_sample=459, changed_full=3132),
     # Every LOW-risk route: the review is the checks, or — escaped — a model
     # review at the lowest band that carries what the checks cannot. A route
     # 1.16.1 promoted off LOW may settle back on LOW: the promotion read the
@@ -401,7 +401,7 @@ RULES: dict[str, Rule] = {
                            "review.mode", "band_overrides_applied", "dispatch_seats", "terminal",
                            "selected_role", "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c3_check, changed_sample=1737, changed_full=6744),
+        check=_c3_check, changed_sample=1107, changed_full=6744),
     # The four conditions, all of them (plan B0 Step 3): the ladder's step up
     # is undone — role and model back to the failure-free plan's, the effort
     # one above every effort that failed — and what follows from the worker:
@@ -415,7 +415,7 @@ RULES: dict[str, Rule] = {
                            "review.independence_required", "review.review_independence",
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c5_check, changed_sample=687, changed_full=7468),
+        check=_c5_check, changed_sample=302, changed_full=7468),
     # Every REVIEW route: the lead joins the reviewers (reviewer-1), the band
     # seats the matrix's count including it, `dispatch_seats` is the one list,
     # and a caller floor the smaller matrix cannot carry leaves the band.
@@ -430,7 +430,7 @@ RULES: dict[str, Rule] = {
                            "review.independence_required", "review.review_independence",
                            "band_overrides_applied", "terminal", "excluded_prior_failures"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_review_lead_check, changed_sample=1173, changed_full=9024),
+        check=_review_lead_check, changed_sample=426, changed_full=9024),
     # A caller's quota reading: `exhausted` withholds a family from every seat
     # (so anything can follow, a terminal included); `low` moves the worker
     # seat to a same-tier model of another family, and the reviewers
@@ -443,7 +443,7 @@ RULES: dict[str, Rule] = {
                            "review.independence_required", "review.review_independence",
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c7_check, changed_sample=857, changed_full=2309),
+        check=_c7_check, changed_sample=215, changed_full=2309),
 }
 
 
@@ -692,10 +692,11 @@ DIMS = list(itertools.product(range(4), repeat=4))
 WRITE_CLASSES = [c for c in CLASSES if CFG["task_write_seat"][c] == "write"]
 # A fixed stratified sample for the default run: the band corners and the
 # uncertainty/blast points the rules key on, plus a seeded spread.
-SAMPLE_DIMS = sorted(set([(0, 0, 0, 0), (1, 1, 0, 0), (0, 3, 0, 0), (1, 1, 1, 0), (2, 1, 1, 1),
-                          (3, 2, 0, 0), (1, 3, 1, 0), (2, 2, 1, 1), (3, 3, 0, 1), (2, 2, 2, 2),
-                          (3, 3, 3, 3)]
-                         + random.Random(20260928).sample(DIMS, 13)))
+SAMPLE_DIMS = sorted(set([(0, 0, 0, 0), (1, 1, 0, 0), (0, 3, 0, 0), (2, 1, 1, 1), (3, 2, 0, 0),
+                          (2, 2, 1, 1), (3, 3, 0, 1), (2, 2, 2, 2)]
+                         + random.Random(20260928).sample(DIMS, 2)))
+SAMPLE_EXTRA_DIMS = [(0, 0, 0, 0), (0, 3, 0, 0), (2, 1, 1, 1), (3, 2, 0, 0), (2, 2, 1, 1),
+                     (2, 2, 2, 2)]
 EXTRA_DIMS = DIMS[::4]
 SHA_EVIDENCE, SHA_RETRY = "1" * 64, "2" * 64
 
@@ -765,7 +766,7 @@ def _prior_failure(req: dict) -> dict | None:
 
 def grid(full: bool) -> list[tuple[str, dict]]:
     core_dims = DIMS if full else SAMPLE_DIMS
-    extra_dims = EXTRA_DIMS if full else SAMPLE_DIMS
+    extra_dims = EXTRA_DIMS if full else SAMPLE_EXTRA_DIMS
     out = []
     for runtime, cls, dims in itertools.product(RUNTIMES, CLASSES, core_dims):
         tag = f"{runtime}/{cls}/{''.join(map(str, dims))}"
@@ -883,7 +884,7 @@ def test_the_grid_reaches_every_band_and_class():
 def test_every_decision_change_since_1161_has_a_named_rule():
     led = ledger()
     assert not led.problems, "\n".join(led.problems)
-    assert led.inputs > (80_000 if FULL else 4_000), led.inputs
+    assert led.inputs > (80_000 if FULL else 3_000), led.inputs
 
 
 def test_rule_counts_are_pinned():
@@ -913,3 +914,155 @@ def _print(full: bool) -> None:
 
 if __name__ == "__main__":
     _print("--full" in sys.argv)
+
+
+# --------------------------------------------------------------------------
+# DD-B11 invariants 1, 2 and 4 on the shipped policy (plan B9)
+# --------------------------------------------------------------------------
+
+_FINALS: dict[bool, list] = {}
+
+
+def finals() -> list[tuple[str, dict, dict]]:
+    """(name, request, route with every rule on) over the grid, once."""
+    if FULL not in _FINALS:
+        _FINALS[FULL] = [(name, req, route_live(req, frozenset(ORDER))) for name, req in grid(FULL)]
+    return _FINALS[FULL]
+
+
+BAND_FLOOR = {"LOW": None, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}          # written out
+
+
+def band_contract(req: dict, out: dict) -> list[str]:
+    """Invariant 1: what each band owes, written out from design DD-B11 ①
+    and the DD-B7 seat matrix, not recomputed from the router."""
+    rv, band = out["review"], out["review"]["band"]
+    review_task = req["task_class"] == "REVIEW"
+    extra = rv["compensating_reviewers"]
+    reviewers = rv["reviewer_models"]
+    causes = set(out["human_control_causes"])
+    gated = out["requires_human_confirmation"] or out["human_confirmation_deferred"]
+    problems = []
+
+    def disclosed(what):
+        if "review_below_band" not in causes or not gated:
+            problems.append(f"{band}: {what} without the review_below_band gate")
+
+    if band == "LOW":
+        if review_task:
+            if len(reviewers) != 1 + extra:
+                problems.append(f"LOW REVIEW seats {len(reviewers)}, not the lead alone")
+        elif len(reviewers) != extra or (not extra and (rv["mode"] != "deterministic_checks"
+                                                        or not rv["required_checks"])):
+            problems.append(f"LOW is not the deterministic checks: {rv['mode']} {reviewers}")
+        return problems
+    seats = {"MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}[band]
+    if len(reviewers) != seats + extra:
+        problems.append(f"{band} seats {len(reviewers)} reviewers")
+    if not rv["independence_required"]:
+        problems.append(f"{band} does not ask for independence")
+    floor = BAND_FLOOR[band]
+    if band == "MEDIUM" and not review_task:
+        floor = max(floor, TIER_OF[out["selected_model"]])
+    for model in reviewers:
+        if TIER_OF[model] < floor:
+            disclosed(f"{model} below tier {floor}")
+    if band == "CRITICAL":
+        if "critical_review_band" not in causes or not gated:
+            problems.append("CRITICAL without its human gate")
+        parties = [out["selected_model"], *reviewers]
+        if rv["judge_model"]:
+            if TIER_OF[rv["judge_model"]] < max(TIER_OF[m] for m in parties) \
+                    or rv["judge_model"] in parties:
+                problems.append("the judge is outranked or a party")
+        elif not rv["judge_unavailable"]:
+            problems.append("CRITICAL with no judge and no judge_unavailable")
+    return problems
+
+
+def test_invariant_1_every_band_keeps_its_contract():
+    checked = 0
+    for name, req, out in finals():
+        if "error" in out or out["terminal"]:
+            continue
+        checked += 1
+        problems = band_contract(req, out)
+        assert not problems, (name, problems)
+    assert checked > (60_000 if FULL else 2_000), checked
+
+
+EXHAUSTED = lambda req: "exhausted" in ((req.get("availability_snapshot") or {})  # noqa: E731
+                                        .get("family_quota") or {}).values()
+
+
+def test_invariant_4_the_worker_never_falls_below_1161_but_for_the_same_model_retry():
+    """No failure history: the worker's tier is at least 1.16.1's. With one:
+    the failed model again only where all four C5 conditions hold, else at
+    least 1.16.1's. Out of scope, each for its stated reason: a REVIEW task's
+    lead is a review seat sized by its band (DD-B7); a declared implementer is
+    the caller's (gated when weaker, DD-B1); an exhausted family is withheld
+    supply the 1.16.1 projection does not see."""
+    checked = same_model = 0
+    for name, req, out in finals():
+        if ("error" in out or out["terminal"] or req["task_class"] == "REVIEW"
+                or "implementer" in req or EXHAUSTED(req)):
+            continue
+        base = route_snapshot(req)
+        if "error" in base or base["terminal"]:
+            continue
+        checked += 1
+        target = _c5_target(req)
+        if target is not None:
+            same_model += 1
+            assert out["selected_model"] == target[0], name
+            continue
+        assert TIER_OF[out["selected_model"]] >= TIER_OF[base["selected_model"]], (
+            name, base["selected_model"], out["selected_model"])
+    assert checked > (60_000 if FULL else 2_000) and same_model, (checked, same_model)
+
+
+RAISING_FLAGS = list(CFG["flags"]["critical_domain"]) + list(CFG["flags"]["elevating"])
+
+
+def _neighbors(req):
+    for dim in ("complexity", "uncertainty", "blast_radius", "reversibility"):
+        if req[dim] < 3:
+            yield f"+{dim}", {**req, dim: req[dim] + 1}
+    for flag in RAISING_FLAGS:
+        if flag not in req["flags"]:
+            yield f"+{flag}", {**req, "flags": req["flags"] + [flag]}
+
+
+def monotonic(base: dict, raised: dict) -> list[str]:
+    """Invariant 2, scoped: raising a dimension or adding a critical/elevating
+    flag never lowers the review band, the band's reviewer count or its
+    reviewer floor, and a gate that fired still fires (a production hotfix may
+    DEFER it — the cause stays; that is the one sanctioned softening)."""
+    if "error" in base or "error" in raised or base["terminal"] or raised["terminal"]:
+        return []
+    out = []
+    b, r = base["review"], raised["review"]
+    if BANDS.index(r["band"]) < BANDS.index(b["band"]):
+        out.append(f"band {b['band']} -> {r['band']}")
+    elif r["band"] == b["band"] and (len(r["reviewers"]) - r["compensating_reviewers"]
+                                     < len(b["reviewers"]) - b["compensating_reviewers"]):
+        out.append("fewer reviewers")
+    lost = set(base["human_control_causes"]) - set(raised["human_control_causes"])
+    if lost:
+        out.append(f"gates lost {sorted(lost)}")
+    return out
+
+
+def test_invariant_2_raising_the_risk_never_weakens_the_review():
+    dims = [(0, 0, 0, 0), (1, 1, 0, 0), (0, 3, 0, 0), (2, 1, 1, 1), (3, 2, 0, 0), (2, 2, 1, 1),
+            (1, 1, 2, 1), (2, 2, 2, 2)]
+    checked, problems = 0, []
+    for runtime, cls, d in itertools.product(RUNTIMES, CLASSES, dims if not FULL else DIMS):
+        base_req = _base(runtime, cls, d)
+        base = route_live(base_req, frozenset(ORDER))
+        for step, req in _neighbors(base_req):
+            checked += 1
+            for problem in monotonic(base, route_live(req, frozenset(ORDER))):
+                problems.append((runtime, cls, d, step, problem))
+    assert not problems, (len(problems), problems[:12])
+    assert checked > 2_000, checked

@@ -321,7 +321,9 @@ def _md_table(text: str, marker: str) -> tuple[list[str], list[list[str]]]:
 
 
 def test_skill_md_worker_table_matches_the_config_cell_by_cell():
-    header, rows = _md_table(SKILL_MD, "### Worker by class and band")
+    # The table moved to routing-policy.md in 1.17.0 (DD-B10); SKILL.md points at it.
+    assert "### Worker by class and band" in SKILL_MD and "routing-policy.md" in SKILL_MD
+    header, rows = _md_table(ROUTING_POLICY_MD, "### Worker by class and band")
     bands = [c.strip("`") for c in header[1:]]
     assert bands == sorted(CFG["router"]["bands"],
                            key=lambda b: CFG["router"]["bands"][b]["ordinal"])

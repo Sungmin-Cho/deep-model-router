@@ -117,6 +117,8 @@ EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → the worke
 
 Critical-domain flags (auth, security, financial, data integrity) raise the band after scoring, for every task class. A small, well-understood change in an authorization path still gets a strong worker and independent review.
 
+Review is sized to the band and no further. A `LOW` review is the deterministic checks the route names (`tests`, `lint`) — the caller owes them before accepting the work, and re-routes with `--checks-unavailable` where they cannot run. A `MEDIUM` review seats one cross-family reviewer at the implementer's tier, not above it. A `REVIEW` task's lead counts as one of its reviewers. For work that is already done, a RouteRequestV1 `implementer` plans the review against the model that actually wrote it.
+
 The policy lives in `skills/model-router/config/model-routing.yaml`. Model identifiers are born in that registry or in a probed local overlay entry on your machine (below), and `model_sync.py promote` is the only way back into the registry. The skill body and `references/` describe the same rules the script executes.
 
 Exit status is part of the contract: **0** dispatchable, **1** terminal, **2** invalid input, **3** needs confirmation first, **4** production hotfix (confirm after it ships), **5** internal error. Only 3 is configurable — it is `human_in_the_loop.human_gate_exit_status`, any value in 3..255, so a caller that already uses 3 for something else can move the gate. Read it from the config rather than hard-coding it; 0, 1 and 2 are taken and >255 truncates to a success code, which is why the range is validated at load time.

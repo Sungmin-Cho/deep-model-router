@@ -232,6 +232,29 @@ Intentional seating is not an outage penalty. If no complete assignment exists,
 reviewer shortages retain conservative gates. If reviewers are feasible but
 a judge is not, the review slate is retained with a human adjudication gate. This search does not establish empirical model quality.
 
+### The five independence states
+
+Independence has five states, and only one of them is a claim. A route is
+computed before any reviewer runs, so nothing known at routing time can prove
+isolation happened:
+
+| State | Meaning |
+|---|---|
+| `not_applicable` | the band does not ask for independence |
+| `degraded` | nobody established whether isolation is possible — the default |
+| `unavailable` | positive evidence it *cannot* be achieved here |
+| `planned` | attested achievable, not yet demonstrated |
+| `enforced` | one distinct session id per reviewer was supplied afterwards |
+
+`unavailable` and `degraded` are deliberately distinct: a confirmed gap and an
+unchecked one call for different responses. **`enforced` does not unlock
+anything** — an isolation receipt is a string the caller passed in, bound to no
+real dispatch, so `CRITICAL` always asks a human and `enforced` reports the
+claim without treating it as proof. Making the strongest control in the policy
+openable by typing would be the exact failure this skill is about.
+
+### What makes two reviews independent
+
 Two reviews are independent if and only if reviewer B's input contains no token
 derived from reviewer A's output, transitively.
 

@@ -943,8 +943,11 @@ def test_d16_skill_md_stays_small_without_being_hollowed_out():
     """
     text = (SKILL / "SKILL.md").read_text()
     size = len(text.encode())
-    assert size <= 30_400, (
-        f"SKILL.md is {size} bytes against a 30,400-byte budget. Move explanation "
+    # 26,000 since 1.17.0 (design 2026-09-25 DD-B10): the independence states,
+    # the pipeline narrative and the class x band worker table moved to the
+    # references that own them.
+    assert size <= 26_000, (
+        f"SKILL.md is {size} bytes against a 26,000-byte budget. Move explanation "
         f"into references/ — do not compress the contracts below out of existence")
 
     required = {

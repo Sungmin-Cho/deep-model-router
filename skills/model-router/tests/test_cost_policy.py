@@ -764,3 +764,35 @@ def test_b7_family_quota_on_the_cli():
     assert FAMILY[out["selected_model"]] != "openai"
     bad = subprocess.run(base + ["--family-quota", "openai"], capture_output=True, text=True, timeout=60)
     assert bad.returncode == 2
+
+
+# --------------------------------------------------------------------------
+# Rule interactions (design DD-B11 table; plan B9)
+# --------------------------------------------------------------------------
+
+def test_c1iii_x_c4_a_band_uncertainty_did_not_promote_gets_the_fitted_medium_reviewer():
+    # DOCUMENTATION c0u3 stays MEDIUM (C1-iii), and its one reviewer is the
+    # lowest cross-family seat at max(1, luna's tier 0) = 1: grok (C4).
+    _, out = _route(_req("DOCUMENTATION", (0, 3, 0, 0)))
+    assert out["review"]["band"] == "MEDIUM"
+    assert out["selected_model"] == ID("openai_worker_fast")
+    assert out["review"]["reviewer_models"] == [ID("xai_frontier")]
+
+
+def test_c2_x_c5_a_same_model_retry_is_not_capped_at_low():
+    """The LOW cap skips a task with a capability failure on record, so the
+    retry's effort is one above what failed even on a LOW-risk task."""
+    _, free = _route(_req("DEBUGGING", (1, 0, 0, 0)))
+    assert free["risk_band"] == "LOW" and free["selected_effort"] == "MEDIUM"      # capped
+    _, out = _route(_req("DEBUGGING", (1, 0, 0, 0),
+                         attempt_outcomes=[_fail("openai_worker_fast", "MEDIUM", H2)]))
+    assert out["selected_model"] == ID("openai_worker_fast")
+    assert out["selected_effort"] == "HIGH"
+    assert not any(n.startswith("effort cap:") for n in out["notes"])
+
+
+def test_low_x_review_a_low_review_task_is_its_lead_alone():
+    _, out = _route(_req("REVIEW", (0, 0, 0, 0)))
+    assert out["review"]["band"] == "LOW" and out["review"]["mode"] == "model_review"
+    assert [s["seat"] for s in out["dispatch_seats"]] == ["reviewer-1"]
+    assert out["dispatch_seats"][0]["model_id"] == out["selected_model"]

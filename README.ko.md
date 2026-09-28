@@ -117,6 +117,8 @@ EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → 워커와
 
 critical-domain 플래그(auth, security, financial, data integrity)는 채점 후 모든 작업 클래스에서 밴드를 올립니다. 잘 이해된 작은 인가 경로 수정도 강한 워커와 독립 리뷰를 받습니다.
 
+리뷰는 밴드만큼만 합니다. `LOW` 리뷰는 라우트가 이름 붙인 결정적 검사(`tests`, `lint`)이며, 호출자는 작업을 받아들이기 전에 그것을 통과시켜야 하고, 검사를 돌릴 수 없는 저장소라면 `--checks-unavailable`로 다시 라우팅합니다. `MEDIUM` 리뷰는 구현자 tier에 맞는 교차 가족 리뷰어 한 명을 앉히고, 그보다 높이지 않습니다. `REVIEW` 작업의 리드는 리뷰어 수에 포함됩니다. 이미 끝난 작업에는 RouteRequestV1 `implementer`로 실제 구현 모델을 기준으로 리뷰를 계획합니다.
+
 정책은 `skills/model-router/config/model-routing.yaml`에 있습니다. 모델 식별자는 이 레지스트리 또는 이 기계에서 프로브를 통과한 로컬 오버레이 항목(아래)에서만 생기며, 레지스트리로 돌아가는 길은 `model_sync.py promote`뿐입니다. 스킬 본문과 `references/`는 스크립트가 실행하는 규칙과 같습니다.
 
 exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2** 잘못된 입력, **3** 먼저 확인 필요, **4** production hotfix(배포 후 확인), **5** 내부 오류. 이 중 3만 설정 가능합니다 — `human_in_the_loop.human_gate_exit_status`이며 3..255 범위의 값을 가질 수 있으므로, 3을 이미 다른 용도로 쓰는 호출자는 게이트 코드를 옮길 수 있습니다. 하드코딩하지 말고 config에서 읽으세요. 0·1·2는 이미 사용 중이고 255를 넘으면 성공 코드로 잘리기 때문에, 이 범위는 로드 시점에 검증합니다.
