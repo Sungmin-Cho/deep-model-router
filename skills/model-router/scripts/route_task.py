@@ -64,7 +64,7 @@ REQUEST_V1_KEYS = frozenset({
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
     "host_seat", "worker_seat", "review_context", "attempt_outcomes",
-    "policy_pin",
+    "policy_pin", "implementer",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
@@ -75,6 +75,9 @@ LOCAL_POLICY_KEYS = frozenset({
 })
 HOST_SEAT_KEYS = frozenset({"model", "effort"})
 REVIEW_CONTEXT_KEYS = frozenset({"target_sha256", "author_model_ids", "author_families"})
+# RouteRequestV1 `implementer` (design 2026-09-25 DD-B1): the model that already
+# did this write work. The route then plans its review, not its dispatch.
+IMPLEMENTER_KEYS = frozenset({"model_id"})
 OPERATIONAL_OUTCOMES = frozenset({"transport_failure", "launch_failure", "resolution_failure",
     "timeout", "max_turns_partial", "no_artifact", "invalid_output", "authentication_failure",
     "quota_exhausted", "publication_failure", "cancelled", "unknown"})
@@ -152,6 +155,8 @@ CAUSE_REASONS = {
     "unconfirmed_prior_termination":
         "a prior attempt's process tree could not be confirmed dead — "
         "dispatching a retry risks two concurrent writers",
+    "implementer_below_worker_tier":
+        "the declared implementer is weaker than the worker this work routes to",
 }
 
 
@@ -1111,7 +1116,8 @@ _NULL_ROUTE_SCALARS = (
     "route_path", "selected_role", "selected_model", "selected_effort",
     "selected_effort_effective", "selected_effort_native", "cross_family_review",
     "escalation_count", "retry_count", "routing_confidence", "routing_confidence_kind",
-    "worker_seat", "host_seat_advisory")
+    "worker_seat", "host_seat_advisory", "worker_seat_state", "implementer_declared",
+    "implementer_source")
 _NULL_REVIEW_LISTS = frozenset({"reviewers", "reviewer_models", "review_depth_reduced",
                                 "self_review_avoided", "required_checks"})
 _NULL_REVIEW_SCALARS = ("band", "effort", "independence_required", "review_independence",
@@ -1197,6 +1203,8 @@ class Task:
     # RouteRequestV1 / --policy-pin: the policy digest to reproduce (DD-A9). A
     # policy SELECTOR, not request content — never part of request_sha256.
     _policy_pin: str | None = field(default=None, repr=False, compare=False)
+    # RouteRequestV1 `implementer` (DD-B1): caller-declared, like review_context.
+    _implementer: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def total_prior_attempts(self) -> int:
@@ -1250,7 +1258,32 @@ class Task:
         self._validate_host_seat(policy)
         self._validate_review_context(policy)
         self._validate_attempt_outcomes(policy)
+        self._validate_implementer(policy)
         self._policy = policy
+
+    def _validate_implementer(self, policy: Policy) -> None:
+        """Completed WRITE work only. REVIEW names its source's author in
+        `review_context` already, and a read-only class's worker produces a
+        judgement rather than work a review could be planned against. Any
+        registry id is accepted, history rows included: the work may have
+        finished before the registry moved on."""
+        decl = self._implementer
+        if decl is None:
+            return
+        if not isinstance(decl, dict) or set(decl) != IMPLEMENTER_KEYS:
+            raise ValidationError('implementer must be exactly {"model_id": <registry model id>}')
+        model = decl["model_id"]
+        if not isinstance(model, str) or model not in policy.model_ids:
+            raise ValidationError(f"implementer.model_id: unknown model id {model!r}")
+        if self.task_class == "REVIEW":
+            raise ValidationError(
+                "implementer does not apply to REVIEW: declare the source's author in "
+                "review_context.author_model_ids")
+        if policy.worker_seat_kind(self.task_class) != "write":
+            raise ValidationError(
+                f"implementer declares completed write work; {self.task_class} is a "
+                f"read-only class")
+        self._implementer = {"model_id": model}
 
     def _validate_attempt_outcomes(self, policy: Policy) -> None:
         history = self._attempt_outcomes
@@ -2243,6 +2276,11 @@ class Resolver:
         # the worker's model and the reviewer had nothing left.
         self.write_seat_role: str | None = None
         self.assignments: dict[str, str] = {}
+        # (worker role, declared implementer id) when the worker seat already
+        # executed (DD-B1). The role answers with that model for every reader
+        # and no availability, family or write filter applies to it: those
+        # constrain seats still to be dispatched, and this one has run.
+        self.pinned_worker: tuple[str, str] | None = None
 
     def _primary(self, role: str) -> str | None:
         """The registry key this role binds to FOR THIS TASK.
@@ -2322,6 +2360,8 @@ class Resolver:
         caller that is asking about the WORKER passes it; reviewer and judge
         seating does not, because those seats read.
         """
+        if self.pinned_worker is not None and role == self.pinned_worker[0]:
+            return self.pinned_worker[1]
         if role in self.assignments:
             return self.assignments[role]
         cfg = self.policy.cfg
@@ -2350,6 +2390,10 @@ class Resolver:
         comp_cfg = cfg.get("fallback_compensations", {})
 
         for role in roles:
+            if self.pinned_worker is not None and role == self.pinned_worker[0]:
+                # Already executed: no binding was resolved, so none fell back.
+                resolved[role] = self.pinned_worker[1]
+                continue
             write = role == write_role
             primary_key = self._primary(role)
             primary_id = cfg["models"][primary_key]["id"] if primary_key else None
@@ -2631,6 +2675,8 @@ def request_sha256_of(task: Task) -> str:
         canonical["review_context"] = task._review_context
     if task._attempt_outcomes is not None:
         canonical["attempt_outcomes"] = task._attempt_outcomes
+    if task._implementer is not None:
+        canonical["implementer"] = task._implementer
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -2741,6 +2787,32 @@ class _Prelude:
     route_path: str | None
     execution_score: int
     execution_band: str
+    # DD-B1: the tier of the worker the policy would have seated, which a
+    # declared implementer is compared against. None when nothing is declared.
+    implementer_ref_tier: int | None = None
+
+
+def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
+    """The seats a caller dispatches, once each: the reviewers and the judge.
+
+    `lead` — the worker seat IS reviewer-1 (a REVIEW task's lead), so that
+    seat also carries the worker's effort. A terminal route dispatches nothing.
+    """
+    seats: list[dict] = []
+    if result["terminal"] is not None:
+        return seats
+    rv = result["review"]
+    for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
+        effort = rv["effort"]
+        if lead and role == result["selected_role"]:
+            effort = max((effort, result["selected_effort_effective"]), key=policy.efforts.index)
+        seats.append(dict(seat=f"reviewer-{i+1}", role=role, model_id=model, effort=effort,
+                          effort_native=policy.native_effort(model, effort)))
+    if rv["judge_model"]:
+        seats.append(dict(seat="judge", role=rv["judge"], model_id=rv["judge_model"],
+                          effort=rv["effort"],
+                          effort_native=policy.native_effort(rv["judge_model"], rv["effort"])))
+    return seats
 
 
 def route(task: Task, cfg: dict | None = None, *,
@@ -2835,7 +2907,16 @@ def route(task: Task, cfg: dict | None = None, *,
                    redundant_overrides=tuple(redundant_overrides), route_path=route_path,
                    execution_score=exec_score, execution_band=exec_band)
     candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
-    if candidate is legacy:
+    if task._implementer is not None:
+        # DD-B1: the worker seat already executed. One plan, for the REVIEW of
+        # that work: the role is the one the policy would have seated after the
+        # execution cell (the ladder and fallback code need a role), the model
+        # is the declared one, and the review is sized against the stronger of
+        # the two — a weaker implementer is gated, not silently accepted.
+        ref = resolver.peek(candidate.role, write=True)
+        pre = replace(pre, implementer_ref_tier=policy.tier_of[ref] if ref else None)
+        result = _plan(task, policy, cfg, pre, resolver, candidate)
+    elif candidate is legacy:
         result = _plan(task, policy, cfg, pre, resolver, legacy)
     else:
         with_cell = _plan(task, policy, cfg, pre, resolver, candidate)
@@ -2857,20 +2938,14 @@ def route(task: Task, cfg: dict | None = None, *,
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
         result["notes"].append("review_context excludes declared source authors from every REVIEW-task seat; target identity is caller-declared")
-        result["dispatch_seats"] = []
-        if result["terminal"] is None:
-            rv = result["review"]
-            for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
-                effort = rv["effort"]
-                if role == result["selected_role"]:
-                    effort = max((effort, result["selected_effort_effective"]), key=policy.efforts.index)
-                result["dispatch_seats"].append(dict(seat=f"reviewer-{i+1}", role=role,
-                    model_id=model, effort=effort, effort_native=policy.native_effort(model, effort)))
-            if rv["judge_model"]:
-                result["dispatch_seats"].append(dict(seat="judge", role=rv["judge"],
-                    model_id=rv["judge_model"], effort=rv["effort"],
-                    effort_native=policy.native_effort(rv["judge_model"], rv["effort"])))
+        result["dispatch_seats"] = _dispatch_seats(result, policy, lead=True)
         result["notes"].append("For review_context dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer, not an extra worker")
+    if task._implementer is not None:
+        result["dispatch_seats"] = _dispatch_seats(result, policy, lead=False)
+        result["notes"].append(
+            "implementer is caller-declared: the worker seat already executed, so dispatch "
+            "only dispatch_seats; review independence relies on this declaration, which the "
+            "router does not authenticate")
     if task._attempt_outcomes is not None:
         history = task._attempt_outcomes
         result["attempt_outcomes"] = [dict(row) for row in history]
@@ -2904,6 +2979,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
     resolver = Resolver(task, policy)
     resolver.worker_writes = pre.seat_kind == "write"
     worker = choice.role
+    if task._implementer is not None:
+        resolver.pinned_worker = (worker, task._implementer["model_id"])
     worker_notes = list(choice.notes)
     ceiling_exhausted = choice.ceiling_exhausted
     overrides = list(pre.overrides)
@@ -2923,7 +3000,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             worker_notes.append(
                 f"worker seat declared read_only against the {task.task_class} default; "
                 f"a seat with no write-capable recipe on {task.runtime} may be named")
-        if seat_kind == "write":
+        if seat_kind == "write" and task._implementer is None:
             nominal, seated = resolver.peek(worker), resolver.peek(worker, write=True)
             if nominal is not None and nominal != seated:
                 # Families, not model ids. A terminal route must withhold every
@@ -3529,6 +3606,16 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 raise ConfigError(
                     f"human_in_the_loop.{key} = {action!r} is not an implemented action")
 
+        # DD-B1. Not a configurable control: a caller who declares weaker work
+        # than the policy would have dispatched is asking for a review sized for
+        # the wrong worker, and only a person can accept that.
+        if (pre.implementer_ref_tier is not None
+                and policy.tier_of[task._implementer["model_id"]] < pre.implementer_ref_tier):
+            requires_human = True
+            fired_causes.append("implementer_below_worker_tier")
+            effort_notes.append("confirm/implementer_below_worker_tier: "
+                                + CAUSE_REASONS["implementer_below_worker_tier"])
+
         # Outcomes the config does not govern: these are properties of the route,
         # not policy choices.
         if terminal is None:
@@ -3568,7 +3655,10 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 # writer racing the first is likeliest. This gate is a hold,
                 # not a disclosure a later confirmation can absorb, so
                 # production_hotfix's deferral does not reach it either.
-                and not task.has("termination_unconfirmed")):
+                and not task.has("termination_unconfirmed")
+                # A review sized for a stronger worker than the one that ran is
+                # not a review a later confirmation can absorb either (DD-B1).
+                and "implementer_below_worker_tier" not in fired_causes):
             deferred = True
             requires_human = False
             effort_notes.append(
@@ -3682,6 +3772,11 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             },
             "selected_capability_tier": (
                 policy.tier_of[worker_model] if worker_model else None),
+            # DD-B1: whether the worker seat is still to be dispatched or has
+            # already executed under a caller-declared implementer.
+            "worker_seat_state": "already_executed" if task._implementer else "to_dispatch",
+            "implementer_declared": task._implementer is not None,
+            "implementer_source": "caller_declared" if task._implementer else None,
             "selected_families": sorted({
                 policy.family_of[m] for m in resolved.values()
             }) if executable else [],
@@ -3804,6 +3899,9 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
             f"{r['routing_confidence']} after {history_text}. Surface to a "
             "human with what was tried, what evidence accumulated, and the blocking uncertainty."
         )
+    elif r["worker_seat_state"] == "already_executed":
+        parts.append(f"Worker seat {r['selected_role']} already executed by the "
+                     f"caller-declared implementer; this route plans its review.")
     else:
         effective = r["selected_effort_effective"]
         if effective != r["selected_effort"]:
@@ -3983,6 +4081,9 @@ def task_from_request_v1(payload: dict) -> Task:
     pin = payload.get("policy_pin")
     if pin is not None:
         _check_pin(pin)
+    implementer = payload.get("implementer")
+    if implementer is not None and not isinstance(implementer, dict):
+        raise ValidationError("implementer must be an object or null")
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
@@ -4004,6 +4105,7 @@ def task_from_request_v1(payload: dict) -> Task:
         _review_context=payload.get("review_context"),
         _attempt_outcomes=payload.get("attempt_outcomes"),
         _policy_pin=pin,
+        _implementer=implementer,
     )
 
 
@@ -4120,6 +4222,9 @@ def _print_text(r: dict) -> None:
         print(f"  already satisfied by another rule: {r['band_overrides_redundant']}")
     if r["terminal"]:
         print(f"TERMINAL:    {r['terminal']}  — no executable bindings emitted")
+    elif r["worker_seat_state"] == "already_executed":
+        print(f"worker:      {r['selected_role']}  ->  {r['selected_model']}  "
+              f"(already executed — caller-declared implementer)")
     else:
         print(f"worker:      {r['selected_role']}  ->  {r['selected_model']}")
         effective = r["selected_effort_effective"]

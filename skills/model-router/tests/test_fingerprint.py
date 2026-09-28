@@ -175,3 +175,47 @@ def test_policy_pin_is_omitted_from_the_request_identity():
     pinned = task_from_request_v1({**request, "policy_pin": "d" * 64})
     assert pinned._policy_pin == "d" * 64
     assert request_sha256_of(pinned) == golden
+
+
+# Part B (1.17.0) request fields — design 2026-09-25 "요청 해시 규칙(Part B 공통)".
+# Pinned from the canonical payload 1.16.1 computed for this request, before any
+# Part B field existed. Every Part B field is omitted from the canonical dict
+# when absent, so a stored fingerprint from 1.16.x still matches the same
+# request; each rule task adds its field to the "absent" half of this test.
+PART_B_GOLDEN = "4cbb7137c9b57f568533b3ac1830050c85cb7a33f20da3c25b4b1f78d3aa72e5"
+
+
+def _part_b_request():
+    return {"route_schema_version": 1, "task_class": "IMPLEMENTATION", "complexity": 2,
+            "uncertainty": 1, "blast_radius": 1, "reversibility": 1, "runtime": "codex",
+            "flags": ["security_sensitive"],
+            "availability_snapshot": {"unavailable_models": [ID("xai_frontier")],
+                                      "isolation": "available"},
+            "local_policy": {"allowed_families": ["openai", "claude"], "minimum_reviewers": 1},
+            "attempt_outcomes": [{"attempt_id": "a1", "model_id": ID("openai_worker_fast"),
+                                  "kind": "capability_failure", "evidence_sha256": "1" * 64}]}
+
+
+def _request_sha(request):
+    # Through `route`: the digest is taken after validation normalises the
+    # request (attempt records gain their explicit null recovery field).
+    from route_task import task_from_request_v1
+    return route(task_from_request_v1(request), _CFG)["request_sha256"]
+
+
+def test_part_b_fields_absent_preserve_the_1161_request_hash():
+    assert _request_sha(_part_b_request()) == PART_B_GOLDEN
+
+
+def test_part_b_fields_present_move_the_request_hash():
+    """The other half: a declared field is request content, so it must move
+    the identity — a hash that ignores a field that changes the route lets two
+    decisions share a fingerprint."""
+    variants = {
+        "implementer": lambda r: {**r, "implementer": {"model_id": ID("claude_senior")}},
+    }
+    seen = {PART_B_GOLDEN}
+    for name, build in variants.items():
+        digest = _request_sha(build(_part_b_request()))
+        assert digest not in seen, name
+        seen.add(digest)

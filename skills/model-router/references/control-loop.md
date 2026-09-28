@@ -216,6 +216,28 @@ the pin needs), `pin_revoked` (a later revocation — revert beats pin),
 `pin_generation_missing`. A pin absorbs overlay replacements only; a route
 given an explicit config cannot honour one and refuses it (exit 2).
 
+## Declared implementer
+
+RouteRequestV1 `implementer: {"model_id": "<registry id>"}` says this write
+work has **already been done** by that model, so the route plans its review
+rather than its dispatch (design 2026-09-25 DD-B1). Write classes only —
+REVIEW names its source's author in `review_context`, and a read-only class
+produces a judgement rather than work — anything else is exit 2. Any registry
+id is accepted, history rows included.
+
+The route keeps the worker role the policy would have seated (after the
+execution cell) and puts the declared id in it: `selected_model` is the
+implementer, `worker_seat_state: already_executed`, and `dispatch_seats` holds
+only the reviewers and the judge. Every de-conflict, family comparison and
+judge floor reads the declared id. `allowed_families`, `unavailable_*`,
+`bridge_down` and `family_quota` bind the review seats only — the worker has
+run. When the declared tier is below the worker the policy would have seated,
+`implementer_below_worker_tier` gates the route (exit 3), and a
+`production_hotfix` does not defer it: the review was sized for a stronger
+worker than the one that ran. The declaration is caller input, exactly like
+`review_context`; review independence rests on it. Omitted, it leaves
+`request_sha256` unchanged.
+
 ## Typed attempt history
 
 V1 optionally accepts `attempt_outcomes`, an ordered array for the executor
@@ -286,6 +308,11 @@ terminal:                      # null, or one of the terminal states in the
                                # table above
 selected_role:  selected_model:  selected_effort:  selected_effort_effective:
 selected_effort_native:
+worker_seat_state:             # to_dispatch, or already_executed when the
+                               # request declared an `implementer`
+implementer_declared:  implementer_source:   # false/null, or true and
+                               # caller_declared (the router does not
+                               # authenticate the declaration)
 review:
   band:  reviewers: []  reviewer_models: []  effort:
   independence_required:       # what the band asks for

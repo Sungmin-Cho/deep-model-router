@@ -19,6 +19,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1916,6 +1917,8 @@ def test_d19_every_control_fires_exactly_on_its_declared_cause():
         "unconfirmed_prior_termination":
             "a prior attempt's process tree could not be confirmed dead — "
             "dispatching a retry risks two concurrent writers",
+        "implementer_below_worker_tier":
+            "the declared implementer is weaker than the worker this work routes to",
     }
     from route_task import CAUSE_REASONS
     assert CAUSE_REASONS == EXPECTED_WORDING, (
@@ -1940,7 +1943,24 @@ def test_d19_every_control_fires_exactly_on_its_declared_cause():
                 r["floor_broken"] for r in out["effort_ceiling_applied"]),
             "unconfirmed_prior_termination":
                 "termination_unconfirmed" in task.flags,
+            "implementer_below_worker_tier":
+                task._implementer is not None
+                and tier[task._implementer["model_id"]] < implementer_ref(task),
         }
+
+    def implementer_ref(task):
+        """The tier of the worker the SAME request seats without the
+        declaration — only asked where that route is executable and kept its
+        table cell, so it is exactly the worker the policy would have run."""
+        free = route(replace(task, _implementer=None), CFG)
+        assert free["terminal"] is None and not any("yielded" in n for n in free["notes"])
+        return tier[free["selected_model"]]
+
+    def implementer_variants(task_class, pf, iso, scarce, flags):
+        if (CFG["task_write_seat"][task_class] != "write" or pf or iso is not None
+                or scarce or flags):
+            return [None]
+        return [None, ID("openai_worker_fast"), ID("claude_architect")]
 
     # The oracle must cover exactly the causes the router declares. A control
     # added with a new cause and not added here would be swept past in silence:
@@ -1962,13 +1982,17 @@ def test_d19_every_control_fires_exactly_on_its_declared_cause():
                           ["termination_unconfirmed"]):
                 for iso in (None, True, False):
                     for pf, pm in ((0, []), (1, [ids[4]]), (cap, [ids[4]] * cap)):
-                        for scarce in ([], [ids[0]], ids[:3], [ID("claude_architect"), ID("openai_frontier")]):
+                        for scarce, declared in (
+                                (sc, d) for sc in ([], [ids[0]], ids[:3], [ID("claude_architect"), ID("openai_frontier")])
+                                for d in implementer_variants(task_class, pf, iso, sc, flags)):
                             task = _task(task_class=task_class, complexity=dims[0],
                                          uncertainty=dims[1], blast_radius=dims[2],
                                          reversibility=dims[3], flags=list(flags),
                                          isolation_available=iso, prior_failures=pf,
                                          prior_models=list(pm),
                                          unavailable_models=list(scarce))
+                            if declared is not None:
+                                task._implementer = {"model_id": declared}
                             out = route(task, CFG)
                             want = {c for c, holds in expected(task, out).items() if holds}
                             got = set(out["human_control_causes"])

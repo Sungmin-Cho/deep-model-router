@@ -174,6 +174,19 @@ do not dispatch `selected_model` again alongside that list. Each entry gives
 an empty list. Isolation evidence still needs one distinct session per reviewer.
 The lead receives the higher of its selected effort and the review effort.
 
+### Reviewing completed write work with a declared implementer
+
+The write-class counterpart is RouteRequestV1 `implementer: {"model_id": ...}`
+(`control-loop.md`, Declared implementer): the work is done, the route plans
+its review. Every seat is de-conflicted against the declared id, not against a
+worker the router would have picked — before 1.17.0 a caller who narrowed
+`allowed_families` to force a cross-family review got the router's own
+(different) worker treated as the author and a slate below the band. It is a
+caller declaration exactly like `review_context`: the router does not
+authenticate authorship, and review independence relies on it. A declared
+implementer below the tier the policy would have dispatched gates the route
+(`implementer_below_worker_tier`, never deferred by a hotfix).
+
 For a deficient ordinary slate, or an explicit source review, the router searches
 eligible fallback candidates jointly. Ordinary workers stay fixed; a source
 review's lead can rise to the final review floor. Reviewers must meet

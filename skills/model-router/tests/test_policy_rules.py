@@ -91,13 +91,70 @@ class Rule:
     changed_full: int
 
 
-# Filled by the rule tasks (B1-B7), in ORDER.
-RULES: dict[str, Rule] = {}
-
 # Output keys Part B adds, with the value a route carries when no rule moved it.
 # Stripped before the snapshot comparison, after asserting the default.
-NEW_KEY_DEFAULTS: dict[str, object] = {}
+NEW_KEY_DEFAULTS: dict[str, object] = {
+    "worker_seat_state": "to_dispatch", "implementer_declared": False,
+    "implementer_source": None,
+}
 NEW_REVIEW_KEY_DEFAULTS: dict[str, object] = {}
+
+# Field groups the rules are declared in.
+EFFORT = frozenset({"selected_effort", "selected_effort_effective", "selected_effort_native"})
+REVIEW_SEATS = frozenset({"review.reviewers", "review.reviewer_models", "review.judge",
+                          "review.judge_model", "review.self_review_avoided",
+                          "review.independence_compromised", "review.judge_unavailable",
+                          "review.review_depth_reduced", "review.band_floor_unsatisfiable",
+                          "review.compensating_reviewers", "cross_family_review",
+                          "effort_ceiling_applied"})
+GATES = frozenset({"human_control_causes", "requires_human_confirmation",
+                   "human_confirmation_deferred", "exit"})
+# What a changed seat roster drags along: the fallback record and the
+# confidence it feeds (0.06 per fallback), the orchestrator ask that reads the
+# confidence, and the families the route seats.
+SEAT_RECORDS = frozenset({"fallbacks_applied", "fallback_compensations_applied",
+                          "routing_confidence", "host_seat_advisory", "selected_families"})
+
+
+def _implementer_check(req, prev, cur):
+    if "error" in cur:
+        return [f"refused: {cur['error']}"]
+    declared = req["implementer"]["model_id"]
+    out = []
+    if (cur["worker_seat_state"], cur["implementer_declared"], cur["implementer_source"]) != \
+            ("already_executed", True, "caller_declared"):
+        out.append("the worker seat is not reported as already executed")
+    if not cur["terminal"]:
+        if cur["selected_model"] != declared:
+            out.append(f"selected_model {cur['selected_model']} is not the declared implementer")
+        # 1.16.1's LOW review is the worker re-reading its own work by design
+        # (`independent: false`), so there the declared implementer is that
+        # reviewer; every independent band must keep it out of every seat.
+        if (cur["review"]["independence_required"]
+                and declared in {s["model_id"] for s in cur["dispatch_seats"]}):
+            out.append("the declared implementer is a dispatch seat")
+    if (not prev["terminal"] and TIER_OF[declared] < TIER_OF[prev["selected_model"]]
+            and "implementer_below_worker_tier" not in cur["human_control_causes"]):
+        out.append("an implementer below the 1.16.1 worker tier is not gated")
+    return out
+
+
+# The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
+RULES: dict[str, Rule] = {
+    "implementer_declared": Rule(
+        "implementer_declared",
+        predicate=lambda req, prev: "implementer" in req,
+        # Widened from the B0 table by `selected_role` (ledger B1): with the
+        # worker already run there is no execution-cell plan to weigh against
+        # the review, so the role is the policy's execution-combined choice
+        # where 1.16.1 may have yielded to the table cell.
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "worker_seat_state", "implementer_declared", "implementer_source",
+                           "dispatch_seats"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_implementer_check,
+        changed_sample=1863, changed_full=5184),
+}
 
 
 # --------------------------------------------------------------------------
