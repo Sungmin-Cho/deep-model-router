@@ -68,6 +68,13 @@ router:
                                       # exactly on the `< 0.80` gate; 0.06 leaves
                                       # 0.01 on every boundary. Design 2026-09-02 DD-3.
       unknown_root_cause:      0.10
+    # 1.17.0 (design 2026-09-25 DD-B2, rule C1-iii). Uncertainty already weighs
+    # 2 in the risk score; when that double weight alone lifted the band (the
+    # band with weight 1 is lower), the same uncertainty is not charged again
+    # in the REVIEW-PROMOTION decision against `extra_review_below`. The
+    # reported `routing_confidence` and `escalate_below` keep the full penalty,
+    # so ESCALATE_ROUTING stays reachable; every other signal still promotes.
+    skip_uncertainty_penalty_when_band_raised: true
 
   floors:
     # Round 9. `critical_domain_review_band: HIGH` and `critical_domain_effort:

@@ -158,6 +158,18 @@ fallback whose penalty triggered the promotion. The route says so in a note
 naming both numbers — the pre-promotion confidence the decision read, and the
 promoted plan's confidence it reports.
 
+Uncertainty is counted once (1.17.0, design 2026-09-25 DD-B2). It already
+weighs 2 in the risk score; when that double weight alone lifted the band —
+the band with uncertainty weighted once, overrides included, is lower — the
+middle row's promotion is decided on the confidence **without** the
+uncertainty penalty (`router.confidence.skip_uncertainty_penalty_when_band_raised`).
+The reported `routing_confidence` and the `< 0.60` escalation keep the full
+penalty, and every other signal (prior failures, unknown root cause,
+fallbacks) still promotes. Where the execution cell offers a stronger worker,
+the two plans are weighed with the promotion the penalty would have made, and
+only the adopted plan is planned without it — counting uncertainty once never
+costs the worker a tier.
+
 Low routing confidence must never be silently ignored. Both the value and the
 reason for it belong in the emitted rationale, because "the router wasn't sure"
 is exactly the context a human needs when the route turns out wrong.

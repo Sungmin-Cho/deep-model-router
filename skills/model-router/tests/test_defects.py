@@ -1519,8 +1519,11 @@ def test_d15_every_human_control_action_is_validated_and_load_bearing():
         "on_any_critical_review": dict(task_class="MECHANICAL", complexity=0,
                                        uncertainty=3, blast_radius=0, reversibility=0,
                                        flags=["auth_sensitive"]),
-        "on_judge_unavailable": dict(task_class="MECHANICAL", complexity=0, uncertainty=3,
-                                     blast_radius=0, reversibility=0,
+        # HIGH by the dimensions themselves: since DD-B2 an uncertainty that
+        # raised the band no longer promotes it, which is what put this probe's
+        # judge on a HIGH review before 1.17.0.
+        "on_judge_unavailable": dict(task_class="MECHANICAL", complexity=3, uncertainty=0,
+                                     blast_radius=2, reversibility=1,
                                      flags=["review_disagreement"],
                                      unavailable_models=[ARCHITECT_ID, ID("openai_reasoning")]),
         "on_review_depth_reduced": dict(task_class="INVESTIGATION", complexity=2,

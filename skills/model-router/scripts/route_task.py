@@ -560,6 +560,12 @@ class Policy:
                 f"human_gate_exit_status must be an integer in 3..255 "
                 f"(0/1/2 are taken, and >255 truncates to a success code); got {gate!r}")
         self.human_gate_exit_status: int = gate
+        skip = cfg["router"]["confidence"].get("skip_uncertainty_penalty_when_band_raised")
+        if not isinstance(skip, bool):
+            raise ConfigError(
+                "router.confidence.skip_uncertainty_penalty_when_band_raised must be true or "
+                f"false, got {skip!r}")
+        self.skip_uncertainty_penalty: bool = skip
 
         self.band_reviewer_floor: dict[str, int] = {}
         for band in self.bands:
@@ -2511,17 +2517,24 @@ def independence(review: dict, task: Task) -> str:
 # Confidence
 # --------------------------------------------------------------------------
 
-def routing_confidence(task: Task, fallbacks: list[str], cfg: dict) -> float:
+def routing_confidence(task: Task, fallbacks: list[str], cfg: dict, *,
+                       skip_uncertainty: bool = False) -> float:
     """The number `router.confidence.escalate_below` is compared against.
 
     The thresholds lived in the config and the penalties that produce the value
     lived here, so moving a threshold meant guessing at numbers in another file.
     One policy, one place.
+
+    `skip_uncertainty` leaves the uncertainty penalty out. Only the review
+    promotion asks for that, and only when uncertainty already raised the band
+    (DD-B2); the reported value always carries it.
     """
     conf = cfg["router"]["confidence"]
     penalty = conf["penalties"]
     c = conf["base"]
-    if task.uncertainty == 3:
+    if skip_uncertainty:
+        pass
+    elif task.uncertainty == 3:
         c -= penalty["uncertainty_3"]
     elif task.uncertainty == 2:
         c -= penalty["uncertainty_2"]
@@ -2790,6 +2803,9 @@ class _Prelude:
     # DD-B1: the tier of the worker the policy would have seated, which a
     # declared implementer is compared against. None when nothing is declared.
     implementer_ref_tier: int | None = None
+    # DD-B2 (C1-iii): the double uncertainty weight alone lifted the band, and
+    # the policy says not to charge it again when deciding a review promotion.
+    uncertainty_counted_in_band: bool = False
 
 
 def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
@@ -2898,6 +2914,14 @@ def route(task: Task, cfg: dict | None = None, *,
     band, overrides, redundant_overrides, route_path = apply_overrides(task, band, policy)
     exec_score = execution_score(task, cfg)
     exec_band = policy.execution_band_of(exec_score)
+    counted = False
+    if policy.skip_uncertainty_penalty and task.uncertainty:
+        # The band this task would reach with uncertainty weighted once,
+        # overrides included: an override that sets the band anyway means the
+        # double weight did not raise it.
+        once = risk_score - task.uncertainty * (cfg["router"]["score_weights"]["uncertainty"] - 1)
+        band_once = apply_overrides(task, band_from_score(once, policy), policy)[0]
+        counted = policy.bands.index(band) > policy.bands.index(band_once)
 
     pre = _Prelude(request_sha=request_sha, policy_hash=policy_hash, lp=lp,
                    local_unsat=local_unsat, history_note=history_note,
@@ -2905,7 +2929,8 @@ def route(task: Task, cfg: dict | None = None, *,
                    seat_source=seat_source, seat_downgraded=seat_downgraded,
                    risk_score=risk_score, band=band, overrides=tuple(overrides),
                    redundant_overrides=tuple(redundant_overrides), route_path=route_path,
-                   execution_score=exec_score, execution_band=exec_band)
+                   execution_score=exec_score, execution_band=exec_band,
+                   uncertainty_counted_in_band=counted)
     candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
     if task._implementer is not None:
         # DD-B1: the worker seat already executed. One plan, for the REVIEW of
@@ -2919,21 +2944,35 @@ def route(task: Task, cfg: dict | None = None, *,
     elif candidate is legacy:
         result = _plan(task, policy, cfg, pre, resolver, legacy)
     else:
-        with_cell = _plan(task, policy, cfg, pre, resolver, candidate)
-        without = _plan(task, policy, cfg, pre, resolver, legacy)
+        # DD-B2's guard. The two plans are weighed with the review promotion
+        # 1.16.1 made — uncertainty charged in full — and only the adopted
+        # plan is planned again without the double-counted penalty. Weighing
+        # them without it let a promotion the table plan no longer takes, while
+        # the execution-cell plan still took one on its own fallback, make the
+        # bands differ and yield the stronger worker: counting uncertainty once
+        # is a review rule, and must never cost the worker a tier.
+        weigh = replace(pre, uncertainty_counted_in_band=False)
+        with_cell = _plan(task, policy, cfg, weigh, resolver, candidate)
+        without = _plan(task, policy, cfg, weigh, resolver, legacy)
         if with_cell["terminal"] and without["terminal"]:
-            result = without                                      # both terminal: nothing to gain
+            adopted, note = legacy, None                          # both terminal: nothing to gain
         else:
             row = _contract_violation(policy, with_cell, without)
             if row is None:
-                result = with_cell
-                capped = (f" at effective effort {result['selected_effort_effective']} (ceiling)"
-                          if result["selected_effort_effective"] != result["selected_effort"] else "")
-                result["notes"].append(
-                    f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
+                adopted, note = candidate, "raised"
             else:
-                result = without
-                result["notes"].append(f"execution band {exec_band} yielded {candidate.role}: {row}")
+                adopted, note = legacy, f"execution band {exec_band} yielded {candidate.role}: {row}"
+        if pre.uncertainty_counted_in_band:
+            result = _plan(task, policy, cfg, pre, resolver, adopted)
+        else:
+            result = with_cell if adopted is candidate else without
+        if note == "raised":
+            capped = (f" at effective effort {result['selected_effort_effective']} (ceiling)"
+                      if result["selected_effort_effective"] != result["selected_effort"] else "")
+            result["notes"].append(
+                f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
+        elif note is not None:
+            result["notes"].append(note)
     if task._review_context is not None:
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
@@ -3226,6 +3265,11 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # post-conditions could not see the promotion. The plan and the decision
             # belong in the same iteration.
             confidence = routing_confidence(task, fallbacks, cfg)
+            # DD-B2: the promotion reads the confidence without the uncertainty
+            # penalty when that uncertainty already raised the band. Only this
+            # decision — the reported value and ESCALATE_ROUTING keep it.
+            promotion_input = (routing_confidence(task, fallbacks, cfg, skip_uncertainty=True)
+                               if pre.uncertainty_counted_in_band else confidence)
             threshold = cfg["router"]["confidence"]["extra_review_below"]
             # The policy is "raise the review band ONE level" — the loop exists so
             # the terminal decision sees the final confidence, not to change how
@@ -3242,14 +3286,14 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # the same shape as a check placed where later code routes around it.
             # Everything the post-conditions inspect is now built after this loop,
             # from the band it settled on.
-            if confidence < threshold and review_band != "CRITICAL" and not promoted_once:
+            if promotion_input < threshold and review_band != "CRITICAL" and not promoted_once:
                 promoted = policy.bands[policy.bands.index(review_band) + 1]
                 overrides.append(f"low_routing_confidence_raised_review_to_{promoted}")
                 review_band = promoted
                 promoted_once = True
                 # The number the DECISION read. The one the route reports is the
                 # promoted plan's, and the two can differ (see the note below).
-                promotion_confidence = confidence
+                promotion_confidence = promotion_input
                 continue
             break
         else:  # pragma: no cover - the band ladder is shorter than the pass budget

@@ -1151,15 +1151,40 @@ def _risk_only_current_policy(kw):
         return rt.route(rt.Task(**kw), CFG)
 
 
-def _assert_not_weaker(new: dict, old: dict) -> None:
-    """Design DD-2 S6 rows 1-12, execution on vs off at the current policy."""
+def _assert_not_weaker(new: dict, old: dict, allow: frozenset = frozenset()) -> None:
+    """Design DD-2 S6 rows 1-12, execution on vs off at the current policy.
+    `allow` names contract rows a Part B rule is declared to move (DD-B11)."""
     import route_task as rt
     if old["terminal"]:
         assert new["terminal"] in (None, old["terminal"])
         return
     assert new["terminal"] is None
-    assert rt._contract_violation(rt.Policy.of(CFG), new, old) is None
+    row = rt._contract_violation(rt.Policy.of(CFG), new, old)
+    assert row is None or row in allow, row
     assert TIER_OF[new["selected_model"]] >= TIER_OF[old["selected_model"]]
+
+
+def _uncertainty_lifted_band(kw) -> bool:
+    """DD-B2's predicate from the inputs: the risk band (overrides included) is
+    higher than with uncertainty weighted once."""
+    import route_task as rt
+    policy = rt.Policy.of(CFG)
+    task = Task(**kw)
+    task.validate(policy)
+    score = rt.score(task, CFG)
+    once = score - task.uncertainty * (CFG["router"]["score_weights"]["uncertainty"] - 1)
+    band = rt.apply_overrides(task, rt.band_from_score(score, policy), policy)[0]
+    band_once = rt.apply_overrides(task, rt.band_from_score(once, policy), policy)[0]
+    return policy.bands.index(band) > policy.bands.index(band_once)
+
+
+# DD-B2 (C1-iii, 1.17.0) weighs the execution cell with the promotion 1.16.1
+# made and re-plans only the adopted plan without the double-counted penalty,
+# so the worker tier never falls (DD-B11 invariant 4). The price, where the
+# un-promoted band seats the stronger worker's reviewers inside one family, is
+# reviewer-family diversity the table plan would have kept: the one contract
+# row that rule may move against the risk-only plan.
+C1III_EXECUTION_AXIS_ALLOW = frozenset({"cross_family_review"})
 
 
 def _raised(out):  return [n for n in out["notes"] if n.startswith("execution band") and " raised worker" in n]
@@ -1212,11 +1237,13 @@ def test_t3b_default_binding_adopts_the_frontier_worker_with_a_fable_substitute(
 # --- T3c: two plans never double-append the promotion override -------------
 
 def test_t3c_two_plans_do_not_duplicate_band_overrides():
-    # risk 9 HIGH with u3 -> confidence 0.75 -> promoted to CRITICAL in BOTH plans;
-    # exec 15 VERY_HARD -> candidate senior_engineer vs legacy worker_balanced, so two
-    # plans are computed (the guard then yields on the CRITICAL judge, which is fine here).
-    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, blast_radius=0,
-                     reversibility=0), CFG)
+    # risk 10 HIGH (8 with u once: still HIGH, so DD-B2 leaves the penalty in)
+    # with unknown_root_cause -> confidence 0.77 -> promoted to CRITICAL in BOTH
+    # plans; exec 15 VERY_HARD -> candidate senior_engineer vs legacy
+    # worker_balanced, so two plans are computed.
+    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+                     reversibility=1, flags=["unfamiliar_codebase", "tool_heavy",
+                                             "unknown_root_cause"]), CFG)
     promo = [o for o in out["band_overrides_applied"] if o.startswith("low_routing_confidence")]
     assert len(promo) == 1 and out["review"]["band"] == "CRITICAL"
 
@@ -1460,7 +1487,8 @@ def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
             assert old["selected_model"] == historical["selected_model"], kw
             historical_compatible += 1
         compared += 1
-        _assert_not_weaker(new, old)                                         # (a)(b)(c)
+        _assert_not_weaker(new, old, C1III_EXECUTION_AXIS_ALLOW
+                           if _uncertainty_lifted_band(kw) else frozenset())  # (a)(b)(c)
         rn, yn = _raised(new), _yielded(new)
         assert len(rn) <= 1 and len(yn) <= 1 and not (rn and yn)
         assert not (rn and new["terminal"]), kw                              # a terminal route never "raised" [P2-opus-missing-4]

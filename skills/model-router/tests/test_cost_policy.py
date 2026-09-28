@@ -151,3 +151,74 @@ def test_b1_without_a_declaration_nothing_changes_shape():
     assert out["worker_seat_state"] == "to_dispatch"
     assert out["implementer_declared"] is False and out["implementer_source"] is None
     assert "dispatch_seats" not in out
+
+
+# --------------------------------------------------------------------------
+# B2 — uncertainty is counted once (DD-B2, C1-iii)
+# --------------------------------------------------------------------------
+
+def test_b2_uncertainty_that_already_raised_the_band_does_not_promote_it_again():
+    """Audit F3: `DOCUMENTATION c0u3` scores 6 (MEDIUM) only because
+    uncertainty weighs 2; with weight 1 it is LOW. 1.16.1 then charged the
+    same uncertainty again as a 0.20 confidence penalty and promoted the
+    review to HIGH — two frontier reviewers on a luna documentation edit."""
+    code, out = _route(_req("DOCUMENTATION", (0, 3, 0, 0)))
+    assert out["risk_band"] == "MEDIUM" and out["review"]["band"] == "MEDIUM", out["review"]["band"]
+    assert not any(o.startswith("low_routing_confidence") for o in out["band_overrides_applied"])
+    # The reported confidence still carries the penalty; only the promotion
+    # decision drops it.
+    assert out["routing_confidence"] == 0.75 and code == 0
+
+
+def test_b2_other_signals_still_promote_a_band_uncertainty_raised():
+    # c0u2: 4 (MEDIUM), 2 with weight 1 (LOW). Unknown root cause (0.10) and
+    # a fallback (0.06) take the uncertainty-free confidence to 0.79.
+    req = _req("DEBUGGING", (0, 2, 0, 0), flags=["unknown_root_cause"],
+               availability_snapshot={"unavailable_models": [ID("openai_worker_fast")]})
+    _, out = _route(req)
+    assert out["review"]["band"] == "HIGH"
+    assert out["routing_confidence"] == 0.71
+
+
+def test_b2_a_band_an_override_set_is_not_raised_by_uncertainty():
+    # The critical-domain override puts c0u3 at HIGH with or without the
+    # double weight, so the penalty is a separate fact and still promotes.
+    _, out = _route(_req("IMPLEMENTATION", (0, 3, 0, 0), flags=["security_sensitive"]))
+    assert out["review"]["band"] == "CRITICAL"
+    assert "low_routing_confidence_raised_review_to_CRITICAL" in out["band_overrides_applied"]
+
+
+def test_b2_escalate_routing_stays_reachable():
+    """The rejected alternative (drop the penalty) left the lowest reachable
+    confidence at 0.64, so ESCALATE_ROUTING could never fire."""
+    _, out = _route(_req("DEBUGGING", (0, 3, 0, 0), flags=["unknown_root_cause", "bridge_down"]))
+    assert out["terminal"] == "ESCALATE_ROUTING" and out["routing_confidence"] < 0.60
+
+
+def test_b2_the_rule_is_one_config_key():
+    cfg = copy.deepcopy(CFG)
+    cfg["router"]["confidence"]["skip_uncertainty_penalty_when_band_raised"] = False
+    _, out = _route(_req("DOCUMENTATION", (0, 3, 0, 0)), cfg)
+    assert out["review"]["band"] == "HIGH"          # 1.16.1's promotion
+    cfg["router"]["confidence"]["skip_uncertainty_penalty_when_band_raised"] = "yes"
+    with pytest.raises(rt.ConfigError):
+        _route(_req("DOCUMENTATION", (0, 3, 0, 0)), cfg)
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex", "grok"])
+@pytest.mark.parametrize("task_class", ["IMPLEMENTATION", "REFACTORING", "DEBUGGING"])
+def test_b2_counting_uncertainty_once_never_costs_the_worker_a_tier(task_class, runtime):
+    """DD-B2's worker drop. c3u3b0r1 scores 10 (HIGH), 7 (MEDIUM) with weight
+    1. Without the promotion the lower-tier table plan and the frontier
+    execution-cell plan stop sharing a review band, so the execution-cell
+    guard yielded the stronger worker — sol fell to a tier-1 seat. The guard
+    now weighs the two plans with the promotion 1.16.1 made, and only the
+    adopted plan is re-planned without the double-counted penalty."""
+    req = _req(task_class, (3, 3, 0, 1), runtime=runtime, reasoning_centric=True)
+    cfg = copy.deepcopy(CFG)
+    cfg["router"]["confidence"]["skip_uncertainty_penalty_when_band_raised"] = False
+    _, before = _route(req, cfg)
+    _, out = _route(req)
+    assert out["selected_model"] == before["selected_model"], (before["selected_model"], out["selected_model"])
+    assert TIER[out["selected_model"]] == 2
+    assert out["review"]["band"] == "HIGH" and before["review"]["band"] == "CRITICAL"

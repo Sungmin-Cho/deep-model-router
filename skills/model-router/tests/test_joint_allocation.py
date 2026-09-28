@@ -64,7 +64,13 @@ def test_source_dispatch_list_executes_lead_once_and_binds_effort():
 
 
 def test_promoted_review_band_can_promote_the_source_lead():
-    out = run(complexity=0, uncertainty=3, blast_radius=0)
+    # MEDIUM (6), promoted by an unknown root cause plus a real outage (0.79).
+    # Uncertainty cannot be the signal any more: since DD-B2 an uncertainty
+    # that lifted the band does not also promote it.
+    out = run(uncertainty=1, flags=['unknown_root_cause'],
+              availability_snapshot=dict(unavailable_models=[CFG['models']['xai_frontier']['id']]))
+    assert out['risk_band'] == 'MEDIUM'
+
     assert out['review']['band'] == 'HIGH'
     assert out['terminal'] is None
     assert not out['review']['review_depth_reduced']

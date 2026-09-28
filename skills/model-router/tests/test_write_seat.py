@@ -505,14 +505,20 @@ def test_a_real_outage_after_the_policy_skip_is_still_recorded():
 
 
 def test_a_real_outage_plus_a_second_signal_still_promotes_the_review():
-    """The consequence round 1 pinned — promotion — now needs a second signal."""
-    task = Task(task_class="REFACTORING", complexity=0, uncertainty=2,
-                blast_radius=0, reversibility=0, runtime="codex",
+    """The consequence round 1 pinned — promotion — now needs a second signal.
+
+    The second signal is an unknown root cause: since DD-B2 an uncertainty
+    that lifted the band (c0 u2 was 4, 2 with u weighted once) no longer
+    promotes it, so the u2 this probe used to lean on is gone."""
+    task = Task(task_class="REFACTORING", complexity=2, uncertainty=1,
+                blast_radius=1, reversibility=0, runtime="codex",
+                flags=["unknown_root_cause"],
                 unavailable_models=[ID("claude_worker_balanced")],
                 prior_failures=1, prior_models=[ID("openai_worker_fast")])
     out = route(task, CFG)
     assert any(f"{ID('claude_worker_balanced')} unavailable" in f for f in out["fallbacks_applied"])
-    assert out["routing_confidence"] == 0.76
+    assert out["risk_band"] == "MEDIUM"
+    assert out["routing_confidence"] == 0.74
     assert out["review"]["band"] == "HIGH"
 
 

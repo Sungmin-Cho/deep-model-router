@@ -139,6 +139,49 @@ def _implementer_check(req, prev, cur):
     return out
 
 
+def _snapshot_band_once(req) -> tuple[str, str]:
+    """(risk band, risk band with uncertainty weighted once), both after the
+    overrides — computed by the 1.16.1 snapshot, so the predicate does not
+    lean on the code it judges."""
+    mod = load_baseline_1161()
+    cfg = baseline_1161_cfg()
+    policy = mod.Policy.of(cfg)
+    task = mod.task_from_request_v1(project(req))
+    task.validate(policy)
+    score = mod.score(task, cfg)
+    once = score - task.uncertainty * (cfg["router"]["score_weights"]["uncertainty"] - 1)
+    band = mod.apply_overrides(task, mod.band_from_score(score, policy), policy)[0]
+    return band, mod.apply_overrides(task, mod.band_from_score(once, policy), policy)[0]
+
+
+BANDS = list(CFG["router"]["bands"])
+
+
+def _c1iii_admits(req, prev):
+    if "error" in prev or not any(o.startswith("low_routing_confidence_raised_review_to_")
+                                  for o in prev["band_overrides_applied"]):
+        return False
+    band, once = _snapshot_band_once(req)
+    return BANDS.index(band) > BANDS.index(once)
+
+
+def _c1iii_check(req, prev, cur):
+    out = []
+    if not cur["terminal"] and not prev["terminal"]:
+        drop = BANDS.index(prev["review"]["band"]) - BANDS.index(cur["review"]["band"])
+        if drop not in (0, 1):
+            out.append(f"review band moved {prev['review']['band']} -> {cur['review']['band']}")
+        # A REVIEW task's lead is a review seat sized by the review band
+        # (a source review's lead rises to the band's floor), so it moves with
+        # the band. Every other worker keeps its tier (DD-B11 invariant 4).
+        if (req["task_class"] != "REVIEW"
+                and TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]):
+            out.append(f"worker tier fell {prev['selected_model']} -> {cur['selected_model']}")
+        if req["task_class"] != "REVIEW" and cur["selected_model"] != prev["selected_model"]:
+            out.append(f"worker moved {prev['selected_model']} -> {cur['selected_model']}")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -154,6 +197,20 @@ RULES: dict[str, Rule] = {
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_implementer_check,
         changed_sample=1863, changed_full=5184),
+    # One band lower on the inputs it admits, and everything that follows from
+    # the band: the seats, their efforts and records, the judge, the gates,
+    # and the worker EFFORT a reviewer-fallback compensation drags along. Never
+    # the worker's model (the adopted plan is chosen as before, DD-B2's guard).
+    "c1iii": Rule(
+        "c1iii", predicate=_c1iii_admits,
+        # `selected_model`/`selected_capability_tier` for a REVIEW lead only
+        # (ledger B2); the check refuses any other worker move.
+        fields=(frozenset({"review.band", "review.effort", "review.required_checks",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "dispatch_seats", "terminal",
+                           "selected_model", "selected_capability_tier"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_c1iii_check, changed_sample=2448, changed_full=7098),
 }
 
 
@@ -189,7 +246,10 @@ REQUEST_SWITCHES: dict[str, Callable[[dict], None]] = {
 }
 
 # rule -> function(cfg) that restores the pre-rule config value in place.
-CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {}
+CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
+    "c1iii": lambda cfg: cfg["router"]["confidence"].__setitem__(
+        "skip_uncertainty_penalty_when_band_raised", False),
+}
 
 # rule -> function(ExitStack) that installs the pre-rule behaviour.
 PATCH_SWITCHES: dict[str, Callable[[ExitStack], None]] = {}
@@ -290,6 +350,16 @@ def changed_fields(a: dict, b: dict) -> set[str]:
         elif a.get(key) != b.get(key):
             out.add(key)
     return out
+
+
+# What a terminal route withholds (every execution binding). When a rule may
+# move `terminal`, the withholding that follows is part of that move, not a
+# worker or seat change of its own.
+WITHHELD = frozenset({"selected_role", "selected_model", "selected_effort",
+                      "selected_effort_effective", "selected_effort_native",
+                      "selected_capability_tier", "selected_families", "review.reviewer_models",
+                      "review.effort", "review.judge_model", "review.review_depth_reduced",
+                      "dispatch_seats", "fallbacks_applied", "effort_ceiling_applied"})
 
 
 def weaker(prev: dict, cur: dict) -> str | None:
@@ -451,6 +521,8 @@ def replay(full: bool) -> Ledger:
             on = on | {rule_name}
             cur = route_live(req, on)
             moved = changed_fields(prev, cur)
+            if "terminal" in rule.fields and prev.get("terminal") != cur.get("terminal"):
+                moved -= WITHHELD
             if not rule.predicate(req, prev):
                 if moved:
                     ledger.fail(name, f"{rule_name} is not admitted here but moved {sorted(moved)}")
