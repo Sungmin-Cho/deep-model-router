@@ -3481,7 +3481,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 effort = retry_effort
             effort_notes.append(
                 f"same-model retry: {policy.id_to_key[task._same_model_retry['model']]} again at "
-                f"{retry_effort}, above every effort it failed at "
+                f"{retry_effort}, above every effort it ran at "
                 f"(retry.same_model_higher_effort)")
         if lp.get("minimum_effort") is not None:
             asked = lp["minimum_effort"]

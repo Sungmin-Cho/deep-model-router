@@ -412,9 +412,11 @@ and tell the human what was tried, what evidence accumulated, and what the
 blocking uncertainty is. Silent looping is the error.
 
 Routing confidence, 0.0–1.0: 0.80+ execute as routed; 0.60–0.79 raise the
-review band one level — unless uncertainty alone lifted the band, which is not
-charged twice (`references/control-loop.md`); below 0.60 escalate the routing
-decision itself. A raised band stays raised; the route notes both numbers.
+review band one level; below 0.60 escalate the routing decision itself. Where
+uncertainty's weight already lifted the band, the raise reads the confidence
+without its uncertainty penalty (other penalties still count;
+`references/control-loop.md`). A raised band stays raised; the route notes both
+numbers.
 
 ## Step 5 — Emit the route
 

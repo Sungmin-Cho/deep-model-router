@@ -246,10 +246,12 @@ OPERATIONAL = {"transport_failure", "launch_failure", "resolution_failure", "tim
                "quota_exhausted", "publication_failure", "cancelled", "unknown"}
 
 
-def _c5_target(req):
-    """DD-B6's four conditions from the request and the replay state before
-    C5 — (model, effort) when all hold, else None. Written out here, not
-    taken from the router."""
+def _c5_target(req, on: frozenset | None = None):
+    """DD-B6's four conditions from the request and a rule state — by default
+    the replay state before C5, for the ledger step; invariant 4 passes the
+    shipped one, whose failure-free plan (a REVIEW lead under `review_lead`,
+    say) is what the router retries from (review i2) — (model, effort) when
+    all hold, else None. Written out here, not taken from the router."""
     history = req.get("attempt_outcomes")
     if not history or "implementer" in req or "termination_unconfirmed" in req["flags"]:
         return None
@@ -268,8 +270,9 @@ def _c5_target(req):
     if "effort" not in last or (CFG["retry"]["require_new_evidence_on_same_tier"]
                                 and "retry_evidence_sha256" not in last):
         return None
-    before = frozenset(r for r in ORDER[:ORDER.index("c5")] if r in RULES)
-    free = route_live({k: v for k, v in req.items() if k != "attempt_outcomes"}, before)
+    if on is None:
+        on = frozenset(r for r in ORDER[:ORDER.index("c5")] if r in RULES)
+    free = route_live({k: v for k, v in req.items() if k != "attempt_outcomes"}, on)
     if "error" in free or free["terminal"] or free["selected_model"] != model:
         return None
     ran = [EFFORTS.index(r["effort"]) for r in history if r["model_id"] == model and "effort" in r]
@@ -634,16 +637,40 @@ _INDEPENDENCE_ORDER = {"not_applicable": -1, "unavailable": 0, "degraded": 1, "p
 
 
 def _seat_efforts(route_out: dict) -> list[int]:
-    """Each reviewer's effective effort (a ceiling record wins), strongest first."""
+    """Each review seat's effective effort (a ceiling record wins), strongest
+    first. A REVIEW task's lead — reviewer-1 of a source review, dispatched
+    by `dispatch_seats` — runs at the higher of the review's effort and its
+    own, and at its own where the band has none (review i2)."""
     rv = route_out["review"]
     capped = {r["role"]: r["capped_at"] for r in route_out["effort_ceiling_applied"]}
-    return sorted((EFFORTS.index(capped.get(role, rv["effort"])) for role in rv["reviewers"]
-                   if capped.get(role, rv["effort"]) is not None), reverse=True)
+    lead = (route_out.get("worker_seat_state") == "to_dispatch"
+            and bool(route_out.get("dispatch_seats"))
+            and route_out["selected_model"] in rv["reviewer_models"])
+    out = []
+    for role, model in zip(rv["reviewers"], rv["reviewer_models"]):
+        level = capped.get(role, rv["effort"])
+        if lead and model == route_out["selected_model"]:
+            own = route_out["selected_effort_effective"]
+            level = own if level is None else max(level, own, key=EFFORTS.index)
+        if level is not None:
+            out.append(EFFORTS.index(level))
+    return sorted(out, reverse=True)
 
 
-def _worker_floor_broken(route_out: dict) -> bool:
-    return any(r["floor_broken"] and r["role"] == route_out["selected_role"]
-               for r in route_out["effort_ceiling_applied"])
+def _worker_floor_break(route_out: dict) -> dict | None:
+    return next((r for r in route_out["effort_ceiling_applied"]
+                 if r["floor_broken"] and r["role"] == route_out["selected_role"]), None)
+
+
+def _worker_floor_worse(prev: dict, cur: dict) -> bool:
+    """A newly broken worker floor, or one broken further — a higher floor or
+    a lower cap — as `_contract_violation` reads it (review i2)."""
+    cw = _worker_floor_break(cur)
+    if cw is None:
+        return False
+    pw = _worker_floor_break(prev)
+    return (pw is None or EFFORTS.index(cw["floor_requires"]) > EFFORTS.index(pw["floor_requires"])
+            or EFFORTS.index(cw["capped_at"]) < EFFORTS.index(pw["capped_at"]))
 
 
 def weaker(prev: dict, cur: dict) -> str | None:
@@ -663,7 +690,7 @@ def weaker(prev: dict, cur: dict) -> str | None:
         return "gate_lost"
     if TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]:
         return "worker_tier"
-    if _worker_floor_broken(cur) and not _worker_floor_broken(prev):
+    if _worker_floor_worse(prev, cur):
         return "worker_floor_broken"
     pr, cr = prev["review"], cur["review"]
     if BANDS.index(cr["band"]) < BANDS.index(pr["band"]):
@@ -1004,6 +1031,61 @@ def band_contract(req: dict, out: dict) -> list[str]:
     return problems
 
 
+def _lead_route() -> dict:
+    """A live REVIEW lead: (0,0,0,0) with checks unavailable escapes to MEDIUM,
+    and its lead is dispatched at the review's HIGH above its own MEDIUM."""
+    out = route_live({"route_schema_version": 1, "task_class": "REVIEW", "complexity": 0,
+                      "uncertainty": 0, "blast_radius": 0, "reversibility": 0,
+                      "runtime": "claude_code", "flags": [],
+                      "availability_snapshot": {"checks_available": False}}, frozenset(ORDER))
+    assert out["terminal"] is None and out["worker_seat_state"] == "to_dispatch", out
+    assert out["dispatch_seats"][0]["model_id"] == out["selected_model"], out
+    return out
+
+
+def test_weaker_reads_each_row_in_its_safety_direction():
+    """Counterexamples for the rows review i1 and i2 found `weaker()` missing,
+    each on a live route with one field moved."""
+    base = _lead_route()
+    assert weaker(base, base) is None
+
+    def moved(**edit):
+        cur = copy.deepcopy(base)
+        for path, value in edit.items():
+            node = cur
+            *head, last = path.split("__")
+            for key in head:
+                node = node[key]
+            node[last] = value
+        return cur
+
+    # A lost human control is weaker whatever the band did.
+    gated = moved(human_control_causes=["critical_review_band"])
+    assert weaker(gated, moved(review__band="HIGH")) == "gate_lost"
+    # A larger band is its own contract; a smaller one is weaker.
+    assert weaker(base, moved(review__band="HIGH", review__reviewers=[])) is None
+    assert weaker(moved(review__band="HIGH"), base) == "review.band"
+    # A removed required check at the same band.
+    assert weaker(moved(review__required_checks=["tests", "lint"]),
+                  moved(review__required_checks=["tests"])) == "required_checks"
+    # The lead's dispatch effort falls while the review's effort stays.
+    assert weaker(moved(selected_effort_effective="VERY_HIGH"),
+                  moved(selected_effort_effective="MEDIUM")) == "reviewer_efforts"
+    # ... and where the band has no review effort, the lead's own is the seat's.
+    assert weaker(moved(review__effort=None, selected_effort_effective="HIGH"),
+                  moved(review__effort=None, selected_effort_effective="MEDIUM")) == "reviewer_efforts"
+
+    def broken(cap):
+        return [{"role": base["selected_role"], "model": base["selected_model"], "requested": "MAX",
+                 "capped_at": cap, "floor_broken": "review.CRITICAL.effort", "floor_requires": "MAX"}]
+    # A worker floor broken further — a lower cap — though both routes break it.
+    assert weaker(moved(effort_ceiling_applied=broken("VERY_HIGH")),
+                  moved(effort_ceiling_applied=broken("HIGH"))) == "worker_floor_broken"
+    assert weaker(base, moved(effort_ceiling_applied=broken("HIGH"))) == "worker_floor_broken"
+    assert weaker(moved(effort_ceiling_applied=broken("HIGH")),
+                  moved(effort_ceiling_applied=broken("VERY_HIGH"))) is None
+
+
 def test_invariant_1_every_band_keeps_its_contract():
     checked = 0
     for name, req, out in finals():
@@ -1028,10 +1110,19 @@ def test_invariant_4_the_worker_never_falls_below_1161_but_for_the_same_model_re
     implementer is the caller's (gated when weaker, DD-B1); an exhausted
     family is withheld supply the 1.16.1 projection does not see."""
     checked = same_model = 0
+    shipped = frozenset(r for r in ORDER if r in RULES)
     for name, req, out in finals():
         if "error" in out or out["terminal"] or "implementer" in req or EXHAUSTED(req):
             continue
-        target = _c5_target(req)
+        target = _c5_target(req, shipped)
+        failed = {r["model_id"] for r in req.get("attempt_outcomes") or []
+                  if r["kind"] == "capability_failure"}
+        if out["selected_model"] in failed and (target is None or out["selected_model"] != target[0]):
+            # Reusing a failed model is C5's alone: without its conditions the
+            # route keeps 1.16.1's choice (review i2).
+            base = route_snapshot(req)
+            assert base.get("selected_model") == out["selected_model"], (
+                name, "failed model reused without C5", out["selected_model"])
         if target is not None and out["selected_model"] == target[0]:
             # The absolute limits hold for every class, REVIEW included: the
             # failed model, one level above every effort any of its records

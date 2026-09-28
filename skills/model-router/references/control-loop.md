@@ -69,9 +69,16 @@ ladder climbs a tier as before:
    `retry_evidence_sha256`: new evidence, different from every hash in the
    history (a repeat is exit 2).
 4. The route without the history seats that model, and one level above the
-   higher of every effort it failed at and the effort that route gives it
-   exists and is within the model's ceiling. It is never clamped: a model that
-   failed at its ceiling is not sent back at it.
+   higher of every effort any of its records ran at (recovered operational
+   attempts included) and the effort that route dispatches it at (a `REVIEW`
+   lead runs at the higher of its own and the review's) exists and is within
+   the model's ceiling. It is never clamped: a model that failed at its
+   ceiling is not sent back at it.
+
+The retry is kept only if the route it settles on still seats that model — a
+`REVIEW` lead is searched with its reviewers, and the failure's own confidence
+penalty can move the band. Otherwise the conditions do not hold and the ladder
+climbs.
 
 The retry keeps the 0.05 failure penalty, lists the model as no longer
 excluded, and says `same-model retry: <registry key> again at <effort>` in
