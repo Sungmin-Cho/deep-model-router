@@ -1085,6 +1085,8 @@ DOCUMENTED_BUT_UNREAD = {
     "transports.codex.to_xai.isolation": "see isolation above",
     "transports.grok.to_claude.mechanism": "see mechanism above",
     "transports.grok.to_claude.mechanism_reviewer": "see mechanism above",
+    "transports.claude_code.to_openai.mechanism_reviewer": "the reviewer seat's recipe, "
+        "read by people and by model_sync's recipe digest, never by a route",
     "transports.grok.to_claude.isolation": "see isolation above",
     "transports.grok.to_openai.mechanism": "see mechanism above",
     "transports.grok.to_openai.isolation": "see isolation above",

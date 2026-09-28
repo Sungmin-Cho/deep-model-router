@@ -196,6 +196,25 @@ codex exec -m <id> \
 
 `<sandbox>` is `read-only` or `workspace-write`.
 
+A read-only **reviewer** seat (`mechanism_reviewer`, 1.17.0) adds two flags:
+
+```bash
+codex exec -m <id> \
+    -c model_reasoning_effort=<effort> \
+    -s <sandbox> \
+    --skip-git-repo-check \
+    --ignore-user-config \
+    --ephemeral \
+    "<prompt>"
+```
+
+`<sandbox>` is `read-only`. On a paired run (plan B8) the two flags cut the boot
+input 27.4% with the review format intact. What they cost: an ephemeral session
+writes no rollout, so it cannot be resumed and does not refresh
+`model_sync.py quota`; and `~/.codex/config.toml` is ignored — a host whose codex
+needs its profile or a custom `model_provider` keeps the plain recipe. The maker
+seat was not measured and keeps the plain recipe.
+
 Runs as a separate process with a fresh session — isolation holds by
 construction.
 

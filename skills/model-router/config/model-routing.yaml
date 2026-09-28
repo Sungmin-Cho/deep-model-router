@@ -950,6 +950,12 @@ transports:
     native: { mechanism: agent_tool_subagent, isolation: context_isolation }
     to_openai:
       mechanism: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check \"<prompt>\""
+      # The read-only REVIEWER seat (1.17.0, design 2026-09-25 DD-B9, plan B8):
+      # the same argv plus --ignore-user-config --ephemeral, which cut boot input
+      # 27,461 -> 19,924 tokens (-27.4%) on a paired run with the review format
+      # intact. <sandbox> is read-only here. The maker seat keeps `mechanism`:
+      # only the reviewer was measured. See the ledger row.
+      mechanism_reviewer: "codex exec -m <id> -c model_reasoning_effort=<effort> -s <sandbox> --skip-git-repo-check --ignore-user-config --ephemeral \"<prompt>\""
       isolation: separate_process
       verified: true
       # Whether this direction may seat WRITE work. Declared, never inferred:
@@ -1474,6 +1480,25 @@ verification_ledger:
       status: verified
       probed_on: 2026-08-11
       evidence: "trivial round-trip succeeded; runs as a separate process"
+
+    - item: "transports.claude_code.to_openai.mechanism_reviewer"
+      status: verified
+      probed_on: "2026-09-28"
+      cli_version: "codex-cli 0.157.0"
+      argv: "codex exec -m gpt-6-sol -c model_reasoning_effort=low -s read-only --skip-git-repo-check --json --ignore-user-config --ephemeral -"
+      evidence: >
+        Plan B8 paired measurement (scripts/tools/measure_codex_recipe.py) from
+        a Claude Code host, one fixed review prompt, empty throwaway cwd, quota
+        reading ok (4% used, fresh): the current recipe reported 27461 input
+        tokens (11776 cached), the same argv plus --ignore-user-config
+        --ephemeral 19924 (11776 cached) — a 27.4% cut against the 20% bar —
+        and both answered in the review format (=== REVIEW === / verdict:
+        PASS). Costs of the two flags, stated rather than measured: an
+        ephemeral session writes no rollout, so it cannot be resumed and does
+        not refresh `model_sync.py quota`'s reading; the user's config.toml
+        (profiles, a custom model_provider) is ignored, so a host that needs
+        it keeps `mechanism`. Not probed from a grok host or for the maker
+        seat. Reviewer quality is not measured by this row.
 
     - item: "Codex -> Claude transport (claude -p)"
       status: verified
