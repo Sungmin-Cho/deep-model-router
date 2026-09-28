@@ -321,7 +321,9 @@ def _md_table(text: str, marker: str) -> tuple[list[str], list[list[str]]]:
 
 
 def test_skill_md_worker_table_matches_the_config_cell_by_cell():
-    header, rows = _md_table(SKILL_MD, "### Worker by class and band")
+    # The table moved to routing-policy.md in 1.17.0 (DD-B10); SKILL.md points at it.
+    assert "### Worker by class and band" in SKILL_MD and "routing-policy.md" in SKILL_MD
+    header, rows = _md_table(ROUTING_POLICY_MD, "### Worker by class and band")
     bands = [c.strip("`") for c in header[1:]]
     assert bands == sorted(CFG["router"]["bands"],
                            key=lambda b: CFG["router"]["bands"][b]["ordinal"])
@@ -486,10 +488,17 @@ def test_skill_md_review_table_matches_config():
     for band in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
         spec = CFG["review"][band]
         row = by_band[band]
-        assert row[2].strip("`") == spec["effort"], band
+        # A band with no model reviewer has no review effort (DD-B4): "—".
+        assert row[2].strip("`") == (spec["effort"] if spec["effort"] is not None else "—"), band
         assert (row[3].strip() == "yes") == spec["independent"], band
         if band != "MEDIUM":
-            documented = [r.strip() for r in row[1].replace("`", "").split("+")]
+            cell = row[1].replace("`", "")
+            if cell.startswith("none"):
+                assert spec["reviewers"] == [], band
+                checks = cell.split("(", 1)[1].rstrip(")").split(",")
+                assert [c.strip() for c in checks] == spec["required_checks"], band
+                continue
+            documented = [r.strip() for r in cell.split("+")]
             assert documented == spec["reviewers"], band
     assert "cross-family" in by_band["MEDIUM"][1]
 

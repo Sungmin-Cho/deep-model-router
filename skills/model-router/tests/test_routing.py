@@ -302,8 +302,15 @@ def test_i1_every_task_reaches_review_selection():
         for c, u, b, rev in ALL_DIMS:
             out = r(task_class=task_class, complexity=c, uncertainty=u,
                     blast_radius=b, reversibility=rev)
-            assert out["review"]["reviewers"], f"{task_class} {c}{u}{b}{rev} got no reviewer"
-            assert out["review"]["band"] in BANDS
+            rv = out["review"]
+            assert rv["band"] in BANDS
+            # Since 1.17.0 the LOW review is the deterministic checks (DD-B4):
+            # reaching review selection there means naming them. Every other
+            # band — and a REVIEW task's lead at LOW — seats a model.
+            if rv["mode"] == "deterministic_checks":
+                assert rv["band"] == "LOW" and rv["required_checks"], (task_class, c, u, b, rev)
+            else:
+                assert rv["reviewers"], f"{task_class} {c}{u}{b}{rev} got no reviewer"
 
 
 @pytest.mark.parametrize("flag", [

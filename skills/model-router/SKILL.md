@@ -19,16 +19,10 @@ claim a safety property you did not actually enforce.
 
 ## When this applies
 
-Route when you are about to **delegate** work — to a subagent, to another
-model, to a fresh session. Delegation already costs you a context window, so
-choosing well is nearly free at that point.
-
-Do not route work you are simply going to do inline in your own turn. There is
-no choice to make there: you are the executor. A one-line fix, a file read, a
-question you can answer — just do it.
-
-Skip routing entirely for trivial single-file edits with no ambiguity. The
-routing overhead would exceed the task.
+Route when you are about to **delegate** work — to a subagent, another model,
+a fresh session; choosing well is nearly free at that point. Do not route work
+you do inline in your own turn (you are the executor), nor a trivial
+single-file edit with no ambiguity.
 
 ## Step 1 — Classify
 
@@ -93,12 +87,9 @@ the system does not keep, so this table is enforced by test:
 | `unknown_root_cause` | effort `MAX`, worker promotion, confidence penalty |
 | `review_disagreement` | routes to the disagreement path and binds a judge |
 
-Two context flags also have a deterministic effect, on the model rather than
-the band: `large_context` and `latency_sensitive` each bind `worker_balanced`
-to `worker_balanced_alt`. The first is the caller's statement that the prompt
-is at or past the primary's 200K whole-request price line; the second, that
-first-escalation wall-clock latency outweighs output price. Numbers and the
-latency evidence: `references/model-profiles.md`.
+`large_context` (past the primary's 200K price line) and `latency_sensitive`
+bind `worker_balanced` to `worker_balanced_alt` — the model, never the band
+(`references/model-profiles.md`).
 
 **`reasoning_centric`** — one boolean that decides between the two frontier
 roles:
@@ -117,12 +108,9 @@ recovers more gracefully from a wrong guess.
 Hand your classification to the scorer. It is deterministic, so the band, the
 overrides, and the review policy come out the same every time:
 
-`SKILL_DIR` below is this skill's base directory — the path announced when
-the skill loads, i.e. the directory containing this file. Every command in
-this file and in `references/examples.md` is written against it, because a
-subagent's working directory is the project root, not the skill root. Assign
-it once before the first command below, substituting the real absolute path
-announced when the skill loaded:
+`SKILL_DIR` is this skill's base directory (announced when it loads; it holds
+this file). Commands here and in `references/examples.md` use it because a
+subagent's cwd is the project root. Assign it once:
 
 ```bash
 SKILL_DIR=<skill-base-directory announced when the skill loads>
@@ -145,35 +133,21 @@ Other inputs worth knowing:
 | `--unavailable <role>` / `--unavailable-models <id>` | a specific role or model does not resolve |
 | `--flags bridge_down` | the whole cross-provider transport is unreachable — switches to the degraded single-provider binding |
 | `--isolation available\|unavailable` / `--isolation-evidence <ids>` | whether isolation *can* be achieved this session, and one **distinct** session id per dispatched reviewer |
-| `--request-json <file>` | RouteRequestV1 file (`route_schema_version`, `local_policy`, `availability_snapshot`). Wins over `--json` and flags |
+| `--checks-unavailable` | this repository cannot run LOW's deterministic checks: LOW review becomes a MEDIUM model review |
+| `--family-quota openai=low` | your quota reading: `exhausted` withholds the family, `low` moves only the worker to a same-tier other family |
+| `--request-json <file>` | RouteRequestV1 file (`route_schema_version`, `local_policy`, `availability_snapshot`; `implementer` names the model that already did write work — `references/control-loop.md`). Wins over `--json` and flags |
 
-**Independence has five states, and only one of them is a claim.** A route is
-computed before any reviewer runs, so nothing known at routing time can prove
-isolation happened:
+`review_independence` reports what was **established**, not what was asked:
+`not_applicable`, `degraded` (the default), `unavailable`, `planned` or
+`enforced` — and **`enforced` unlocks nothing**: an isolation receipt is a
+string the caller passed in, so `CRITICAL` always asks a human
+(`references/review-policy.md`, The five independence states).
 
-| State | Meaning |
-|---|---|
-| `not_applicable` | the band does not ask for independence |
-| `degraded` | nobody established whether isolation is possible — the default |
-| `unavailable` | positive evidence it *cannot* be achieved here |
-| `planned` | attested achievable, not yet demonstrated |
-| `enforced` | one distinct session id per reviewer was supplied afterwards |
-
-`unavailable` and `degraded` are deliberately distinct: a confirmed gap and an
-unchecked one call for different responses. **`enforced` does not unlock
-anything** — an isolation receipt is a string the caller passed in, bound to no
-real dispatch, so `CRITICAL` always asks a human and `enforced` reports the
-claim without treating it as proof. Making the strongest control in the policy
-openable by typing would be the exact failure this skill is about.
-
-Exit status is the part of this contract a shell can act on, so every outcome
-needing a person is nonzero: **0** dispatchable, **1** terminal, **2** invalid
-input, **4** dispatchable with a confirmation owed afterwards (a production
-hotfix — the review runs at full depth, the human is asked after the fix
-ships), and `human_in_the_loop.human_gate_exit_status` (**3** by default) for a
-route executable only after a human confirms — `requires_human_confirmation` is
-a boolean in a JSON blob, and a caller reading success as authorisation walks
-straight through it.
+Exit status is what a shell can act on, so every outcome needing a person is
+nonzero: **0** dispatchable, **1** terminal, **2** invalid input, **4**
+dispatchable with a confirmation owed after a production hotfix ships, and
+`human_in_the_loop.human_gate_exit_status` (**3** by default) for a route
+executable only after a human confirms.
 
 The terminal states are normal outcomes that need a human, not routes to
 execute:
@@ -190,17 +164,11 @@ execute:
 | `UNSATISFIABLE_LOCAL_POLICY` | `local_policy` cannot be met (empty `allowed_families`, empty intersection, or a floor the binding cannot seat) |
 | `MODEL_STATE_UNAVAILABLE` | local model state is unreadable or its root fails admission, or a `policy_pin` cannot be reproduced — no model is named |
 
-`judge_unavailable` is deliberately **not** terminal: independence failing means
-the review cannot happen as specified, so nothing is safe to dispatch, whereas a
-missing adjudicator leaves the review runnable and only hands a human the job of
-settling a disagreement.
+`judge_unavailable` is deliberately **not** terminal: the review still runs; a
+human settles any disagreement.
 
 **Every strength comparison reads the resolved model's `capability_tier`, never
-a role's position in the ladder** — judge-vs-party, reviewer-vs-band-floor,
-substitute-vs-replaced, critical-domain floor, and retry escalation alike. Under
-scarcity a role holds whatever model is left, so `worker_fast` can end up on the
-frontier model and `worker_balanced` on a weaker one; ranking by role label
-ranks the assignment backwards exactly when scarcity makes it matter.
+a role's ladder position** — under scarcity a role holds whatever model is left.
 
 Shortfall reporting — `review_depth_reduced`, `band_floor_unsatisfiable`, `effort_below_floor` — and the seating rules are in `references/review-policy.md`.
 
@@ -210,23 +178,9 @@ policy, so the two must agree.
 
 ### The pipeline
 
-Eight stages, and **no stage returns early**. That constraint is not stylistic:
-an earlier version of this policy dispatched on task class with early returns
-and checked critical-domain flags afterwards, so debugging an auth bug and
-designing a payments architecture silently bypassed mandatory dual review. The
-fix was to stop fusing "who does it" and "how it's reviewed" into one decision.
-
-```
-1 NORMALIZE  → class, 4 dimensions, flags, reasoning_centric
-2 SCORE      → risk_score → band; execution_score → execution_band
-3 OVERRIDE   → band adjusted by flags        [unconditional]
-4 WORKER     → role, by class × execution band, never below class × risk band;
-               yields if the review would suffer
-5 EFFORT     → conceptual effort level
-6 REVIEW     → policy, by BAND ONLY          [depth independent of stage 4]
-7 RESOLVE    → aliases → available models, with fallbacks
-8 EMIT       → route + rationale + confidence + metrics
-```
+Eight stages — normalize, score, override, worker, effort, review, resolve,
+emit — and **none returns early**; review depth is a function of the band alone
+(`references/routing-policy.md`, The pipeline).
 
 Before acting on a route, check these five — the suite asserts them too, so if
 one looks false something is genuinely broken:
@@ -292,25 +246,10 @@ Overrides only raise a band, never lower it.
 
 ### Worker by class and band
 
-The class × risk-band table is the **floor** — the weakest worker that risk
-tolerates:
-
-| Class | LOW | MEDIUM | HIGH | CRITICAL |
-|---|---|---|---|---|
-| `MECHANICAL` | worker_fast | worker_fast | worker_balanced | senior_engineer |
-| `DOCUMENTATION` | worker_fast | worker_fast | worker_balanced | worker_balanced |
-| `TESTING` | worker_fast | worker_fast | worker_balanced | senior_engineer |
-| `IMPLEMENTATION` | worker_fast | worker_fast | worker_balanced | ‡ |
-| `REFACTORING` | worker_fast | worker_balanced | worker_balanced | ‡ |
-| `DEBUGGING` | worker_fast | worker_fast | worker_balanced | ‡ |
-| `INVESTIGATION` | worker_fast | worker_balanced | reasoning_specialist | reasoning_specialist |
-| `MIGRATION` | worker_balanced | worker_balanced | senior_engineer | principal_architect † |
-| `ARCHITECTURE` | worker_balanced | worker_balanced | senior_engineer | principal_architect |
-| `REVIEW` | worker_fast | worker_balanced | senior_engineer | senior_engineer |
-| `OPERATIONS` | worker_fast | worker_balanced | senior_engineer | senior_engineer |
-
-**‡** `reasoning_specialist` if `reasoning_centric`, else `senior_engineer`.
-**†** architecture phase only; implementation runs at worker_balanced / senior_engineer.
+The class × risk-band table is the **floor** — the weakest worker risk
+tolerates — and lives with its execution-band twin in
+`references/routing-policy.md` (Worker by class and band); **‡** there is
+`reasoning_specialist` if `reasoning_centric`, else `senior_engineer`.
 
 A second table, class × execution band (`references/routing-policy.md`,
 "Execution difficulty"), names the worker difficulty asks for. The router
@@ -349,6 +288,9 @@ MINIMAL < LOW < MEDIUM < HIGH < VERY_HIGH < MAX
 | multi-system refactoring | `VERY_HIGH` |
 | complex architecture, unknown root cause, adversarial review | `MAX` |
 
+`LOW` risk caps it at `MEDIUM` (`effort_caps`) absent a failure or unknown
+root cause.
+
 Floors override the table, never the reverse:
 
 ```
@@ -377,9 +319,8 @@ more subtasks interlock, requirements conflict, routing confidence is below
 For a read-only REVIEW of existing work, pass RouteRequestV1 `review_context`
 with its target SHA-256 and known author model IDs or families. Do not infer
 source authorship from your host model. See `references/review-policy.md`.
-When this context is present, dispatch **only `dispatch_seats`**, once per entry.
-`selected_*` identifies its lead reviewer; it is not an additional worker to
-spawn. Keep peer contexts independent and collect one session ID per reviewer.
+Any REVIEW task: dispatch **only `dispatch_seats`**, once each; the lead is
+reviewer-1, one of the band's reviewers, and `selected_*` names it. Keep peer contexts independent and collect one session ID per reviewer.
 An empty dispatch list is not permission to invent a replacement route.
 
 ## Step 3 — Review, by band alone
@@ -390,7 +331,7 @@ weaken the review.
 
 | Band | Reviewers | Effort | Independent |
 |---|---|---|---|
-| `LOW` | worker_fast | `MEDIUM` | no |
+| `LOW` | none — deterministic checks (`tests`, `lint`) | — | no |
 | `MEDIUM` | one stronger role, cross-family preferred | `HIGH` | yes |
 | `HIGH` | senior_engineer + reasoning_specialist | `HIGH` | yes |
 | `CRITICAL` | senior_engineer + reasoning_specialist | `MAX` | yes |
@@ -410,34 +351,18 @@ A `CRITICAL` review that silently omits one is invalid and must be re-run.
 
 ### Making independence real
 
-Two reviews are independent only if reviewer B's input contains no token
-derived from reviewer A's output. Stated as prose alone, this requirement is
-violated by default — the natural implementation, asking one conversation for
-two reviews in sequence, leaks the first into the second.
+Reviewer B's input must contain no token derived from reviewer A's output: each
+gets the diff, the spec and acceptance criteria, the relevant source and the
+band's checklist — never the other's verdict, findings, confidence, a
+paraphrase, or a hint that it exists. One separate `Agent` subagent per
+reviewer, all in one message (Claude Code); one non-interactive execution per
+reviewer with a fresh session id (Codex); a bridge (`codex exec` / `claude -p`)
+is a fresh process. Per-runtime detail: `references/review-policy.md`.
 
-Each reviewer gets exactly: the diff, the task spec and acceptance criteria,
-the relevant source, and the band's checklist. Not the other reviewer's
-verdict, findings, confidence, or any paraphrase — and not even a hint that
-another review is happening.
-
-Mechanically: in Claude Code, dispatch each reviewer as a separate `Agent`
-subagent, all in one message so they run concurrently and none can observe
-another; in Codex, one non-interactive execution per reviewer with a fresh
-session id, never reused. A cross-family reviewer reached over the bridge
-(`codex exec` / `claude -p`) spawns a fresh process, so isolation holds by
-construction. `references/review-policy.md` has the per-runtime detail.
-
-When the execution band seats a frontier worker, the HIGH / CRITICAL pair loses
-that model and `_deconflict` substitutes — `self_review_avoided` discloses it.
-If the substitute would leave the review shallower than the risk-band worker
-allowed, the execution cell yields instead.
-
-If you cannot achieve real isolation, **do not claim it**. Run sequentially with
+If you cannot achieve real isolation, **do not claim it**: run sequentially,
 the second reviewer forming its verdict first, record `review_independence:
 degraded`, and treat `PASS + PASS` on `CRITICAL` as `PASS_WITH_CHANGES` pending
-human confirmation. Claiming independence you did not enforce is the most
-damaging thing this skill can produce: it converts a control into an assurance
-that is false.
+human confirmation. Claimed but unenforced independence is a false assurance.
 
 ### Reading verdicts
 
@@ -458,15 +383,16 @@ Escalate on **evidence**: a failed acceptance check, a stated low confidence,
 an unstable plan, a reviewer finding. Not on a hunch, and not merely because a
 stronger model exists.
 
-A retry must reach a **strictly higher `capability_tier` than the model that
-ran**, and never a weaker one than the same task with no failures. **The router
-does not reconstruct what ran — it asks.** `--prior-failures N` requires
+A retry reaches a **strictly higher `capability_tier` than the model that
+ran**, never weaker than with no failures — unless a typed failure earns the
+same model one effort up (`references/control-loop.md`). **The router does not reconstruct what ran — it
+asks.** `--prior-failures N` requires
 `--prior-models` to name N concrete model ids (repeat one that failed twice);
 anything else is `RETRY_HISTORY_REQUIRED`. `route()` is stateless while this
 rule is historical, so the party that knows — the caller, which dispatched them
-— supplies it. Every route emits `selected_model`; keep it. The same-tier
-budgets below are real, but the router will not route one: it reports
-exhaustion and asks a human.
+— supplies it. Every route emits `selected_model`; keep it. The router routes
+`same_model_higher_effort` and the total cap below; at exhaustion it asks a
+human.
 
 ```
 same_model_same_effort:            1
@@ -485,11 +411,12 @@ Exhausting the retry budget is a **normal terminal state**, not an error. Stop
 and tell the human what was tried, what evidence accumulated, and what the
 blocking uncertainty is. Silent looping is the error.
 
-Emit your own routing confidence, 0.0–1.0: 0.80+ execute as routed; 0.60–0.79
-execute but raise the review band one level; below 0.60 escalate the routing
-decision itself — re-classify at higher effort or ask a human. A band raised at
-0.60–0.79 stays raised even if the promoted plan then resolves at 0.80+, and
-the route notes both numbers.
+Routing confidence, 0.0–1.0: 0.80+ execute as routed; 0.60–0.79 raise the
+review band one level; below 0.60 escalate the routing decision itself. Where
+uncertainty's weight already lifted the band, the raise reads the confidence
+without its uncertainty penalty (other penalties still count;
+`references/control-loop.md`). A raised band stays raised; the route notes both
+numbers.
 
 ## Step 5 — Emit the route
 
@@ -532,12 +459,9 @@ the kill ladder, and termination confirmation. Read
 `references/adapters.md` ("Dispatch contract") before the first background
 dispatch of a session.
 
-On Darwin, when promoting stored receipts to trusted completion evidence, use
-`run --receipt-guard darwin-sandbox-v1` and
-`verify-evidence --require-receipt-guard`. If the requested guard is unavailable,
-keep protected authority unavailable; do not silently substitute an unguarded
-launch. See `references/adapters.md` for the exact process-tree boundary and
-external-writer limitations.
+On Darwin, trusted completion evidence needs `run --receipt-guard
+darwin-sandbox-v1` and `verify-evidence --require-receipt-guard`; if the guard
+is unavailable, keep protected authority unavailable (`references/adapters.md`).
 
 Two receipts are two different proofs, and neither substitutes for the
 other: `--isolation-evidence` takes the `attempt_id`s of reviewer receipts

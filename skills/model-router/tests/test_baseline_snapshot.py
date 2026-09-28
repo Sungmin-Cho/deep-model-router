@@ -11,6 +11,10 @@ sys.path.insert(0, str(HERE.parent / "scripts"))
 from _baseline import (  # noqa: E402
     BASELINE_POLICY_SHA, BASELINE_VERSION, SNAPSHOT_DIR, baseline_cfg, load_baseline,
 )
+from _baseline import (  # noqa: E402
+    BASELINE_1161_POLICY_SHA, BASELINE_1161_VERSION, SNAPSHOT_1161_DIR, SNAPSHOT_1161_PREFIX,
+    baseline_1161_cfg, load_baseline_1161,
+)
 
 
 def test_manifest_matches_every_snapshot_file():
@@ -116,9 +120,13 @@ def test_the_floor_tables_did_not_move():
     import route_task as live
     mod = load_baseline()
     old, new = baseline_cfg(mod), live.load_config()
-    for key in ("worker_selection", "review", "effort_by_work",
+    for key in ("worker_selection", "effort_by_work",
                 "role_tiers", "effort_map", "worker_balanced_selection"):
         assert new[key] == old[key], key
+    # `review` is the table Part B changes on purpose (U-1). It is held to the
+    # 1.16.1 snapshot plus exactly the edits each rule declares below
+    # (plan B4, design DD-B11) — an edit no rule names fails here.
+    assert review_as_declared() == new["review"]
     # Preserve every historical model field except independently refreshed
     # billing quotes, and the provider `id` ONLY where this file names the
     # move. Everything the router reads off a model — family, capability_tier,
@@ -156,3 +164,100 @@ def test_the_floor_tables_did_not_move():
         # an earlier id, or pointing it at one the chain never names, fails.
         assert historical["id"] in chain, (key, historical["id"], chain)
         assert new["models"][now]["id"] == chain[-1], (key, chain)
+
+
+# --- the 1.16.1 oracle (Part B, plan B0 Step 1) -------------------------------
+
+
+def _insert_after(items, anchor, item):
+    out = list(items)
+    out.insert(out.index(anchor) + 1, item)
+    return out
+
+
+# Each Part B rule's edit to the `review` table, as (rule, edit(review) -> None).
+REVIEW_EDITS = [
+    # C4 (DD-B5): the MEDIUM reviewer fits the floor; the preference table goes
+    # and the binding-only alt seat becomes a candidate.
+    ("c4", lambda rv: rv["MEDIUM"].pop("preferred_by_implementer")),
+    ("c4", lambda rv: rv["MEDIUM"].__setitem__("candidates", _insert_after(
+        rv["MEDIUM"]["candidates"], "worker_balanced", "worker_balanced_alt"))),
+    # C3 (DD-B4): LOW review is the deterministic checks — no model seat, so
+    # no effort — and nothing else about the band moves.
+    ("c3", lambda rv: rv.__setitem__("LOW", {"reviewers": [], "effort": None,
+                                             "independent": False,
+                                             "required_checks": ["tests", "lint"]})),
+    # REVIEW lead (DD-B7): the lead is reviewer-1 of every REVIEW task.
+    ("review_lead", lambda rv: rv.__setitem__("review_class_lead_counts", True)),
+]
+
+
+def review_as_declared() -> dict:
+    import copy
+    review = copy.deepcopy(baseline_1161_cfg()["review"])
+    for _rule, edit in REVIEW_EDITS:
+        edit(review)
+    return review
+
+
+_SNAPSHOT_1161_MODULES = ("route_task", "policy_digest", "strict_json", "lineage",
+                          "model_state", "secure_io")
+
+
+def test_1161_manifest_matches_every_snapshot_file():
+    lines = [l for l in (SNAPSHOT_1161_DIR / "MANIFEST.sha256").read_text().splitlines()
+             if l and not l.startswith("#")]
+    listed = {line.split()[1] for line in lines}
+    assert listed == {f"scripts/{SNAPSHOT_1161_PREFIX}{m}.py" for m in _SNAPSHOT_1161_MODULES} \
+        | {"config/model-routing.yaml"}
+    for line in lines:
+        digest, rel = line.split()
+        assert hashlib.sha256((SNAPSHOT_1161_DIR / rel).read_bytes()).hexdigest() == digest, rel
+    on_disk = {str(p.relative_to(SNAPSHOT_1161_DIR)) for p in SNAPSHOT_1161_DIR.rglob("*")
+               if p.is_file() and p.name != "MANIFEST.sha256" and "__pycache__" not in p.parts}
+    assert on_disk == listed, on_disk ^ listed
+    assert not (SNAPSHOT_1161_DIR / ".claude-plugin").exists()
+
+
+def test_1161_snapshot_imports_no_live_module():
+    """Every sibling import is rewritten to a `baseline_1_16_1_*` name, so a
+    live module already in `sys.modules` cannot bind in its place."""
+    scripts = SNAPSHOT_1161_DIR / "scripts"
+    for mod in _SNAPSHOT_1161_MODULES:
+        text = (scripts / f"{SNAPSHOT_1161_PREFIX}{mod}.py").read_text()
+        for other in _SNAPSHOT_1161_MODULES:
+            assert f"\nimport {other}\n" not in text, (mod, other)
+            assert f"\nfrom {other} import" not in text, (mod, other)
+    load_baseline_1161()
+    loaded = {n: m for n, m in sys.modules.items() if n.startswith(SNAPSHOT_1161_PREFIX)}
+    assert set(loaded) == {f"{SNAPSHOT_1161_PREFIX}{m}" for m in _SNAPSHOT_1161_MODULES}
+    for name, module in loaded.items():
+        assert Path(module.__file__).resolve().parent == scripts.resolve(), name
+
+
+def test_1161_snapshot_reads_only_its_own_config_and_seeded_version():
+    mod = load_baseline_1161()
+    assert Path(mod.CONFIG_PATH).resolve() == (SNAPSHOT_1161_DIR / "config" / "model-routing.yaml").resolve()
+    assert mod.plugin_manifest_version() == BASELINE_1161_VERSION
+    assert Path(mod.policy_sha256.__code__.co_filename).resolve() \
+        == (SNAPSHOT_1161_DIR / "scripts" / f"{SNAPSHOT_1161_PREFIX}policy_digest.py").resolve()
+    for attr in ("lineage", "model_state"):
+        assert Path(getattr(mod, attr).__file__).resolve().parent \
+            == (SNAPSHOT_1161_DIR / "scripts").resolve(), attr
+
+
+def test_1161_snapshot_route_carries_its_release_sentinels():
+    mod = load_baseline_1161()
+    out = mod.route(mod.Task(task_class="MECHANICAL", complexity=0, uncertainty=0,
+                             blast_radius=0, reversibility=0), baseline_1161_cfg())
+    assert out["router_plugin_version"] == BASELINE_1161_VERSION
+    assert out["policy_sha256"] == BASELINE_1161_POLICY_SHA
+    assert "execution_band" in out and out["model_overlay"] is None
+
+
+def test_1161_snapshot_policy_cache_is_separate_from_the_live_one():
+    import route_task as live
+    mod = load_baseline_1161()
+    assert mod.Policy is not live.Policy
+    assert mod.Policy._cache is not live.Policy._cache
+    assert mod.model_state is not sys.modules.get("model_state")

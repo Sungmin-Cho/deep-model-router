@@ -51,6 +51,42 @@ require_new_evidence_on_same_tier: true    # "tier" = capability_tier of the
                                           # model that RAN
 ```
 
+### The same-model retry (1.17.0)
+
+The router reads `same_model_higher_effort` and
+`require_new_evidence_on_same_tier` (design 2026-09-25 DD-B6, user decision
+U-7). A capability failure is retried on the **same model at one effort
+higher** instead of a stronger model when all of these hold — otherwise the
+ladder climbs a tier as before:
+
+1. The history is typed (`attempt_outcomes`), nothing else stops the route
+   (budget, unconfirmed termination, unrecovered operational outcomes), no
+   `implementer` is declared, and every capability failure is on ONE model.
+2. That model has at most `same_model_higher_effort` capability failures — the
+   integer is the budget: `2` retries it twice, the third failure climbs.
+3. Its most recent capability failure declares `effort` (the conceptual level
+   it actually ran at) and, while `require_new_evidence_on_same_tier` holds,
+   `retry_evidence_sha256`: new evidence, different from every hash in the
+   history (a repeat is exit 2).
+4. The route without the history seats that model, and one level above the
+   higher of every effort any of its records ran at (recovered operational
+   attempts included) and the effort that route dispatches it at (a `REVIEW`
+   lead runs at the higher of its own and the review's) exists and is within
+   the model's ceiling. It is never clamped: a model that failed at its
+   ceiling is not sent back at it.
+
+The retry is kept only if the route it settles on still seats that model — a
+`REVIEW` lead is searched with its reviewers, and the failure's own confidence
+penalty can move the band. Otherwise the conditions do not hold and the ladder
+climbs.
+
+The retry keeps the 0.05 failure penalty, lists the model as no longer
+excluded, and says `same-model retry: <registry key> again at <effort>` in
+`notes`. The fields are caller declarations like every attempt record — the
+router reads no receipt — and are omitted from the request identity when
+absent, so a 1.16 history still hashes as it did. Operational outcomes are
+never its target: effort does not fix a timeout.
+
 ### Accounting for silent seats
 
 Two questions the retry rules used to leave open, decided:
@@ -158,6 +194,18 @@ fallback whose penalty triggered the promotion. The route says so in a note
 naming both numbers — the pre-promotion confidence the decision read, and the
 promoted plan's confidence it reports.
 
+Uncertainty is counted once (1.17.0, design 2026-09-25 DD-B2). It already
+weighs 2 in the risk score; when that double weight alone lifted the band —
+the band with uncertainty weighted once, overrides included, is lower — the
+middle row's promotion is decided on the confidence **without** the
+uncertainty penalty (`router.confidence.skip_uncertainty_penalty_when_band_raised`).
+The reported `routing_confidence` and the `< 0.60` escalation keep the full
+penalty, and every other signal (prior failures, unknown root cause,
+fallbacks) still promotes. Where the execution cell offers a stronger worker,
+the two plans are weighed with the promotion the penalty would have made, and
+only the adopted plan is planned without it — counting uncertainty once never
+costs the worker a tier.
+
 Low routing confidence must never be silently ignored. Both the value and the
 reason for it belong in the emitted rationale, because "the router wasn't sure"
 is exactly the context a human needs when the route turns out wrong.
@@ -216,12 +264,87 @@ the pin needs), `pin_revoked` (a later revocation — revert beats pin),
 `pin_generation_missing`. A pin absorbs overlay replacements only; a route
 given an explicit config cannot honour one and refuses it (exit 2).
 
+## LOW review is the deterministic checks
+
+Since 1.17.0 the LOW band seats no model reviewer (design 2026-09-25 DD-B4,
+user decision U-6): `review.reviewers` is `[]`, `review.effort` is null,
+`review.mode` is `deterministic_checks`, and `review.required_checks` names the
+checks — today `tests` and `lint`. The router cannot see them run, so **exit 0
+with a non-empty `required_checks` means the consumer owes those checks**:
+dispatch the worker, run the checks, and accept the work only when they pass.
+Exit 0 is "dispatchable", never "the checks passed". A repository that cannot
+run them re-routes with `availability_snapshot.checks_available: false` (CLI
+`--checks-unavailable`); the review then leaves LOW for MEDIUM and seats a
+model. It is never replaced by the host's own judgement.
+
+A LOW route also leaves LOW — raise only, once, before the confidence
+promotion, which may still add its one band — on `review_disagreement` (to
+MEDIUM), and on a `local_policy` floor the checks cannot meet: the lowest band
+whose seat matrix supplies `minimum_reviewers` reviewers and
+`minimum_provider_families` families (`minimum_reviewers: 2` → HIGH). No band
+at all: `UNSATISFIABLE_LOCAL_POLICY`, as before. Each move is a
+`band_overrides_applied` entry `low_band_<reason>_raised_review_to_<band>`.
+`mode` and `required_checks` are read off the SETTLED band, so a route promoted
+off LOW never advertises `deterministic_checks`.
+
+deep-loop does not read `required_checks`: it dispatches `selected_model` and
+verifies with its own checker, and it never dispatched the LOW reviewer seat
+either, so for deep-loop this change is no change — and deep-loop does not
+enforce the LOW checks (open item L-8).
+
+## Quota readings
+
+`availability_snapshot.family_quota: {"<family>": "ok" | "low" | "exhausted"}`
+(CLI `--family-quota openai=low,xai=ok`) is the caller's reading of each
+provider's remaining quota (design 2026-09-25 DD-B8). The router reads no
+network and no user file for it; `model_sync.py quota` reports what the local
+codex rollout records say, without running codex.
+
+- `exhausted` withholds every model of the family from every seat, like
+  `unavailable_models` with the reason quota (not echoed in that list — it is
+  the caller's). A declared `implementer` is not unseated: it already ran.
+- `low` moves only the **worker** seat, to the first same-tier model of another
+  family when one exists — a binding choice with no confidence penalty, and no
+  move at all without a same-tier seat. Review seats are unaffected. The
+  execution cell is weighed without it, so a `low` reading never costs the
+  worker a tier.
+- `ok`, or no entry, changes nothing. Absent, the field leaves
+  `request_sha256` unchanged.
+
+A `quota_exhausted` attempt outcome still needs recovery evidence
+(`OPERATIONAL_RECOVERY_REQUIRED`): the typed history records what happened to
+one attempt; `family_quota` states the provider's standing.
+
+## Declared implementer
+
+RouteRequestV1 `implementer: {"model_id": "<registry id>"}` says this write
+work has **already been done** by that model, so the route plans its review
+rather than its dispatch (design 2026-09-25 DD-B1). Write classes only —
+REVIEW names its source's author in `review_context`, and a read-only class
+produces a judgement rather than work — anything else is exit 2. Any registry
+id is accepted, history rows included.
+
+The route keeps the worker role the policy would have seated (after the
+execution cell) and puts the declared id in it: `selected_model` is the
+implementer, `worker_seat_state: already_executed`, and `dispatch_seats` holds
+only the reviewers and the judge. Every de-conflict, family comparison and
+judge floor reads the declared id. `allowed_families`, `unavailable_*`,
+`bridge_down` and `family_quota` bind the review seats only — the worker has
+run. When the declared tier is below the worker the policy would have seated,
+`implementer_below_worker_tier` gates the route (exit 3), and a
+`production_hotfix` does not defer it: the review was sized for a stronger
+worker than the one that ran. The declaration is caller input, exactly like
+`review_context`; review independence rests on it. Omitted, it leaves
+`request_sha256` unchanged.
+
 ## Typed attempt history
 
 V1 optionally accepts `attempt_outcomes`, an ordered array for the executor
 lineage being routed (not sibling reviewer/judge attempts). Each record has a
 unique safe `attempt_id`, concrete registry/history `model_id`, `kind`, and
 hex64 `evidence_sha256`; `recovery_sha256` is optional/null or a different hex64.
+Since 1.17.0 a record may also carry `effort` (the level it ran at) and, on a
+`capability_failure`, `retry_evidence_sha256` — see The same-model retry.
 Do not combine it with nonempty legacy `prior_failures`.
 
 Only `capability_failure` feeds the existing model exclusion, tier escalation,
@@ -286,8 +409,16 @@ terminal:                      # null, or one of the terminal states in the
                                # table above
 selected_role:  selected_model:  selected_effort:  selected_effort_effective:
 selected_effort_native:
+worker_seat_state:             # to_dispatch, or already_executed when the
+                               # request declared an `implementer`
+implementer_declared:  implementer_source:   # false/null, or true and
+                               # caller_declared (the router does not
+                               # authenticate the declaration)
 review:
-  band:  reviewers: []  reviewer_models: []  effort:
+  band:  reviewers: []  reviewer_models: []  effort:   # effort null when the
+                               # band seats no model reviewer (LOW)
+  mode:                        # model_review, or deterministic_checks when
+                               # the settled band seats no model reviewer
   independence_required:       # what the band asks for
   review_independence:         # what was actually established
   independence_compromised:    # no distinct model was available for a seat

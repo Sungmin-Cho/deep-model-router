@@ -75,26 +75,28 @@ exec_score:  9
 exec_band:   NORMAL
 overrides:   (none)
 worker:      worker_balanced  ->  xai_frontier
-effort:      HIGH  (native: high)
+effort:      MEDIUM  (native: medium)
 review:
   band:            LOW
-  reviewers:       worker_fast
-  models:          openai_worker_fast
-  effort:          MEDIUM
+  reviewers:       (none — deterministic checks)
   required:        independent=False
   actual:          not_applicable
-cross_family_review: True
+  checks:          tests, lint
+cross_family_review: False
 fallbacks:   (none)
 confidence:  0.95
 notes:
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
+  - effort cap: band LOW capped effort HIGH at MEDIUM
   - execution band NORMAL raised worker from worker_fast to worker_balanced
 
-IMPLEMENTATION scored 3/18 (c=3 u=0 b=0 r=0) -> band LOW; execution 9/18 -> NORMAL. Worker worker_balanced at HIGH effort. Review band LOW: worker_fast, independence_required=False, review_independence=not_applicable. No fallbacks applied.
+IMPLEMENTATION scored 3/18 (c=3 u=0 b=0 r=0) -> band LOW; execution 9/18 -> NORMAL. Worker worker_balanced at MEDIUM effort. Review band LOW: no model reviewer — deterministic checks (tests, lint) must pass before the work is accepted. No fallbacks applied.
 ```
 
-Risk `3` is `LOW`, so the review stays a single light pass. Execution `9` is
-`NORMAL`, so the worker rises from `worker_fast` to `worker_balanced` — the
+Risk `3` is `LOW`, so the review is the deterministic checks — `tests` and
+`lint` must pass before the work is accepted, and no model re-reads it — and
+the class table's `HIGH` effort is capped at `MEDIUM` (1.17.0). Execution `9`
+is `NORMAL`, so the worker rises from `worker_fast` to `worker_balanced` — the
 route says so in `notes` (`execution band NORMAL raised worker …`). Before
 1.13.0 this task went to the cheapest model and escalated only after failing.
 
@@ -119,23 +121,24 @@ worker:      worker_fast  ->  openai_worker_fast
 effort:      LOW  (native: low)
 review:
   band:            LOW
-  reviewers:       worker_fast
-  models:          openai_worker_fast
-  effort:          MEDIUM
+  reviewers:       (none — deterministic checks)
   required:        independent=False
   actual:          not_applicable
+  checks:          tests, lint
 cross_family_review: False
 fallbacks:   (none)
 confidence:  0.95
 
-MECHANICAL scored 0/18 (c=0 u=0 b=0 r=0) -> band LOW; execution 0/18 -> EASY. Worker worker_fast at LOW effort. Review band LOW: worker_fast, independence_required=False, review_independence=not_applicable. No fallbacks applied.
+MECHANICAL scored 0/18 (c=0 u=0 b=0 r=0) -> band LOW; execution 0/18 -> EASY. Worker worker_fast at LOW effort. Review band LOW: no model reviewer — deterministic checks (tests, lint) must pass before the work is accepted. No fallbacks applied.
 ```
 
 Twelve files sounds like a lot, and it routes to the cheapest model at the
 lowest effort — correctly. The workload is large; the *task* is trivial.
 
 Note `not_applicable` rather than `degraded`: a `LOW` band does not ask for
-independence, so there is nothing to fail to enforce.
+independence, so there is nothing to fail to enforce. Since 1.17.0 it seats no
+model reviewer at all (`review.mode: deterministic_checks`): exit 0 means the
+route is dispatchable, and the checks it names are the review the caller owes.
 
 ---
 
@@ -491,8 +494,8 @@ worker:      worker_balanced  ->  xai_frontier
 effort:      MEDIUM  (native: medium)
 review:
   band:            MEDIUM
-  reviewers:       reasoning_specialist
-  models:          openai_reasoning
+  reviewers:       worker_balanced_alt
+  models:          claude_worker_balanced
   effort:          HIGH
   required:        independent=True
   actual:          degraded
@@ -504,7 +507,7 @@ notes:
   - escalated above capability tier 0
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
 
-IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM; execution 5/18 -> EASY. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
+IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM; execution 5/18 -> EASY. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: worker_balanced_alt, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
 ```
 
 Without the failure this routes to `worker_fast`. With it, the router refuses
@@ -625,7 +628,7 @@ overrides:   (none)
 TERMINAL:    HUMAN_REQUIRED  — no executable bindings emitted
 review (policy only — not dispatchable):
   band:            MEDIUM
-  reviewers:       reasoning_specialist
+  reviewers:       worker_balanced_alt
   required:        independent=True
   actual:          degraded
 cross_family_review: True
@@ -638,7 +641,7 @@ notes:
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
   - retry budget spent: 4 attempt(s) against a cap of 4 — stop retrying and surface what was tried to a human
 
-IMPLEMENTATION scored 6/18 (c=1 u=1 b=1 r=1) -> band MEDIUM; execution 5/18 -> EASY. TERMINAL: HUMAN_REQUIRED — no executable bindings emitted; routing confidence 0.8 after 4 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast. Requires human confirmation before proceeding.
+IMPLEMENTATION scored 6/18 (c=1 u=1 b=1 r=1) -> band MEDIUM; execution 5/18 -> EASY. TERMINAL: HUMAN_REQUIRED — no executable bindings emitted; routing confidence 0.8 after 4 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: worker_balanced_alt, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast. Requires human confirmation before proceeding.
 ```
 
 **No executable bindings are emitted at all, and the CLI exits nonzero.**

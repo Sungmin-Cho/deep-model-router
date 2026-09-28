@@ -47,7 +47,10 @@ def test_ordinary_disagreement_uses_hidden_frontier_without_losing_diversity():
     out = run(review_context=None, flags=['review_disagreement'])
     rv = out['review']
     assert out['terminal'] is None and not rv['judge_unavailable']
-    assert len({out['selected_model'], *rv['reviewer_models'], rv['judge_model']}) == 4
+    # Since 1.17.0 the lead is reviewer-1 (DD-B7): two reviewers and a judge,
+    # three distinct models, where 1.16 seated a worker beside two reviewers.
+    assert out['selected_model'] == rv['reviewer_models'][0]
+    assert len({*rv['reviewer_models'], rv['judge_model']}) == 3
     assert out['cross_family_review']
     assert not out['fallbacks_applied']
 
@@ -64,7 +67,13 @@ def test_source_dispatch_list_executes_lead_once_and_binds_effort():
 
 
 def test_promoted_review_band_can_promote_the_source_lead():
-    out = run(complexity=0, uncertainty=3, blast_radius=0)
+    # MEDIUM (6), promoted by an unknown root cause plus a real outage (0.79).
+    # Uncertainty cannot be the signal any more: since DD-B2 an uncertainty
+    # that lifted the band does not also promote it.
+    out = run(uncertainty=1, flags=['unknown_root_cause'],
+              availability_snapshot=dict(unavailable_models=[CFG['models']['xai_frontier']['id']]))
+    assert out['risk_band'] == 'MEDIUM'
+
     assert out['review']['band'] == 'HIGH'
     assert out['terminal'] is None
     assert not out['review']['review_depth_reduced']

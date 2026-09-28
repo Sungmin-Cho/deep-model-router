@@ -66,6 +66,18 @@ NOMINAL_TIER = {role: TIER_OF[CFG["models"][key]["id"]]
 # becomes 0, disabling the gate on both sides at once.
 BAND_FLOOR = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}
 
+
+def reviewer_floor(out) -> int:
+    """What a route's reviewers must reach: the band floor, and at MEDIUM never
+    below the implementer (design 2026-09-25 DD-B5, C4). The rule written out
+    here, not the router's function. A terminal route withholds its worker, so
+    only the band part is known for it."""
+    band = out["review"]["band"]
+    floor = BAND_FLOOR[band]
+    if band == "MEDIUM" and out["selected_model"]:
+        floor = max(floor, TIER_OF[out["selected_model"]])
+    return floor
+
 # Dimension corners plus a midpoint. Bands are determined by the weighted sum,
 # so the corners cover every band and the midpoint catches boundary handling.
 DIMENSIONS = [(0, 0, 0, 0), (1, 1, 1, 1), (2, 2, 2, 0), (3, 3, 3, 3), (0, 3, 0, 0), (3, 0, 3, 2),
@@ -354,6 +366,10 @@ def test_no_reviewer_holds_the_implementer_model_where_independence_is_required(
         if out["terminal"] or not rv["independence_required"]:
             continue
         models = [m for m in rv["reviewer_models"] if m]
+        if out["task_class"] == "REVIEW":
+            # The lead reviews the source and IS reviewer-1 (DD-B7): once.
+            assert models.count(out["selected_model"]) == 1, (out["task_class"], rv["band"], models)
+            continue
         assert out["selected_model"] not in models, (
             f"{out['task_class']}/{rv['band']}: implementer {out['selected_model']} "
             f"is also a reviewer"
@@ -414,7 +430,7 @@ def test_a_review_below_its_band_floor_is_disclosed_and_gated():
         rv = out["review"]
         if out["terminal"]:
             continue
-        floor = BAND_FLOOR[rv["band"]]
+        floor = reviewer_floor(out)
         under = [m for m in rv["reviewer_models"] if m and TIER_OF[m] < floor]
         if not under:
             assert not rv["review_depth_reduced"], "reported a shortfall that is not there"
@@ -636,13 +652,19 @@ def test_the_shortfall_record_carries_the_band_the_gate_actually_used():
     recomputed from the config, because an oracle that repeats the
     implementation's formula cannot detect an error in the formula."""
     from route_task import Policy
-    assert Policy.of(CFG).band_reviewer_floor == BAND_FLOOR, "the router's floors drifted"
+    # LOW seats no reviewer since 1.17.0 (DD-B4): no floor, and never read as 0.
+    assert Policy.of(CFG).band_reviewer_floor == {**BAND_FLOOR, "LOW": None}, \
+        "the router's floors drifted"
     seen = 0
     for out in routes():
         rv = out["review"]
         for short in rv["review_depth_reduced"]:
             seen += 1
-            assert short["band_requires"] == BAND_FLOOR[rv["band"]]
+            if out["terminal"] and rv["band"] == "MEDIUM":
+                # The implementer term is withheld with the worker's id.
+                assert BAND_FLOOR["MEDIUM"] <= short["band_requires"] <= max(TIER_OF.values())
+            else:
+                assert short["band_requires"] == reviewer_floor(out)
             if short["model"]:
                 assert short["capability_tier"] == TIER_OF[short["model"]]
                 assert short["capability_tier"] < short["band_requires"]
@@ -714,7 +736,7 @@ def test_a_promoted_review_band_still_passes_every_emit_boundary_check():
     for out in dispatchable:
         rv = out["review"]
         involved = parties(out)
-        floor = BAND_FLOOR[rv["band"]]
+        floor = reviewer_floor(out)
         under = [m for m in rv["reviewer_models"] if m and TIER_OF[m] < floor]
         assert bool(under) == bool(rv["review_depth_reduced"]), (
             f"promoted to {rv['band']} with {under} and depth_reduced="
@@ -723,8 +745,11 @@ def test_a_promoted_review_band_still_passes_every_emit_boundary_check():
             assert TIER_OF[rv["judge_model"]] >= max(TIER_OF[m] for m in involved)
         if rv["independence_required"]:
             models = [m for m in rv["reviewer_models"] if m]
-            assert out["selected_model"] not in models or rv["independence_compromised"], (
-                "the implementer sits in its own review on a promoted route")
+            if out["task_class"] == "REVIEW":                   # the lead is reviewer-1 (DD-B7)
+                assert models.count(out["selected_model"]) == 1 or rv["independence_compromised"]
+            else:
+                assert out["selected_model"] not in models or rv["independence_compromised"], (
+                    "the implementer sits in its own review on a promoted route")
         # Not asserted: that the final confidence is still below the threshold.
         # A promotion can seat better models and lift it back to the threshold,
         # and the promotion is deliberately not reverted — `promoted_once`
@@ -1074,6 +1099,10 @@ def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
         else:
             still_low += 1
             assert not note, (out["routing_confidence"], note)
+    # Until 1.17.0 the recovered promotions were LOW's own reviewer seat, whose
+    # fallback the promotion retired. LOW seats no reviewer now (DD-B4); what
+    # recovers is a REVIEW task's lead, seated with the reviewers at the
+    # promoted band (DD-B7), where intentional seating is not an outage.
     assert recovered, "the sweep no longer reaches a promotion whose confidence recovered"
     assert still_low, "the sweep no longer reaches an ordinary low-confidence promotion"
 
@@ -1151,15 +1180,40 @@ def _risk_only_current_policy(kw):
         return rt.route(rt.Task(**kw), CFG)
 
 
-def _assert_not_weaker(new: dict, old: dict) -> None:
-    """Design DD-2 S6 rows 1-12, execution on vs off at the current policy."""
+def _assert_not_weaker(new: dict, old: dict, allow: frozenset = frozenset()) -> None:
+    """Design DD-2 S6 rows 1-12, execution on vs off at the current policy.
+    `allow` names contract rows a Part B rule is declared to move (DD-B11)."""
     import route_task as rt
     if old["terminal"]:
         assert new["terminal"] in (None, old["terminal"])
         return
     assert new["terminal"] is None
-    assert rt._contract_violation(rt.Policy.of(CFG), new, old) is None
+    row = rt._contract_violation(rt.Policy.of(CFG), new, old)
+    assert row is None or row in allow, row
     assert TIER_OF[new["selected_model"]] >= TIER_OF[old["selected_model"]]
+
+
+def _uncertainty_lifted_band(kw) -> bool:
+    """DD-B2's predicate from the inputs: the risk band (overrides included) is
+    higher than with uncertainty weighted once."""
+    import route_task as rt
+    policy = rt.Policy.of(CFG)
+    task = Task(**kw)
+    task.validate(policy)
+    score = rt.score(task, CFG)
+    once = score - task.uncertainty * (CFG["router"]["score_weights"]["uncertainty"] - 1)
+    band = rt.apply_overrides(task, rt.band_from_score(score, policy), policy)[0]
+    band_once = rt.apply_overrides(task, rt.band_from_score(once, policy), policy)[0]
+    return policy.bands.index(band) > policy.bands.index(band_once)
+
+
+# DD-B2 (C1-iii, 1.17.0) weighs the execution cell with the promotion 1.16.1
+# made and re-plans only the adopted plan without the double-counted penalty,
+# so the worker tier never falls (DD-B11 invariant 4). The price, where the
+# un-promoted band seats the stronger worker's reviewers inside one family, is
+# reviewer-family diversity the table plan would have kept: the one contract
+# row that rule may move against the risk-only plan.
+C1III_EXECUTION_AXIS_ALLOW = frozenset({"cross_family_review"})
 
 
 def _raised(out):  return [n for n in out["notes"] if n.startswith("execution band") and " raised worker" in n]
@@ -1212,11 +1266,13 @@ def test_t3b_default_binding_adopts_the_frontier_worker_with_a_fable_substitute(
 # --- T3c: two plans never double-append the promotion override -------------
 
 def test_t3c_two_plans_do_not_duplicate_band_overrides():
-    # risk 9 HIGH with u3 -> confidence 0.75 -> promoted to CRITICAL in BOTH plans;
-    # exec 15 VERY_HARD -> candidate senior_engineer vs legacy worker_balanced, so two
-    # plans are computed (the guard then yields on the CRITICAL judge, which is fine here).
-    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, blast_radius=0,
-                     reversibility=0), CFG)
+    # risk 10 HIGH (8 with u once: still HIGH, so DD-B2 leaves the penalty in)
+    # with unknown_root_cause -> confidence 0.77 -> promoted to CRITICAL in BOTH
+    # plans; exec 15 VERY_HARD -> candidate senior_engineer vs legacy
+    # worker_balanced, so two plans are computed.
+    out = route(Task(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
+                     reversibility=1, flags=["unfamiliar_codebase", "tool_heavy",
+                                             "unknown_root_cause"]), CFG)
     promo = [o for o in out["band_overrides_applied"] if o.startswith("low_routing_confidence")]
     assert len(promo) == 1 and out["review"]["band"] == "CRITICAL"
 
@@ -1324,7 +1380,7 @@ def test_t13_class_promotions_are_exercised_and_never_lose_tier(task_class, flag
 @pytest.mark.parametrize("lp,outcome", [
     ({"minimum_capability_tier": 1}, "unlock"),   # tier-0 legacy unsatisfiable, tier-1 candidate fine
     ({"minimum_effort": "MAX"}, "yield"),         # grok's VERY_HIGH ceiling fails MAX; luna has none -> candidate terminal, legacy not -> row 1
-    ({"minimum_reviewers": 2}, "same"),           # LOW seats one reviewer either way -> both terminal -> legacy
+    ({"minimum_reviewers": 2}, "escape"),         # 1.12.1: LOW's one reviewer -> terminal; 1.17.0: LOW leaves for HIGH (DD-B4)
     ({"minimum_provider_families": 2}, "unlock"), # luna+luna is one family; grok+luna is two
     ({"allowed_families": ["openai"]}, "adopt"),  # the balanced ladder reaches terra (openai, tier 1) -> adopted, nothing terminal [P1-sol-F1][P1-opus-F5]
 ])
@@ -1342,6 +1398,10 @@ def test_t14_local_policy_only_ever_unlocks(lp, outcome):
     elif outcome == "yield":
         assert old["terminal"] is None and new["terminal"] is None
         assert _yielded(new) == ["execution band NORMAL yielded worker_balanced: terminal"]
+    elif outcome == "escape":
+        assert old["terminal"] == "UNSATISFIABLE_LOCAL_POLICY" and new["terminal"] is None
+        assert new["review"]["band"] == "HIGH" and len(new["review"]["reviewers"]) == 2
+        assert "low_band_minimum_reviewers_raised_review_to_HIGH" in new["band_overrides_applied"]
     elif outcome == "adopt":
         assert old["terminal"] is None and new["terminal"] is None and _raised(new)
         assert new["selected_model"] == ID("openai_worker_balanced")
@@ -1453,14 +1513,18 @@ def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
     for kw, new in _paired_population():
         old = _risk_only_current_policy(kw)
         historical = base.route(base.Task(**kw), bcfg)
-        if historical["terminal"] is None and old["terminal"] is None:
+        if (historical["terminal"] is None and old["terminal"] is None
+                and kw["task_class"] != "REVIEW"):
             # Allocation/compensation repairs must not secretly alter the
-            # historical risk-only worker choice on executable routes.
+            # historical risk-only worker choice on executable routes. A REVIEW
+            # task's worker is its lead reviewer since 1.17.0 (DD-B7), searched
+            # with the review seats rather than fixed by the table.
             assert old["selected_role"] == historical["selected_role"], kw
             assert old["selected_model"] == historical["selected_model"], kw
             historical_compatible += 1
         compared += 1
-        _assert_not_weaker(new, old)                                         # (a)(b)(c)
+        _assert_not_weaker(new, old, C1III_EXECUTION_AXIS_ALLOW
+                           if _uncertainty_lifted_band(kw) else frozenset())  # (a)(b)(c)
         rn, yn = _raised(new), _yielded(new)
         assert len(rn) <= 1 and len(yn) <= 1 and not (rn and yn)
         assert not (rn and new["terminal"]), kw                              # a terminal route never "raised" [P2-opus-missing-4]
@@ -1473,7 +1537,15 @@ def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
             continue
         # (f) no execution note: identical save the excluded fields; (g) effort-only delta accounted for
         floor_notes = [n for n in new["notes"] if n.startswith("execution band") and "floored effort" in n]
-        assert {k: v for k, v in new.items() if k not in EXCLUDED} == {k: v for k, v in old.items() if k not in EXCLUDED}, kw
+        # A REVIEW task's lead is reviewer-1 and carries the worker's effort
+        # (DD-B7), which the execution floor owns; every other seat must match.
+        def seats(route_out):
+            return [{k: v for k, v in seat.items()
+                     if not (seat["seat"] == "reviewer-1" and k.startswith("effort"))}
+                    for seat in route_out.get("dispatch_seats", [])]
+        assert seats(new) == seats(old), kw
+        excluded = EXCLUDED | {"dispatch_seats"}
+        assert {k: v for k, v in new.items() if k not in excluded} == {k: v for k, v in old.items() if k not in excluded}, kw
         assert [n for n in new["notes"] if not n.startswith("execution band")] == old["notes"], kw
         if new["terminal"]:
             assert new["selected_effort"] is None, kw

@@ -54,9 +54,24 @@ BOUNDARY_ROWS = [
 ]
 
 
+# The table is the 1.9.0 fallback-penalty arithmetic, so its promotion column is
+# read with DD-B2 (C1-iii, 1.17.0) switched off. At BASE (c1 b1 r1) every u>=2
+# row reaches its band only through uncertainty's double weight, and with
+# C1-iii on those rows promote only if the rest of the penalties alone cross
+# the gate — `test_boundary_table_counts_uncertainty_once` holds that half.
+def _no_c1iii():
+    cfg = copy.deepcopy(CFG)
+    cfg["router"]["confidence"]["skip_uncertainty_penalty_when_band_raised"] = False
+    return cfg
+
+
+U_PENALTY = {0: 0.0, 1: 0.0, 2: CONF["penalties"]["uncertainty_2"], 3: CONF["penalties"]["uncertainty_3"]}
+
+
 @pytest.mark.parametrize("u,priors,flags,expected,promoted,terminal", BOUNDARY_ROWS)
 def test_boundary_table(u, priors, flags, expected, promoted, terminal):
-    out = _r(uncertainty=u, prior_failures=len(priors), prior_models=list(priors), flags=list(flags))
+    out = route(_t(uncertainty=u, prior_failures=len(priors), prior_models=list(priors),
+                   flags=list(flags)), _no_c1iii())
     assert out["routing_confidence"] == expected, out["routing_confidence"]
     if terminal:
         assert out["terminal"] == "ESCALATE_ROUTING" and out["selected_model"] is None
@@ -64,6 +79,20 @@ def test_boundary_table(u, priors, flags, expected, promoted, terminal):
     assert out["terminal"] is None, out["terminal"]
     overrides = [o for o in out["band_overrides_applied"] if o.startswith("low_routing_confidence")]
     assert bool(overrides) == promoted, (out["band_overrides_applied"], out["review"]["band"])
+
+
+@pytest.mark.parametrize("u,priors,flags,expected,promoted,terminal", BOUNDARY_ROWS)
+def test_boundary_table_counts_uncertainty_once(u, priors, flags, expected, promoted, terminal):
+    out = _r(uncertainty=u, prior_failures=len(priors), prior_models=list(priors), flags=list(flags))
+    assert out["routing_confidence"] == expected, out["routing_confidence"]   # reported in full
+    if terminal:
+        assert out["terminal"] == "ESCALATE_ROUTING"
+        return
+    # Every u>=2 row at BASE is a band uncertainty raised, so the promotion
+    # reads the confidence without it.
+    without_u = round(expected + (U_PENALTY[u] if u >= 2 else 0.0), 2)
+    overrides = [o for o in out["band_overrides_applied"] if o.startswith("low_routing_confidence")]
+    assert bool(overrides) == (without_u < EXTRA_REVIEW_BELOW), (u, flags, without_u, overrides)
 
 
 def test_a_lone_fallback_never_promotes_at_modal_uncertainty():
@@ -104,7 +133,9 @@ GRID = [  # penalty-relevant axes on three band corners; the fallback origin is 
 
 
 def _cfg(penalty):
-    cfg = copy.deepcopy(CFG)
+    # The 1.9.0 migration in isolation: DD-B2 (C1-iii) is a later, separate
+    # promotion rule with its own ledger (test_policy_rules.py).
+    cfg = _no_c1iii()
     cfg["router"]["confidence"]["penalties"]["any_fallback"] = penalty
     return cfg
 
@@ -190,8 +221,17 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
         # terminalise the 0.10 side and seat a worker only on 0.06.
         if a["terminal"] is None and b["terminal"] is None:
             if a["selected_role"] != b["selected_role"]:
-                yielder, adopter = (a, b) if _yielded(a) else (b, a)
-                assert _yielded(yielder) and _raised(adopter), (inp, a["notes"], b["notes"])
+                yielder, adopter = (a, b) if _raised(b) else (b, a)
+                assert _raised(adopter), (inp, a["notes"], b["notes"])
+                if inp["task_class"] == "REVIEW" and not _yielded(yielder):
+                    # A REVIEW lead is searched with its reviewers (DD-B7): the
+                    # cell is kept only where the searched lead is strictly
+                    # stronger than ITS OWN side's table lead, and a no-raise is
+                    # not recorded as a yield. Across the two sides the bands
+                    # differ, so only "never weaker" is comparable.
+                    assert TIER_OF[adopter["selected_model"]] >= TIER_OF[yielder["selected_model"]], inp
+                    continue
+                assert _yielded(yielder), (inp, a["notes"], b["notes"])
                 # The yielding side is the one whose review the penalty promoted.
                 assert yielder["review"]["band"] != adopter["review"]["band"], inp
                 assert TIER_OF[adopter["selected_model"]] > TIER_OF[yielder["selected_model"]], inp
@@ -238,7 +278,12 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
                     assert all(model_tiers[m] >= floor for m in b["review"]["reviewer_models"]), inp
                 elif "reviewers" in table:
                     assert b["review"]["reviewers"] == table["reviewers"], inp
-                else:                                          # MEDIUM seats one candidate
-                    assert len(b["review"]["reviewers"]) == 1 and b["review"]["reviewers"][0] in table["candidates"], inp
+                else:
+                    # MEDIUM seats one reviewer: a listed candidate, or — when no
+                    # listed one reaches max(floor, implementer tier) — any role
+                    # (DD-B5 searches every role, as de-confliction always did).
+                    assert len(b["review"]["reviewers"]) == 1, inp
+                    assert (b["review"]["reviewers"][0] in table["candidates"]
+                            or b["review"]["reviewers"][0] in new_cfg["role_tiers"]), inp
     assert seen_c >= 20, seen_c                               # the class is actually exercised
     assert seen_withheld_fallback >= 3, seen_withheld_fallback  # every band corner saw a withheld-model fallback

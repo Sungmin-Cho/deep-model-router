@@ -31,23 +31,38 @@ them all.
 ### `LOW`
 
 ```yaml
-reviewers: [worker_fast]
-effort: MEDIUM
+reviewers: []
+effort: null
 independent: false
+required_checks: [tests, lint]
 ```
 
-Formatting, isolated UI, mechanical refactor, generated tests.
+Formatting, isolated UI, mechanical refactor, generated tests. Since 1.17.0
+the review is the deterministic checks and no model (design 2026-09-25 DD-B4,
+user decision U-6); until then the worker's own model re-read its work in a
+second process, which bought no independence and cost a process. `review.mode`
+is `deterministic_checks`, and the consumer owes the checks before accepting
+the work (`control-loop.md`, LOW review is the deterministic checks). A
+dispute, a repository whose checks cannot run (`checks_available: false`) and
+a `local_policy` reviewer or family floor take the route off LOW to the lowest
+band that carries them — never down, and once, before the confidence
+promotion. A REVIEW task at LOW is its lead alone: the lead is the review.
+Only this band may seat no reviewer, so only it has no review effort.
 
 ### `MEDIUM`
 
 ```yaml
-candidates: [worker_balanced, senior_engineer, reasoning_specialist]
+candidates: [worker_balanced, worker_balanced_alt, senior_engineer, reasoning_specialist]
 effort: HIGH
 independent: true
 ```
 
 Exactly one independent reviewer, from a different family where available, and
-at least as strong as the implementer. Both of those are constants in
+at least as strong as the implementer — and, since 1.17.0, no stronger than
+that asks: the lowest-tier candidate reaching max(band floor, implementer tier)
+(design 2026-09-25 DD-B5; `routing-policy.md`, The MEDIUM reviewer fits the
+floor). A slate that cannot reach it is gated (`review_below_band`) — at MEDIUM
+the shortfall counts the implementer's tier. Both properties are constants in
 `select_review`, not settings: a `reviewer_count` key and a
 `prefer_cross_family` key used to sit in this block and neither was read —
 raising the count to 3 or clearing the preference produced byte-identical
@@ -63,21 +78,16 @@ work there, not a tier difference. The same applies when a `MEDIUM`-band task
 gets promoted to `principal_architect` by the architecture rule: its reviewer
 is a peer, not a superior.
 
-Pick the first candidate that is both available and a different family from the
-implementer:
-
-| Implementer | Preferred reviewer |
-|---|---|
-| `worker_fast` | `worker_balanced` |
-| `worker_balanced` | `reasoning_specialist` |
-| `worker_balanced_alt` | `senior_engineer` |
-| `senior_engineer` | `reasoning_specialist` |
-| `reasoning_specialist` | `senior_engineer` |
-| `principal_architect` | `reasoning_specialist` |
-
-If no cross-family reviewer is available, use the strongest available
-same-family reviewer and record `cross_family_review: false`. A same-family
-review is worth having; it is just worth less, and the metric should say so.
+Seat the lowest-tier candidate whose model reaches max(the band's floor, the
+implementer's tier), from a different family first, ties in candidate order (a
+role bound to the model beats one reaching it through a fallback). With no
+cross-family candidate at that tier, take a same-family one at it and record
+`cross_family_review: false` — a same-family review is worth having; it is
+just worth less, and the metric should say so. When no listed candidate
+reaches the tier, every role is searched the same way; when nothing does, the
+strongest candidate is seated and `review_below_band` gates the route. The
+per-implementer preference table that sat here until 1.17.0 is gone
+(`routing-policy.md`, The MEDIUM reviewer fits the floor).
 
 ### `HIGH`
 
@@ -160,19 +170,53 @@ host remains advisory and is never used to infer who wrote the source artifact.
 
 The context is normalized and included in request identity and the decision
 fingerprint. Changing the target or authors changes that identity. Omitted/null
-context retains worker-plus-review semantics and the same request identity. Invalid context, write-seat
+context keeps the same request identity and excludes no author; since 1.17.0 it
+no longer changes the seat semantics (below). Invalid context, write-seat
 overrides and other task classes are rejected. Exclusion is an eligibility rule,
 not a model outage; genuine outages of eligible replacements remain recorded.
 
 This is a caller declaration. The router does not read the artifact to verify
 its digest, authenticate authorship, or certify the served provider model.
-The context is echoed as input even on terminal routes. With this explicit
-context, the selected executor is the lead reviewer, included once in the
-band's reviewer count. Use `dispatch_seats` as the canonical execution list;
+The context is echoed as input even on terminal routes.
+
+### A REVIEW task's lead is one of its reviewers
+
+Since 1.17.0 every REVIEW task — with or without `review_context` — seats its
+executor as the **lead reviewer**, included once in the band's reviewer count
+(`review.review_class_lead_counts`, design 2026-09-25 DD-B7, user decision
+U-8). Before, a REVIEW task without context seated its worker AND the band's
+reviewers: a HIGH review was reviewed by two more models. The class × band
+seat matrix:
+
+| | LOW | MEDIUM | HIGH | CRITICAL |
+|---|---|---|---|---|
+| Other classes: worker + independent reviewers | 1 + 0 | 1 + 1 | 1 + 2 | 1 + 2 (+ judge) |
+| REVIEW: `dispatch_seats`, the lead included | 1 | 1 | 2 | 2 (+ judge) |
+
+A REVIEW route without context therefore has one independent seat fewer than
+in 1.16. The lead counts as independent because it is not the source's author
+— which only a declared `review_context` (or nothing) says — and because every
+seat runs isolated. A caller floor the smaller matrix cannot carry
+(`minimum_provider_families: 2` at MEDIUM) takes the lowest band that can,
+recorded as `review_lead_<floor>_raised_review_to_<band>`. For every REVIEW
+route `selected_*` names the lead reviewer. Use `dispatch_seats` as the canonical execution list;
 do not dispatch `selected_model` again alongside that list. Each entry gives
 `seat`, `role`, `model_id`, `effort`, and `effort_native`. Terminal routes return
 an empty list. Isolation evidence still needs one distinct session per reviewer.
 The lead receives the higher of its selected effort and the review effort.
+
+### Reviewing completed write work with a declared implementer
+
+The write-class counterpart is RouteRequestV1 `implementer: {"model_id": ...}`
+(`control-loop.md`, Declared implementer): the work is done, the route plans
+its review. Every seat is de-conflicted against the declared id, not against a
+worker the router would have picked — before 1.17.0 a caller who narrowed
+`allowed_families` to force a cross-family review got the router's own
+(different) worker treated as the author and a slate below the band. It is a
+caller declaration exactly like `review_context`: the router does not
+authenticate authorship, and review independence relies on it. A declared
+implementer below the tier the policy would have dispatched gates the route
+(`implementer_below_worker_tier`, never deferred by a hotfix).
 
 For a deficient ordinary slate, or an explicit source review, the router searches
 eligible fallback candidates jointly. Ordinary workers stay fixed; a source
@@ -182,6 +226,29 @@ capable as every party. Candidate preference breaks ties after provider diversit
 Intentional seating is not an outage penalty. If no complete assignment exists,
 reviewer shortages retain conservative gates. If reviewers are feasible but
 a judge is not, the review slate is retained with a human adjudication gate. This search does not establish empirical model quality.
+
+### The five independence states
+
+Independence has five states, and only one of them is a claim. A route is
+computed before any reviewer runs, so nothing known at routing time can prove
+isolation happened:
+
+| State | Meaning |
+|---|---|
+| `not_applicable` | the band does not ask for independence |
+| `degraded` | nobody established whether isolation is possible — the default |
+| `unavailable` | positive evidence it *cannot* be achieved here |
+| `planned` | attested achievable, not yet demonstrated |
+| `enforced` | one distinct session id per reviewer was supplied afterwards |
+
+`unavailable` and `degraded` are deliberately distinct: a confirmed gap and an
+unchecked one call for different responses. **`enforced` does not unlock
+anything** — an isolation receipt is a string the caller passed in, bound to no
+real dispatch, so `CRITICAL` always asks a human and `enforced` reports the
+claim without treating it as proof. Making the strongest control in the policy
+openable by typing would be the exact failure this skill is about.
+
+### What makes two reviews independent
 
 Two reviews are independent if and only if reviewer B's input contains no token
 derived from reviewer A's output, transitively.
@@ -487,14 +554,14 @@ reviewer. Review depth is not currency for buying a judge seat. If the judge
 can only be seated by spending it, the judge is unavailable and a human settles
 any disagreement, which is a shortage the caller can act on.
 
-`LOW`'s self-review exemption is narrower than it looks: it permits the reviewer
-the **band configured** to resolve onto the implementer's model. It is not a
-licence for the router to *move* a reviewer there. Re-seating a distinct,
-stronger reviewer onto the implementer in order to free a model for the judge
-buys the adjudicator with the review — and at `LOW` neither the substitution
-record nor the depth gate can report it, because the band's reviewer floor is
-zero. So the implementer's model is barred from a *replacement* reviewer at
-every band. With two models and three seats you cannot have both an independent
+Before 1.17.0 `LOW`'s self-review exemption was narrower than it looked: it
+permitted the reviewer the **band configured** to resolve onto the implementer's
+model, not a licence for the router to *move* a reviewer there. Re-seating a
+distinct, stronger reviewer onto the implementer in order to free a model for
+the judge buys the adjudicator with the review, and at a band with no reviewer
+floor neither the substitution record nor the depth gate can report it. The
+rule outlived that band's model reviewer: the implementer's model is barred
+from a *replacement* reviewer at every band. With two models and three seats you cannot have both an independent
 reviewer and an independent adjudicator; saying `judge_unavailable` is the
 honest answer, not a false stop.
 

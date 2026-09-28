@@ -1,0 +1,15 @@
+# source commit 77ec747 (deep-model-router 1.16.1). Import closure of route_task.py, modules renamed baseline_1_16_1_* with their sibling imports rewritten so no live module can bind (plan B0 Step 1). No nested plugin manifest: the loader seeds the version cache. Regenerate only when the oracle release changes.
+# pre-rewrite sha256 of each source at that commit:
+#   6c1edb53718e9a424d86b007cb02f0a766b2efd773bc3190844b230c8f27f55e  scripts/route_task.py
+#   4836b98ae0094fccfae2c0ade2f5dc3b40627ceb4bab21142362060788c78978  scripts/policy_digest.py
+#   040e8bb5e240f526e2d3b31b3d4d058e7c308bc90b9c6ff6d7a559d8eba5f1f2  scripts/strict_json.py
+#   75432c2ea4319cabaafbbacaddb99ad3f6b84dca1adc05c6442cc804ed4f06ea  scripts/lineage.py
+#   932f71416e990880379507e408854e4c433770d5b5225bbbfde10a7863529790  scripts/model_state.py
+#   93188ebe95860847725c2cbd02b6d1d31a1fbfaf4f1811f69b07f5fe736a3bed  scripts/secure_io.py
+e5c6945874ec5d84ff527ed34592eeb6d204eb4b9443dab60278d7c2864db76f  scripts/baseline_1_16_1_route_task.py
+4836b98ae0094fccfae2c0ade2f5dc3b40627ceb4bab21142362060788c78978  scripts/baseline_1_16_1_policy_digest.py
+040e8bb5e240f526e2d3b31b3d4d058e7c308bc90b9c6ff6d7a559d8eba5f1f2  scripts/baseline_1_16_1_strict_json.py
+75432c2ea4319cabaafbbacaddb99ad3f6b84dca1adc05c6442cc804ed4f06ea  scripts/baseline_1_16_1_lineage.py
+ec9425ae7d0201246298b2211c4f6d53e950f4129d6ef4bd7f68e18514955b39  scripts/baseline_1_16_1_model_state.py
+4eaa0e14762e8459340a5fd3a5ec586aabd95e239ccd2dd941ea6a4456da7b97  scripts/baseline_1_16_1_secure_io.py
+45451c27821efad2884b44ec365ed4ea4b4955507e2e2830bdcd7747c706610f  config/model-routing.yaml

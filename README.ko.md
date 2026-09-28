@@ -117,6 +117,8 @@ EASY 0–8 · NORMAL 9–11 · HARD 12–14 · VERY_HARD 15–18   → 워커와
 
 critical-domain 플래그(auth, security, financial, data integrity)는 채점 후 모든 작업 클래스에서 밴드를 올립니다. 잘 이해된 작은 인가 경로 수정도 강한 워커와 독립 리뷰를 받습니다.
 
+리뷰는 밴드만큼만 합니다. `LOW` 리뷰는 라우트가 이름 붙인 결정적 검사(`tests`, `lint`)이며, 호출자는 작업을 받아들이기 전에 그것을 통과시켜야 하고, 검사를 돌릴 수 없는 저장소라면 `--checks-unavailable`로 다시 라우팅합니다. `MEDIUM` 리뷰는 밴드 하한과 구현자 tier 둘 다에 닿는 가장 낮은 tier의 리뷰어 한 명을, 가능하면 다른 가족에서 앉힙니다. `REVIEW` 작업의 리드는 리뷰어 수에 포함됩니다. 이미 끝난 작업에는 RouteRequestV1 `implementer`로 실제 구현 모델을 기준으로 리뷰를 계획합니다.
+
 정책은 `skills/model-router/config/model-routing.yaml`에 있습니다. 모델 식별자는 이 레지스트리 또는 이 기계에서 프로브를 통과한 로컬 오버레이 항목(아래)에서만 생기며, 레지스트리로 돌아가는 길은 `model_sync.py promote`뿐입니다. 스킬 본문과 `references/`는 스크립트가 실행하는 규칙과 같습니다.
 
 exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2** 잘못된 입력, **3** 먼저 확인 필요, **4** production hotfix(배포 후 확인), **5** 내부 오류. 이 중 3만 설정 가능합니다 — `human_in_the_loop.human_gate_exit_status`이며 3..255 범위의 값을 가질 수 있으므로, 3을 이미 다른 용도로 쓰는 호출자는 게이트 코드를 옮길 수 있습니다. 하드코딩하지 말고 config에서 읽으세요. 0·1·2는 이미 사용 중이고 255를 넘으면 성공 코드로 잘리기 때문에, 이 범위는 로드 시점에 검증합니다.
@@ -131,7 +133,7 @@ exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2**
 - **상태.** `$DEEP_MODEL_ROUTER_STATE_DIR`, 없으면 `$XDG_STATE_HOME/deep-model-router`, 없으면 `~/.local/state/deep-model-router`(0700; 도구가 쓰는 상태이며 사람이 편집하지 않습니다). 라우터는 `committed/`만 읽습니다. `committed/`를 지우면 처음 설치 상태로 돌아가며, 폐기도 함께 사라집니다.
 - **명령.** `model_sync.py status`(현 세대, 보류, 알림) · `revert <key>`(항목을 빼고 그 id를 폐기) · `unblock <id>` · `disable` / `enable`(자동 업그레이드; `disable`은 진행 중 프로브도 취소) · `repair [--to <generation> [--force]]` · `quota`(로컬 rollout 기록에서 읽는 codex 사용량; 모델 호출 없음) · `promote --repo … --key … --price …`(항목을 리포 체크아웃으로 옮김).
 - **끄기.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 틱과 발행을 멈춥니다. `DEEP_MODEL_ROUTER_OVERLAY=off`는 비상 스위치입니다: 라우터가 오버레이 항목을 무시하되 폐기는 유지하며, 이미 좌석에 앉혔던 오버레이 id는 재시도 이력 입력으로 계속 유효합니다. 손상된 committed 상태는 그래도 fail closed(`MODEL_STATE_UNAVAILABLE`)입니다 — `repair`를 쓰세요. 승인 검사를 통과하지 못한 상태 루트(내가 소유한 0700 모드 디렉터리가 아님)도 마찬가지이며, 라우트 note가 `chmod 700` 조치를 알려 줍니다.
-- **진행 중인 deep-loop 실행.** 정책 다이제스트가 바뀌면 — 플러그인 업데이트나 오버레이 발행 — deep-loop가 `policy_pin`을 넘기기 전까지 진행 중인 deep-loop 실행이 멈춥니다. 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
+- **진행 중인 deep-loop 실행.** 정책 다이제스트가 바뀌면 진행 중인 deep-loop 실행이 멈춥니다. 플러그인 업데이트 뒤에는(번들 정책이 바뀜) 어떤 pin으로도 이전 정책을 재현할 수 없으니, 업데이트 전에 실행을 마무리하거나 멈춘 실행을 새로 시작하세요. 오버레이 발행도 deep-loop가 `policy_pin`을 넘기기 전까지 실행을 멈추므로, 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
 
 ---
 

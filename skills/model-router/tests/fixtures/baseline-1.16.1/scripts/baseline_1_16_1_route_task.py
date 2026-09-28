@@ -48,10 +48,10 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 
-import lineage
-import model_state
-from policy_digest import canonical_policy_sha256, policy_sha256
-from strict_json import loads as strict_json_loads, ensure_json_value
+import baseline_1_16_1_lineage as lineage
+import baseline_1_16_1_model_state as model_state
+from baseline_1_16_1_policy_digest import canonical_policy_sha256, policy_sha256
+from baseline_1_16_1_strict_json import loads as strict_json_loads, ensure_json_value
 from pathlib import Path
 from typing import Any
 
@@ -64,23 +64,17 @@ REQUEST_V1_KEYS = frozenset({
     "blast_radius", "reversibility", "reasoning_centric", "flags",
     "runtime", "prior_failures", "availability_snapshot", "local_policy",
     "host_seat", "worker_seat", "review_context", "attempt_outcomes",
-    "policy_pin", "implementer",
+    "policy_pin",
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
-    "checks_available", "family_quota",
 })
-# availability_snapshot.family_quota values (design 2026-09-25 DD-B8, C7).
-FAMILY_QUOTA_LEVELS = ("ok", "low", "exhausted")
 LOCAL_POLICY_KEYS = frozenset({
     "minimum_capability_tier", "minimum_effort", "minimum_reviewers",
     "minimum_provider_families", "allowed_families",
 })
 HOST_SEAT_KEYS = frozenset({"model", "effort"})
 REVIEW_CONTEXT_KEYS = frozenset({"target_sha256", "author_model_ids", "author_families"})
-# RouteRequestV1 `implementer` (design 2026-09-25 DD-B1): the model that already
-# did this write work. The route then plans its review, not its dispatch.
-IMPLEMENTER_KEYS = frozenset({"model_id"})
 OPERATIONAL_OUTCOMES = frozenset({"transport_failure", "launch_failure", "resolution_failure",
     "timeout", "max_turns_partial", "no_artifact", "invalid_output", "authentication_failure",
     "quota_exhausted", "publication_failure", "cancelled", "unknown"})
@@ -158,8 +152,6 @@ CAUSE_REASONS = {
     "unconfirmed_prior_termination":
         "a prior attempt's process tree could not be confirmed dead — "
         "dispatching a retry risks two concurrent writers",
-    "implementer_below_worker_tier":
-        "the declared implementer is weaker than the worker this work routes to",
 }
 
 
@@ -563,59 +555,10 @@ class Policy:
                 f"human_gate_exit_status must be an integer in 3..255 "
                 f"(0/1/2 are taken, and >255 truncates to a success code); got {gate!r}")
         self.human_gate_exit_status: int = gate
-        skip = cfg["router"]["confidence"].get("skip_uncertainty_penalty_when_band_raised")
-        if not isinstance(skip, bool):
-            raise ConfigError(
-                "router.confidence.skip_uncertainty_penalty_when_band_raised must be true or "
-                f"false, got {skip!r}")
-        self.skip_uncertainty_penalty: bool = skip
-        # review.review_class_lead_counts (DD-B7, U-8): a REVIEW task's lead is
-        # reviewer-1 and one of the band's reviewers, with or without a
-        # declared review_context.
-        lead = cfg["review"].get("review_class_lead_counts")
-        if not isinstance(lead, bool):
-            raise ConfigError(
-                f"review.review_class_lead_counts must be true or false, got {lead!r}")
-        self.review_lead_counts: bool = lead
-        # effort_caps: {band_<BAND>: level} (DD-B3, C2) — the class table's
-        # effort for that risk band is capped before any floor applies.
-        caps = cfg.get("effort_caps")
-        if not isinstance(caps, Mapping):
-            raise ConfigError("effort_caps must be a mapping (possibly empty)")
-        self.effort_caps: dict[str, str] = {}
-        for key, level in caps.items():
-            band = key[len("band_"):] if isinstance(key, str) and key.startswith("band_") else None
-            if band not in self.bands or level not in self.efforts:
-                raise ConfigError(
-                    f"effort_caps.{key} = {level!r}: keys are band_<risk band>, values effort levels")
-            self.effort_caps[band] = level
 
-        # `None` for a band that seats no model reviewer — only the lowest band
-        # may (design 2026-09-25 DD-B4: LOW review is deterministic checks).
-        # The sentinel is read only where the settled band is that one; any
-        # other reader meeting it raises rather than taking it for 0.
-        self.band_reviewer_floor: dict[str, int | None] = {}
+        self.band_reviewer_floor: dict[str, int] = {}
         for band in self.bands:
             spec = cfg["review"][band]
-            if spec.get("reviewers") == [] and "candidates" not in spec:
-                if band != self.bands[0]:
-                    raise ConfigError(
-                        f"review.{band} seats no reviewer; only the lowest band "
-                        f"({self.bands[0]}) may be reviewed by deterministic checks alone")
-                if spec.get("effort") is not None or spec.get("independent"):
-                    raise ConfigError(
-                        f"review.{band} seats no reviewer, so its effort must be null and "
-                        f"it cannot be independent")
-                checks = spec.get("required_checks")
-                if not isinstance(checks, list) or not checks or not all(
-                        isinstance(c, str) and c for c in checks):
-                    raise ConfigError(
-                        f"review.{band} seats no reviewer, so it must name the "
-                        f"deterministic checks it consists of (required_checks)")
-                self.band_reviewer_floor[band] = None
-                continue
-            if spec.get("effort") not in self.efforts:
-                raise ConfigError(f"review.{band}.effort {spec.get('effort')!r} is not an effort level")
             roles = [r for r in (spec.get("reviewers") or spec.get("candidates") or [])
                      if r in nominal]
             if not roles:
@@ -1168,11 +1111,10 @@ _NULL_ROUTE_SCALARS = (
     "route_path", "selected_role", "selected_model", "selected_effort",
     "selected_effort_effective", "selected_effort_native", "cross_family_review",
     "escalation_count", "retry_count", "routing_confidence", "routing_confidence_kind",
-    "worker_seat", "host_seat_advisory", "worker_seat_state", "implementer_declared",
-    "implementer_source")
+    "worker_seat", "host_seat_advisory")
 _NULL_REVIEW_LISTS = frozenset({"reviewers", "reviewer_models", "review_depth_reduced",
                                 "self_review_avoided", "required_checks"})
-_NULL_REVIEW_SCALARS = ("band", "mode", "effort", "independence_required", "review_independence",
+_NULL_REVIEW_SCALARS = ("band", "effort", "independence_required", "review_independence",
                         "independence_compromised", "judge_unavailable",
                         "band_floor_unsatisfiable", "compensating_reviewers", "judge",
                         "judge_model")
@@ -1255,17 +1197,6 @@ class Task:
     # RouteRequestV1 / --policy-pin: the policy digest to reproduce (DD-A9). A
     # policy SELECTOR, not request content — never part of request_sha256.
     _policy_pin: str | None = field(default=None, repr=False, compare=False)
-    # RouteRequestV1 `implementer` (DD-B1): caller-declared, like review_context.
-    _implementer: dict | None = field(default=None, repr=False, compare=False)
-    # availability_snapshot.checks_available (DD-B4): false when this repository
-    # cannot run the deterministic checks a LOW review consists of. None = true.
-    _checks_available: bool | None = field(default=None, repr=False, compare=False)
-    # availability_snapshot.family_quota (DD-B8): {family: ok|low|exhausted},
-    # the caller's reading of each provider's remaining quota.
-    _family_quota: dict | None = field(default=None, repr=False, compare=False)
-    # Set by route() when the same-model retry rule holds (DD-B6): {"model": id,
-    # "effort": level}. Not caller input and never part of request_sha256.
-    _same_model_retry: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def total_prior_attempts(self) -> int:
@@ -1319,45 +1250,7 @@ class Task:
         self._validate_host_seat(policy)
         self._validate_review_context(policy)
         self._validate_attempt_outcomes(policy)
-        self._validate_implementer(policy)
-        if self._checks_available is not None:
-            self._require_bool("availability_snapshot.checks_available", self._checks_available)
-        if self._family_quota is not None:
-            quota = self._family_quota
-            if not isinstance(quota, dict):
-                raise ValidationError("availability_snapshot.family_quota must be an object")
-            for family, level in quota.items():
-                if family not in policy.families:
-                    raise ValidationError(f"family_quota: unknown model family {family!r}")
-                if level not in FAMILY_QUOTA_LEVELS:
-                    raise ValidationError(
-                        f"family_quota.{family}: {level!r} is not one of {list(FAMILY_QUOTA_LEVELS)}")
-            self._family_quota = dict(sorted(quota.items()))
         self._policy = policy
-
-    def _validate_implementer(self, policy: Policy) -> None:
-        """Completed WRITE work only. REVIEW names its source's author in
-        `review_context` already, and a read-only class's worker produces a
-        judgement rather than work a review could be planned against. Any
-        registry id is accepted, history rows included: the work may have
-        finished before the registry moved on."""
-        decl = self._implementer
-        if decl is None:
-            return
-        if not isinstance(decl, dict) or set(decl) != IMPLEMENTER_KEYS:
-            raise ValidationError('implementer must be exactly {"model_id": <registry model id>}')
-        model = decl["model_id"]
-        if not isinstance(model, str) or model not in policy.model_ids:
-            raise ValidationError(f"implementer.model_id: unknown model id {model!r}")
-        if self.task_class == "REVIEW":
-            raise ValidationError(
-                "implementer does not apply to REVIEW: declare the source's author in "
-                "review_context.author_model_ids")
-        if policy.worker_seat_kind(self.task_class) != "write":
-            raise ValidationError(
-                f"implementer declares completed write work; {self.task_class} is a "
-                f"read-only class")
-        self._implementer = {"model_id": model}
 
     def _validate_attempt_outcomes(self, policy: Policy) -> None:
         history = self._attempt_outcomes
@@ -1372,15 +1265,10 @@ class Task:
         except ValueError as exc:
             raise ValidationError(f"attempt_outcomes: {exc}") from None
         required = {"attempt_id", "model_id", "kind", "evidence_sha256"}
-        # `effort` and `retry_evidence_sha256` (1.17.0, design 2026-09-25
-        # DD-B6): the conceptual effort the attempt actually ran at, and fresh
-        # evidence for a same-model retry. Optional, and omitted from the
-        # normalised record when absent, so a 1.16 history hashes as it did.
-        optional = {"recovery_sha256", "effort", "retry_evidence_sha256"}
         seen, normalized = set(), []
         for item in history:
             if (not isinstance(item, dict) or not required <= set(item)
-                    or set(item) - (required | optional)):
+                    or set(item) - (required | {"recovery_sha256"})):
                 raise ValidationError("attempt_outcomes entry has missing or unknown fields")
             attempt_id = item["attempt_id"]
             if (not isinstance(attempt_id, str)
@@ -1401,30 +1289,7 @@ class Task:
                 raise ValidationError("recovery evidence cannot bypass capability failure or unconfirmed termination")
             if item.get("recovery_sha256") == item["evidence_sha256"]:
                 raise ValidationError("recovery evidence must differ from the failed attempt evidence")
-            if "effort" in item and item["effort"] not in policy.efforts:
-                raise ValidationError(
-                    f"attempt_outcomes.effort: {item['effort']!r} is not one of {policy.efforts}")
-            if "retry_evidence_sha256" in item:
-                value = item["retry_evidence_sha256"]
-                if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-                    raise ValidationError("attempt_outcomes.retry_evidence_sha256 must be lowercase hex64")
-                if kind != "capability_failure":
-                    raise ValidationError(
-                        "retry_evidence_sha256 is evidence for a same-model retry after a "
-                        "capability_failure; it has no meaning on any other kind")
             normalized.append({**item, "recovery_sha256": item.get("recovery_sha256")})
-        # Fresh evidence has to be fresh: a retry hash that repeats any hash in
-        # the history — its own attempt's evidence included — proves nothing new.
-        for i, row in enumerate(normalized):
-            fresh = row.get("retry_evidence_sha256")
-            if fresh is None:
-                continue
-            others = {h for j, other in enumerate(normalized)
-                      for k, h in other.items() if k.endswith("sha256") and h is not None
-                      and not (j == i and k == "retry_evidence_sha256")}
-            if fresh in others:
-                raise ValidationError(
-                    "attempt_outcomes.retry_evidence_sha256 repeats a hash already in the history")
         self._attempt_outcomes = normalized
 
     def _validate_review_context(self, policy: Policy) -> None:
@@ -1920,16 +1785,6 @@ def select_effort(task: Task, band: str, execution_band: str, policy: Policy) ->
     else:
         effort = table["multi_file_feature"] if task.complexity >= 2 else table["straightforward_impl"]
 
-    # DD-B3 (C2): a LOW-risk task does not get the class table's HIGH effort.
-    # Before the floors, so an execution floor, a local minimum and a
-    # compensation still win; not after any prior attempt (a recovered
-    # operational one included — that is failure history too, review i1) or
-    # on an unknown root cause, where the effort is doing the diagnosing.
-    cap = policy.effort_caps.get(band)
-    capped_from = None
-    if (cap is not None and not task.has("unknown_root_cause") and task.total_prior_attempts == 0
-            and policy.efforts.index(effort) > policy.efforts.index(cap)):
-        capped_from, effort = effort, cap
     floors = cfg["effort_floors"]
     for condition, floor, why in (
         (band == "HIGH", floors["band_HIGH"], "band HIGH"),
@@ -1943,12 +1798,7 @@ def select_effort(task: Task, band: str, execution_band: str, policy: Policy) ->
             if raised != effort:
                 notes.append(f"{why} floored effort at {floor}")
                 effort = raised
-    if capped_from is not None and effort == cap:
-        notes.append(f"{EFFORT_CAP_NOTE} band {band} capped effort {capped_from} at {cap}")
     return effort, notes
-
-
-EFFORT_CAP_NOTE = "effort cap:"
 
 
 # --------------------------------------------------------------------------
@@ -1964,13 +1814,32 @@ def select_review(band: str, worker: str, policy: Policy, resolver: "Resolver") 
     spec = dict(cfg["review"][band])
 
     if band == "MEDIUM":
+        worker_family = resolver.family_for_role(worker, write=True)
+        preferred = spec["preferred_by_implementer"].get(worker)
+        ordered = [c for c in ([preferred] if preferred else []) + list(spec["candidates"]) if c]
+        seen, ranked = set(), []
+        for c in ordered:
+            if c not in seen:
+                seen.add(c)
+                ranked.append(c)
+        chosen = None
+        for candidate in ranked:                       # first cross-family and available
+            model = resolver.peek(candidate)
+            if model and policy.family_of[model] != worker_family:
+                chosen = candidate
+                break
+        if chosen is None:
+            for candidate in ranked:                   # then merely available
+                if resolver.peek(candidate):
+                    chosen = candidate
+                    break
         # One seat, and cross-family first. Both were config keys until the
-        # 2026-08-18 audit found them inert: this band has always seated
-        # exactly one reviewer and has always preferred a different family, so
-        # the keys read as policy while changing nothing. The constants live
-        # here now, with the config carrying the reasons.
+        # 2026-08-18 audit found them inert: this line has always seated
+        # exactly one reviewer and the loop above has always preferred a
+        # different family, so the keys read as policy while changing nothing.
+        # The constants live here now, with the config carrying the reasons.
         spec = {
-            "reviewers": [_seat_medium_reviewer(spec, worker, policy, resolver)],
+            "reviewers": [chosen or ranked[0]],
             "effort": spec["effort"],
             "independent": spec["independent"],
         }
@@ -1987,127 +1856,6 @@ def select_review(band: str, worker: str, policy: Policy, resolver: "Resolver") 
     if spec["independent"]:
         spec = _deconflict(spec, worker, policy, resolver)
     return spec
-
-
-def _medium_reviewer_floor(policy: Policy, band: str, worker_model: str | None) -> int | None:
-    """What a MEDIUM reviewer has to reach (design 2026-09-25 DD-B5, C4): the
-    band's floor, and never less than the implementer — the one reviewer is
-    the only check on that implementer's work. Other bands keep their floor;
-    their two independent seats are already at or above the frontier floor."""
-    floor = policy.band_reviewer_floor[band]
-    if floor is None:
-        return None                     # the deterministic LOW band: no reviewer seat to floor
-    if band == "MEDIUM" and worker_model is not None:
-        floor = max(floor, policy.tier_of[worker_model])
-    return floor
-
-
-def _seat_medium_reviewer(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -> str:
-    """The MEDIUM reviewer role (DD-B5, C4): the LOWEST-tier candidate that
-    still meets `_medium_reviewer_floor`, cross-family first, ties in list
-    order. Until 1.17.0 a per-implementer preference seated the frontier sol
-    seat behind every grok worker, one tier above what the band asks.
-
-    A candidate resolving to the implementer's own model is not a candidate:
-    de-confliction would replace it by its own rule. With no cross-family
-    candidate at the requirement, a same-family one at it is taken and
-    `cross_family_review` reports the loss. When no LISTED candidate reaches
-    it, every role is searched the same way — the list is a preference, and
-    de-confliction always searched every role for an adequate replacement, so
-    stopping at the list would trade an adequate seat for a shortfall gate.
-    With none anywhere, the strongest listed candidate is seated and the
-    shortfall gate discloses it.
-    """
-    worker_model = resolver.peek(worker, write=True)
-    worker_family = policy.family_of[worker_model] if worker_model else None
-    need = _medium_reviewer_floor(policy, "MEDIUM", worker_model)
-    ranked = list(dict.fromkeys(spec["candidates"]))
-
-    def fell_back(role, model):
-        # Two roles can reach one model, one by its binding and one through a
-        # fallback. Seating the second records an outage that did not happen
-        # to this seat and charges its confidence penalty.
-        key = resolver._primary(role)
-        return key is None or policy.cfg["models"][key]["id"] != model
-
-    def usable(roles):
-        return [(i, role, model) for i, role in enumerate(roles)
-                if (model := resolver.peek(role)) and model != worker_model]
-
-    seats = usable(ranked)
-    cross = [x for x in seats if policy.family_of[x[2]] != worker_family]
-    wider = usable(ranked + [r for r in policy.roles if r not in ranked and r != worker])
-    wider_cross = [x for x in wider if policy.family_of[x[2]] != worker_family]
-    for pool in (cross, seats, wider_cross, wider):
-        fits = [x for x in pool if policy.tier_of[x[2]] >= need]
-        if fits:
-            return min(fits, key=lambda x: (policy.tier_of[x[2]], fell_back(x[1], x[2]), x[0]))[1]
-    pool = cross or seats
-    if pool:
-        return max(pool, key=lambda x: (policy.tier_of[x[2]], not fell_back(x[1], x[2]), -x[0]))[1]
-    return ranked[0]
-
-
-def _is_source_review(task: Task, policy: Policy) -> bool:
-    """Does this route seat its worker as the lead REVIEWER — reviewer-1, one
-    of the band's reviewers — rather than as a worker the review checks?
-    Always for a REVIEW task since 1.17.0 (design 2026-09-25 DD-B7, U-8);
-    before, only when it declared a `review_context`."""
-    return task.task_class == "REVIEW" and (task._review_context is not None
-                                            or policy.review_lead_counts)
-
-
-def _review_seat_supply(policy: Policy, task: Task, band: str) -> tuple[int, int]:
-    """(reviewer seats, seats that can hold distinct families) the class x band
-    seat matrix gives this band (design 2026-09-25 DD-B7). Outside REVIEW: the
-    worker plus the band's reviewers, and a judge at the top band. A REVIEW
-    task's lead IS a reviewer: max(1, the band's reviewers) seats, plus the
-    judge — the lead alone at LOW and MEDIUM, two at HIGH and CRITICAL."""
-    spec = policy.cfg["review"][band]
-    reviewers = len(spec["reviewers"]) if "reviewers" in spec else 1
-    judge = 1 if band == policy.bands[-1] else 0
-    if _is_source_review(task, policy):
-        return max(1, reviewers), max(1, reviewers) + judge
-    return reviewers, 1 + reviewers + judge
-
-
-def _low_review_escape(task: Task, policy: Policy, band: str, route_path: str | None,
-                       lp: dict) -> tuple[str, list[str]] | None:
-    """Where a LOW route that deterministic checks cannot carry goes instead
-    (design 2026-09-25 DD-B4). Raise only, once, before the fixed point: a
-    dispute needs a model review; so does a repository whose checks cannot
-    run; and a caller floor on reviewers or provider families takes the lowest
-    band whose seat matrix can meet it. None when LOW stands — or when no band
-    can meet the floor, which then ends where it always did, at
-    UNSATISFIABLE_LOCAL_POLICY, without a detour through the bands."""
-    low = policy.bands[0]
-    here = policy.bands.index(band)
-    deterministic = band == low and policy.band_reviewer_floor[low] is None
-    # A REVIEW task's lead counts as its reviewer, so its MEDIUM seats one
-    # model where it used to seat two: a caller floor there leaves the band
-    # too (DD-B7 — a two-family REVIEW does not stay at one seat).
-    lead = _is_source_review(task, policy) and policy.review_lead_counts
-    if not deterministic and not lead:
-        return None
-    target, reasons = here, []
-    if deterministic and route_path == "disagreement":
-        target, reasons = here + 1, ["review_disagreement"]
-    if deterministic and task._checks_available is False:
-        target = max(target, here + 1)
-        reasons.append("checks_unavailable")
-    need_reviewers = lp.get("minimum_reviewers") or 0
-    need_families = lp.get("minimum_provider_families") or 0
-    supply = [_review_seat_supply(policy, task, b) for b in policy.bands]
-    if need_reviewers > supply[here][0] or need_families > supply[here][1]:
-        fits = [i for i, (seats, families) in enumerate(supply)
-                if i > here and seats >= need_reviewers and families >= need_families]
-        if fits:
-            target = max(target, fits[0])
-            if need_reviewers > supply[here][0]:
-                reasons.append("minimum_reviewers")
-            if need_families > supply[here][1]:
-                reasons.append("minimum_provider_families")
-    return (policy.bands[target], reasons) if target > here else None
 
 
 def _deconflict(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -> dict:
@@ -2235,9 +1983,6 @@ def _seat_judge(review: dict, worker: str, judge_role: str, policy: "Policy",
     # Retry once, freeing the strongest reviewer seat if another model that
     # still satisfies the band can take its place.
     floor = policy.band_reviewer_floor[review["band"]]
-    if floor is None:
-        raise RouterInvariantError(
-            f"a judge is being seated on the {review['band']} band, which seats no reviewer")
     # The implementer's model is off-limits to a REPLACEMENT reviewer at every
     # band, `independent` or not.
     #
@@ -2327,27 +2072,11 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
     """
     if any(row.get("with") not in review["reviewers"] for row in review.get("self_review_avoided", [])):
         raise RouterInvariantError("stale reviewer substitution before joint allocation")
-    source_review = resolver.source_review
+    source_review = resolver.task._review_context is not None
     def unavailable():
-        # Compromised independence is a fact about a band that asks for it: a
-        # REVIEW task's lone lead at LOW that cannot be seated is a shortage,
-        # which the final resolution reports as one.
-        compromised = source_review and review["independent"]
-        return ({**review, "independence_compromised": True} if compromised else review), judge
+        return ({**review, "independence_compromised": True} if source_review else review), judge
+    floor = policy.band_reviewer_floor[review["band"]]
     worker_model = resolver.peek(worker, write=True)
-    # What the band asks of a reviewer — at MEDIUM including the implementer's
-    # tier (DD-B5), so a MEDIUM slate below its implementer is deficient here
-    # too and the search can reach an adequate model no role is bound to.
-    floor = _medium_reviewer_floor(policy, review["band"], worker_model)
-    if floor is None:
-        # The deterministic LOW band seats no reviewer: its only possible seats
-        # are a REVIEW task's lead (which keeps its own floor, the worker's
-        # tier) and a compensation's extra reviewer, which no band floor asked
-        # for. Anything more is a plan this band cannot have produced.
-        if len(review["reviewers"]) > review.get("compensating_reviewers", 0) + int(source_review):
-            raise RouterInvariantError(
-                f"{review['band']} seats no reviewer but the plan names {review['reviewers']}")
-        floor = 0
     if worker_model is None and not source_review:
         return unavailable()
     need_judge = judge is not None or bool(review.get("judge_unavailable"))
@@ -2358,8 +2087,6 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
         return unavailable()
 
     count = len(review["reviewers"])
-    if source_review:
-        count = max(count, 1)           # the lead is a seat even where the band has no reviewer
     # Aliases carry one model each; reserve a unique alias for every real seat.
     aliases = list(dict.fromkeys([r for r in review["reviewers"] if r != worker]
                                 + [r for r in policy.roles if r != worker]))
@@ -2378,8 +2105,7 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
             policy.cfg["models"][key]["id"] for key in list(dict.fromkeys(resolver._candidates(role) + offered))
             if policy.cfg["models"][key]["id"] not in resolver.unusable
             and policy.tier_of[policy.cfg["models"][key]["id"]] >= floor
-            and (review["effort"] is None
-                 or _clamp(policy, review["effort"], policy.cfg["models"][key]["id"]) == review["effort"])))
+            and _clamp(policy, review["effort"], policy.cfg["models"][key]["id"]) == review["effort"]))
     if source_review:
         lead_floor = (policy.tier_of[worker_model] if worker_model else
                       policy.cfg["models"][policy.cfg["role_bindings"]["default"][worker]]["capability_tier"])
@@ -2387,8 +2113,7 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
         lead_floor = max(lead_floor, (lp.get("minimum_capability_tier") or 0))
         minimum_effort = (lp.get("minimum_effort") or review["effort"])
         pools[worker] = [m for m in pools[worker] if policy.tier_of[m] >= lead_floor
-                         and (minimum_effort is None
-                              or _clamp(policy, minimum_effort, m) == minimum_effort)]
+                         and _clamp(policy, minimum_effort, m) == minimum_effort]
     best, best_rank = None, None
 
     def search(index, assigned, used, preference):
@@ -2488,23 +2213,11 @@ class Resolver:
         # exclusion set removed another, and the model that actually ran came
         # straight back out of `peek`. One function answers it now.
         self.failed = task.failed_models(policy)
-        if task._same_model_retry is not None:
-            # DD-B6: the one failed model this retry goes back to, at a higher
-            # effort. Every other seat still excludes it.
-            self.failed.discard(task._same_model_retry["model"])
         # Kept apart from `blocked`: that set is the CALLER's withholding and is
         # echoed on every route, terminal ones included. A local revocation is
         # not caller input, so it filters seats without being echoed.
         self.local_blocked = set(policy.local_blocked_ids)
-        # DD-B8 (C7). `exhausted`: the family's models are withheld like the
-        # caller's `unavailable_models` (reason: quota) — not echoed there, it
-        # is not that list. `low`: consulted only for the worker seat.
-        quota = task._family_quota or {}
-        self.quota_exhausted = {m["id"] for m in cfg["models"].values()
-                                if quota.get(m["family"]) == "exhausted"}
-        self.quota_low = frozenset(f for f, level in quota.items() if level == "low")
-        self.quota_swaps: dict[str, str] = {}
-        self.unusable = self.blocked | self.failed | self.local_blocked | self.quota_exhausted
+        self.unusable = self.blocked | self.failed | self.local_blocked
 
         # Does THIS route's worker seat have to write? Set by `route()`.
         #
@@ -2530,14 +2243,6 @@ class Resolver:
         # the worker's model and the reviewer had nothing left.
         self.write_seat_role: str | None = None
         self.assignments: dict[str, str] = {}
-        # (worker role, declared implementer id) when the worker seat already
-        # executed (DD-B1). The role answers with that model for every reader
-        # and no availability, family or write filter applies to it: those
-        # constrain seats still to be dispatched, and this one has run.
-        self.pinned_worker: tuple[str, str] | None = None
-        # The worker is the lead reviewer (DD-B7): its seat is searched with
-        # the reviewers' instead of fixed ahead of them.
-        self.source_review: bool = _is_source_review(task, policy)
 
     def _primary(self, role: str) -> str | None:
         """The registry key this role binds to FOR THIS TASK.
@@ -2580,14 +2285,10 @@ class Resolver:
         degraded_name = self.policy.degraded_binding[self.task.runtime]
         if (d := cfg["role_bindings"][degraded_name].get(role)):
             ordered.append(d)
-        # A binding-only role (`worker_balanced_alt`) has no rung on the
-        # ladder: it resolves to its own binding and nothing else, so a MEDIUM
-        # candidate list can name it without inheriting another role's seats.
-        if role in self.policy.roles:
-            index = self.policy.roles.index(role)
-            for other in self.policy.roles[index + 1:] + self.policy.roles[:index][::-1]:
-                if (k := self.binding.get(other)):
-                    ordered.append(k)
+        index = self.policy.roles.index(role)
+        for other in self.policy.roles[index + 1:] + self.policy.roles[:index][::-1]:
+            if (k := self.binding.get(other)):
+                ordered.append(k)
         seen: set[str] = set()
         out = []
         for k in ordered:
@@ -2612,29 +2313,7 @@ class Resolver:
                         self.task.runtime, cfg["models"][k]["family"])):
                 continue
             out.append(k)
-        # A REVIEW task's lead is a review seat (DD-B7), and `low` moves the
-        # worker seat only (review i1).
-        if self.quota_low and not self.source_review and (write or role == self.write_seat_role):
-            out = self._quota_low_order(role, out)
         return out
-
-    def _quota_low_order(self, role: str, keys: list[str]) -> list[str]:
-        """DD-B8 `low`, the worker seat only: when the seat would land on a
-        model of a low-quota family, the first same-tier model of another
-        family goes first. A binding choice with no confidence penalty — not a
-        fallback — and nothing moves without a same-tier seat to move to."""
-        models = self.policy.cfg["models"]
-        usable = [k for k in keys if models[k]["id"] not in self.unusable]
-        if not usable or models[usable[0]]["family"] not in self.quota_low:
-            return keys
-        tier = self.policy.tier_of[models[usable[0]]["id"]]
-        swap = next((k for k in usable
-                     if self.policy.tier_of[models[k]["id"]] == tier
-                     and models[k]["family"] not in self.quota_low), None)
-        if swap is None:
-            return keys
-        self.quota_swaps[role] = models[swap]["id"]
-        return [swap] + [k for k in keys if k != swap]
 
     def peek(self, role: str, *, write: bool = False) -> str | None:
         """The model this role would resolve to, or None if nothing is usable.
@@ -2643,8 +2322,6 @@ class Resolver:
         caller that is asking about the WORKER passes it; reviewer and judge
         seating does not, because those seats read.
         """
-        if self.pinned_worker is not None and role == self.pinned_worker[0]:
-            return self.pinned_worker[1]
         if role in self.assignments:
             return self.assignments[role]
         cfg = self.policy.cfg
@@ -2673,10 +2350,6 @@ class Resolver:
         comp_cfg = cfg.get("fallback_compensations", {})
 
         for role in roles:
-            if self.pinned_worker is not None and role == self.pinned_worker[0]:
-                # Already executed: no binding was resolved, so none fell back.
-                resolved[role] = self.pinned_worker[1]
-                continue
             write = role == write_role
             primary_key = self._primary(role)
             primary_id = cfg["models"][primary_key]["id"] if primary_key else None
@@ -2712,11 +2385,6 @@ class Resolver:
                 offered = self._candidates(role, write=write)
                 primary_id = cfg["models"][offered[0]]["id"] if offered else None
             chosen_id = self.peek(role, write=write)
-            if (chosen_id is not None and chosen_id == self.quota_swaps.get(role)
-                    and primary_id is not None and primary_id not in self.unusable):
-                # A low-quota family moved this seat on purpose (DD-B8): a
-                # binding decision, not a model that went missing.
-                primary_id = chosen_id
             if chosen_id is None:
                 # The fourth cause is new and is often the only true one: the
                 # candidate exists, is available, has not failed and the bridge
@@ -2799,24 +2467,17 @@ def independence(review: dict, task: Task) -> str:
 # Confidence
 # --------------------------------------------------------------------------
 
-def routing_confidence(task: Task, fallbacks: list[str], cfg: dict, *,
-                       skip_uncertainty: bool = False) -> float:
+def routing_confidence(task: Task, fallbacks: list[str], cfg: dict) -> float:
     """The number `router.confidence.escalate_below` is compared against.
 
     The thresholds lived in the config and the penalties that produce the value
     lived here, so moving a threshold meant guessing at numbers in another file.
     One policy, one place.
-
-    `skip_uncertainty` leaves the uncertainty penalty out. Only the review
-    promotion asks for that, and only when uncertainty already raised the band
-    (DD-B2); the reported value always carries it.
     """
     conf = cfg["router"]["confidence"]
     penalty = conf["penalties"]
     c = conf["base"]
-    if skip_uncertainty:
-        pass
-    elif task.uncertainty == 3:
+    if task.uncertainty == 3:
         c -= penalty["uncertainty_3"]
     elif task.uncertainty == 2:
         c -= penalty["uncertainty_2"]
@@ -2970,12 +2631,6 @@ def request_sha256_of(task: Task) -> str:
         canonical["review_context"] = task._review_context
     if task._attempt_outcomes is not None:
         canonical["attempt_outcomes"] = task._attempt_outcomes
-    if task._implementer is not None:
-        canonical["implementer"] = task._implementer
-    if task._checks_available is not None:
-        canonical["checks_available"] = task._checks_available
-    if task._family_quota is not None:
-        canonical["family_quota"] = task._family_quota
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -3051,12 +2706,8 @@ def _contract_violation(policy: Policy, cand: dict, legacy: dict) -> str | None:
     lt = sorted((policy.tier_of[m] for m in lr["reviewer_models"] if m), reverse=True)
     if len(ct) != len(lt) or any(c < l for c, l in zip(ct, lt)):
         return "reviewer_tiers"
-    # A seat with no review effort (the lead of a REVIEW task on the band that
-    # seats no reviewer, DD-B4) carries the worker's effort, compared above.
-    ce = sorted((ei(e) for role in cr["reviewers"]
-                 if (e := _seat_effort(policy, cand, role, cr["effort"])) is not None), reverse=True)
-    le = sorted((ei(e) for role in lr["reviewers"]
-                 if (e := _seat_effort(policy, legacy, role, lr["effort"])) is not None), reverse=True)
+    ce = sorted((ei(_seat_effort(policy, cand, role, cr["effort"])) for role in cr["reviewers"]), reverse=True)
+    le = sorted((ei(_seat_effort(policy, legacy, role, lr["effort"])) for role in lr["reviewers"]), reverse=True)
     if any(c < l for c, l in zip(ce, le)):
         return "reviewer_efforts"
     if len(cr["review_depth_reduced"]) > len(lr["review_depth_reduced"]):
@@ -3090,115 +2741,6 @@ class _Prelude:
     route_path: str | None
     execution_score: int
     execution_band: str
-    # DD-B1: the tier of the worker the policy would have seated, which a
-    # declared implementer is compared against. None when nothing is declared.
-    implementer_ref_tier: int | None = None
-    # DD-B2 (C1-iii): the double uncertainty weight alone lifted the band, and
-    # the policy says not to charge it again when deciding a review promotion.
-    uncertainty_counted_in_band: bool = False
-
-
-def _without_low_quota(task: Task) -> Task:
-    """`task` with its `low` quota readings dropped (DD-B8) — the same object
-    when it has none. `exhausted` stays: a withheld family is withheld from
-    every plan."""
-    quota = task._family_quota
-    if not quota or "low" not in quota.values():
-        return task
-    kept = {family: level for family, level in quota.items() if level != "low"}
-    return replace(task, _family_quota=kept or None)
-
-
-def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
-    """The seats a caller dispatches, once each: the reviewers and the judge.
-
-    `lead` — the worker seat IS reviewer-1 (a REVIEW task's lead), so that
-    seat also carries the worker's effort. A terminal route dispatches nothing.
-    """
-    seats: list[dict] = []
-    if result["terminal"] is not None:
-        return seats
-    rv = result["review"]
-    for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
-        effort = rv["effort"]
-        if lead and role == result["selected_role"]:
-            effort = (result["selected_effort_effective"] if effort is None else
-                      max((effort, result["selected_effort_effective"]), key=policy.efforts.index))
-        seats.append(dict(seat=f"reviewer-{i+1}", role=role, model_id=model, effort=effort,
-                          effort_native=policy.native_effort(model, effort)))
-    if rv["judge_model"]:
-        seats.append(dict(seat="judge", role=rv["judge"], model_id=rv["judge_model"],
-                          effort=rv["effort"],
-                          effort_native=policy.native_effort(rv["judge_model"], rv["effort"])))
-    return seats
-
-
-def _same_model_retry(task: Task, policy: Policy, cfg: dict, history_note: str | None,
-                      budget_spent: bool) -> tuple[str, str, str] | None:
-    """(role, model, effort) when a capability failure may be retried on the
-    SAME model at a higher effort (design 2026-09-25 DD-B6, U-7), else None
-    and the ladder climbs a tier as before. All of:
-
-    1. The history is typed and usable, nothing else stops the route (spent
-       budget, unconfirmed termination, unrecovered operational outcomes), no
-       implementer is declared, and every capability failure is on one model
-       — a stronger model having failed too is no case for the weaker again.
-    2. That model's capability failures number at most
-       `retry.same_model_higher_effort`: the integer is the real budget.
-    3. Its most recent capability failure declares the `effort` it ran at and,
-       while `retry.require_new_evidence_on_same_tier` holds, fresh
-       `retry_evidence_sha256` (validation refuses a repeated hash).
-    4. The failure-free plan seats that model, and one level above the higher
-       of every effort any of its records ran at and the effort that plan
-       dispatches it at exists and is within its ceiling — computed, never
-       clamped: a model that failed at its ceiling is not sent back at it.
-
-    The caller then keeps the retry only if the settled plan still seats that
-    model (a REVIEW lead is searched with its reviewers, and the failure's own
-    confidence penalty can move the band and the search).
-
-    Caller-declared, like every attempt record: the router reads no receipt.
-    """
-    history = task._attempt_outcomes
-    if (history is None or history_note or budget_spent or task._implementer is not None
-            or task.has("termination_unconfirmed")
-            or any(row["kind"] in OPERATIONAL_OUTCOMES and row["recovery_sha256"] is None
-                   for row in history)):
-        return None
-    failures = [row for row in history if row["kind"] == "capability_failure"]
-    models = {row["model_id"] for row in failures}
-    if len(models) != 1:
-        return None
-    (model,) = models
-    retry_cfg = cfg["retry"]
-    if len(failures) > retry_cfg["same_model_higher_effort"]:
-        return None
-    last = failures[-1]
-    if "effort" not in last:
-        return None
-    if retry_cfg["require_new_evidence_on_same_tier"] and "retry_evidence_sha256" not in last:
-        return None
-    free = route(replace(task, prior_failures=0, prior_models=[], _attempt_outcomes=None,
-                         flags=[f for f in task.flags if f != "termination_unconfirmed"],
-                         _policy_pin=None, _policy=None), cfg)
-    if free["terminal"] is not None or free["selected_model"] != model:
-        return None
-    # Every record of this model, operational ones included: a recovered
-    # attempt that ran at MAX already had MAX (review i1). And what the
-    # failure-free plan gives it is what it would be DISPATCHED at — a REVIEW
-    # lead runs at the higher of its own effort and the review's.
-    ran = [policy.efforts.index(row["effort"]) for row in history
-           if row["model_id"] == model and "effort" in row]
-    assigned = policy.efforts.index(free["selected_effort_effective"])
-    for seat in free.get("dispatch_seats") or []:
-        if seat["model_id"] == model and seat["effort"] is not None:
-            assigned = max(assigned, policy.efforts.index(seat["effort"]))
-    above = max(ran + [assigned]) + 1
-    ceiling = policy.ceiling_of.get(model)
-    if above >= len(policy.efforts) or (
-            ceiling is not None and above > policy.efforts.index(ceiling)):
-        return None
-    return free["selected_role"], model, policy.efforts[above]
 
 
 def route(task: Task, cfg: dict | None = None, *,
@@ -3284,14 +2826,6 @@ def route(task: Task, cfg: dict | None = None, *,
     band, overrides, redundant_overrides, route_path = apply_overrides(task, band, policy)
     exec_score = execution_score(task, cfg)
     exec_band = policy.execution_band_of(exec_score)
-    counted = False
-    if policy.skip_uncertainty_penalty and task.uncertainty:
-        # The band this task would reach with uncertainty weighted once,
-        # overrides included: an override that sets the band anyway means the
-        # double weight did not raise it.
-        once = risk_score - task.uncertainty * (cfg["router"]["score_weights"]["uncertainty"] - 1)
-        band_once = apply_overrides(task, band_from_score(once, policy), policy)[0]
-        counted = policy.bands.index(band) > policy.bands.index(band_once)
 
     pre = _Prelude(request_sha=request_sha, policy_hash=policy_hash, lp=lp,
                    local_unsat=local_unsat, history_note=history_note,
@@ -3299,104 +2833,44 @@ def route(task: Task, cfg: dict | None = None, *,
                    seat_source=seat_source, seat_downgraded=seat_downgraded,
                    risk_score=risk_score, band=band, overrides=tuple(overrides),
                    redundant_overrides=tuple(redundant_overrides), route_path=route_path,
-                   execution_score=exec_score, execution_band=exec_band,
-                   uncertainty_counted_in_band=counted)
-    retry = _same_model_retry(task, policy, cfg, history_note, budget_spent)
-    result = None
-    if retry is not None:
-        # DD-B6 (C5): the failed model again, one effort above every effort it
-        # ran at, in the role the failure-free plan seats it in. One plan:
-        # there is no ladder step to weigh an execution cell against. Kept only
-        # if it is executable on that model — otherwise C5 does not hold and
-        # the ladder climbs, as it always did (review i1).
-        role, model, effort = retry
-        retried = replace(task, _same_model_retry={"model": model, "effort": effort})
-        planned = _plan(retried, policy, cfg, pre, resolver, WorkerChoice(role, (), False))
-        if planned["terminal"] is None and planned["selected_model"] == model:
-            task, result = retried, planned
-    if result is None:
-        candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
-        if task._implementer is not None:
-            # DD-B1: the worker seat already executed. One plan, for the REVIEW of
-            # that work: the role is the one the policy would have seated after the
-            # execution cell (the ladder and fallback code need a role), the model
-            # is the declared one, and the review is sized against the stronger of
-            # the two — a weaker implementer is gated, not silently accepted.
-            ref = resolver.peek(candidate.role, write=True)
-            pre = replace(pre, implementer_ref_tier=policy.tier_of[ref] if ref else None)
-            result = _plan(task, policy, cfg, pre, resolver, candidate)
-        elif candidate is legacy:
-            result = _plan(task, policy, cfg, pre, resolver, legacy)
+                   execution_score=exec_score, execution_band=exec_band)
+    candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
+    if candidate is legacy:
+        result = _plan(task, policy, cfg, pre, resolver, legacy)
+    else:
+        with_cell = _plan(task, policy, cfg, pre, resolver, candidate)
+        without = _plan(task, policy, cfg, pre, resolver, legacy)
+        if with_cell["terminal"] and without["terminal"]:
+            result = without                                      # both terminal: nothing to gain
         else:
-            # DD-B2's guard. The two plans are weighed with the review promotion
-            # 1.16.1 made — uncertainty charged in full — and only the adopted
-            # plan is planned again without the double-counted penalty. Weighing
-            # them without it let a promotion the table plan no longer takes, while
-            # the execution-cell plan still took one on its own fallback, make the
-            # bands differ and yield the stronger worker: counting uncertainty once
-            # is a review rule, and must never cost the worker a tier.
-            #
-            # DD-B8 likewise: a `low` quota reading is a binding preference for
-            # the worker the policy adopts, never a reason to adopt a weaker
-            # one, so the plans are weighed without it and it is applied to the
-            # adopted plan only.
-            weigh = replace(pre, uncertainty_counted_in_band=False)
-            weigh_task = _without_low_quota(task)
-            with_cell = _plan(weigh_task, policy, cfg, weigh, resolver, candidate)
-            without = _plan(weigh_task, policy, cfg, weigh, resolver, legacy)
-            if with_cell["terminal"] and without["terminal"]:
-                adopted, note = legacy, None                          # both terminal: nothing to gain
-            else:
-                row = _contract_violation(policy, with_cell, without)
-                if (row is None and _is_source_review(task, policy) and policy.review_lead_counts
-                        and without["terminal"] is None
-                        and policy.tier_of[with_cell["selected_model"]]
-                        <= policy.tier_of[without["selected_model"]]):
-                    # A REVIEW task's lead is searched with its reviewers (DD-B7):
-                    # the stronger cell only raises the lead's FLOOR, and the
-                    # search can land on the same model or an equal or weaker
-                    # one than the table cell's lead. That is no raise, so the
-                    # table plan stands and nothing is recorded.
-                    adopted, note = legacy, None
-                elif row is None:
-                    adopted, note = candidate, "raised"
-                else:
-                    adopted, note = legacy, f"execution band {exec_band} yielded {candidate.role}: {row}"
-            if pre.uncertainty_counted_in_band or weigh_task is not task:
-                result = _plan(task, policy, cfg, pre, resolver, adopted)
-            else:
-                result = with_cell if adopted is candidate else without
-            if note == "raised":
+            row = _contract_violation(policy, with_cell, without)
+            if row is None:
+                result = with_cell
                 capped = (f" at effective effort {result['selected_effort_effective']} (ceiling)"
                           if result["selected_effort_effective"] != result["selected_effort"] else "")
                 result["notes"].append(
                     f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
-            elif note is not None:
-                result["notes"].append(note)
+            else:
+                result = without
+                result["notes"].append(f"execution band {exec_band} yielded {candidate.role}: {row}")
     if task._review_context is not None:
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
         result["notes"].append("review_context excludes declared source authors from every REVIEW-task seat; target identity is caller-declared")
-    if _is_source_review(task, policy):
-        result["dispatch_seats"] = _dispatch_seats(result, policy, lead=True)
-        result["notes"].append("REVIEW task: dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer (reviewer-1), not an extra worker")
-    if task._family_quota:
-        exhausted = sorted(f for f, level in task._family_quota.items() if level == "exhausted")
-        low = sorted(f for f, level in task._family_quota.items() if level == "low")
-        if exhausted:
-            result["notes"].append(
-                f"family_quota: {', '.join(exhausted)} exhausted — every model of the family "
-                f"is withheld (reason: quota)")
-        if low:
-            result["notes"].append(
-                f"family_quota: {', '.join(low)} low — the worker seat prefers a same-tier "
-                f"model of another family; review seats are unaffected")
-    if task._implementer is not None:
-        result["dispatch_seats"] = _dispatch_seats(result, policy, lead=False)
-        result["notes"].append(
-            "implementer is caller-declared: the worker seat already executed, so dispatch "
-            "only dispatch_seats; review independence relies on this declaration, which the "
-            "router does not authenticate")
+        result["dispatch_seats"] = []
+        if result["terminal"] is None:
+            rv = result["review"]
+            for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
+                effort = rv["effort"]
+                if role == result["selected_role"]:
+                    effort = max((effort, result["selected_effort_effective"]), key=policy.efforts.index)
+                result["dispatch_seats"].append(dict(seat=f"reviewer-{i+1}", role=role,
+                    model_id=model, effort=effort, effort_native=policy.native_effort(model, effort)))
+            if rv["judge_model"]:
+                result["dispatch_seats"].append(dict(seat="judge", role=rv["judge"],
+                    model_id=rv["judge_model"], effort=rv["effort"],
+                    effort_native=policy.native_effort(rv["judge_model"], rv["effort"])))
+        result["notes"].append("For review_context dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer, not an extra worker")
     if task._attempt_outcomes is not None:
         history = task._attempt_outcomes
         result["attempt_outcomes"] = [dict(row) for row in history]
@@ -3430,8 +2904,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
     resolver = Resolver(task, policy)
     resolver.worker_writes = pre.seat_kind == "write"
     worker = choice.role
-    if task._implementer is not None:
-        resolver.pinned_worker = (worker, task._implementer["model_id"])
     worker_notes = list(choice.notes)
     ceiling_exhausted = choice.ceiling_exhausted
     overrides = list(pre.overrides)
@@ -3451,7 +2923,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             worker_notes.append(
                 f"worker seat declared read_only against the {task.task_class} default; "
                 f"a seat with no write-capable recipe on {task.runtime} may be named")
-        if seat_kind == "write" and task._implementer is None:
+        if seat_kind == "write":
             nominal, seated = resolver.peek(worker), resolver.peek(worker, write=True)
             if nominal is not None and nominal != seated:
                 # Families, not model ids. A terminal route must withhold every
@@ -3475,20 +2947,9 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         if history_note:
             worker_notes.append(history_note)
         effort, effort_notes = select_effort(task, band, pre.execution_band, policy)
-        if task._same_model_retry is not None:
-            retry_effort = task._same_model_retry["effort"]
-            if policy.efforts.index(retry_effort) > policy.efforts.index(effort):
-                effort = retry_effort
-            effort_notes.append(
-                f"same-model retry: {policy.id_to_key[task._same_model_retry['model']]} again at "
-                f"{retry_effort}, above every effort it ran at "
-                f"(retry.same_model_higher_effort)")
         if lp.get("minimum_effort") is not None:
             asked = lp["minimum_effort"]
             if policy.efforts.index(asked) > policy.efforts.index(effort):
-                # A cap a local minimum overrode did not survive; its note
-                # would describe an effort the route does not use.
-                effort_notes = [n for n in effort_notes if not n.startswith(EFFORT_CAP_NOTE)]
                 effort_notes.append(f"local_policy raised effort to {asked}")
                 effort = asked
         disagreement = cfg["review"]["disagreement"]
@@ -3507,11 +2968,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # from a preliminary role set let a route whose *final* fallbacks pushed it
         # below the escalation floor still emit as executable.
         review_band = band
-        escape = _low_review_escape(task, policy, band, route_path, lp)
-        if escape is not None:
-            review_band, reasons = escape
-            prefix = "low_band" if band == policy.bands[0] else "review_lead"
-            overrides.extend(f"{prefix}_{why}_raised_review_to_{review_band}" for why in reasons)
         promoted_once = False
         promotion_confidence = None
         supply_exhausted: str | None = None
@@ -3535,7 +2991,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             resolver.assignments = {}
             review = select_review(review_band, worker, policy, resolver)
             source_judge = None
-            if resolver.source_review:
+            if task._review_context is not None:
                 source_judge = disagreement["default_judge"] if (
                     review["band"] == "CRITICAL" or route_path == "disagreement") else None
                 review, source_judge = _joint_seats(review, worker, source_judge, policy, resolver)
@@ -3569,11 +3025,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                     if extra:
                         review = dict(review)
                         review["reviewers"] = list(review["reviewers"]) + [extra]
-                        if review["effort"] is None:
-                            # A model seat on the band that seats none (DD-B4):
-                            # reviewed at the next band's effort, the first band
-                            # that asks for a model reviewer at all.
-                            review["effort"] = cfg["review"][policy.bands[1]]["effort"]
                         # `independent` stays the BAND's answer. Round 4 added the flip
                         # so the extra seat would be de-conflicted; round 10 showed what
                         # it actually bought — a bonus reviewer upgrading the band's own
@@ -3655,7 +3106,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # worker-reviews-itself is documented design. The judge is not covered by
             # that exemption: an adjudicator brought in to settle a dispute must not be
             # one of the parties, whatever the band.
-            if resolver.source_review:
+            if task._review_context is not None:
                 judge_role = source_judge
             else:
                 if review["independent"]:
@@ -3698,11 +3149,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # post-conditions could not see the promotion. The plan and the decision
             # belong in the same iteration.
             confidence = routing_confidence(task, fallbacks, cfg)
-            # DD-B2: the promotion reads the confidence without the uncertainty
-            # penalty when that uncertainty already raised the band. Only this
-            # decision — the reported value and ESCALATE_ROUTING keep it.
-            promotion_input = (routing_confidence(task, fallbacks, cfg, skip_uncertainty=True)
-                               if pre.uncertainty_counted_in_band else confidence)
             threshold = cfg["router"]["confidence"]["extra_review_below"]
             # The policy is "raise the review band ONE level" — the loop exists so
             # the terminal decision sees the final confidence, not to change how
@@ -3719,14 +3165,14 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             # the same shape as a check placed where later code routes around it.
             # Everything the post-conditions inspect is now built after this loop,
             # from the band it settled on.
-            if promotion_input < threshold and review_band != "CRITICAL" and not promoted_once:
+            if confidence < threshold and review_band != "CRITICAL" and not promoted_once:
                 promoted = policy.bands[policy.bands.index(review_band) + 1]
                 overrides.append(f"low_routing_confidence_raised_review_to_{promoted}")
                 review_band = promoted
                 promoted_once = True
                 # The number the DECISION read. The one the route reports is the
                 # promoted plan's, and the two can differ (see the note below).
-                promotion_confidence = promotion_input
+                promotion_confidence = confidence
                 continue
             break
         else:  # pragma: no cover - the band ladder is shorter than the pass budget
@@ -3735,17 +3181,12 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
 
         if resolver.assignments:
             worker_notes.append("jointly allocated eligible models across the review and judge seats")
-        # A cap a later compensation overrode did not survive either (review
-        # i1): the note describes the effort the route runs at, or nothing.
-        cap = policy.effort_caps.get(band)
-        if cap is not None and effort != cap:
-            effort_notes = [n for n in effort_notes if not n.startswith(EFFORT_CAP_NOTE)]
 
         # Post-condition, asserted rather than assumed. Reviewer duplication is
         # only a defect where independence was requested; a judge sharing any seat
         # is a defect always.
         seat_models = {
-            **({"worker": resolved.get(worker)} if not resolver.source_review else {}),
+            **({"worker": resolved.get(worker)} if task._review_context is None else {}),
             **{f"reviewer_{i}": resolved.get(x) for i, x in enumerate(review["reviewers"])},
         }
         if review["independent"]:
@@ -3775,10 +3216,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # final roster. A record that names a reviewer who is not there is worse
         # than no record: it is the rationale asserting a fact about the route that
         # the route contradicts.
-        floor = _medium_reviewer_floor(policy, review["band"], resolved.get(worker))
-        # None on the deterministic LOW band: its only possible seat is a
-        # compensation's extra reviewer, which no band floor asked for.
-        shortfall = [] if floor is None else [
+        floor = policy.band_reviewer_floor[review["band"]]
+        shortfall = [
             {"reviewer": role, "model": resolved[role],
              "capability_tier": policy.tier_of[resolved[role]], "band_requires": floor}
             for role in review["reviewers"] if resolved.get(role)
@@ -3814,12 +3253,12 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # gate that restoring one model would have cleared.
         worker_model = resolved.get(worker)
         seats = len(review["reviewers"]) + (
-            1 if not resolver.source_review and review["independent"] and worker_model
+            1 if task._review_context is None and review["independent"] and worker_model
             and policy.tier_of[worker_model] >= floor else 0)
         # Every id the binding can reach, including roles outside `role_tiers`
         # (`worker_balanced_alt`) that the fallback ladder can still seat.
         supply = {cfg["models"][key]["id"] for key in resolver.binding.values()}
-        if resolver.source_review:
+        if task._review_context is not None:
             supply = {cfg["models"][key]["id"] for role in policy.roles
                       for key in resolver._candidates(role)}
         unsatisfiable = bool(shortfall) and sum(
@@ -3835,12 +3274,9 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             len(review["reviewers"]) == 1 and review["reviewers"][0] in fams and worker in fams
             and fams[review["reviewers"][0]] != fams[worker]
         )
-        if resolver.source_review and len(review["reviewers"]) == 1:
-            # One seat reviews the source: cross-family means cross to its
-            # declared authors. With no authors declared there is nothing to
-            # be cross to, and one family is not two.
+        if task._review_context is not None and len(review["reviewers"]) == 1:
             source_families = {policy.family_of[m] for m in resolver.author_excluded}
-            cross_family = bool(source_families) and bool(reviewer_families - source_families)
+            cross_family = bool(reviewer_families - source_families)
 
 
         if resolver.allowed_families is not None and len(resolver.allowed_families) == 0:
@@ -3913,9 +3349,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # the review band's own effort — the promoted band, because that is the
         # review that will run. Unlike the worker there is no table/floor split
         # here: what the band names IS the requirement.
-        review_floor = review["effort"]
-        for role in (list(review["reviewers"]) + ([judge] if judge else [])
-                     if review_floor is not None else []):
+        review_floor = cfg["review"][review["band"]]["effort"]
+        for role in list(review["reviewers"]) + ([judge] if judge else []):
             model = resolved.get(role)
             capped = _clamp(policy, review_floor, model)
             if capped != review_floor:
@@ -4094,16 +3529,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 raise ConfigError(
                     f"human_in_the_loop.{key} = {action!r} is not an implemented action")
 
-        # DD-B1. Not a configurable control: a caller who declares weaker work
-        # than the policy would have dispatched is asking for a review sized for
-        # the wrong worker, and only a person can accept that.
-        if (pre.implementer_ref_tier is not None
-                and policy.tier_of[task._implementer["model_id"]] < pre.implementer_ref_tier):
-            requires_human = True
-            fired_causes.append("implementer_below_worker_tier")
-            effort_notes.append("confirm/implementer_below_worker_tier: "
-                                + CAUSE_REASONS["implementer_below_worker_tier"])
-
         # Outcomes the config does not govern: these are properties of the route,
         # not policy choices.
         if terminal is None:
@@ -4143,10 +3568,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 # writer racing the first is likeliest. This gate is a hold,
                 # not a disclosure a later confirmation can absorb, so
                 # production_hotfix's deferral does not reach it either.
-                and not task.has("termination_unconfirmed")
-                # A review sized for a stronger worker than the one that ran is
-                # not a review a later confirmation can absorb either (DD-B1).
-                and "implementer_below_worker_tier" not in fired_causes):
+                and not task.has("termination_unconfirmed")):
             deferred = True
             requires_human = False
             effort_notes.append(
@@ -4260,11 +3682,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             },
             "selected_capability_tier": (
                 policy.tier_of[worker_model] if worker_model else None),
-            # DD-B1: whether the worker seat is still to be dispatched or has
-            # already executed under a caller-declared implementer.
-            "worker_seat_state": "already_executed" if task._implementer else "to_dispatch",
-            "implementer_declared": task._implementer is not None,
-            "implementer_source": "caller_declared" if task._implementer else None,
             "selected_families": sorted({
                 policy.family_of[m] for m in resolved.values()
             }) if executable else [],
@@ -4304,10 +3721,6 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 "independence_required": review["independent"],
                 "review_independence": review_independence,
                 "required_checks": review.get("required_checks", []),
-                # DD-B4: `deterministic_checks` when the settled band seats no
-                # model reviewer — the checks ARE the review, and exit 0 means
-                # dispatchable, not that they passed.
-                "mode": "model_review" if review["reviewers"] else "deterministic_checks",
                 "judge": judge,
                 "judge_model": (resolved.get(judge) if judge else None) if executable else None,
                 "self_review_avoided": review.get("self_review_avoided") or [],
@@ -4391,9 +3804,6 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
             f"{r['routing_confidence']} after {history_text}. Surface to a "
             "human with what was tried, what evidence accumulated, and the blocking uncertainty."
         )
-    elif r["worker_seat_state"] == "already_executed":
-        parts.append(f"Worker seat {r['selected_role']} already executed by the "
-                     f"caller-declared implementer; this route plans its review.")
     else:
         effective = r["selected_effort_effective"]
         if effective != r["selected_effort"]:
@@ -4403,13 +3813,9 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
         else:
             parts.append(f"Worker {r['selected_role']} at {r['selected_effort']} effort.")
     rv = r["review"]
-    if rv["mode"] == "deterministic_checks":
-        parts.append(f"Review band {rv['band']}: no model reviewer — deterministic checks "
-                     f"({', '.join(rv['required_checks'])}) must pass before the work is accepted.")
-    else:
-        parts.append(f"Review band {rv['band']}: {', '.join(rv['reviewers'])}, "
-                     f"independence_required={rv['independence_required']}, "
-                     f"review_independence={rv['review_independence']}.")
+    parts.append(f"Review band {rv['band']}: {', '.join(rv['reviewers'])}, "
+                 f"independence_required={rv['independence_required']}, "
+                 f"review_independence={rv['review_independence']}.")
     for sub in (rv.get("self_review_avoided") or []):
         parts.append(f"Reviewer slot substituted: {sub['replaced']} -> {sub['with']} "
                      f"({sub['reason']}).")
@@ -4430,7 +3836,7 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
                      f"{short['band_requires']} this band asks of a reviewer.")
     if rv["judge"]:
         parts.append(f"Judge: {rv['judge']}.")
-    if rv["required_checks"] and rv["mode"] != "deterministic_checks":
+    if rv["required_checks"]:
         parts.append(f"Required checks: {', '.join(rv['required_checks'])}.")
     if r["fallbacks_applied"]:
         parts.append(f"Fallbacks: {'; '.join(r['fallbacks_applied'])}.")
@@ -4494,13 +3900,6 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                    choices=list(WORKER_SEAT_KINDS),
                    help="override this route's class default for whether the "
                         "worker needs a write-capable dispatch recipe")
-    p.add_argument("--checks-unavailable", action="store_true",
-                   help="this repository cannot run the deterministic checks a LOW "
-                        "review consists of; LOW review then seats a model reviewer")
-    p.add_argument("--family-quota", default="",
-                   help="comma-separated family=ok|low|exhausted — the caller's reading of "
-                        "each provider's remaining quota (exhausted withholds the family; "
-                        "low moves only the worker to a same-tier model of another family)")
     p.add_argument("--host-model", default=None)
     p.add_argument("--host-effort", default=None)
     p.add_argument("--policy-pin", dest="policy_pin", default=None,
@@ -4508,19 +3907,6 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                         "committed local model state (64 lowercase hex)")
     p.add_argument("--format", default="text", choices=["text", "json"])
     return p
-
-
-def _parse_family_quota(value: str) -> dict | None:
-    pairs = _split(value)
-    if not pairs:
-        return None
-    quota = {}
-    for pair in pairs:
-        family, sep, level = pair.partition("=")
-        if not sep or not family.strip() or family.strip() in quota:
-            raise ValidationError(f"--family-quota: expected family=level pairs, got {pair!r}")
-        quota[family.strip()] = level.strip()
-    return quota
 
 
 REQUIRED_JSON_FIELDS = ("task_class", "complexity", "uncertainty", "blast_radius", "reversibility")
@@ -4597,15 +3983,6 @@ def task_from_request_v1(payload: dict) -> Task:
     pin = payload.get("policy_pin")
     if pin is not None:
         _check_pin(pin)
-    implementer = payload.get("implementer")
-    if implementer is not None and not isinstance(implementer, dict):
-        raise ValidationError("implementer must be an object or null")
-    checks = snap.get("checks_available") if snap else None
-    if checks is not None and not isinstance(checks, bool):
-        raise ValidationError("availability_snapshot.checks_available must be true, false or null")
-    quota = snap.get("family_quota") if snap else None
-    if quota is not None and not isinstance(quota, dict):
-        raise ValidationError("availability_snapshot.family_quota must be an object or null")
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
@@ -4627,9 +4004,6 @@ def task_from_request_v1(payload: dict) -> Task:
         _review_context=payload.get("review_context"),
         _attempt_outcomes=payload.get("attempt_outcomes"),
         _policy_pin=pin,
-        _implementer=implementer,
-        _checks_available=checks,
-        _family_quota=quota,
     )
 
 
@@ -4686,8 +4060,6 @@ def main(argv: list[str] | None = None) -> int:
                 isolation_available=None if args.isolation is None else args.isolation == "available",
                 isolation_evidence=_split(args.isolation_evidence),
                 worker_seat=args.worker_seat,
-                _checks_available=False if args.checks_unavailable else None,
-                _family_quota=_parse_family_quota(args.family_quota),
             )
             if args.host_effort and not args.host_model:
                 raise ValidationError("--host-effort requires --host-model")
@@ -4748,9 +4120,6 @@ def _print_text(r: dict) -> None:
         print(f"  already satisfied by another rule: {r['band_overrides_redundant']}")
     if r["terminal"]:
         print(f"TERMINAL:    {r['terminal']}  — no executable bindings emitted")
-    elif r["worker_seat_state"] == "already_executed":
-        print(f"worker:      {r['selected_role']}  ->  {r['selected_model']}  "
-              f"(already executed — caller-declared implementer)")
     else:
         print(f"worker:      {r['selected_role']}  ->  {r['selected_model']}")
         effective = r["selected_effort_effective"]
@@ -4761,8 +4130,8 @@ def _print_text(r: dict) -> None:
     label = "review (policy only — not dispatchable)" if r["terminal"] else "review"
     print(f"{label}:")
     print(f"  band:            {rv['band']}")
-    print(f"  reviewers:       {', '.join(rv['reviewers']) or '(none — deterministic checks)'}")
-    if not r["terminal"] and rv["reviewers"]:
+    print(f"  reviewers:       {', '.join(rv['reviewers'])}")
+    if not r["terminal"]:
         print(f"  models:          {', '.join(m for m in rv['reviewer_models'] if m)}")
         print(f"  effort:          {rv['effort']}")
     print(f"  required:        independent={rv['independence_required']}")

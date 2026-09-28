@@ -329,9 +329,16 @@ def test_second_plan_is_skipped_when_candidate_is_legacy(monkeypatch):
     r(task_class="IMPLEMENTATION", complexity=1, uncertainty=1)
     assert len(calls) == 1
     calls.clear()
+    r(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1, reversibility=1,
+      flags=["unfamiliar_codebase", "tool_heavy"])        # risk 10, 8 with u weighted once: both HIGH
+    assert len(calls) == 2
+    calls.clear()
+    # DD-B2: uncertainty lifted this band (9 HIGH, 7 MEDIUM once), so the two
+    # plans are weighed with 1.16.1's promotion and the adopted one is planned
+    # once more without the double-counted penalty.
     r(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
       flags=["unfamiliar_codebase", "tool_heavy"])
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 # --- T18: the contract partial order, row by row -----------------------------
@@ -474,7 +481,14 @@ def test_t5_hard_and_very_hard_floor_the_effort_and_say_so():
     assert [n for n in hard["notes"] if n.startswith("execution band HARD floored effort at HIGH")]
     assert very["selected_effort"] == "VERY_HIGH"
     assert sum(n.startswith("execution band VERY_HARD floored effort at VERY_HIGH") for n in very["notes"]) == 1
-    assert very["review"]["band"] == "CRITICAL"          # 0.75 < 0.80 promoted the review; note still once
+    # DD-B2: u3 lifted this band (9, 6 with u once), so the 0.75 no longer
+    # promotes it. The note-once property is held on a promoted route below.
+    assert very["review"]["band"] == "HIGH"
+    promoted = r(task_class="MECHANICAL", complexity=3, uncertainty=2,
+                 flags=["unfamiliar_codebase", "tool_heavy", "unknown_root_cause"])  # exec 15, risk 7
+    assert promoted["review"]["band"] == "HIGH" and promoted["risk_band"] == "MEDIUM"   # 0.77 promoted it
+    assert sum(n.startswith("execution band VERY_HARD floored effort at VERY_HIGH")
+               for n in promoted["notes"]) == 1
 
 
 def test_t5_the_execution_owned_effort_floors_are_exactly_two():
@@ -521,5 +535,13 @@ def test_t10_medium_reviewer_identity_follows_the_raised_worker():
     out = r(task_class="IMPLEMENTATION", complexity=3, blast_radius=1)     # risk 5 MEDIUM, exec 9 NORMAL
     assert out["selected_role"] == "worker_balanced"
     assert out["review"]["band"] == "MEDIUM" and out["review"]["effort"] == "HIGH"
-    assert out["review"]["reviewers"] == ["reasoning_specialist"]
-    assert out["review"]["reviewer_models"] == [ID("openai_reasoning")]
+    # DD-B5 (C4): the lowest cross-family candidate at max(floor, worker tier)
+    # — tier 1 for the tier-1 grok worker — where 1.16.1's preference table
+    # seated the tier-2 reasoning seat.
+    assert out["review"]["reviewers"] == ["worker_balanced_alt"]
+    assert out["review"]["reviewer_models"] == [ID("claude_worker_balanced")]
+    # And it still follows the worker: the table worker (luna, tier 0) of the
+    # same task without the execution axis's inputs gets the grok seat.
+    low = r(task_class="IMPLEMENTATION", complexity=1, blast_radius=1, reversibility=2)   # risk 5, exec 3
+    assert low["selected_role"] == "worker_fast"
+    assert low["review"]["reviewer_models"] == [ID("xai_frontier")]

@@ -10,6 +10,8 @@ Those live in `config/model-routing.yaml` and `adapters.md`.
 - [The derived signal: reasoning_centric](#the-derived-signal-reasoning_centric)
 - [Flags](#flags)
 - [Bands and overrides](#bands-and-overrides)
+- [Execution difficulty](#execution-difficulty)
+- [The pipeline](#the-pipeline)
 - [Implementation tiers](#implementation-tiers)
 - [Write seats](#write-seats)
 - [Effort ceilings](#effort-ceilings)
@@ -198,6 +200,28 @@ hard to do and easy to get wrong. Uncertainty alone cannot leave `EASY`;
 debugging escalates through the retry ladder and `unknown_root_cause`, not
 through this score.
 
+### Worker by class and band
+
+The class × risk-band table is the **floor** — the weakest worker that risk
+tolerates:
+
+| Class | LOW | MEDIUM | HIGH | CRITICAL |
+|---|---|---|---|---|
+| `MECHANICAL` | worker_fast | worker_fast | worker_balanced | senior_engineer |
+| `DOCUMENTATION` | worker_fast | worker_fast | worker_balanced | worker_balanced |
+| `TESTING` | worker_fast | worker_fast | worker_balanced | senior_engineer |
+| `IMPLEMENTATION` | worker_fast | worker_fast | worker_balanced | ‡ |
+| `REFACTORING` | worker_fast | worker_balanced | worker_balanced | ‡ |
+| `DEBUGGING` | worker_fast | worker_fast | worker_balanced | ‡ |
+| `INVESTIGATION` | worker_fast | worker_balanced | reasoning_specialist | reasoning_specialist |
+| `MIGRATION` | worker_balanced | worker_balanced | senior_engineer | principal_architect † |
+| `ARCHITECTURE` | worker_balanced | worker_balanced | senior_engineer | principal_architect |
+| `REVIEW` | worker_fast | worker_balanced | senior_engineer | senior_engineer |
+| `OPERATIONS` | worker_fast | worker_balanced | senior_engineer | senior_engineer |
+
+**‡** `reasoning_specialist` if `reasoning_centric`, else `senior_engineer`.
+**†** architecture phase only; implementation runs at worker_balanced / senior_engineer.
+
 ### Worker by class and execution band
 
 | Class | EASY | NORMAL | HARD | VERY_HARD |
@@ -231,9 +255,43 @@ through this score.
    no row is worse; otherwise yield to the legacy worker. Either outcome is a
    `notes` entry (`execution band … raised worker …` / `… yielded …: <row>`).
 
-Reviewer *identity* still follows the worker by the existing rules
-(`preferred_by_implementer`, de-confliction), so a MEDIUM route whose worker
-rose from the fast tier gets its reviewer chosen for the stronger worker.
+Reviewer *identity* still follows the worker (the MEDIUM floor fit below, and
+de-confliction), so a MEDIUM route whose worker rose from the fast tier gets its
+reviewer chosen for the stronger worker.
+
+### The MEDIUM reviewer fits the floor (1.17.0, design 2026-09-25 DD-B5)
+
+A MEDIUM review seats one reviewer: the **lowest-tier** candidate in
+`review.MEDIUM.candidates` whose resolved model reaches max(the band's floor,
+the implementer's tier), cross-family first, ties in list order (a role whose
+model comes from a fallback loses a tie to one bound to it). With no
+cross-family candidate at that tier a same-family one is taken and
+`cross_family_review` is false; when no listed candidate reaches it every role
+is searched the same way, as de-confliction always did. Only when nothing
+reaches it is the strongest candidate seated — and the shortfall check, which at
+MEDIUM also counts the implementer's tier, gates it (`review_below_band`).
+Until 1.17.0 a per-implementer preference (`preferred_by_implementer`) put the
+tier-2 reasoning seat behind every tier-1 grok worker, one tier above the band.
+
+## The pipeline
+
+Eight stages, and **no stage returns early**. That constraint is not stylistic:
+an earlier version of this policy dispatched on task class with early returns
+and checked critical-domain flags afterwards, so debugging an auth bug and
+designing a payments architecture silently bypassed mandatory dual review. The
+fix was to stop fusing "who does it" and "how it's reviewed" into one decision.
+
+```
+1 NORMALIZE  → class, 4 dimensions, flags, reasoning_centric
+2 SCORE      → risk_score → band; execution_score → execution_band
+3 OVERRIDE   → band adjusted by flags        [unconditional]
+4 WORKER     → role, by class × execution band, never below class × risk band;
+               yields if the review would suffer
+5 EFFORT     → conceptual effort level
+6 REVIEW     → policy, by BAND ONLY          [depth independent of stage 4]
+7 RESOLVE    → aliases → available models, with fallbacks
+8 EMIT       → route + rationale + confidence + metrics
+```
 
 ## Implementation tiers
 

@@ -61,3 +61,56 @@ def baseline_cfg(mod) -> dict:
 def pair_tasks(live_mod, base_mod, **kwargs):
     """One canonical kwargs record, two Task instances (design §4 T3)."""
     return live_mod.Task(**kwargs), base_mod.Task(**kwargs)
+
+
+# --- the 1.16.1 oracle (Part B, plan B0) --------------------------------------
+#
+# Part B changes the review policy on purpose, so the release it is measured
+# against is the last one before it: 1.16.1, whose routing is 1.16.0's with the
+# two OpenAI ids promoted. Its import closure is six modules, not two, and a
+# sibling bound to a LIVE module would move the oracle with the implementation.
+# The vendored files are renamed `baseline_1_16_1_*` with their sibling imports
+# rewritten, so nothing in the snapshot can resolve to the live scripts
+# whatever `sys.modules` already holds.
+
+SNAPSHOT_1161_DIR = Path(__file__).resolve().parent / "fixtures" / "baseline-1.16.1"
+BASELINE_1161_VERSION = "1.16.1"
+BASELINE_1161_POLICY_SHA = "9597ed2cd30f40319b283740cb9858f4d92b7cbc45415f3f70d56124131994bd"
+SNAPSHOT_1161_PREFIX = "baseline_1_16_1_"
+_loaded_1161 = None
+_cfg_1161 = None
+
+
+def load_baseline_1161():
+    global _loaded_1161
+    if _loaded_1161 is not None:
+        return _loaded_1161
+    scripts = (SNAPSHOT_1161_DIR / "scripts").resolve()
+    sys.path.insert(0, str(scripts))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"{SNAPSHOT_1161_PREFIX}route_task", scripts / f"{SNAPSHOT_1161_PREFIX}route_task.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(scripts))
+    for name, loaded in list(sys.modules.items()):
+        if name.startswith(SNAPSHOT_1161_PREFIX):
+            if Path(loaded.__file__).resolve().parent != scripts:
+                raise AssertionError(f"{name} resolved outside the snapshot: {loaded.__file__}")
+    # Same reason as the 1.12.1 loader: `plugin_manifest_version()` would walk
+    # up to the LIVE manifest and report the release under test.
+    mod._PLUGIN_VERSION_CACHE[str(scripts / f"{SNAPSHOT_1161_PREFIX}route_task.py")] = \
+        BASELINE_1161_VERSION
+    _loaded_1161 = mod
+    return mod
+
+
+def baseline_1161_cfg() -> dict:
+    """The snapshot's own parsed config, once per session."""
+    global _cfg_1161
+    if _cfg_1161 is None:
+        mod = load_baseline_1161()
+        _cfg_1161 = mod.load_config(mod.CONFIG_PATH)
+    return _cfg_1161

@@ -98,6 +98,9 @@ def test_frontier_host_advisory_is_recognized_without_changing_route():
 def test_frontier_emits_supported_effort_even_when_it_is_a_fast_seat_fallback(conceptual, native):
     cfg = copy.deepcopy(CFG)
     cfg["effort_by_work"]["formatting_rename"] = conceptual
+    # The spelling of each level is the subject, not the LOW-band cap
+    # (DD-B3), which would hold HIGH and above at MEDIUM on this LOW task.
+    cfg["effort_caps"] = {}
     unavailable = [m["id"] for m in cfg["models"].values() if m["id"] != astra_id()]
     out = route(task(flags=["bridge_down"], unavailable_models=unavailable), cfg)
     assert out["terminal"] is None
