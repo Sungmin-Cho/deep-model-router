@@ -133,7 +133,7 @@ exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2**
 - **상태.** `$DEEP_MODEL_ROUTER_STATE_DIR`, 없으면 `$XDG_STATE_HOME/deep-model-router`, 없으면 `~/.local/state/deep-model-router`(0700; 도구가 쓰는 상태이며 사람이 편집하지 않습니다). 라우터는 `committed/`만 읽습니다. `committed/`를 지우면 처음 설치 상태로 돌아가며, 폐기도 함께 사라집니다.
 - **명령.** `model_sync.py status`(현 세대, 보류, 알림) · `revert <key>`(항목을 빼고 그 id를 폐기) · `unblock <id>` · `disable` / `enable`(자동 업그레이드; `disable`은 진행 중 프로브도 취소) · `repair [--to <generation> [--force]]` · `quota`(로컬 rollout 기록에서 읽는 codex 사용량; 모델 호출 없음) · `promote --repo … --key … --price …`(항목을 리포 체크아웃으로 옮김).
 - **끄기.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 틱과 발행을 멈춥니다. `DEEP_MODEL_ROUTER_OVERLAY=off`는 비상 스위치입니다: 라우터가 오버레이 항목을 무시하되 폐기는 유지하며, 이미 좌석에 앉혔던 오버레이 id는 재시도 이력 입력으로 계속 유효합니다. 손상된 committed 상태는 그래도 fail closed(`MODEL_STATE_UNAVAILABLE`)입니다 — `repair`를 쓰세요. 승인 검사를 통과하지 못한 상태 루트(내가 소유한 0700 모드 디렉터리가 아님)도 마찬가지이며, 라우트 note가 `chmod 700` 조치를 알려 줍니다.
-- **진행 중인 deep-loop 실행.** 정책 다이제스트가 바뀌면 진행 중인 deep-loop 실행이 멈춥니다. 플러그인 업데이트 뒤에는(번들 정책이 바뀜) 어떤 pin으로도 이전 정책을 재현할 수 없으니, 업데이트 전에 실행을 마무리하거나 멈춘 실행을 새로 시작하세요. 오버레이 발행도 deep-loop가 `policy_pin`을 넘기기 전까지 실행을 멈추므로, 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
+- **진행 중인 deep-loop 실행.** deep-loop 1.25.0 이상은 실행의 고정 정책 다이제스트를 `policy_pin`으로 넘기므로, 오버레이 발행으로는 진행 중인 실행이 멈추지 않습니다. 플러그인 업데이트(번들 정책이 바뀜), 이후의 폐기, 세대 소실은 pin으로도 재현할 수 없습니다. 이때 deep-loop는 `router-policy-pin:<사유>`를 보고하고 `HIGH`/`CRITICAL` 작업을 멈추므로, 업데이트 전에 실행을 마무리하거나 멈춘 실행을 새로 시작하세요. deep-loop 1.25.0 미만에서는 오버레이 발행도 실행을 멈추므로, 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
 
 ---
 
