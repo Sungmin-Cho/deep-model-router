@@ -156,3 +156,73 @@ def test_the_floor_tables_did_not_move():
         # an earlier id, or pointing it at one the chain never names, fails.
         assert historical["id"] in chain, (key, historical["id"], chain)
         assert new["models"][now]["id"] == chain[-1], (key, chain)
+
+
+# --- the 1.16.1 oracle (Part B, plan B0 Step 1) -------------------------------
+
+from _baseline import (  # noqa: E402
+    BASELINE_1161_POLICY_SHA, BASELINE_1161_VERSION, SNAPSHOT_1161_DIR, SNAPSHOT_1161_PREFIX,
+    baseline_1161_cfg, load_baseline_1161,
+)
+
+_SNAPSHOT_1161_MODULES = ("route_task", "policy_digest", "strict_json", "lineage",
+                          "model_state", "secure_io")
+
+
+def test_1161_manifest_matches_every_snapshot_file():
+    lines = [l for l in (SNAPSHOT_1161_DIR / "MANIFEST.sha256").read_text().splitlines()
+             if l and not l.startswith("#")]
+    listed = {line.split()[1] for line in lines}
+    assert listed == {f"scripts/{SNAPSHOT_1161_PREFIX}{m}.py" for m in _SNAPSHOT_1161_MODULES} \
+        | {"config/model-routing.yaml"}
+    for line in lines:
+        digest, rel = line.split()
+        assert hashlib.sha256((SNAPSHOT_1161_DIR / rel).read_bytes()).hexdigest() == digest, rel
+    on_disk = {str(p.relative_to(SNAPSHOT_1161_DIR)) for p in SNAPSHOT_1161_DIR.rglob("*")
+               if p.is_file() and p.name != "MANIFEST.sha256" and "__pycache__" not in p.parts}
+    assert on_disk == listed, on_disk ^ listed
+    assert not (SNAPSHOT_1161_DIR / ".claude-plugin").exists()
+
+
+def test_1161_snapshot_imports_no_live_module():
+    """Every sibling import is rewritten to a `baseline_1_16_1_*` name, so a
+    live module already in `sys.modules` cannot bind in its place."""
+    scripts = SNAPSHOT_1161_DIR / "scripts"
+    for mod in _SNAPSHOT_1161_MODULES:
+        text = (scripts / f"{SNAPSHOT_1161_PREFIX}{mod}.py").read_text()
+        for other in _SNAPSHOT_1161_MODULES:
+            assert f"\nimport {other}\n" not in text, (mod, other)
+            assert f"\nfrom {other} import" not in text, (mod, other)
+    load_baseline_1161()
+    loaded = {n: m for n, m in sys.modules.items() if n.startswith(SNAPSHOT_1161_PREFIX)}
+    assert set(loaded) == {f"{SNAPSHOT_1161_PREFIX}{m}" for m in _SNAPSHOT_1161_MODULES}
+    for name, module in loaded.items():
+        assert Path(module.__file__).resolve().parent == scripts.resolve(), name
+
+
+def test_1161_snapshot_reads_only_its_own_config_and_seeded_version():
+    mod = load_baseline_1161()
+    assert Path(mod.CONFIG_PATH).resolve() == (SNAPSHOT_1161_DIR / "config" / "model-routing.yaml").resolve()
+    assert mod.plugin_manifest_version() == BASELINE_1161_VERSION
+    assert Path(mod.policy_sha256.__code__.co_filename).resolve() \
+        == (SNAPSHOT_1161_DIR / "scripts" / f"{SNAPSHOT_1161_PREFIX}policy_digest.py").resolve()
+    for attr in ("lineage", "model_state"):
+        assert Path(getattr(mod, attr).__file__).resolve().parent \
+            == (SNAPSHOT_1161_DIR / "scripts").resolve(), attr
+
+
+def test_1161_snapshot_route_carries_its_release_sentinels():
+    mod = load_baseline_1161()
+    out = mod.route(mod.Task(task_class="MECHANICAL", complexity=0, uncertainty=0,
+                             blast_radius=0, reversibility=0), baseline_1161_cfg())
+    assert out["router_plugin_version"] == BASELINE_1161_VERSION
+    assert out["policy_sha256"] == BASELINE_1161_POLICY_SHA
+    assert "execution_band" in out and out["model_overlay"] is None
+
+
+def test_1161_snapshot_policy_cache_is_separate_from_the_live_one():
+    import route_task as live
+    mod = load_baseline_1161()
+    assert mod.Policy is not live.Policy
+    assert mod.Policy._cache is not live.Policy._cache
+    assert mod.model_state is not sys.modules.get("model_state")
