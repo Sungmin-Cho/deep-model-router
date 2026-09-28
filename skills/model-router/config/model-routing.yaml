@@ -1488,8 +1488,9 @@ verification_ledger:
       argv: "codex exec -m gpt-6-sol -c model_reasoning_effort=low -s read-only --skip-git-repo-check --json --ignore-user-config --ephemeral -"
       evidence: >
         Plan B8 paired measurement (scripts/tools/measure_codex_recipe.py) from
-        a Claude Code host, one fixed review prompt, empty throwaway cwd, quota
-        reading ok (4% used, fresh): the current recipe reported 27461 input
+        a Claude Code host, one fixed review prompt, both runs in one empty
+        throwaway cwd (a re-run in that form after review gave the same counts),
+        quota reading ok (4-6% used, fresh): the current recipe reported 27461 input
         tokens (11776 cached), the same argv plus --ignore-user-config
         --ephemeral 19924 (11776 cached) — a 27.4% cut against the 20% bar —
         and both answered in the review format (=== REVIEW === / verdict:

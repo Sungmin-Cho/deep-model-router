@@ -23,18 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Review a `LOW`-band route by the deterministic checks it names (`tests`, `lint`) instead of the worker's own model; the caller owes the checks before accepting the work, and a dispute, unavailable checks or a `local_policy` reviewer or family floor take the route to the lowest band that carries them.
-- Cap a `LOW`-risk task's table effort at `MEDIUM` unless it has an unknown root cause or a capability failure on record; execution floors, local minimums and compensations still win.
+- Cap a `LOW`-risk task's table effort at `MEDIUM` unless it has an unknown root cause or any prior attempt on record; execution floors, local minimums and compensations still win.
 - Count uncertainty once: when its double weight alone lifted the band, the same uncertainty no longer promotes the review again, while the reported confidence and `ESCALATE_ROUTING` keep the full penalty and the worker never loses a tier.
 - Seat the lowest-tier `MEDIUM` reviewer that reaches the band floor and the implementer's tier, cross-family first, and gate a `MEDIUM` review below the implementer's tier.
-- Retry a capability failure on the same model one effort higher when that failure declares its effort and fresh evidence, it is the only model that failed, it is within `retry.same_model_higher_effort`, and the next effort is within its ceiling.
+- Retry a capability failure on the same model one effort above every effort any of its records ran at when that failure declares its effort and fresh evidence, it is the only model that failed, it is within `retry.same_model_higher_effort`, the next effort is within its ceiling, and the settled route still seats it.
 - Count a `REVIEW` task's lead as reviewer-1 of its band, with or without `review_context`, so a `HIGH` or `CRITICAL` review no longer adds two more reviewers of the review.
 - `minimum_reviewers: 2` on a `LOW` route now routes at `HIGH` instead of stopping at `UNSATISFIABLE_LOCAL_POLICY`.
 - Weaker than 1.16: 5,136 of the 104,640 routes in the release measurement grid lose `LOW`'s model reviewer, by rule (C3), and 24 `LOW` `REVIEW` leads run at the worker's effort.
-- Weaker than 1.16: 7,506 routes review one band lower where uncertainty had promoted its own band (C1-iii), and 33 `minimum_reviewers: 2` routes that relied on that promotion stop at `UNSATISFIABLE_LOCAL_POLICY`.
+- Weaker than 1.16: 7,506 routes review one band lower where uncertainty had promoted its own band (C1-iii) — 6,860 of them at `HIGH` instead of `CRITICAL`, without its human gate — and 33 `minimum_reviewers: 2` routes that relied on that promotion stop at `UNSATISFIABLE_LOCAL_POLICY`.
 - Weaker than 1.16: 7,069 `MEDIUM` reviews seat a lower-tier reviewer at the floor (C4), and 8 are gated below an implementer no free model matches.
-- Weaker than 1.16: 4,671 retries keep the failed model one effort higher instead of climbing a tier (C5), with 2,573 of them reviewed by lower-tier seats and 164 one band lower.
-- Weaker than 1.16: 1,953 `REVIEW` routes without context review with one seat fewer, so `cross_family_review` is false for a lone lead, and 143 count a lower-tier lead as a reviewer (REVIEW lead).
-- Weaker than 1.16: with an `implementer` declared, 549 reviews share one family where only it supplies the band's tier; with a quota reading, an `exhausted` family thins the slate like withheld models.
+- Weaker than 1.16: 7,408 retries keep the failed model one effort higher instead of climbing a tier (C5); 2,573 of them are reviewed by lower-tier seats, 164 one band lower (120 no longer `CRITICAL`), and 1,968 seat a judge where 1.16's stronger worker left no model to adjudicate (`no_adjudicator`).
+- Weaker than 1.16: a `REVIEW` route without context reviews with one seat fewer (REVIEW lead), so 1,977 routes lose `cross_family_review` (a lone lead has no second family) and 623 count a lower-tier lead as a reviewer.
+- Weaker than 1.16: with an `implementer` declared, 549 reviews share one family where only it supplies the band's tier; with a quota reading, an `exhausted` family thins the slate like withheld models (601 routes lose `cross_family_review`, 607 seat lower-tier reviewers, 31 a lower-tier worker).
 - A `LOW`-risk task's worker effort drops from the table's `HIGH` to `MEDIUM` on 3,132 routes (C2).
 - deep-loop does not enforce the `LOW` deterministic checks, as it did not dispatch the `LOW` reviewer before.
 - Updating stops an in-flight deep-loop run on the policy digest change; finish running loops first. A request using a 1.17 field gets exit 2 from 1.16.

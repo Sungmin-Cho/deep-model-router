@@ -1922,11 +1922,12 @@ def select_effort(task: Task, band: str, execution_band: str, policy: Policy) ->
 
     # DD-B3 (C2): a LOW-risk task does not get the class table's HIGH effort.
     # Before the floors, so an execution floor, a local minimum and a
-    # compensation still win; not on a retry or an unknown root cause, where
-    # the effort is doing the diagnosing.
+    # compensation still win; not after any prior attempt (a recovered
+    # operational one included — that is failure history too, review i1) or
+    # on an unknown root cause, where the effort is doing the diagnosing.
     cap = policy.effort_caps.get(band)
     capped_from = None
-    if (cap is not None and not task.has("unknown_root_cause") and task.prior_failures == 0
+    if (cap is not None and not task.has("unknown_root_cause") and task.total_prior_attempts == 0
             and policy.efforts.index(effort) > policy.efforts.index(cap)):
         capped_from, effort = effort, cap
     floors = cfg["effort_floors"]
@@ -2611,7 +2612,9 @@ class Resolver:
                         self.task.runtime, cfg["models"][k]["family"])):
                 continue
             out.append(k)
-        if self.quota_low and (write or role == self.write_seat_role):
+        # A REVIEW task's lead is a review seat (DD-B7), and `low` moves the
+        # worker seat only (review i1).
+        if self.quota_low and not self.source_review and (write or role == self.write_seat_role):
             out = self._quota_low_order(role, out)
         return out
 
@@ -3146,9 +3149,13 @@ def _same_model_retry(task: Task, policy: Policy, cfg: dict, history_note: str |
        while `retry.require_new_evidence_on_same_tier` holds, fresh
        `retry_evidence_sha256` (validation refuses a repeated hash).
     4. The failure-free plan seats that model, and one level above the higher
-       of every effort it failed at and the effort that plan gives it exists
-       and is within its ceiling — computed, never clamped: a model that
-       failed at its ceiling is not sent back at the same effort.
+       of every effort any of its records ran at and the effort that plan
+       dispatches it at exists and is within its ceiling — computed, never
+       clamped: a model that failed at its ceiling is not sent back at it.
+
+    The caller then keeps the retry only if the settled plan still seats that
+    model (a REVIEW lead is searched with its reviewers, and the failure's own
+    confidence penalty can move the band and the search).
 
     Caller-declared, like every attempt record: the router reads no receipt.
     """
@@ -3176,8 +3183,17 @@ def _same_model_retry(task: Task, policy: Policy, cfg: dict, history_note: str |
                          _policy_pin=None, _policy=None), cfg)
     if free["terminal"] is not None or free["selected_model"] != model:
         return None
-    ran = [policy.efforts.index(row["effort"]) for row in failures if "effort" in row]
-    above = max(ran + [policy.efforts.index(free["selected_effort_effective"])]) + 1
+    # Every record of this model, operational ones included: a recovered
+    # attempt that ran at MAX already had MAX (review i1). And what the
+    # failure-free plan gives it is what it would be DISPATCHED at — a REVIEW
+    # lead runs at the higher of its own effort and the review's.
+    ran = [policy.efforts.index(row["effort"]) for row in history
+           if row["model_id"] == model and "effort" in row]
+    assigned = policy.efforts.index(free["selected_effort_effective"])
+    for seat in free.get("dispatch_seats") or []:
+        if seat["model_id"] == model and seat["effort"] is not None:
+            assigned = max(assigned, policy.efforts.index(seat["effort"]))
+    above = max(ran + [assigned]) + 1
     ceiling = policy.ceiling_of.get(model)
     if above >= len(policy.efforts) or (
             ceiling is not None and above > policy.efforts.index(ceiling)):
@@ -3286,14 +3302,19 @@ def route(task: Task, cfg: dict | None = None, *,
                    execution_score=exec_score, execution_band=exec_band,
                    uncertainty_counted_in_band=counted)
     retry = _same_model_retry(task, policy, cfg, history_note, budget_spent)
+    result = None
     if retry is not None:
         # DD-B6 (C5): the failed model again, one effort above every effort it
-        # failed at, in the role the failure-free plan seats it in. One plan:
-        # there is no ladder step to weigh an execution cell against.
+        # ran at, in the role the failure-free plan seats it in. One plan:
+        # there is no ladder step to weigh an execution cell against. Kept only
+        # if it is executable on that model — otherwise C5 does not hold and
+        # the ladder climbs, as it always did (review i1).
         role, model, effort = retry
-        task = replace(task, _same_model_retry={"model": model, "effort": effort})
-        result = _plan(task, policy, cfg, pre, resolver, WorkerChoice(role, (), False))
-    else:
+        retried = replace(task, _same_model_retry={"model": model, "effort": effort})
+        planned = _plan(retried, policy, cfg, pre, resolver, WorkerChoice(role, (), False))
+        if planned["terminal"] is None and planned["selected_model"] == model:
+            task, result = retried, planned
+    if result is None:
         candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
         if task._implementer is not None:
             # DD-B1: the worker seat already executed. One plan, for the REVIEW of
@@ -3714,6 +3735,11 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
 
         if resolver.assignments:
             worker_notes.append("jointly allocated eligible models across the review and judge seats")
+        # A cap a later compensation overrode did not survive either (review
+        # i1): the note describes the effort the route runs at, or nothing.
+        cap = policy.effort_caps.get(band)
+        if cap is not None and effort != cap:
+            effort_notes = [n for n in effort_notes if not n.startswith(EFFORT_CAP_NOTE)]
 
         # Post-condition, asserted rather than assumed. Reviewer duplication is
         # only a defect where independence was requested; a judge sharing any seat

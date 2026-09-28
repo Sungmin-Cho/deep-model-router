@@ -23,18 +23,18 @@
 ### Changed
 
 - `LOW` 밴드 라우트는 워커 자신의 모델 대신 라우트가 이름 붙인 결정적 검사(`tests`, `lint`)로 리뷰합니다. 호출자는 작업을 받아들이기 전에 검사를 통과시켜야 하며, 분쟁·검사 불가·`local_policy`의 리뷰어/family 하한은 그것을 감당하는 가장 낮은 밴드로 라우트를 올립니다.
-- `LOW` 위험 작업의 표 effort를 `MEDIUM`으로 상한합니다. 원인 불명이거나 capability 실패 기록이 있으면 예외이고, 실행 floor·로컬 하한·보상 규칙은 여전히 이깁니다.
+- `LOW` 위험 작업의 표 effort를 `MEDIUM`으로 상한합니다. 원인 불명이거나 이전 시도 기록이 하나라도 있으면 예외이고, 실행 floor·로컬 하한·보상 규칙은 여전히 이깁니다.
 - 불확실성을 한 번만 셉니다. 이중 가중치만으로 밴드가 올라갔다면 같은 불확실성이 리뷰를 다시 승격하지 않으며, 보고되는 신뢰도와 `ESCALATE_ROUTING`은 벌점 전체를 유지하고 워커 tier는 내려가지 않습니다.
 - `MEDIUM` 리뷰어는 밴드 하한과 구현자 tier에 닿는 가장 낮은 tier를 교차 가족 우선으로 앉히며, 구현자 tier에 못 미치는 `MEDIUM` 리뷰는 게이트합니다.
-- capability 실패가 effort와 새 증거를 선언하고, 실패한 모델이 그 하나뿐이며, `retry.same_model_higher_effort` 이내이고, 다음 effort가 모델 상한 안이면 같은 모델을 effort 한 단계 올려 재시도합니다.
+- capability 실패가 effort와 새 증거를 선언하고, 실패한 모델이 그 하나뿐이며, `retry.same_model_higher_effort` 이내이고, 다음 effort가 모델 상한 안이며, 정착된 라우트가 여전히 그 모델을 앉히면, 그 모델의 어떤 기록보다도 한 단계 높은 effort로 같은 모델을 재시도합니다.
 - `REVIEW` 작업의 리드를 `review_context` 유무와 무관하게 밴드의 reviewer-1로 셉니다. `HIGH`·`CRITICAL` 리뷰에 리뷰의 리뷰어 둘이 더 붙지 않습니다.
 - `LOW` 라우트의 `minimum_reviewers: 2`는 `UNSATISFIABLE_LOCAL_POLICY`에서 멈추지 않고 `HIGH`로 라우팅됩니다.
 - 1.16보다 약해짐: 릴리스 측정 격자 104,640개 라우트 중 5,136개가 규칙상 `LOW`의 모델 리뷰어를 잃고(C3), `LOW` `REVIEW` 리드 24개는 워커 effort로 돕니다.
-- 1.16보다 약해짐: 불확실성이 자기 밴드를 승격시키던 7,506개 라우트가 한 밴드 낮게 리뷰되고(C1-iii), 그 승격에 기대던 `minimum_reviewers: 2` 라우트 33개는 `UNSATISFIABLE_LOCAL_POLICY`에서 멈춥니다.
+- 1.16보다 약해짐: 불확실성이 자기 밴드를 승격시키던 7,506개 라우트가 한 밴드 낮게 리뷰되고(C1-iii) — 그중 6,860개는 `CRITICAL` 대신 `HIGH`라 그 밴드의 사람 게이트가 없습니다 — 그 승격에 기대던 `minimum_reviewers: 2` 라우트 33개는 `UNSATISFIABLE_LOCAL_POLICY`에서 멈춥니다.
 - 1.16보다 약해짐: `MEDIUM` 리뷰 7,069개가 하한에 맞춘 더 낮은 tier 리뷰어를 앉히고(C4), 8개는 구현자 tier에 맞는 빈 모델이 없어 게이트됩니다.
-- 1.16보다 약해짐: 재시도 4,671개가 tier를 올리는 대신 실패한 모델을 effort 한 단계 올려 유지하며(C5), 그중 2,573개는 더 낮은 tier 좌석이 리뷰하고 164개는 한 밴드 낮습니다.
-- 1.16보다 약해짐: context 없는 `REVIEW` 라우트 1,953개가 좌석 하나 적게 리뷰해 리드 혼자면 `cross_family_review`가 거짓이 되고, 143개는 더 낮은 tier 리드를 리뷰어로 셉니다(REVIEW 리드).
-- 1.16보다 약해짐: `implementer`를 선언하면 밴드 tier를 그 family만 공급할 때 리뷰 549개가 한 family를 공유하고, 쿼터 판독에서 `exhausted` family는 보류된 모델처럼 슬레이트를 얇게 합니다.
+- 1.16보다 약해짐: 재시도 7,408개가 tier를 올리는 대신 실패한 모델을 effort 한 단계 올려 유지합니다(C5). 그중 2,573개는 더 낮은 tier 좌석이 리뷰하고, 164개는 한 밴드 낮으며(120개는 더 이상 `CRITICAL`이 아님), 1,968개는 1.16의 더 강한 워커 때문에 판정할 모델이 없던(`no_adjudicator`) 곳에 판사를 앉힙니다.
+- 1.16보다 약해짐: context 없는 `REVIEW` 라우트는 좌석 하나 적게 리뷰하므로(REVIEW 리드) 1,977개 라우트가 `cross_family_review`를 잃고(리드 혼자면 두 번째 family가 없음), 623개는 더 낮은 tier 리드를 리뷰어로 셉니다.
+- 1.16보다 약해짐: `implementer`를 선언하면 밴드 tier를 그 family만 공급할 때 리뷰 549개가 한 family를 공유하고, 쿼터 판독에서 `exhausted` family는 보류된 모델처럼 슬레이트를 얇게 합니다(601개 라우트가 `cross_family_review`를 잃고, 607개는 더 낮은 tier 리뷰어를, 31개는 더 낮은 tier 워커를 앉힘).
 - `LOW` 위험 작업의 워커 effort가 3,132개 라우트에서 표의 `HIGH`에서 `MEDIUM`으로 내려갑니다(C2).
 - deep-loop는 `LOW`의 결정적 검사를 강제하지 않습니다. 이전에도 `LOW` 리뷰어를 디스패치하지 않았습니다.
 - 업데이트는 정책 다이제스트 변경으로 진행 중인 deep-loop 실행을 멈춥니다. 실행 중인 루프를 먼저 마무리하세요. 1.17 필드를 쓴 요청은 1.16에서 exit 2를 받습니다.

@@ -78,21 +78,16 @@ work there, not a tier difference. The same applies when a `MEDIUM`-band task
 gets promoted to `principal_architect` by the architecture rule: its reviewer
 is a peer, not a superior.
 
-Pick the first candidate that is both available and a different family from the
-implementer:
-
-| Implementer | Preferred reviewer |
-|---|---|
-| `worker_fast` | `worker_balanced` |
-| `worker_balanced` | `reasoning_specialist` |
-| `worker_balanced_alt` | `senior_engineer` |
-| `senior_engineer` | `reasoning_specialist` |
-| `reasoning_specialist` | `senior_engineer` |
-| `principal_architect` | `reasoning_specialist` |
-
-If no cross-family reviewer is available, use the strongest available
-same-family reviewer and record `cross_family_review: false`. A same-family
-review is worth having; it is just worth less, and the metric should say so.
+Seat the lowest-tier candidate whose model reaches max(the band's floor, the
+implementer's tier), from a different family first, ties in candidate order (a
+role bound to the model beats one reaching it through a fallback). With no
+cross-family candidate at that tier, take a same-family one at it and record
+`cross_family_review: false` — a same-family review is worth having; it is
+just worth less, and the metric should say so. When no listed candidate
+reaches the tier, every role is searched the same way; when nothing does, the
+strongest candidate is seated and `review_below_band` gates the route. The
+per-implementer preference table that sat here until 1.17.0 is gone
+(`routing-policy.md`, The MEDIUM reviewer fits the floor).
 
 ### `HIGH`
 

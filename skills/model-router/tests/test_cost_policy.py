@@ -796,3 +796,77 @@ def test_low_x_review_a_low_review_task_is_its_lead_alone():
     assert out["review"]["band"] == "LOW" and out["review"]["mode"] == "model_review"
     assert [s["seat"] for s in out["dispatch_seats"]] == ["reviewer-1"]
     assert out["dispatch_seats"][0]["model_id"] == out["selected_model"]
+
+
+# --------------------------------------------------------------------------
+# Implementation review i1 (gpt-6-sol + gpt-6-astra, 2026-09-28)
+# --------------------------------------------------------------------------
+
+def test_i1_the_retry_effort_is_above_every_record_of_the_model_not_only_its_failures():
+    """sol F1 / astra F2: a recovered operational attempt that ran at MAX is a
+    record of that model's effort too — nothing is above it, so no same-model
+    retry, and the ladder climbs."""
+    code, out = _retry(_fail("openai_worker_fast", "MAX", None, "a1", H1, kind="timeout", recovery=H3),
+                       _fail("openai_worker_fast", "HIGH", H2, "a2", H4))
+    assert code == 0 and _climbed(out)
+    assert not any(n.startswith("same-model retry") for n in out["notes"])
+
+
+def test_i1_a_review_leads_assigned_effort_is_its_dispatched_effort():
+    """astra F1: a REVIEW lead is dispatched at max(its effort, the review's).
+    An under-declared failure must not bring the retry back to that effort."""
+    base = _req("REVIEW", (0, 0, 0, 0), availability_snapshot={"checks_available": False})
+    _, free = _route(base)
+    lead = free["dispatch_seats"][0]
+    assert lead["model_id"] == free["selected_model"]
+    failure = {"attempt_id": "a1", "model_id": lead["model_id"], "kind": "capability_failure",
+               "evidence_sha256": H1, "effort": "MEDIUM", "retry_evidence_sha256": H2}
+    _, out = _route({**base, "attempt_outcomes": [failure]})
+    if out["selected_model"] == lead["model_id"]:
+        levels = CFG["effort_levels"]
+        assert levels.index(out["dispatch_seats"][0]["effort"]) > levels.index(lead["effort"])
+
+
+def test_i1_a_retry_the_settled_plan_cannot_keep_is_no_same_model_retry():
+    """astra F3: the retry's failure penalty promotes this REVIEW to HIGH, whose
+    searched lead is another model. The route must not claim a same-model retry
+    it did not make; the ladder applies instead."""
+    base = _req("REVIEW", (0, 2, 1, 0), flags=["bridge_down"])
+    _, free = _route(base)
+    failure = {"attempt_id": "a1", "model_id": free["selected_model"], "kind": "capability_failure",
+               "evidence_sha256": H1, "effort": "HIGH", "retry_evidence_sha256": H2}
+    _, out = _route({**base, "attempt_outcomes": [failure]})
+    claimed = any(n.startswith("same-model retry") for n in out["notes"])
+    assert claimed == (out["selected_model"] == free["selected_model"]), (out["selected_model"], claimed)
+    if not claimed:
+        assert free["selected_model"] in out["excluded_prior_failures"]
+
+
+def test_i1_the_low_cap_skips_any_prior_attempt():
+    """sol F3: DD-B3 caps only a task without failure history; a recovered
+    operational attempt is history too, so the retry keeps the table effort."""
+    code, out = _route(_req("DEBUGGING", (1, 0, 0, 0), attempt_outcomes=[
+        _fail("openai_worker_fast", None, None, "a1", H1, kind="timeout", recovery=H3)]))
+    assert out["risk_band"] == "LOW" and out["selected_effort"] == "HIGH"
+    assert not any(n.startswith("effort cap:") for n in out["notes"])
+
+
+def test_i1_quota_low_does_not_move_a_review_lead():
+    """sol F4: a REVIEW task's lead is a review seat; `low` moves the worker
+    seat only, and the note says review seats are unaffected."""
+    base = _req("REVIEW", (2, 1, 1, 0))
+    _, plain = _route(base)
+    family = FAMILY[plain["selected_model"]]
+    _, low = _route({**base, "availability_snapshot": {"family_quota": {family: "low"}}})
+    assert low["dispatch_seats"] == plain["dispatch_seats"]
+
+
+def test_i1_a_cap_a_compensation_overrode_leaves_no_cap_note():
+    """astra F7: a LOW ARCHITECTURE with long_horizon seats the architect; with
+    fable and astra withheld its fallback compensates to MAX — the cap did not
+    survive, so no cap note."""
+    _, out = _route(_req("ARCHITECTURE", (0, 0, 0, 0), flags=["long_horizon"],
+                         availability_snapshot={"unavailable_models": [ID("claude_architect"),
+                                                                       ID("openai_frontier")]}))
+    if out["selected_effort"] != "MEDIUM":
+        assert not any(n.startswith("effort cap:") for n in out["notes"]), out["notes"]

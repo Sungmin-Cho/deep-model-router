@@ -2,7 +2,7 @@
 """Paired measurement of the codex reviewer recipe (design 2026-09-25 DD-B9,
 plan B8).
 
-Two read-only runs of ONE model on ONE fixed review prompt from an empty,
+Two read-only runs of ONE model on ONE fixed review prompt from ONE empty,
 throwaway working directory: the current recipe, and the same argv plus
 `--ignore-user-config --ephemeral`. What is compared is the boot input the
 `codex-exec-json-v1` envelope reports (`turn.completed.usage.input_tokens`),
@@ -55,13 +55,9 @@ def current_argv(codex: str, model_id: str) -> list[str]:
             "-s", "read-only", "--skip-git-repo-check", "--json", "-"]
 
 
-def run_once(argv: list[str], timeout: int) -> dict:
-    cwd = tempfile.mkdtemp(prefix="dmr-b8-")
-    try:
-        proc = subprocess.run(argv, input=PROMPT, capture_output=True, text=True,
-                              cwd=cwd, timeout=timeout)
-    finally:
-        shutil.rmtree(cwd, ignore_errors=True)
+def run_once(argv: list[str], cwd: str, timeout: int) -> dict:
+    proc = subprocess.run(argv, input=PROMPT, capture_output=True, text=True,
+                          cwd=cwd, timeout=timeout)
     envelope = dispatch_agent._decode_envelope(proc.stdout.encode(), dispatch_agent.CODEX_JSON_FORMAT)
     text = envelope.get("text") or ""
     lines = [line.strip() for line in text.splitlines()]
@@ -98,8 +94,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     base = current_argv(args.codex, model_id)
-    runs = {"current": run_once(base, args.timeout),
-            "candidate": run_once(base[:-1] + CANDIDATE_FLAGS + base[-1:], args.timeout)}
+    cwd = tempfile.mkdtemp(prefix="dmr-b8-")        # one cwd for the pair (plan B8)
+    try:
+        runs = {"current": run_once(base, cwd, args.timeout),
+                "candidate": run_once(base[:-1] + CANDIDATE_FLAGS + base[-1:], cwd, args.timeout)}
+        leftovers = sorted(os.listdir(cwd))
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
     for name, run in runs.items():
         (args.out_dir / f"b8-{name}.stdout.jsonl").write_text(run.pop("stdout"))
         (args.out_dir / f"b8-{name}.stderr.txt").write_text(run.pop("stderr"))
@@ -108,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     adopt = bool(ratio is not None and ratio <= ADOPT_BELOW
                  and runs["current"]["format_ok"] and runs["candidate"]["format_ok"])
     summary = {"measured": True, "at": now, "model_key": args.model_key, "quota": quota,
+               "cwd": cwd, "cwd_left_after_runs": leftovers,
                "runs": runs, "ratio": ratio, "adopt": adopt}
     (args.out_dir / "b8-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(f"current {cur} / candidate {cand} input tokens; ratio {ratio}; adopt {adopt}")

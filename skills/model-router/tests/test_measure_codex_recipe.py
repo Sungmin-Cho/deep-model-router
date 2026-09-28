@@ -17,7 +17,7 @@ TOOL = Path(__file__).resolve().parent.parent / "scripts" / "tools" / "measure_c
 FAKE_CODEX = r'''#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["FAKE_CODEX_LOG"], "a") as f:
-    f.write(json.dumps(sys.argv[1:]) + "\n")
+    f.write(json.dumps(sys.argv[1:] + ["cwd=" + os.getcwd()]) + "\n")
 sys.stdin.read()
 tokens = int(os.environ["FAKE_EPHEMERAL_TOKENS"]) if "--ephemeral" in sys.argv else 26000
 text = os.environ.get("FAKE_TEXT", "=== REVIEW ===\nverdict: PASS\nThe sign is fixed.")
@@ -77,7 +77,10 @@ def test_a_measured_pair_compares_boot_input_and_format(tmp_path):
     proc, calls = _run(tmp_path, sessions, codex)
     assert proc.returncode == 0, proc.stderr
     assert len(calls) == 2
-    current, candidate = calls
+    # One empty cwd for the pair, gone afterwards (plan B8: same cwd).
+    assert calls[0][-1] == calls[1][-1] and calls[0][-1].startswith("cwd=")
+    assert not Path(calls[0][-1][4:]).exists()
+    current, candidate = [c[:-1] for c in calls]
     assert "--ephemeral" not in current and "--ignore-user-config" not in current
     assert candidate[:-1] == current[:-1] + ["--ignore-user-config", "--ephemeral"]
     assert current[current.index("-s") + 1] == "read-only" and current[-1] == "-"

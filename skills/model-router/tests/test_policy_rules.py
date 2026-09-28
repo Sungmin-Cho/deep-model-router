@@ -205,14 +205,10 @@ def _c4_check(req, prev, cur):
     return out
 
 
-def _no_capability_failure(req) -> bool:
-    return not req.get("prior_failures") and not any(
-        row["kind"] == "capability_failure" for row in req.get("attempt_outcomes") or [])
-
-
 def _c2_admits(req, prev):
     return ("error" not in prev and prev["risk_band"] == "LOW"
-            and "unknown_root_cause" not in req["flags"] and _no_capability_failure(req))
+            and "unknown_root_cause" not in req["flags"]
+            and not req.get("prior_failures") and not req.get("attempt_outcomes"))
 
 
 def _c2_check(req, prev, cur):
@@ -276,8 +272,12 @@ def _c5_target(req):
     free = route_live({k: v for k, v in req.items() if k != "attempt_outcomes"}, before)
     if "error" in free or free["terminal"] or free["selected_model"] != model:
         return None
-    ran = [EFFORTS.index(r["effort"]) for r in failures if "effort" in r]
-    above = max(ran + [EFFORTS.index(free["selected_effort_effective"])]) + 1
+    ran = [EFFORTS.index(r["effort"]) for r in history if r["model_id"] == model and "effort" in r]
+    assigned = EFFORTS.index(free["selected_effort_effective"])
+    for seat in free.get("dispatch_seats") or []:
+        if seat["model_id"] == model and seat["effort"] is not None:
+            assigned = max(assigned, EFFORTS.index(seat["effort"]))
+    above = max(ran + [assigned]) + 1
     ceiling = CFG["models"][next(k for k, m in CFG["models"].items() if m["id"] == model)].get(
         "effort_ceiling")
     if above >= len(EFFORTS) or (ceiling and above > EFFORTS.index(ceiling)):
@@ -289,6 +289,8 @@ def _c5_check(req, prev, cur):
     target = _c5_target(req)
     if target is None or cur.get("terminal"):
         return []
+    if cur == prev:
+        return []        # the settled plan could not keep the model: the ladder, unchanged
     model, effort = target
     out = []
     if cur["selected_model"] != model:
@@ -443,7 +445,7 @@ RULES: dict[str, Rule] = {
                            "review.independence_required", "review.review_independence",
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c7_check, changed_sample=215, changed_full=2309),
+        check=_c7_check, changed_sample=212, changed_full=2288),
 }
 
 
@@ -631,6 +633,19 @@ _INDEPENDENCE_ORDER = {"not_applicable": -1, "unavailable": 0, "degraded": 1, "p
                        "enforced": 3}
 
 
+def _seat_efforts(route_out: dict) -> list[int]:
+    """Each reviewer's effective effort (a ceiling record wins), strongest first."""
+    rv = route_out["review"]
+    capped = {r["role"]: r["capped_at"] for r in route_out["effort_ceiling_applied"]}
+    return sorted((EFFORTS.index(capped.get(role, rv["effort"])) for role in rv["reviewers"]
+                   if capped.get(role, rv["effort"]) is not None), reverse=True)
+
+
+def _worker_floor_broken(route_out: dict) -> bool:
+    return any(r["floor_broken"] and r["role"] == route_out["selected_role"]
+               for r in route_out["effort_ceiling_applied"])
+
+
 def weaker(prev: dict, cur: dict) -> str | None:
     """The first way `cur` is weaker than `prev`, or None. DD-B11's "weaker"
     covers every `_contract_violation` row plus the worker tier and is not
@@ -638,18 +653,27 @@ def weaker(prev: dict, cur: dict) -> str | None:
     any difference as a violation (a stronger review is a contract change it
     will not adopt), and counting a raised band or an added reviewer as
     "weaker" would fill the CHANGELOG with routes that got stronger. A gate
-    that fires where it did not is counted apart, by `gates_added`."""
+    that fires where it did not is counted apart, by `gates_added`; a gate
+    that no longer fires is weaker whatever the band did (review i1)."""
     if "error" in prev or "error" in cur or prev["terminal"]:
         return None
     if cur["terminal"]:
         return "terminal"
+    if set(prev["human_control_causes"]) - set(cur["human_control_causes"]):
+        return "gate_lost"
+    if TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]:
+        return "worker_tier"
+    if _worker_floor_broken(cur) and not _worker_floor_broken(prev):
+        return "worker_floor_broken"
     pr, cr = prev["review"], cur["review"]
     if BANDS.index(cr["band"]) < BANDS.index(pr["band"]):
         return "review.band"
     if BANDS.index(cr["band"]) > BANDS.index(pr["band"]):
-        return None                           # a stronger band: a different, larger review
+        return None                           # a larger review by the band's own contract
     if len(cr["reviewers"]) < len(pr["reviewers"]):
         return "reviewer_count"
+    if set(pr["required_checks"]) - set(cr["required_checks"]):
+        return "required_checks"
     if pr["effort"] is not None and (cr["effort"] is None
                                      or EFFORTS.index(cr["effort"]) < EFFORTS.index(pr["effort"])):
         return "review.effort"
@@ -669,10 +693,10 @@ def weaker(prev: dict, cur: dict) -> str | None:
     ct = sorted((TIER_OF[m] for m in cr["reviewer_models"] if m), reverse=True)
     if any(c < p for c, p in zip(ct, pt)):
         return "reviewer_tiers"
+    if any(c < p for c, p in zip(_seat_efforts(cur), _seat_efforts(prev))):
+        return "reviewer_efforts"
     if len(cr["review_depth_reduced"]) > len(pr["review_depth_reduced"]):
         return "review_depth_reduced"
-    if TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]:
-        return "worker_tier"
     return None
 
 
@@ -997,25 +1021,39 @@ EXHAUSTED = lambda req: "exhausted" in ((req.get("availability_snapshot") or {})
 
 def test_invariant_4_the_worker_never_falls_below_1161_but_for_the_same_model_retry():
     """No failure history: the worker's tier is at least 1.16.1's. With one:
-    the failed model again only where all four C5 conditions hold, else at
-    least 1.16.1's. Out of scope, each for its stated reason: a REVIEW task's
-    lead is a review seat sized by its band (DD-B7); a declared implementer is
-    the caller's (gated when weaker, DD-B1); an exhausted family is withheld
-    supply the 1.16.1 projection does not see."""
+    the failed model again only where all four C5 conditions hold — and then
+    above every effort it ran at, within its ceiling, for every class — else
+    at least 1.16.1's. Out of the tier half, each for its stated reason: a
+    REVIEW task's lead is a review seat sized by its band (DD-B7); a declared
+    implementer is the caller's (gated when weaker, DD-B1); an exhausted
+    family is withheld supply the 1.16.1 projection does not see."""
     checked = same_model = 0
     for name, req, out in finals():
-        if ("error" in out or out["terminal"] or req["task_class"] == "REVIEW"
-                or "implementer" in req or EXHAUSTED(req)):
+        if "error" in out or out["terminal"] or "implementer" in req or EXHAUSTED(req):
+            continue
+        target = _c5_target(req)
+        if target is not None and out["selected_model"] == target[0]:
+            # The absolute limits hold for every class, REVIEW included: the
+            # failed model, one level above every effort any of its records
+            # ran at, within its ceiling — at the effort it is dispatched at.
+            same_model += 1
+            model = out["selected_model"]
+            ran = [EFFORTS.index(r["effort"]) for r in req.get("attempt_outcomes") or []
+                   if r["model_id"] == model and "effort" in r]
+            seat = next((s for s in out.get("dispatch_seats") or [] if s["model_id"] == model), None)
+            got = EFFORTS.index(seat["effort"] if seat else out["selected_effort_effective"])
+            assert ran and got > max(ran), (name, got, ran)
+            ceiling = CFG["models"][next(k for k, m in CFG["models"].items()
+                                         if m["id"] == model)].get("effort_ceiling")
+            assert ceiling is None or got <= EFFORTS.index(ceiling), name
+            assert got >= EFFORTS.index(target[1]), name
+            continue
+        if req["task_class"] == "REVIEW":
             continue
         base = route_snapshot(req)
         if "error" in base or base["terminal"]:
             continue
         checked += 1
-        target = _c5_target(req)
-        if target is not None:
-            same_model += 1
-            assert out["selected_model"] == target[0], name
-            continue
         assert TIER_OF[out["selected_model"]] >= TIER_OF[base["selected_model"]], (
             name, base["selected_model"], out["selected_model"])
     assert checked > (60_000 if FULL else 2_000) and same_model, (checked, same_model)
@@ -1037,11 +1075,26 @@ def monotonic(base: dict, raised: dict) -> list[str]:
     """Invariant 2, scoped: raising a dimension or adding a critical/elevating
     flag never lowers the review band, the band's reviewer count or its
     reviewer floor, and a gate that fired still fires (a production hotfix may
-    DEFER it — the cause stays; that is the one sanctioned softening)."""
-    if "error" in base or "error" in raised or base["terminal"] or raised["terminal"]:
+    DEFER it — the cause stays; that is the one sanctioned softening).
+
+    The floor compared is the BAND's (MEDIUM 1, HIGH and CRITICAL 2). MEDIUM
+    also asks its one reviewer to match the implementer (DD-B5); HIGH and
+    CRITICAL answer the same risk with two independent seats at the frontier
+    floor instead, so a tier-3 implementer's MEDIUM term does not carry into
+    them — the one place invariant 1's per-band floor and this band-level
+    floor differ (ledger, review i1)."""
+    if "error" in base or "error" in raised or raised["terminal"]:
         return []
+    if base["terminal"]:
+        # Raising the risk turned a terminal into a route: nothing may have
+        # been dropped on the way — every cause the terminal carried still fires.
+        lost = set(base["human_control_causes"]) - set(raised["human_control_causes"])
+        return [f"terminal -> route lost gates {sorted(lost)}"] if lost else []
     out = []
     b, r = base["review"], raised["review"]
+    floor = lambda band: BAND_FLOOR[band] or 0                      # noqa: E731
+    if floor(r["band"]) < floor(b["band"]):
+        out.append(f"reviewer floor {floor(b['band'])} -> {floor(r['band'])}")
     if BANDS.index(r["band"]) < BANDS.index(b["band"]):
         out.append(f"band {b['band']} -> {r['band']}")
     elif r["band"] == b["band"] and (len(r["reviewers"]) - r["compensating_reviewers"]
