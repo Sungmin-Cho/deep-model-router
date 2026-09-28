@@ -68,6 +68,7 @@ REQUEST_V1_KEYS = frozenset({
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
+    "checks_available",
 })
 LOCAL_POLICY_KEYS = frozenset({
     "minimum_capability_tier", "minimum_effort", "minimum_reviewers",
@@ -566,10 +567,45 @@ class Policy:
                 "router.confidence.skip_uncertainty_penalty_when_band_raised must be true or "
                 f"false, got {skip!r}")
         self.skip_uncertainty_penalty: bool = skip
+        # effort_caps: {band_<BAND>: level} (DD-B3, C2) — the class table's
+        # effort for that risk band is capped before any floor applies.
+        caps = cfg.get("effort_caps")
+        if not isinstance(caps, Mapping):
+            raise ConfigError("effort_caps must be a mapping (possibly empty)")
+        self.effort_caps: dict[str, str] = {}
+        for key, level in caps.items():
+            band = key[len("band_"):] if isinstance(key, str) and key.startswith("band_") else None
+            if band not in self.bands or level not in self.efforts:
+                raise ConfigError(
+                    f"effort_caps.{key} = {level!r}: keys are band_<risk band>, values effort levels")
+            self.effort_caps[band] = level
 
-        self.band_reviewer_floor: dict[str, int] = {}
+        # `None` for a band that seats no model reviewer — only the lowest band
+        # may (design 2026-09-25 DD-B4: LOW review is deterministic checks).
+        # The sentinel is read only where the settled band is that one; any
+        # other reader meeting it raises rather than taking it for 0.
+        self.band_reviewer_floor: dict[str, int | None] = {}
         for band in self.bands:
             spec = cfg["review"][band]
+            if spec.get("reviewers") == [] and "candidates" not in spec:
+                if band != self.bands[0]:
+                    raise ConfigError(
+                        f"review.{band} seats no reviewer; only the lowest band "
+                        f"({self.bands[0]}) may be reviewed by deterministic checks alone")
+                if spec.get("effort") is not None or spec.get("independent"):
+                    raise ConfigError(
+                        f"review.{band} seats no reviewer, so its effort must be null and "
+                        f"it cannot be independent")
+                checks = spec.get("required_checks")
+                if not isinstance(checks, list) or not checks or not all(
+                        isinstance(c, str) and c for c in checks):
+                    raise ConfigError(
+                        f"review.{band} seats no reviewer, so it must name the "
+                        f"deterministic checks it consists of (required_checks)")
+                self.band_reviewer_floor[band] = None
+                continue
+            if spec.get("effort") not in self.efforts:
+                raise ConfigError(f"review.{band}.effort {spec.get('effort')!r} is not an effort level")
             roles = [r for r in (spec.get("reviewers") or spec.get("candidates") or [])
                      if r in nominal]
             if not roles:
@@ -1126,7 +1162,7 @@ _NULL_ROUTE_SCALARS = (
     "implementer_source")
 _NULL_REVIEW_LISTS = frozenset({"reviewers", "reviewer_models", "review_depth_reduced",
                                 "self_review_avoided", "required_checks"})
-_NULL_REVIEW_SCALARS = ("band", "effort", "independence_required", "review_independence",
+_NULL_REVIEW_SCALARS = ("band", "mode", "effort", "independence_required", "review_independence",
                         "independence_compromised", "judge_unavailable",
                         "band_floor_unsatisfiable", "compensating_reviewers", "judge",
                         "judge_model")
@@ -1211,6 +1247,9 @@ class Task:
     _policy_pin: str | None = field(default=None, repr=False, compare=False)
     # RouteRequestV1 `implementer` (DD-B1): caller-declared, like review_context.
     _implementer: dict | None = field(default=None, repr=False, compare=False)
+    # availability_snapshot.checks_available (DD-B4): false when this repository
+    # cannot run the deterministic checks a LOW review consists of. None = true.
+    _checks_available: bool | None = field(default=None, repr=False, compare=False)
 
     @property
     def total_prior_attempts(self) -> int:
@@ -1265,6 +1304,8 @@ class Task:
         self._validate_review_context(policy)
         self._validate_attempt_outcomes(policy)
         self._validate_implementer(policy)
+        if self._checks_available is not None:
+            self._require_bool("availability_snapshot.checks_available", self._checks_available)
         self._policy = policy
 
     def _validate_implementer(self, policy: Policy) -> None:
@@ -1824,6 +1865,15 @@ def select_effort(task: Task, band: str, execution_band: str, policy: Policy) ->
     else:
         effort = table["multi_file_feature"] if task.complexity >= 2 else table["straightforward_impl"]
 
+    # DD-B3 (C2): a LOW-risk task does not get the class table's HIGH effort.
+    # Before the floors, so an execution floor, a local minimum and a
+    # compensation still win; not on a retry or an unknown root cause, where
+    # the effort is doing the diagnosing.
+    cap = policy.effort_caps.get(band)
+    capped_from = None
+    if (cap is not None and not task.has("unknown_root_cause") and task.prior_failures == 0
+            and policy.efforts.index(effort) > policy.efforts.index(cap)):
+        capped_from, effort = effort, cap
     floors = cfg["effort_floors"]
     for condition, floor, why in (
         (band == "HIGH", floors["band_HIGH"], "band HIGH"),
@@ -1837,7 +1887,12 @@ def select_effort(task: Task, band: str, execution_band: str, policy: Policy) ->
             if raised != effort:
                 notes.append(f"{why} floored effort at {floor}")
                 effort = raised
+    if capped_from is not None and effort == cap:
+        notes.append(f"{EFFORT_CAP_NOTE} band {band} capped effort {capped_from} at {cap}")
     return effort, notes
+
+
+EFFORT_CAP_NOTE = "effort cap:"
 
 
 # --------------------------------------------------------------------------
@@ -1878,12 +1933,14 @@ def select_review(band: str, worker: str, policy: Policy, resolver: "Resolver") 
     return spec
 
 
-def _medium_reviewer_floor(policy: Policy, band: str, worker_model: str | None) -> int:
+def _medium_reviewer_floor(policy: Policy, band: str, worker_model: str | None) -> int | None:
     """What a MEDIUM reviewer has to reach (design 2026-09-25 DD-B5, C4): the
     band's floor, and never less than the implementer — the one reviewer is
     the only check on that implementer's work. Other bands keep their floor;
     their two independent seats are already at or above the frontier floor."""
     floor = policy.band_reviewer_floor[band]
+    if floor is None:
+        return None                     # the deterministic LOW band: no reviewer seat to floor
     if band == "MEDIUM" and worker_model is not None:
         floor = max(floor, policy.tier_of[worker_model])
     return floor
@@ -1933,6 +1990,49 @@ def _seat_medium_reviewer(spec: dict, worker: str, policy: Policy, resolver: "Re
     if pool:
         return max(pool, key=lambda x: (policy.tier_of[x[2]], not fell_back(x[1], x[2]), -x[0]))[1]
     return ranked[0]
+
+
+def _review_seat_supply(policy: Policy, task: Task, band: str) -> tuple[int, int]:
+    """(reviewer seats, seats that can hold distinct families) the class x band
+    seat matrix gives this band (design 2026-09-25 DD-B7): the worker plus the
+    band's reviewers, and a judge at the top band."""
+    spec = policy.cfg["review"][band]
+    reviewers = len(spec["reviewers"]) if "reviewers" in spec else 1
+    judge = 1 if band == policy.bands[-1] else 0
+    return reviewers, 1 + reviewers + judge
+
+
+def _low_review_escape(task: Task, policy: Policy, band: str, route_path: str | None,
+                       lp: dict) -> tuple[str, list[str]] | None:
+    """Where a LOW route that deterministic checks cannot carry goes instead
+    (design 2026-09-25 DD-B4). Raise only, once, before the fixed point: a
+    dispute needs a model review; so does a repository whose checks cannot
+    run; and a caller floor on reviewers or provider families takes the lowest
+    band whose seat matrix can meet it. None when LOW stands — or when no band
+    can meet the floor, which then ends where it always did, at
+    UNSATISFIABLE_LOCAL_POLICY, without a detour through the bands."""
+    low = policy.bands[0]
+    if band != low or policy.band_reviewer_floor[low] is not None:
+        return None
+    target, reasons = 0, []
+    if route_path == "disagreement":
+        target, reasons = 1, ["review_disagreement"]
+    if task._checks_available is False:
+        target = max(target, 1)
+        reasons.append("checks_unavailable")
+    need_reviewers = lp.get("minimum_reviewers") or 0
+    need_families = lp.get("minimum_provider_families") or 0
+    supply = [_review_seat_supply(policy, task, b) for b in policy.bands]
+    if need_reviewers > supply[0][0] or need_families > supply[0][1]:
+        fits = [i for i, (seats, families) in enumerate(supply)
+                if seats >= need_reviewers and families >= need_families]
+        if fits:
+            target = max(target, fits[0])
+            if need_reviewers > supply[0][0]:
+                reasons.append("minimum_reviewers")
+            if need_families > supply[0][1]:
+                reasons.append("minimum_provider_families")
+    return (policy.bands[target], reasons) if target else None
 
 
 def _deconflict(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -> dict:
@@ -2060,6 +2160,9 @@ def _seat_judge(review: dict, worker: str, judge_role: str, policy: "Policy",
     # Retry once, freeing the strongest reviewer seat if another model that
     # still satisfies the band can take its place.
     floor = policy.band_reviewer_floor[review["band"]]
+    if floor is None:
+        raise RouterInvariantError(
+            f"a judge is being seated on the {review['band']} band, which seats no reviewer")
     # The implementer's model is off-limits to a REPLACEMENT reviewer at every
     # band, `independent` or not.
     #
@@ -2157,6 +2260,15 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
     # tier (DD-B5), so a MEDIUM slate below its implementer is deficient here
     # too and the search can reach an adequate model no role is bound to.
     floor = _medium_reviewer_floor(policy, review["band"], worker_model)
+    if floor is None:
+        # The deterministic LOW band seats no reviewer: its only possible seats
+        # are a REVIEW task's lead (which keeps its own floor, the worker's
+        # tier) and a compensation's extra reviewer, which no band floor asked
+        # for. Anything more is a plan this band cannot have produced.
+        if len(review["reviewers"]) > review.get("compensating_reviewers", 0) + int(source_review):
+            raise RouterInvariantError(
+                f"{review['band']} seats no reviewer but the plan names {review['reviewers']}")
+        floor = 0
     if worker_model is None and not source_review:
         return unavailable()
     need_judge = judge is not None or bool(review.get("judge_unavailable"))
@@ -2167,6 +2279,8 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
         return unavailable()
 
     count = len(review["reviewers"])
+    if source_review:
+        count = max(count, 1)           # the lead is a seat even where the band has no reviewer
     # Aliases carry one model each; reserve a unique alias for every real seat.
     aliases = list(dict.fromkeys([r for r in review["reviewers"] if r != worker]
                                 + [r for r in policy.roles if r != worker]))
@@ -2185,7 +2299,8 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
             policy.cfg["models"][key]["id"] for key in list(dict.fromkeys(resolver._candidates(role) + offered))
             if policy.cfg["models"][key]["id"] not in resolver.unusable
             and policy.tier_of[policy.cfg["models"][key]["id"]] >= floor
-            and _clamp(policy, review["effort"], policy.cfg["models"][key]["id"]) == review["effort"]))
+            and (review["effort"] is None
+                 or _clamp(policy, review["effort"], policy.cfg["models"][key]["id"]) == review["effort"])))
     if source_review:
         lead_floor = (policy.tier_of[worker_model] if worker_model else
                       policy.cfg["models"][policy.cfg["role_bindings"]["default"][worker]]["capability_tier"])
@@ -2193,7 +2308,8 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
         lead_floor = max(lead_floor, (lp.get("minimum_capability_tier") or 0))
         minimum_effort = (lp.get("minimum_effort") or review["effort"])
         pools[worker] = [m for m in pools[worker] if policy.tier_of[m] >= lead_floor
-                         and _clamp(policy, minimum_effort, m) == minimum_effort]
+                         and (minimum_effort is None
+                              or _clamp(policy, minimum_effort, m) == minimum_effort)]
     best, best_rank = None, None
 
     def search(index, assigned, used, preference):
@@ -2735,6 +2851,8 @@ def request_sha256_of(task: Task) -> str:
         canonical["attempt_outcomes"] = task._attempt_outcomes
     if task._implementer is not None:
         canonical["implementer"] = task._implementer
+    if task._checks_available is not None:
+        canonical["checks_available"] = task._checks_available
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -2810,8 +2928,12 @@ def _contract_violation(policy: Policy, cand: dict, legacy: dict) -> str | None:
     lt = sorted((policy.tier_of[m] for m in lr["reviewer_models"] if m), reverse=True)
     if len(ct) != len(lt) or any(c < l for c, l in zip(ct, lt)):
         return "reviewer_tiers"
-    ce = sorted((ei(_seat_effort(policy, cand, role, cr["effort"])) for role in cr["reviewers"]), reverse=True)
-    le = sorted((ei(_seat_effort(policy, legacy, role, lr["effort"])) for role in lr["reviewers"]), reverse=True)
+    # A seat with no review effort (the lead of a REVIEW task on the band that
+    # seats no reviewer, DD-B4) carries the worker's effort, compared above.
+    ce = sorted((ei(e) for role in cr["reviewers"]
+                 if (e := _seat_effort(policy, cand, role, cr["effort"])) is not None), reverse=True)
+    le = sorted((ei(e) for role in lr["reviewers"]
+                 if (e := _seat_effort(policy, legacy, role, lr["effort"])) is not None), reverse=True)
     if any(c < l for c, l in zip(ce, le)):
         return "reviewer_efforts"
     if len(cr["review_depth_reduced"]) > len(lr["review_depth_reduced"]):
@@ -2866,7 +2988,8 @@ def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
     for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
         effort = rv["effort"]
         if lead and role == result["selected_role"]:
-            effort = max((effort, result["selected_effort_effective"]), key=policy.efforts.index)
+            effort = (result["selected_effort_effective"] if effort is None else
+                      max((effort, result["selected_effort_effective"]), key=policy.efforts.index))
         seats.append(dict(seat=f"reviewer-{i+1}", role=role, model_id=model, effort=effort,
                           effort_native=policy.native_effort(model, effort)))
     if rv["judge_model"]:
@@ -3111,6 +3234,9 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         if lp.get("minimum_effort") is not None:
             asked = lp["minimum_effort"]
             if policy.efforts.index(asked) > policy.efforts.index(effort):
+                # A cap a local minimum overrode did not survive; its note
+                # would describe an effort the route does not use.
+                effort_notes = [n for n in effort_notes if not n.startswith(EFFORT_CAP_NOTE)]
                 effort_notes.append(f"local_policy raised effort to {asked}")
                 effort = asked
         disagreement = cfg["review"]["disagreement"]
@@ -3129,6 +3255,10 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # from a preliminary role set let a route whose *final* fallbacks pushed it
         # below the escalation floor still emit as executable.
         review_band = band
+        escape = _low_review_escape(task, policy, band, route_path, lp)
+        if escape is not None:
+            review_band, reasons = escape
+            overrides.extend(f"low_band_{why}_raised_review_to_{review_band}" for why in reasons)
         promoted_once = False
         promotion_confidence = None
         supply_exhausted: str | None = None
@@ -3186,6 +3316,11 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                     if extra:
                         review = dict(review)
                         review["reviewers"] = list(review["reviewers"]) + [extra]
+                        if review["effort"] is None:
+                            # A model seat on the band that seats none (DD-B4):
+                            # reviewed at the next band's effort, the first band
+                            # that asks for a model reviewer at all.
+                            review["effort"] = cfg["review"][policy.bands[1]]["effort"]
                         # `independent` stays the BAND's answer. Round 4 added the flip
                         # so the extra seat would be de-conflicted; round 10 showed what
                         # it actually bought — a bonus reviewer upgrading the band's own
@@ -3383,7 +3518,9 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # than no record: it is the rationale asserting a fact about the route that
         # the route contradicts.
         floor = _medium_reviewer_floor(policy, review["band"], resolved.get(worker))
-        shortfall = [
+        # None on the deterministic LOW band: its only possible seat is a
+        # compensation's extra reviewer, which no band floor asked for.
+        shortfall = [] if floor is None else [
             {"reviewer": role, "model": resolved[role],
              "capability_tier": policy.tier_of[resolved[role]], "band_requires": floor}
             for role in review["reviewers"] if resolved.get(role)
@@ -3515,8 +3652,9 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # the review band's own effort — the promoted band, because that is the
         # review that will run. Unlike the worker there is no table/floor split
         # here: what the band names IS the requirement.
-        review_floor = cfg["review"][review["band"]]["effort"]
-        for role in list(review["reviewers"]) + ([judge] if judge else []):
+        review_floor = review["effort"]
+        for role in (list(review["reviewers"]) + ([judge] if judge else [])
+                     if review_floor is not None else []):
             model = resolved.get(role)
             capped = _clamp(policy, review_floor, model)
             if capped != review_floor:
@@ -3905,6 +4043,10 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
                 "independence_required": review["independent"],
                 "review_independence": review_independence,
                 "required_checks": review.get("required_checks", []),
+                # DD-B4: `deterministic_checks` when the settled band seats no
+                # model reviewer — the checks ARE the review, and exit 0 means
+                # dispatchable, not that they passed.
+                "mode": "model_review" if review["reviewers"] else "deterministic_checks",
                 "judge": judge,
                 "judge_model": (resolved.get(judge) if judge else None) if executable else None,
                 "self_review_avoided": review.get("self_review_avoided") or [],
@@ -4000,9 +4142,13 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
         else:
             parts.append(f"Worker {r['selected_role']} at {r['selected_effort']} effort.")
     rv = r["review"]
-    parts.append(f"Review band {rv['band']}: {', '.join(rv['reviewers'])}, "
-                 f"independence_required={rv['independence_required']}, "
-                 f"review_independence={rv['review_independence']}.")
+    if rv["mode"] == "deterministic_checks":
+        parts.append(f"Review band {rv['band']}: no model reviewer — deterministic checks "
+                     f"({', '.join(rv['required_checks'])}) must pass before the work is accepted.")
+    else:
+        parts.append(f"Review band {rv['band']}: {', '.join(rv['reviewers'])}, "
+                     f"independence_required={rv['independence_required']}, "
+                     f"review_independence={rv['review_independence']}.")
     for sub in (rv.get("self_review_avoided") or []):
         parts.append(f"Reviewer slot substituted: {sub['replaced']} -> {sub['with']} "
                      f"({sub['reason']}).")
@@ -4023,7 +4169,7 @@ def explain(task: Task, r: dict, policy: Policy) -> str:
                      f"{short['band_requires']} this band asks of a reviewer.")
     if rv["judge"]:
         parts.append(f"Judge: {rv['judge']}.")
-    if rv["required_checks"]:
+    if rv["required_checks"] and rv["mode"] != "deterministic_checks":
         parts.append(f"Required checks: {', '.join(rv['required_checks'])}.")
     if r["fallbacks_applied"]:
         parts.append(f"Fallbacks: {'; '.join(r['fallbacks_applied'])}.")
@@ -4087,6 +4233,9 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                    choices=list(WORKER_SEAT_KINDS),
                    help="override this route's class default for whether the "
                         "worker needs a write-capable dispatch recipe")
+    p.add_argument("--checks-unavailable", action="store_true",
+                   help="this repository cannot run the deterministic checks a LOW "
+                        "review consists of; LOW review then seats a model reviewer")
     p.add_argument("--host-model", default=None)
     p.add_argument("--host-effort", default=None)
     p.add_argument("--policy-pin", dest="policy_pin", default=None,
@@ -4173,6 +4322,9 @@ def task_from_request_v1(payload: dict) -> Task:
     implementer = payload.get("implementer")
     if implementer is not None and not isinstance(implementer, dict):
         raise ValidationError("implementer must be an object or null")
+    checks = snap.get("checks_available") if snap else None
+    if checks is not None and not isinstance(checks, bool):
+        raise ValidationError("availability_snapshot.checks_available must be true, false or null")
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
@@ -4195,6 +4347,7 @@ def task_from_request_v1(payload: dict) -> Task:
         _attempt_outcomes=payload.get("attempt_outcomes"),
         _policy_pin=pin,
         _implementer=implementer,
+        _checks_available=checks,
     )
 
 
@@ -4251,6 +4404,7 @@ def main(argv: list[str] | None = None) -> int:
                 isolation_available=None if args.isolation is None else args.isolation == "available",
                 isolation_evidence=_split(args.isolation_evidence),
                 worker_seat=args.worker_seat,
+                _checks_available=False if args.checks_unavailable else None,
             )
             if args.host_effort and not args.host_model:
                 raise ValidationError("--host-effort requires --host-model")
@@ -4324,8 +4478,8 @@ def _print_text(r: dict) -> None:
     label = "review (policy only — not dispatchable)" if r["terminal"] else "review"
     print(f"{label}:")
     print(f"  band:            {rv['band']}")
-    print(f"  reviewers:       {', '.join(rv['reviewers'])}")
-    if not r["terminal"]:
+    print(f"  reviewers:       {', '.join(rv['reviewers']) or '(none — deterministic checks)'}")
+    if not r["terminal"] and rv["reviewers"]:
         print(f"  models:          {', '.join(m for m in rv['reviewer_models'] if m)}")
         print(f"  effort:          {rv['effort']}")
     print(f"  required:        independent={rv['independence_required']}")

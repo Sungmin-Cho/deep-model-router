@@ -333,6 +333,14 @@ effort_by_work:
   standard_review:          HIGH
   adversarial_review:       MAX
 
+# 1.17.0 (design 2026-09-25 DD-B3, rule C2): the table's effort for a task in
+# this RISK band is capped here — 60% of LOW routes ran their worker at HIGH.
+# Applied before the floors, so an execution floor, a local minimum or a
+# compensation still wins; skipped on a retry (a capability failure on record)
+# and on an unknown root cause, where the effort is doing the diagnosing.
+effort_caps:
+  band_LOW: MEDIUM
+
 # Floors override the table above — never the other way round.
 effort_floors:
   band_HIGH:            HIGH
@@ -350,10 +358,20 @@ effort_floors:
 # no worker-selection branch can weaken the review.
 
 review:
+  # 1.17.0 (design 2026-09-25 DD-B4, rule C3, user decision U-6): LOW review is
+  # the deterministic checks, not a model. Until then it was the worker's own
+  # model re-reading its work in a second process (78% of LOW routes). The
+  # router cannot see the checks run: exit 0 means dispatchable, and the caller
+  # accepts the work only once they pass; a repository that cannot run them
+  # re-routes with `availability_snapshot.checks_available: false`, which takes
+  # the review to MEDIUM. So do a dispute and a caller's reviewer or
+  # provider-family floor (the lowest band that can meet it). Only this band
+  # may seat no reviewer, and it therefore has no effort.
   LOW:
-    reviewers: [worker_fast]
-    effort: MEDIUM
+    reviewers: []
+    effort: null
     independent: false
+    required_checks: [tests, lint]
 
   MEDIUM:
     candidates: [worker_balanced, worker_balanced_alt, senior_engineer, reasoning_specialist]

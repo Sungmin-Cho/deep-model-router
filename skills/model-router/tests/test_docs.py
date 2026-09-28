@@ -486,10 +486,17 @@ def test_skill_md_review_table_matches_config():
     for band in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
         spec = CFG["review"][band]
         row = by_band[band]
-        assert row[2].strip("`") == spec["effort"], band
+        # A band with no model reviewer has no review effort (DD-B4): "—".
+        assert row[2].strip("`") == (spec["effort"] if spec["effort"] is not None else "—"), band
         assert (row[3].strip() == "yes") == spec["independent"], band
         if band != "MEDIUM":
-            documented = [r.strip() for r in row[1].replace("`", "").split("+")]
+            cell = row[1].replace("`", "")
+            if cell.startswith("none"):
+                assert spec["reviewers"] == [], band
+                checks = cell.split("(", 1)[1].rstrip(")").split(",")
+                assert [c.strip() for c in checks] == spec["required_checks"], band
+                continue
+            documented = [r.strip() for r in cell.split("+")]
             assert documented == spec["reviewers"], band
     assert "cross-family" in by_band["MEDIUM"][1]
 

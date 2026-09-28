@@ -286,3 +286,158 @@ def test_b3_a_binding_only_role_resolves_to_its_own_seat_only():
 def test_b3_the_preference_table_is_gone():
     assert "preferred_by_implementer" not in CFG["review"]["MEDIUM"]
     assert "worker_balanced_alt" in CFG["review"]["MEDIUM"]["candidates"]
+
+
+# --------------------------------------------------------------------------
+# B4 — LOW effort cap (DD-B3, C2) and LOW review by deterministic checks
+# (DD-B4, C3). REVIEW-class LOW and the seat matrix's REVIEW row are B6.
+# --------------------------------------------------------------------------
+
+def test_b4_a_low_risk_task_does_not_get_the_class_tables_high_effort():
+    """Audit F4: `DEBUGGING c1` routed luna at HIGH on a LOW-risk task."""
+    _, out = _route(_req("DEBUGGING", (1, 0, 0, 0)))
+    assert out["risk_band"] == "LOW"
+    assert out["selected_effort"] == out["selected_effort_effective"] == "MEDIUM"
+    assert any(n.startswith("effort cap: band LOW capped effort HIGH at MEDIUM") for n in out["notes"])
+
+
+@pytest.mark.parametrize("why,extra", [
+    ("unknown root cause: the effort is doing the diagnosing",
+     dict(flags=["unknown_root_cause"])),
+    ("a retry after a capability failure",
+     dict(attempt_outcomes=[{"attempt_id": "a1", "model_id": "__FAST__", "kind": "capability_failure",
+                             "evidence_sha256": "1" * 64}])),
+])
+def test_b4_the_cap_skips_diagnosis_and_retries(why, extra):
+    extra = copy.deepcopy(extra)
+    for row in extra.get("attempt_outcomes", []):
+        row["model_id"] = ID("openai_worker_fast")
+    _, out = _route(_req("DEBUGGING", (1, 0, 0, 0), **extra))
+    assert out["risk_band"] == "LOW"
+    assert out["selected_effort"] in ("HIGH", "MAX"), why
+    assert not any(n.startswith("effort cap:") for n in out["notes"]), why
+
+
+def test_b4_floors_and_local_minimums_still_win_and_the_note_goes_with_the_cap():
+    # Execution HARD at LOW risk: the HARD floor lifts the capped effort back.
+    _, hard = _route(_req("DEBUGGING", (3, 0, 0, 0),
+                          flags=["unfamiliar_codebase", "tool_heavy", "cross_service_change"]))
+    assert hard["risk_band"] == "LOW" and hard["execution_band"] == "HARD"
+    assert hard["selected_effort"] == "HIGH"
+    assert not any(n.startswith("effort cap:") for n in hard["notes"])
+    _, local = _route(_req("DEBUGGING", (1, 0, 0, 0), local_policy={"minimum_effort": "HIGH"}))
+    assert local["selected_effort"] == "HIGH"
+    assert not any(n.startswith("effort cap:") for n in local["notes"])
+
+
+def test_b4_a_low_review_is_the_deterministic_checks():
+    """U-6. 78% of LOW routes re-read the worker's work with the worker's own
+    model in a second process; the checks now are the review."""
+    code, out = _route(_req("IMPLEMENTATION", (1, 0, 1, 0)))
+    rv = out["review"]
+    assert rv["band"] == "LOW" and code == 0
+    assert rv["reviewers"] == [] and rv["reviewer_models"] == []
+    assert rv["effort"] is None and rv["judge"] is None
+    assert rv["mode"] == "deterministic_checks"
+    assert rv["required_checks"] == ["tests", "lint"]
+    assert rv["review_independence"] == "not_applicable"
+    assert "deterministic checks (tests, lint) must pass" in out["rationale"]
+    assert rt.Policy.of(CFG).band_reviewer_floor["LOW"] is None
+
+
+@pytest.mark.parametrize("extra,reason", [
+    (dict(flags=["review_disagreement"]), "review_disagreement"),
+    (dict(availability_snapshot={"checks_available": False}), "checks_unavailable"),
+    (dict(local_policy={"minimum_reviewers": 1}), "minimum_reviewers"),
+    (dict(local_policy={"minimum_provider_families": 2}), "minimum_provider_families"),
+])
+def test_b4_what_checks_cannot_carry_leaves_low_for_medium(extra, reason):
+    code, out = _route(_req("IMPLEMENTATION", (1, 0, 1, 0), **extra))
+    assert out["risk_band"] == "LOW"
+    assert out["review"]["band"] == "MEDIUM", out["band_overrides_applied"]
+    assert f"low_band_{reason}_raised_review_to_MEDIUM" in out["band_overrides_applied"]
+    # Settled off LOW: a model review, never advertised as the checks.
+    assert out["review"]["mode"] == "model_review" and len(out["review"]["reviewers"]) == 1
+    assert out["review"]["required_checks"] == []
+    assert out["terminal"] is None
+
+
+def test_b4_a_reviewer_floor_takes_the_lowest_band_that_can_meet_it():
+    _, two = _route(_req("IMPLEMENTATION", (1, 0, 1, 0), local_policy={"minimum_reviewers": 2}))
+    assert two["review"]["band"] == "HIGH" and two["terminal"] is None     # 1.16.1: terminal
+    assert len(two["review"]["reviewers"]) == 2
+    _, three = _route(_req("IMPLEMENTATION", (1, 0, 1, 0), local_policy={"minimum_reviewers": 3}))
+    assert three["terminal"] == "UNSATISFIABLE_LOCAL_POLICY"
+    assert not any(o.startswith("low_band_") for o in three["band_overrides_applied"])
+    _, fams = _route(_req("IMPLEMENTATION", (1, 0, 1, 0), local_policy={"minimum_provider_families": 3}))
+    assert fams["review"]["band"] == "HIGH"
+
+
+def test_b4_the_escape_only_raises_and_only_from_low():
+    # A CRITICAL route with a floor it already meets stays where it is, and
+    # its confidence promotion is not undone by a second pass.
+    _, out = _route(_req("IMPLEMENTATION", (2, 2, 2, 2), local_policy={"minimum_reviewers": 1}))
+    assert out["review"]["band"] == "CRITICAL"
+    assert not any(o.startswith("low_band_") for o in out["band_overrides_applied"])
+    # The escape runs before the fixed point: a confidence promotion can still
+    # add its one band on top of it (unknown root cause + a fallback = 0.79).
+    req = _req("INVESTIGATION", (1, 0, 0, 0), flags=["unknown_root_cause"],
+               availability_snapshot={"checks_available": False,
+                                      "unavailable_models": [ID("xai_frontier")]})
+    _, out = _route(req)
+    assert out["review"]["band"] == "HIGH", out["band_overrides_applied"]
+    assert "low_band_checks_unavailable_raised_review_to_MEDIUM" in out["band_overrides_applied"]
+    assert "low_routing_confidence_raised_review_to_HIGH" in out["band_overrides_applied"]
+
+
+def test_b4_a_confidence_promotion_off_low_is_a_model_review():
+    """`mode` is read off the settled band: a route promoted from LOW that
+    advertised deterministic checks would have its host skip its reviewer."""
+    req = _req("IMPLEMENTATION", (1, 0, 1, 0), flags=["unknown_root_cause"],
+               availability_snapshot={"unavailable_models": [ID("openai_worker_fast")]})
+    _, out = _route(req)
+    assert out["review"]["band"] == "MEDIUM" and out["review"]["mode"] == "model_review"
+
+
+def test_b4_only_the_lowest_band_may_seat_no_reviewer():
+    for band in ("MEDIUM", "HIGH", "CRITICAL"):
+        cfg = copy.deepcopy(CFG)
+        cfg["review"][band] = {"reviewers": [], "effort": None, "independent": False,
+                               "required_checks": ["tests"]}
+        with pytest.raises(rt.ConfigError):
+            rt.Policy(cfg)
+    for broken in ({"effort": "MEDIUM"}, {"required_checks": []}, {"independent": True}):
+        cfg = copy.deepcopy(CFG)
+        cfg["review"]["LOW"].update(broken)
+        with pytest.raises(rt.ConfigError):
+            rt.Policy(cfg)
+
+
+def test_b4_the_sentinel_is_never_read_as_zero_elsewhere():
+    policy = rt.Policy.of(CFG)
+    task = rt.Task(task_class="IMPLEMENTATION", complexity=1, uncertainty=0, blast_radius=1,
+                   reversibility=0)
+    task.validate(policy)
+    resolver = rt.Resolver(task, policy)
+    review = {"band": "LOW", "reviewers": ["worker_balanced"], "effort": "HIGH", "independent": False}
+    with pytest.raises(rt.RouterInvariantError):
+        rt._seat_judge(review, "worker_fast", "principal_architect", policy,
+                       type("R", (), {"peek": lambda self, role, write=False: None})())
+
+
+def test_b4_checks_unavailable_on_the_cli():
+    import subprocess
+    script = HERE.parent / "scripts" / "route_task.py"
+    proc = subprocess.run([sys.executable, str(script), "--class", "IMPLEMENTATION",
+                           "--complexity", "1", "--uncertainty", "0", "--blast-radius", "1",
+                           "--reversibility", "0", "--checks-unavailable", "--format", "json"],
+                          capture_output=True, text=True, timeout=60)
+    import json
+    out = json.loads(proc.stdout)
+    assert out["review"]["band"] == "MEDIUM" and proc.returncode == 0
+
+
+def test_b4_the_consumer_contract_is_written_down():
+    text = " ".join((HERE.parent / "references" / "control-loop.md").read_text().split())
+    assert "exit 0 with a non-empty `required_checks` means the consumer owes those checks" in text
+    assert "deep-loop does not read `required_checks`" in text

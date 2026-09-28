@@ -349,6 +349,10 @@ MINIMAL < LOW < MEDIUM < HIGH < VERY_HIGH < MAX
 | multi-system refactoring | `VERY_HIGH` |
 | complex architecture, unknown root cause, adversarial review | `MAX` |
 
+A `LOW`-risk task's table effort is capped at `MEDIUM` (`effort_caps`) unless it
+has an unknown root cause or a capability failure on record; the floors below
+still win.
+
 Floors override the table, never the reverse:
 
 ```
@@ -390,7 +394,7 @@ weaken the review.
 
 | Band | Reviewers | Effort | Independent |
 |---|---|---|---|
-| `LOW` | worker_fast | `MEDIUM` | no |
+| `LOW` | none — deterministic checks (`tests`, `lint`) | — | no |
 | `MEDIUM` | one stronger role, cross-family preferred | `HIGH` | yes |
 | `HIGH` | senior_engineer + reasoning_specialist | `HIGH` | yes |
 | `CRITICAL` | senior_engineer + reasoning_specialist | `MAX` | yes |

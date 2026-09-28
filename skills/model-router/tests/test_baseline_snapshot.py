@@ -182,6 +182,11 @@ REVIEW_EDITS = [
     ("c4", lambda rv: rv["MEDIUM"].pop("preferred_by_implementer")),
     ("c4", lambda rv: rv["MEDIUM"].__setitem__("candidates", _insert_after(
         rv["MEDIUM"]["candidates"], "worker_balanced", "worker_balanced_alt"))),
+    # C3 (DD-B4): LOW review is the deterministic checks — no model seat, so
+    # no effort — and nothing else about the band moves.
+    ("c3", lambda rv: rv.__setitem__("LOW", {"reviewers": [], "effort": None,
+                                             "independent": False,
+                                             "required_checks": ["tests", "lint"]})),
 ]
 
 

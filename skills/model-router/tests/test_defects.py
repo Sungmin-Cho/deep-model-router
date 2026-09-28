@@ -975,7 +975,11 @@ def test_d13_the_judge_retry_never_seats_the_implementer_as_its_own_reviewer():
         f"precondition 'two models' drifted: remaining={remaining}")
     assert len(seats) == 3, (
         f"precondition 'three seats' drifted: seats={seats}")
-    assert rv["band"] == "LOW" and out["route_path"] == "disagreement", "probe drifted"
+    # Since 1.17.0 a disputed LOW route leaves LOW for MEDIUM (DD-B4): the
+    # judge now sits beside an INDEPENDENT reviewer, and the rule under test —
+    # no retry buys the judge with the implementer's own review — is unchanged.
+    assert rv["band"] == "MEDIUM" and out["route_path"] == "disagreement", "probe drifted"
+    assert "low_band_review_disagreement_raised_review_to_MEDIUM" in out["band_overrides_applied"]
     assert out["selected_model"] not in rv["reviewer_models"], (
         f"implementer {out['selected_model']} was re-seated as its own reviewer "
         f"to free a judge: reviewers={rv['reviewer_models']} judge={rv['judge_model']}")
@@ -1791,7 +1795,11 @@ def test_d21_the_promotion_decision_sees_the_confidence_that_ships():
     # The promotion fires because that pair is thin, not because five names
     # were listed.
     keep = (ID("claude_worker_fast"), ID("openai_worker_balanced"))
-    out = r(task_class="MECHANICAL", flags=["review_disagreement", "unknown_root_cause"],
+    # No dispute since 1.17.0: a disputed LOW route leaves LOW for MEDIUM
+    # before the fixed point (DD-B4) and this pair cannot staff the HIGH its
+    # promotion then asks for. The worker's own fallback (0.06) and the
+    # unknown root cause (0.10) are the signal: 0.79.
+    out = r(task_class="MECHANICAL", flags=["unknown_root_cause"],
             unavailable_models=_leave_only(*keep))
     remaining = sorted({m["id"] for m in CFG["models"].values()} - set(out["unavailable_models"]))
     assert remaining == sorted(keep), (
@@ -2308,10 +2316,17 @@ def _disagreement_sweep():
                             continue
 
 
-def test_d12_sweep_reaches_low_band_disagreement_routes():
-    low = [o for o in _disagreement_sweep()
-           if not o["terminal"] and o["review"]["band"] == "LOW" and o["review"]["judge"]]
-    assert low, "the sweep never produced a LOW-band route with a judge"
+def test_d12_a_low_band_dispute_always_leaves_low():
+    """Until 1.17.0 this asserted the opposite — that the sweep reached a LOW
+    route with a judge, the blind spot round 5 found. LOW now seats no model
+    reviewer (DD-B4), so a dispute there has nothing to adjudicate between:
+    it leaves LOW for MEDIUM before the fixed point, and the judge sits beside
+    an independent reviewer."""
+    disputed_low = [o for o in _disagreement_sweep() if o["risk_band"] == "LOW"]
+    assert disputed_low, "the sweep never produced a LOW-risk disputed route"
+    for o in disputed_low:
+        assert o["review"]["band"] != "LOW", o["band_overrides_applied"]
+        assert "low_band_review_disagreement_raised_review_to_MEDIUM" in o["band_overrides_applied"]
 
 
 def test_d12_the_judge_is_never_a_party_at_any_band():
@@ -2517,21 +2532,18 @@ def test_d23_a_merged_ceiling_row_reads_coherently():
     """
     import copy
 
-    # (a) executable, by design, no independence failure anywhere near it.
+    # (a) The executable way in closed in 1.17.0: LOW seats no model reviewer
+    # (DD-B4), so the worker no longer holds a reviewer seat there, and a
+    # REVIEW task's lead — the other seat that is also the worker — is drawn
+    # only from models that reach the review effort. The same probe now
+    # writes the worker's own row and nothing for a review seat.
     cfg = copy.deepcopy(CFG)
     cfg["models"]["openai_worker_fast"]["effort_ceiling"] = "MINIMAL"
     out = route(_task(task_class="MECHANICAL"), cfg)
-    assert out["terminal"] is None, "the executable merge path went terminal"
-    assert out["review"]["reviewers"] == [out["selected_role"]], (
-        "probe drifted: this case exists because the worker reviews itself")
-    assert not out["review"]["independence_required"]
-    rows = out["effort_ceiling_applied"]
-    assert len(rows) == 1, f"one seat, one row: {rows}"
-    row = rows[0]
-    assert row["requested"] == row["floor_requires"], (
-        f"the row asks for {row['requested']} while naming a floor that "
-        f"requires {row['floor_requires']}: {row}")
-    assert row["floor_broken"] == "review.LOW.effort"
+    assert out["terminal"] is None
+    assert out["review"]["reviewers"] == [] and out["review"]["mode"] == "deterministic_checks"
+    assert [r["role"] for r in out["effort_ceiling_applied"]] == [out["selected_role"]]
+    assert out["effort_ceiling_applied"][0]["floor_broken"] is None
 
     # (b) both floors broken on one seat: the stricter one is what ships.
     cfg = copy.deepcopy(CFG)
@@ -2543,6 +2555,10 @@ def test_d23_a_merged_ceiling_row_reads_coherently():
     assert out["review"]["independence_compromised"], "probe drifted"
     shared = [r for r in out["effort_ceiling_applied"]
               if r["floor_broken"] == "review.CRITICAL.effort"]
+    for row in shared:
+        assert row["requested"] == row["floor_requires"], (
+            f"the row asks for {row['requested']} while naming a floor that "
+            f"requires {row['floor_requires']}: {row}")
     assert len(shared) == len(out["effort_ceiling_applied"]), (
         f"a seat broke the review floor and reported a weaker one: "
         f"{out['effort_ceiling_applied']}")
@@ -2628,11 +2644,16 @@ def test_d23_worker_clamp_reads_peek_not_the_provisional_resolved_map():
     against `{}` and shipped an effort the worker cannot receive."""
     cfg = {**CFG, "models": {**CFG["models"], "claude_worker_balanced": {
         **CFG["models"]["claude_worker_balanced"], "effort_ceiling": "LOW"}}}
+    # Two models since 1.17.0: the dispute takes the review off LOW to MEDIUM
+    # (DD-B4), which needs an independent reviewer beside the worker; the
+    # judge still has nothing left and is dropped for the final resolution.
     out = route(_task(task_class="MIGRATION", flags=["review_disagreement"],
-                      unavailable_models=_leave_only(ID("claude_worker_balanced"))), cfg)
+                      unavailable_models=_leave_only(ID("claude_worker_balanced"),
+                                                     ID("openai_worker_balanced"))), cfg)
     assert out["terminal"] is None, f"probe went terminal: {out['terminal']}"
+    assert out["review"]["judge_unavailable"], "probe drifted: the judge must be dropped"
     assert out["selected_model"] == ID("claude_worker_balanced")
-    assert out["selected_effort"] == "HIGH"
+    assert out["selected_effort"] == "MEDIUM"          # the LOW-band cap (DD-B3)
     assert out["selected_effort_effective"] == "LOW", (
         f"worker clamp missed a LOW ceiling: effective={out['selected_effort_effective']} "
         f"records={out['effort_ceiling_applied']}")
@@ -2641,7 +2662,7 @@ def test_d23_worker_clamp_reads_peek_not_the_provisional_resolved_map():
                    if rec["role"] == out["selected_role"]]
     assert worker_recs, f"worker clamp wrote nothing: {out['effort_ceiling_applied']}"
     assert worker_recs[0]["model"] == ID("claude_worker_balanced")
-    assert worker_recs[0]["requested"] == "HIGH"
+    assert worker_recs[0]["requested"] == "MEDIUM"
     assert worker_recs[0]["capped_at"] == "LOW"
 
 

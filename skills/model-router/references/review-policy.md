@@ -31,23 +31,38 @@ them all.
 ### `LOW`
 
 ```yaml
-reviewers: [worker_fast]
-effort: MEDIUM
+reviewers: []
+effort: null
 independent: false
+required_checks: [tests, lint]
 ```
 
-Formatting, isolated UI, mechanical refactor, generated tests.
+Formatting, isolated UI, mechanical refactor, generated tests. Since 1.17.0
+the review is the deterministic checks and no model (design 2026-09-25 DD-B4,
+user decision U-6); until then the worker's own model re-read its work in a
+second process, which bought no independence and cost a process. `review.mode`
+is `deterministic_checks`, and the consumer owes the checks before accepting
+the work (`control-loop.md`, LOW review is the deterministic checks). A
+dispute, a repository whose checks cannot run (`checks_available: false`) and
+a `local_policy` reviewer or family floor take the route off LOW to the lowest
+band that carries them — never down, and once, before the confidence
+promotion. A REVIEW task at LOW is its lead alone: the lead is the review.
+Only this band may seat no reviewer, so only it has no review effort.
 
 ### `MEDIUM`
 
 ```yaml
-candidates: [worker_balanced, senior_engineer, reasoning_specialist]
+candidates: [worker_balanced, worker_balanced_alt, senior_engineer, reasoning_specialist]
 effort: HIGH
 independent: true
 ```
 
 Exactly one independent reviewer, from a different family where available, and
-at least as strong as the implementer. Both of those are constants in
+at least as strong as the implementer — and, since 1.17.0, no stronger than
+that asks: the lowest-tier candidate reaching max(band floor, implementer tier)
+(design 2026-09-25 DD-B5; `routing-policy.md`, The MEDIUM reviewer fits the
+floor). A slate that cannot reach it is gated (`review_below_band`) — at MEDIUM
+the shortfall counts the implementer's tier. Both properties are constants in
 `select_review`, not settings: a `reviewer_count` key and a
 `prefer_cross_family` key used to sit in this block and neither was read —
 raising the count to 3 or clearing the preference produced byte-identical
@@ -500,14 +515,14 @@ reviewer. Review depth is not currency for buying a judge seat. If the judge
 can only be seated by spending it, the judge is unavailable and a human settles
 any disagreement, which is a shortage the caller can act on.
 
-`LOW`'s self-review exemption is narrower than it looks: it permits the reviewer
-the **band configured** to resolve onto the implementer's model. It is not a
-licence for the router to *move* a reviewer there. Re-seating a distinct,
-stronger reviewer onto the implementer in order to free a model for the judge
-buys the adjudicator with the review — and at `LOW` neither the substitution
-record nor the depth gate can report it, because the band's reviewer floor is
-zero. So the implementer's model is barred from a *replacement* reviewer at
-every band. With two models and three seats you cannot have both an independent
+Before 1.17.0 `LOW`'s self-review exemption was narrower than it looked: it
+permitted the reviewer the **band configured** to resolve onto the implementer's
+model, not a licence for the router to *move* a reviewer there. Re-seating a
+distinct, stronger reviewer onto the implementer in order to free a model for
+the judge buys the adjudicator with the review, and at a band with no reviewer
+floor neither the substitution record nor the depth gate can report it. The
+rule outlived that band's model reviewer: the implementer's model is barred
+from a *replacement* reviewer at every band. With two models and three seats you cannot have both an independent
 reviewer and an independent adjudicator; saying `judge_unavailable` is the
 honest answer, not a false stop.
 

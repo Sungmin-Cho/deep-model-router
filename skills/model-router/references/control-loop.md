@@ -228,6 +228,34 @@ the pin needs), `pin_revoked` (a later revocation — revert beats pin),
 `pin_generation_missing`. A pin absorbs overlay replacements only; a route
 given an explicit config cannot honour one and refuses it (exit 2).
 
+## LOW review is the deterministic checks
+
+Since 1.17.0 the LOW band seats no model reviewer (design 2026-09-25 DD-B4,
+user decision U-6): `review.reviewers` is `[]`, `review.effort` is null,
+`review.mode` is `deterministic_checks`, and `review.required_checks` names the
+checks — today `tests` and `lint`. The router cannot see them run, so **exit 0
+with a non-empty `required_checks` means the consumer owes those checks**:
+dispatch the worker, run the checks, and accept the work only when they pass.
+Exit 0 is "dispatchable", never "the checks passed". A repository that cannot
+run them re-routes with `availability_snapshot.checks_available: false` (CLI
+`--checks-unavailable`); the review then leaves LOW for MEDIUM and seats a
+model. It is never replaced by the host's own judgement.
+
+A LOW route also leaves LOW — raise only, once, before the confidence
+promotion, which may still add its one band — on `review_disagreement` (to
+MEDIUM), and on a `local_policy` floor the checks cannot meet: the lowest band
+whose seat matrix supplies `minimum_reviewers` reviewers and
+`minimum_provider_families` families (`minimum_reviewers: 2` → HIGH). No band
+at all: `UNSATISFIABLE_LOCAL_POLICY`, as before. Each move is a
+`band_overrides_applied` entry `low_band_<reason>_raised_review_to_<band>`.
+`mode` and `required_checks` are read off the SETTLED band, so a route promoted
+off LOW never advertises `deterministic_checks`.
+
+deep-loop does not read `required_checks`: it dispatches `selected_model` and
+verifies with its own checker, and it never dispatched the LOW reviewer seat
+either, so for deep-loop this change is no change — and deep-loop does not
+enforce the LOW checks (open item L-8).
+
 ## Declared implementer
 
 RouteRequestV1 `implementer: {"model_id": "<registry id>"}` says this write
@@ -326,7 +354,10 @@ implementer_declared:  implementer_source:   # false/null, or true and
                                # caller_declared (the router does not
                                # authenticate the declaration)
 review:
-  band:  reviewers: []  reviewer_models: []  effort:
+  band:  reviewers: []  reviewer_models: []  effort:   # effort null when the
+                               # band seats no model reviewer (LOW)
+  mode:                        # model_review, or deterministic_checks when
+                               # the settled band seats no model reviewer
   independence_required:       # what the band asks for
   review_independence:         # what was actually established
   independence_compromised:    # no distinct model was available for a seat

@@ -648,7 +648,9 @@ def test_the_shortfall_record_carries_the_band_the_gate_actually_used():
     recomputed from the config, because an oracle that repeats the
     implementation's formula cannot detect an error in the formula."""
     from route_task import Policy
-    assert Policy.of(CFG).band_reviewer_floor == BAND_FLOOR, "the router's floors drifted"
+    # LOW seats no reviewer since 1.17.0 (DD-B4): no floor, and never read as 0.
+    assert Policy.of(CFG).band_reviewer_floor == {**BAND_FLOOR, "LOW": None}, \
+        "the router's floors drifted"
     seen = 0
     for out in routes():
         rv = out["review"]
@@ -1090,8 +1092,26 @@ def test_a_low_confidence_promotion_never_contradicts_the_confidence_it_ships():
         else:
             still_low += 1
             assert not note, (out["routing_confidence"], note)
-    assert recovered, "the sweep no longer reaches a promotion whose confidence recovered"
     assert still_low, "the sweep no longer reaches an ordinary low-confidence promotion"
+    # Recovery needs a fallback that the promotion retires, and until 1.17.0
+    # that was LOW's own reviewer seat (the worker's model re-reading its
+    # work). LOW seats no reviewer now (DD-B4) and a MEDIUM reviewer is picked
+    # away from fallback roles (DD-B5), so no route in the sweep recovers — a
+    # census of 1-2 withheld models over six classes and three runtimes found
+    # none. The disclosure stays as depth; it is held to its words on the
+    # 1.16.1 LOW shape, where the path is still real.
+    assert not recovered, "a recovered promotion is reachable again: restore the sweep half"
+    import copy
+    cfg = copy.deepcopy(CFG)
+    cfg["review"]["LOW"] = {"reviewers": ["worker_fast"], "effort": "MEDIUM", "independent": False}
+    out = route(Task(task_class="MIGRATION", complexity=0, uncertainty=0, blast_radius=0,
+                     reversibility=0, flags=["unknown_root_cause"],
+                     unavailable_models=[ID("openai_worker_fast")]), cfg)
+    note = [n for n in out["notes"] if "promoted plan resolves at" in n]
+    assert out["review"]["band"] == "MEDIUM" and out["routing_confidence"] >= threshold
+    assert len(note) == 1 and f"resolves at {out['routing_confidence']:.2f} " in note[0], note
+    pre = float(note[0].split("pre-promotion confidence ")[1].split(";")[0])
+    assert pre < threshold <= out["routing_confidence"]
 
 
 # --- helpers for the paired (new vs 1.12.1) checks ----------------------------
@@ -1367,7 +1387,7 @@ def test_t13_class_promotions_are_exercised_and_never_lose_tier(task_class, flag
 @pytest.mark.parametrize("lp,outcome", [
     ({"minimum_capability_tier": 1}, "unlock"),   # tier-0 legacy unsatisfiable, tier-1 candidate fine
     ({"minimum_effort": "MAX"}, "yield"),         # grok's VERY_HIGH ceiling fails MAX; luna has none -> candidate terminal, legacy not -> row 1
-    ({"minimum_reviewers": 2}, "same"),           # LOW seats one reviewer either way -> both terminal -> legacy
+    ({"minimum_reviewers": 2}, "escape"),         # 1.12.1: LOW's one reviewer -> terminal; 1.17.0: LOW leaves for HIGH (DD-B4)
     ({"minimum_provider_families": 2}, "unlock"), # luna+luna is one family; grok+luna is two
     ({"allowed_families": ["openai"]}, "adopt"),  # the balanced ladder reaches terra (openai, tier 1) -> adopted, nothing terminal [P1-sol-F1][P1-opus-F5]
 ])
@@ -1385,6 +1405,10 @@ def test_t14_local_policy_only_ever_unlocks(lp, outcome):
     elif outcome == "yield":
         assert old["terminal"] is None and new["terminal"] is None
         assert _yielded(new) == ["execution band NORMAL yielded worker_balanced: terminal"]
+    elif outcome == "escape":
+        assert old["terminal"] == "UNSATISFIABLE_LOCAL_POLICY" and new["terminal"] is None
+        assert new["review"]["band"] == "HIGH" and len(new["review"]["reviewers"]) == 2
+        assert "low_band_minimum_reviewers_raised_review_to_HIGH" in new["band_overrides_applied"]
     elif outcome == "adopt":
         assert old["terminal"] is None and new["terminal"] is None and _raised(new)
         assert new["selected_model"] == ID("openai_worker_balanced")

@@ -58,6 +58,8 @@ CFG = rt.load_config()
 POLICY = rt.Policy.of(CFG)
 ID = lambda key: CFG["models"][key]["id"]                       # noqa: E731
 TIER_OF = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
+EFFORTS = list(CFG["effort_levels"])
+BANDS = list(CFG["router"]["bands"])
 FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 
 # The closed rule vocabulary, in replay order (design DD-B11 ②). A rule not
@@ -97,7 +99,7 @@ NEW_KEY_DEFAULTS: dict[str, object] = {
     "worker_seat_state": "to_dispatch", "implementer_declared": False,
     "implementer_source": None,
 }
-NEW_REVIEW_KEY_DEFAULTS: dict[str, object] = {}
+NEW_REVIEW_KEY_DEFAULTS: dict[str, object] = {"mode": "model_review"}
 
 # Field groups the rules are declared in.
 EFFORT = frozenset({"selected_effort", "selected_effort_effective", "selected_effort_native"})
@@ -154,9 +156,6 @@ def _snapshot_band_once(req) -> tuple[str, str]:
     return band, mod.apply_overrides(task, mod.band_from_score(once, policy), policy)[0]
 
 
-BANDS = list(CFG["router"]["bands"])
-
-
 def _c1iii_admits(req, prev):
     if "error" in prev or not any(o.startswith("low_routing_confidence_raised_review_to_")
                                   for o in prev["band_overrides_applied"]):
@@ -202,6 +201,46 @@ def _c4_check(req, prev, cur):
     return out
 
 
+def _no_capability_failure(req) -> bool:
+    return not req.get("prior_failures") and not any(
+        row["kind"] == "capability_failure" for row in req.get("attempt_outcomes") or [])
+
+
+def _c2_admits(req, prev):
+    return ("error" not in prev and prev["risk_band"] == "LOW"
+            and "unknown_root_cause" not in req["flags"] and _no_capability_failure(req))
+
+
+def _c2_check(req, prev, cur):
+    if cur["terminal"] or prev["terminal"]:
+        return []
+    out = []
+    if EFFORTS.index(cur["selected_effort"]) > EFFORTS.index(prev["selected_effort"]):
+        out.append(f"effort rose {prev['selected_effort']} -> {cur['selected_effort']}")
+    if cur["selected_model"] != prev["selected_model"]:
+        out.append("the worker moved")
+    return out
+
+
+def _c3_check(req, prev, cur):
+    out = []
+    rv = cur["review"]
+    if rv["band"] == "LOW" and req["task_class"] != "REVIEW":
+        if (rv["reviewers"], rv["mode"], rv["required_checks"]) != ([], "deterministic_checks",
+                                                                    ["tests", "lint"]):
+            out.append(f"a LOW review is not the deterministic checks: {rv}")
+    elif rv["mode"] == "deterministic_checks" and rv["band"] != "LOW":
+        out.append(f"a {rv['band']} review advertises deterministic checks")
+    if BANDS.index(rv["band"]) < BANDS.index(prev["review"]["band"]) and not (
+            prev["review"]["band"] != "LOW" and rv["band"] == "LOW"
+            and any(o.startswith("low_routing_confidence") for o in prev["band_overrides_applied"])):
+        out.append(f"review band fell {prev['review']['band']} -> {rv['band']}")
+    if (not cur["terminal"] and not prev["terminal"] and req["task_class"] != "REVIEW"
+            and TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]):
+        out.append(f"worker tier fell {prev['selected_model']} -> {cur['selected_model']}")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -230,7 +269,7 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "dispatch_seats", "terminal",
                            "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c1iii_check, changed_sample=2448, changed_full=7098),
+        check=_c1iii_check, changed_sample=2613, changed_full=7329),
     # The settled MEDIUM reviewer and what follows from it: the seat, its
     # records, cross-family, the (implementer-inclusive) shortfall gate, and a
     # compensation's effort. The band is not declared: a reviewer choice made
@@ -243,7 +282,27 @@ RULES: dict[str, Rule] = {
         fields=(frozenset({"dispatch_seats", "selected_role", "selected_model",
                            "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c4_check, changed_sample=980, changed_full=7882),
+        check=_c4_check, changed_sample=1065, changed_full=8225),
+    # The class table's effort for a LOW-risk task, capped at MEDIUM before
+    # the floors: the worker's effort and nothing that does not read it.
+    # `dispatch_seats`: a REVIEW task's lead is dispatched at the higher of
+    # its own effort and the review's.
+    "c2": Rule(
+        "c2", predicate=_c2_admits,
+        fields=EFFORT | frozenset({"effort_ceiling_applied", "dispatch_seats"}),
+        check=_c2_check, changed_sample=621, changed_full=2808),
+    # Every LOW-risk route: the review is the checks, or — escaped — a model
+    # review at the lowest band that carries what the checks cannot. A route
+    # 1.16.1 promoted off LOW may settle back on LOW: the promotion read the
+    # fallback penalty of a LOW reviewer seat that no longer exists.
+    "c3": Rule(
+        "c3", predicate=lambda req, prev: "error" not in prev and prev["risk_band"] == "LOW",
+        fields=(frozenset({"review.band", "review.effort", "review.required_checks",
+                           "review.independence_required", "review.review_independence",
+                           "review.mode", "band_overrides_applied", "dispatch_seats", "terminal",
+                           "selected_role", "selected_model", "selected_capability_tier"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_c3_check, changed_sample=1539, changed_full=6216),
 }
 
 
@@ -282,6 +341,9 @@ REQUEST_SWITCHES: dict[str, Callable[[dict], None]] = {
 CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
     "c1iii": lambda cfg: cfg["router"]["confidence"].__setitem__(
         "skip_uncertainty_penalty_when_band_raised", False),
+    "c2": lambda cfg: cfg.__setitem__("effort_caps", {}),
+    "c3": lambda cfg: cfg["review"].__setitem__(
+        "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
 }
 
 def _c4_off(stack: ExitStack) -> None:
@@ -423,24 +485,59 @@ WITHHELD = frozenset({"selected_role", "selected_model", "selected_effort",
                       "dispatch_seats", "fallbacks_applied", "effort_ceiling_applied"})
 
 
+_INDEPENDENCE_ORDER = {"not_applicable": -1, "unavailable": 0, "degraded": 1, "planned": 2,
+                       "enforced": 3}
+
+
 def weaker(prev: dict, cur: dict) -> str | None:
-    """Design DD-B11's "weaker": every `_contract_violation` row, plus the
-    worker tier. Not narrowed — a rule that weakens a route has to be counted
-    and listed in the CHANGELOG."""
-    if "error" in prev or "error" in cur:
+    """The first way `cur` is weaker than `prev`, or None. DD-B11's "weaker"
+    covers every `_contract_violation` row plus the worker tier and is not
+    narrowed — but it is read in its safety DIRECTION here: that guard treats
+    any difference as a violation (a stronger review is a contract change it
+    will not adopt), and counting a raised band or an added reviewer as
+    "weaker" would fill the CHANGELOG with routes that got stronger. A gate
+    that fires where it did not is counted apart, by `gates_added`."""
+    if "error" in prev or "error" in cur or prev["terminal"]:
         return None
-    if prev["terminal"] and not cur["terminal"]:
-        return None
-    if cur["terminal"] and cur["terminal"] != prev["terminal"]:
+    if cur["terminal"]:
         return "terminal"
-    if prev["terminal"]:
-        return None
-    row = rt._contract_violation(POLICY, cur, prev)
-    if row is not None:
-        return row
+    pr, cr = prev["review"], cur["review"]
+    if BANDS.index(cr["band"]) < BANDS.index(pr["band"]):
+        return "review.band"
+    if BANDS.index(cr["band"]) > BANDS.index(pr["band"]):
+        return None                           # a stronger band: a different, larger review
+    if len(cr["reviewers"]) < len(pr["reviewers"]):
+        return "reviewer_count"
+    if pr["effort"] is not None and (cr["effort"] is None
+                                     or EFFORTS.index(cr["effort"]) < EFFORTS.index(pr["effort"])):
+        return "review.effort"
+    if pr["independence_required"] and not cr["independence_required"]:
+        return "independence_required"
+    if _INDEPENDENCE_ORDER[cr["review_independence"]] < _INDEPENDENCE_ORDER[pr["review_independence"]]:
+        return "review_independence"
+    for flag in ("independence_compromised", "band_floor_unsatisfiable", "judge_unavailable"):
+        if cr[flag] and not pr[flag]:
+            return "review.flags"
+    if pr["judge_model"] and (not cr["judge_model"]
+                              or TIER_OF[cr["judge_model"]] < TIER_OF[pr["judge_model"]]):
+        return "judge_tier"
+    if prev["cross_family_review"] and not cur["cross_family_review"]:
+        return "cross_family_review"
+    pt = sorted((TIER_OF[m] for m in pr["reviewer_models"] if m), reverse=True)
+    ct = sorted((TIER_OF[m] for m in cr["reviewer_models"] if m), reverse=True)
+    if any(c < p for c, p in zip(ct, pt)):
+        return "reviewer_tiers"
+    if len(cr["review_depth_reduced"]) > len(pr["review_depth_reduced"]):
+        return "review_depth_reduced"
     if TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]:
         return "worker_tier"
     return None
+
+
+def gates_added(prev: dict, cur: dict) -> list[str]:
+    if "error" in prev or "error" in cur:
+        return []
+    return sorted(set(cur["human_control_causes"]) - set(prev["human_control_causes"]))
 
 
 # --------------------------------------------------------------------------
@@ -553,6 +650,7 @@ class Ledger:
     changed: Counter = field(default_factory=Counter)
     admitted: Counter = field(default_factory=Counter)
     weakened: dict = field(default_factory=dict)          # rule -> Counter(reason)
+    gates: dict = field(default_factory=dict)             # rule -> Counter(cause added)
 
     def fail(self, name, text):
         if len(self.problems) < 40:
@@ -562,7 +660,7 @@ class Ledger:
 
 
 def replay(full: bool) -> Ledger:
-    ledger = Ledger(weakened={r: Counter() for r in ORDER})
+    ledger = Ledger(weakened={r: Counter() for r in ORDER}, gates={r: Counter() for r in ORDER})
     for name, req in grid(full):
         ledger.inputs += 1
         base = route_snapshot(req)
@@ -597,6 +695,8 @@ def replay(full: bool) -> Ledger:
                     ledger.changed[rule_name] += 1
                     if (why := weaker(prev, cur)) is not None:
                         ledger.weakened[rule_name][why] += 1
+                    for cause in gates_added(prev, cur):
+                        ledger.gates[rule_name][cause] += 1
             prev = cur
     return ledger
 
@@ -660,12 +760,13 @@ def _print(full: bool) -> None:
     print(f"grid: {'full' if full else 'sample'}; inputs {led.inputs}; problems {len(led.problems)}")
     for line in led.problems[:20]:
         print("  !", line)
-    print("| rule | admitted | changed | weakened (by _contract_violation row / worker tier) |")
-    print("|---|---|---|---|")
+    print("| rule | admitted | changed | weaker (first row) | gates added |")
+    print("|---|---|---|---|---|")
     for name in ORDER:
         if name in RULES:
             weak = ", ".join(f"{k} {v}" for k, v in sorted(led.weakened[name].items())) or "0"
-            print(f"| `{name}` | {led.admitted[name]} | {led.changed[name]} | {weak} |")
+            gate = ", ".join(f"{k} {v}" for k, v in sorted(led.gates[name].items())) or "0"
+            print(f"| `{name}` | {led.admitted[name]} | {led.changed[name]} | {weak} | {gate} |")
 
 
 if __name__ == "__main__":
