@@ -356,7 +356,7 @@ review:
     independent: false
 
   MEDIUM:
-    candidates: [worker_balanced, senior_engineer, reasoning_specialist]
+    candidates: [worker_balanced, worker_balanced_alt, senior_engineer, reasoning_specialist]
     effort: HIGH
     independent: true
     # Depth is the reviewer LIST in every other band, and MEDIUM is no
@@ -372,15 +372,13 @@ review:
     #   * cross-family-first is the REASON this band names candidates instead
     #     of a fixed reviewer, so a key offering to turn it off is a safety
     #     property with a switch on it.
-    # First candidate that is both available and a different family from the
-    # implementer wins.
-    preferred_by_implementer:
-      worker_fast:             worker_balanced
-      worker_balanced:         reasoning_specialist
-      worker_balanced_alt:     senior_engineer
-      senior_engineer:         reasoning_specialist
-      reasoning_specialist:    senior_engineer
-      principal_architect:     reasoning_specialist
+    # 1.17.0 (design 2026-09-25 DD-B5, C4): the seated reviewer is the
+    # LOWEST-tier candidate that meets max(this band's floor, the implementer's
+    # tier), cross-family first, ties in this list's order; with no cross-family
+    # candidate at that tier a same-family one is taken (cross_family_review
+    # false). `preferred_by_implementer` sat here until then and put the
+    # tier-2 reasoning seat behind every tier-1 grok worker — one tier above
+    # what the band asks, on a quarter of MEDIUM reviews.
 
   HIGH:
     reviewers: [senior_engineer, reasoning_specialist]

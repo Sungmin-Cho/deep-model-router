@@ -222,3 +222,67 @@ def test_b2_counting_uncertainty_once_never_costs_the_worker_a_tier(task_class, 
     assert out["selected_model"] == before["selected_model"], (before["selected_model"], out["selected_model"])
     assert TIER[out["selected_model"]] == 2
     assert out["review"]["band"] == "HIGH" and before["review"]["band"] == "CRITICAL"
+
+
+# --------------------------------------------------------------------------
+# B3 — the MEDIUM reviewer fits the floor (DD-B5, C4)
+# --------------------------------------------------------------------------
+
+def test_b3_a_tier_1_worker_gets_the_cheapest_adequate_cross_family_reviewer():
+    """Audit F6: a grok (tier 1) worker's MEDIUM review went to sol (tier 2)
+    through a per-implementer preference; the band asks for tier 1."""
+    _, out = _route(_req("IMPLEMENTATION", (3, 0, 1, 0)))      # risk 5 MEDIUM, exec 9 NORMAL
+    assert out["selected_model"] == ID("xai_frontier")
+    assert out["review"]["reviewer_models"] == [ID("claude_worker_balanced")]
+    assert out["review"]["reviewers"] == ["worker_balanced_alt"]
+    assert out["cross_family_review"] is True and out["human_control_causes"] == []
+
+
+def test_b3_the_requirement_is_the_implementer_tier_when_that_is_higher():
+    # A declared tier-2 implementer: a tier-1 reviewer would review work
+    # stronger than itself, so a tier-2 cross-family seat is taken.
+    _, out = _route(_req("IMPLEMENTATION", (2, 1, 1, 1),
+                         implementer={"model_id": ID("claude_senior")}))
+    assert out["review"]["band"] == "MEDIUM"
+    [model] = out["review"]["reviewer_models"]
+    assert TIER[model] == 2 and FAMILY[model] != "claude"
+
+
+def test_b3_no_cross_family_candidate_falls_back_within_the_family_at_the_requirement():
+    _, out = _route(_req("IMPLEMENTATION", (2, 0, 1, 0), flags=["bridge_down"]))
+    assert out["review"]["band"] == "MEDIUM"
+    assert out["review"]["reviewer_models"] == [ID("claude_worker_balanced")]
+    assert out["cross_family_review"] is False
+    assert out["human_control_causes"] == []
+
+
+def test_b3_a_same_family_fallback_below_the_implementer_is_disclosed_and_gated():
+    """The fallback carries the same requirement, and the shortfall check
+    counts the implementer: a tier-2 implementer reviewed by the only
+    tier-1 seat left is a review below its band."""
+    req = _req("IMPLEMENTATION", (2, 1, 1, 1), runtime="codex", flags=["bridge_down"],
+               implementer={"model_id": ID("openai_reasoning")},
+               availability_snapshot={"unavailable_models": [ID("openai_frontier")]})
+    code, out = _route(req)
+    assert out["review"]["band"] == "MEDIUM"
+    [short] = out["review"]["review_depth_reduced"]
+    assert short["band_requires"] == 2 and short["capability_tier"] == 1
+    assert "review_below_band" in out["human_control_causes"] and code == 3
+
+
+def test_b3_a_binding_only_role_resolves_to_its_own_seat_only():
+    policy = rt.Policy.of(CFG)
+    task = rt.Task(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, blast_radius=1,
+                   reversibility=1)
+    task.validate(policy)
+    resolver = rt.Resolver(task, policy)
+    assert resolver._candidates("worker_balanced_alt") == ["claude_worker_balanced"]
+    task = rt.Task(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, blast_radius=1,
+                   reversibility=1, unavailable_models=[ID("claude_worker_balanced")])
+    task.validate(policy)
+    assert rt.Resolver(task, policy).peek("worker_balanced_alt") is None
+
+
+def test_b3_the_preference_table_is_gone():
+    assert "preferred_by_implementer" not in CFG["review"]["MEDIUM"]
+    assert "worker_balanced_alt" in CFG["review"]["MEDIUM"]["candidates"]

@@ -182,6 +182,26 @@ def _c1iii_check(req, prev, cur):
     return out
 
 
+def _c4_check(req, prev, cur):
+    """At or above max(MEDIUM floor, implementer tier) when any candidate
+    reaches it, and never above what 1.16.1 seated unless that was below it."""
+    if cur["terminal"] or prev["terminal"] or cur["review"]["band"] != "MEDIUM":
+        return []
+    [now] = cur["review"]["reviewer_models"] or [None]
+    [was] = prev["review"]["reviewer_models"] or [None]
+    if now is None or was is None:
+        return []
+    need = max(1, TIER_OF[cur["selected_model"]])
+    out = []
+    if TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]:
+        out.append(f"worker tier fell {prev['selected_model']} -> {cur['selected_model']}")
+    if cur["selected_model"] == prev["selected_model"] and TIER_OF[now] > max(TIER_OF[was], need):
+        out.append(f"reviewer overshoots: {was} -> {now} (requirement {need})")
+    if TIER_OF[now] < need and "review_below_band" not in cur["human_control_causes"]:
+        out.append(f"reviewer {now} below requirement {need} without the shortfall gate")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -211,6 +231,19 @@ RULES: dict[str, Rule] = {
                            "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_c1iii_check, changed_sample=2448, changed_full=7098),
+    # The settled MEDIUM reviewer and what follows from it: the seat, its
+    # records, cross-family, the (implementer-inclusive) shortfall gate, and a
+    # compensation's effort. The band is not declared: a reviewer choice made
+    # inside a MEDIUM pass must not move it. Widened by the worker (ledger B3):
+    # the execution-cell guard weighs the two plans' reviews, so a stronger
+    # worker can now be adopted where an adequate reviewer exists for it — up
+    # only, which the check holds.
+    "c4": Rule(
+        "c4", predicate=lambda req, prev: prev.get("review", {}).get("band") == "MEDIUM",
+        fields=(frozenset({"dispatch_seats", "selected_role", "selected_model",
+                           "selected_capability_tier"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_c4_check, changed_sample=980, changed_full=7882),
 }
 
 
@@ -251,8 +284,36 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
         "skip_uncertainty_penalty_when_band_raised", False),
 }
 
+def _c4_off(stack: ExitStack) -> None:
+    """1.16.1's MEDIUM reviewer: the per-implementer preference first, then
+    the first cross-family candidate, then the first available — read from
+    the SNAPSHOT's config, the only place that table still exists — and a
+    shortfall measured against the band floor alone."""
+    from unittest.mock import patch
+    medium = baseline_1161_cfg()["review"]["MEDIUM"]
+
+    def legacy(spec, worker, policy, resolver):
+        worker_family = resolver.family_for_role(worker, write=True)
+        preferred = medium["preferred_by_implementer"].get(worker)
+        ranked = list(dict.fromkeys(c for c in ([preferred] if preferred else [])
+                                    + list(medium["candidates"]) if c))
+        for candidate in ranked:
+            model = resolver.peek(candidate)
+            if model and policy.family_of[model] != worker_family:
+                return candidate
+        for candidate in ranked:
+            if resolver.peek(candidate):
+                return candidate
+        return ranked[0]
+
+    stack.enter_context(patch.object(rt, "_seat_medium_reviewer", legacy))
+    stack.enter_context(patch.object(
+        rt, "_medium_reviewer_floor",
+        lambda policy, band, worker_model: policy.band_reviewer_floor[band]))
+
+
 # rule -> function(ExitStack) that installs the pre-rule behaviour.
-PATCH_SWITCHES: dict[str, Callable[[ExitStack], None]] = {}
+PATCH_SWITCHES: dict[str, Callable[[ExitStack], None]] = {"c4": _c4_off}
 
 
 def project(req: dict) -> dict:

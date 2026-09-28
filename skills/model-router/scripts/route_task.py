@@ -1853,32 +1853,13 @@ def select_review(band: str, worker: str, policy: Policy, resolver: "Resolver") 
     spec = dict(cfg["review"][band])
 
     if band == "MEDIUM":
-        worker_family = resolver.family_for_role(worker, write=True)
-        preferred = spec["preferred_by_implementer"].get(worker)
-        ordered = [c for c in ([preferred] if preferred else []) + list(spec["candidates"]) if c]
-        seen, ranked = set(), []
-        for c in ordered:
-            if c not in seen:
-                seen.add(c)
-                ranked.append(c)
-        chosen = None
-        for candidate in ranked:                       # first cross-family and available
-            model = resolver.peek(candidate)
-            if model and policy.family_of[model] != worker_family:
-                chosen = candidate
-                break
-        if chosen is None:
-            for candidate in ranked:                   # then merely available
-                if resolver.peek(candidate):
-                    chosen = candidate
-                    break
         # One seat, and cross-family first. Both were config keys until the
-        # 2026-08-18 audit found them inert: this line has always seated
-        # exactly one reviewer and the loop above has always preferred a
-        # different family, so the keys read as policy while changing nothing.
-        # The constants live here now, with the config carrying the reasons.
+        # 2026-08-18 audit found them inert: this band has always seated
+        # exactly one reviewer and has always preferred a different family, so
+        # the keys read as policy while changing nothing. The constants live
+        # here now, with the config carrying the reasons.
         spec = {
-            "reviewers": [chosen or ranked[0]],
+            "reviewers": [_seat_medium_reviewer(spec, worker, policy, resolver)],
             "effort": spec["effort"],
             "independent": spec["independent"],
         }
@@ -1895,6 +1876,63 @@ def select_review(band: str, worker: str, policy: Policy, resolver: "Resolver") 
     if spec["independent"]:
         spec = _deconflict(spec, worker, policy, resolver)
     return spec
+
+
+def _medium_reviewer_floor(policy: Policy, band: str, worker_model: str | None) -> int:
+    """What a MEDIUM reviewer has to reach (design 2026-09-25 DD-B5, C4): the
+    band's floor, and never less than the implementer — the one reviewer is
+    the only check on that implementer's work. Other bands keep their floor;
+    their two independent seats are already at or above the frontier floor."""
+    floor = policy.band_reviewer_floor[band]
+    if band == "MEDIUM" and worker_model is not None:
+        floor = max(floor, policy.tier_of[worker_model])
+    return floor
+
+
+def _seat_medium_reviewer(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -> str:
+    """The MEDIUM reviewer role (DD-B5, C4): the LOWEST-tier candidate that
+    still meets `_medium_reviewer_floor`, cross-family first, ties in list
+    order. Until 1.17.0 a per-implementer preference seated the frontier sol
+    seat behind every grok worker, one tier above what the band asks.
+
+    A candidate resolving to the implementer's own model is not a candidate:
+    de-confliction would replace it by its own rule. With no cross-family
+    candidate at the requirement, a same-family one at it is taken and
+    `cross_family_review` reports the loss. When no LISTED candidate reaches
+    it, every role is searched the same way — the list is a preference, and
+    de-confliction always searched every role for an adequate replacement, so
+    stopping at the list would trade an adequate seat for a shortfall gate.
+    With none anywhere, the strongest listed candidate is seated and the
+    shortfall gate discloses it.
+    """
+    worker_model = resolver.peek(worker, write=True)
+    worker_family = policy.family_of[worker_model] if worker_model else None
+    need = _medium_reviewer_floor(policy, "MEDIUM", worker_model)
+    ranked = list(dict.fromkeys(spec["candidates"]))
+
+    def fell_back(role, model):
+        # Two roles can reach one model, one by its binding and one through a
+        # fallback. Seating the second records an outage that did not happen
+        # to this seat and charges its confidence penalty.
+        key = resolver._primary(role)
+        return key is None or policy.cfg["models"][key]["id"] != model
+
+    def usable(roles):
+        return [(i, role, model) for i, role in enumerate(roles)
+                if (model := resolver.peek(role)) and model != worker_model]
+
+    seats = usable(ranked)
+    cross = [x for x in seats if policy.family_of[x[2]] != worker_family]
+    wider = usable(ranked + [r for r in policy.roles if r not in ranked and r != worker])
+    wider_cross = [x for x in wider if policy.family_of[x[2]] != worker_family]
+    for pool in (cross, seats, wider_cross, wider):
+        fits = [x for x in pool if policy.tier_of[x[2]] >= need]
+        if fits:
+            return min(fits, key=lambda x: (policy.tier_of[x[2]], fell_back(x[1], x[2]), x[0]))[1]
+    pool = cross or seats
+    if pool:
+        return max(pool, key=lambda x: (policy.tier_of[x[2]], not fell_back(x[1], x[2]), -x[0]))[1]
+    return ranked[0]
 
 
 def _deconflict(spec: dict, worker: str, policy: Policy, resolver: "Resolver") -> dict:
@@ -2114,8 +2152,11 @@ def _joint_seats(review: dict, worker: str, judge: str | None,
     source_review = resolver.task._review_context is not None
     def unavailable():
         return ({**review, "independence_compromised": True} if source_review else review), judge
-    floor = policy.band_reviewer_floor[review["band"]]
     worker_model = resolver.peek(worker, write=True)
+    # What the band asks of a reviewer — at MEDIUM including the implementer's
+    # tier (DD-B5), so a MEDIUM slate below its implementer is deficient here
+    # too and the search can reach an adequate model no role is bound to.
+    floor = _medium_reviewer_floor(policy, review["band"], worker_model)
     if worker_model is None and not source_review:
         return unavailable()
     need_judge = judge is not None or bool(review.get("judge_unavailable"))
@@ -2329,10 +2370,14 @@ class Resolver:
         degraded_name = self.policy.degraded_binding[self.task.runtime]
         if (d := cfg["role_bindings"][degraded_name].get(role)):
             ordered.append(d)
-        index = self.policy.roles.index(role)
-        for other in self.policy.roles[index + 1:] + self.policy.roles[:index][::-1]:
-            if (k := self.binding.get(other)):
-                ordered.append(k)
+        # A binding-only role (`worker_balanced_alt`) has no rung on the
+        # ladder: it resolves to its own binding and nothing else, so a MEDIUM
+        # candidate list can name it without inheriting another role's seats.
+        if role in self.policy.roles:
+            index = self.policy.roles.index(role)
+            for other in self.policy.roles[index + 1:] + self.policy.roles[:index][::-1]:
+                if (k := self.binding.get(other)):
+                    ordered.append(k)
         seen: set[str] = set()
         out = []
         for k in ordered:
@@ -3337,7 +3382,7 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
         # final roster. A record that names a reviewer who is not there is worse
         # than no record: it is the rationale asserting a fact about the route that
         # the route contradicts.
-        floor = policy.band_reviewer_floor[review["band"]]
+        floor = _medium_reviewer_floor(policy, review["band"], resolved.get(worker))
         shortfall = [
             {"reviewer": role, "model": resolved[role],
              "capability_tier": policy.tier_of[resolved[role]], "band_requires": floor}

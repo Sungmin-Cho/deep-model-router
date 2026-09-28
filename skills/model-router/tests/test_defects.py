@@ -1040,9 +1040,6 @@ DOCUMENTED_BUT_UNREAD = {
         "dispute-kind input the schema does not have yet.",
     "review.disagreement.formal_reasoning_dispute_judge": "see above",
     "review.disagreement.formal_reasoning_dispute_effort": "see above",
-    "review.MEDIUM.preferred_by_implementer.reasoning_specialist": "read for "
-        "the implementers that reach MEDIUM; these two do not in any probe",
-    "review.MEDIUM.preferred_by_implementer.worker_balanced_alt": "see above",
     "effort_map.claude.MINIMAL": "vocabulary completeness — no band or "
                                  "floor selects MINIMAL",
     "effort_map.openai.MINIMAL": "same",
@@ -1251,14 +1248,6 @@ def test_d14_every_config_rule_has_a_consumer_or_a_recorded_reason():
 # reason. `DOCUMENTED_BUT_UNREAD` answers a different question — "was this key
 # ever looked at" — and B2 was two keys that WERE looked at and changed nothing.
 PERTURBATION_EXEMPT = {
-    "review.MEDIUM.preferred_by_implementer.reasoning_specialist":
-        "no probe puts this implementer in a MEDIUM review: the classes that "
-        "seat it are HIGH/CRITICAL, and a MEDIUM promotion reaching it would "
-        "have to come from a failed principal_architect, which is already the "
-        "ceiling. Uncovered, not inert.",
-    "review.MEDIUM.preferred_by_implementer.worker_balanced_alt":
-        "the alt is a binding target, not a role select_worker can return, so "
-        "it is never the implementer a MEDIUM review is picked against.",
     "review.disagreement.code_local_dispute_judge":
         "the recorded REAL GAP: the router always seats `default_judge` and "
         "never inspects the dispute's kind. Wiring these needs a dispute-kind "
@@ -1267,9 +1256,10 @@ PERTURBATION_EXEMPT = {
     "review.disagreement.formal_reasoning_dispute_effort": "see above",
 }
 
-# Probes chosen so that every `preferred_by_implementer` key a route can reach
-# is actually reached — the four implementers that can hold a MEDIUM review,
-# including the two that only arrive there by promotion after a failure.
+# Probes chosen so that every MEDIUM implementer tier is actually reached — the
+# four implementers that can hold a MEDIUM review, including the two that only
+# arrive there by promotion after a failure. (Until 1.17.0 these reached each
+# `preferred_by_implementer` key; DD-B5 replaced that table with the floor fit.)
 _PERTURBATION_PROBES = [
     dict(task_class="MECHANICAL", complexity=1, uncertainty=1, blast_radius=1, reversibility=1),
     dict(task_class="MECHANICAL", complexity=0, uncertainty=0, blast_radius=0, reversibility=0),

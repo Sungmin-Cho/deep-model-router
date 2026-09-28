@@ -66,6 +66,18 @@ NOMINAL_TIER = {role: TIER_OF[CFG["models"][key]["id"]]
 # becomes 0, disabling the gate on both sides at once.
 BAND_FLOOR = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}
 
+
+def reviewer_floor(out) -> int:
+    """What a route's reviewers must reach: the band floor, and at MEDIUM never
+    below the implementer (design 2026-09-25 DD-B5, C4). The rule written out
+    here, not the router's function. A terminal route withholds its worker, so
+    only the band part is known for it."""
+    band = out["review"]["band"]
+    floor = BAND_FLOOR[band]
+    if band == "MEDIUM" and out["selected_model"]:
+        floor = max(floor, TIER_OF[out["selected_model"]])
+    return floor
+
 # Dimension corners plus a midpoint. Bands are determined by the weighted sum,
 # so the corners cover every band and the midpoint catches boundary handling.
 DIMENSIONS = [(0, 0, 0, 0), (1, 1, 1, 1), (2, 2, 2, 0), (3, 3, 3, 3), (0, 3, 0, 0), (3, 0, 3, 2),
@@ -414,7 +426,7 @@ def test_a_review_below_its_band_floor_is_disclosed_and_gated():
         rv = out["review"]
         if out["terminal"]:
             continue
-        floor = BAND_FLOOR[rv["band"]]
+        floor = reviewer_floor(out)
         under = [m for m in rv["reviewer_models"] if m and TIER_OF[m] < floor]
         if not under:
             assert not rv["review_depth_reduced"], "reported a shortfall that is not there"
@@ -642,7 +654,11 @@ def test_the_shortfall_record_carries_the_band_the_gate_actually_used():
         rv = out["review"]
         for short in rv["review_depth_reduced"]:
             seen += 1
-            assert short["band_requires"] == BAND_FLOOR[rv["band"]]
+            if out["terminal"] and rv["band"] == "MEDIUM":
+                # The implementer term is withheld with the worker's id.
+                assert BAND_FLOOR["MEDIUM"] <= short["band_requires"] <= max(TIER_OF.values())
+            else:
+                assert short["band_requires"] == reviewer_floor(out)
             if short["model"]:
                 assert short["capability_tier"] == TIER_OF[short["model"]]
                 assert short["capability_tier"] < short["band_requires"]
@@ -714,7 +730,7 @@ def test_a_promoted_review_band_still_passes_every_emit_boundary_check():
     for out in dispatchable:
         rv = out["review"]
         involved = parties(out)
-        floor = BAND_FLOOR[rv["band"]]
+        floor = reviewer_floor(out)
         under = [m for m in rv["reviewer_models"] if m and TIER_OF[m] < floor]
         assert bool(under) == bool(rv["review_depth_reduced"]), (
             f"promoted to {rv['band']} with {under} and depth_reduced="

@@ -11,6 +11,10 @@ sys.path.insert(0, str(HERE.parent / "scripts"))
 from _baseline import (  # noqa: E402
     BASELINE_POLICY_SHA, BASELINE_VERSION, SNAPSHOT_DIR, baseline_cfg, load_baseline,
 )
+from _baseline import (  # noqa: E402
+    BASELINE_1161_POLICY_SHA, BASELINE_1161_VERSION, SNAPSHOT_1161_DIR, SNAPSHOT_1161_PREFIX,
+    baseline_1161_cfg, load_baseline_1161,
+)
 
 
 def test_manifest_matches_every_snapshot_file():
@@ -116,9 +120,13 @@ def test_the_floor_tables_did_not_move():
     import route_task as live
     mod = load_baseline()
     old, new = baseline_cfg(mod), live.load_config()
-    for key in ("worker_selection", "review", "effort_by_work",
+    for key in ("worker_selection", "effort_by_work",
                 "role_tiers", "effort_map", "worker_balanced_selection"):
         assert new[key] == old[key], key
+    # `review` is the table Part B changes on purpose (U-1). It is held to the
+    # 1.16.1 snapshot plus exactly the edits each rule declares below
+    # (plan B4, design DD-B11) — an edit no rule names fails here.
+    assert review_as_declared() == new["review"]
     # Preserve every historical model field except independently refreshed
     # billing quotes, and the provider `id` ONLY where this file names the
     # move. Everything the router reads off a model — family, capability_tier,
@@ -160,10 +168,30 @@ def test_the_floor_tables_did_not_move():
 
 # --- the 1.16.1 oracle (Part B, plan B0 Step 1) -------------------------------
 
-from _baseline import (  # noqa: E402
-    BASELINE_1161_POLICY_SHA, BASELINE_1161_VERSION, SNAPSHOT_1161_DIR, SNAPSHOT_1161_PREFIX,
-    baseline_1161_cfg, load_baseline_1161,
-)
+
+def _insert_after(items, anchor, item):
+    out = list(items)
+    out.insert(out.index(anchor) + 1, item)
+    return out
+
+
+# Each Part B rule's edit to the `review` table, as (rule, edit(review) -> None).
+REVIEW_EDITS = [
+    # C4 (DD-B5): the MEDIUM reviewer fits the floor; the preference table goes
+    # and the binding-only alt seat becomes a candidate.
+    ("c4", lambda rv: rv["MEDIUM"].pop("preferred_by_implementer")),
+    ("c4", lambda rv: rv["MEDIUM"].__setitem__("candidates", _insert_after(
+        rv["MEDIUM"]["candidates"], "worker_balanced", "worker_balanced_alt"))),
+]
+
+
+def review_as_declared() -> dict:
+    import copy
+    review = copy.deepcopy(baseline_1161_cfg()["review"])
+    for _rule, edit in REVIEW_EDITS:
+        edit(review)
+    return review
+
 
 _SNAPSHOT_1161_MODULES = ("route_task", "policy_digest", "strict_json", "lineage",
                           "model_state", "secure_io")

@@ -269,7 +269,12 @@ def test_migration_0_10_to_0_06_changes_exactly_class_c():
                     assert all(model_tiers[m] >= floor for m in b["review"]["reviewer_models"]), inp
                 elif "reviewers" in table:
                     assert b["review"]["reviewers"] == table["reviewers"], inp
-                else:                                          # MEDIUM seats one candidate
-                    assert len(b["review"]["reviewers"]) == 1 and b["review"]["reviewers"][0] in table["candidates"], inp
+                else:
+                    # MEDIUM seats one reviewer: a listed candidate, or — when no
+                    # listed one reaches max(floor, implementer tier) — any role
+                    # (DD-B5 searches every role, as de-confliction always did).
+                    assert len(b["review"]["reviewers"]) == 1, inp
+                    assert (b["review"]["reviewers"][0] in table["candidates"]
+                            or b["review"]["reviewers"][0] in new_cfg["role_tiers"]), inp
     assert seen_c >= 20, seen_c                               # the class is actually exercised
     assert seen_withheld_fallback >= 3, seen_withheld_fallback  # every band corner saw a withheld-model fallback

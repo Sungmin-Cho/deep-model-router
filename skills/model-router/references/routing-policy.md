@@ -231,9 +231,23 @@ through this score.
    no row is worse; otherwise yield to the legacy worker. Either outcome is a
    `notes` entry (`execution band … raised worker …` / `… yielded …: <row>`).
 
-Reviewer *identity* still follows the worker by the existing rules
-(`preferred_by_implementer`, de-confliction), so a MEDIUM route whose worker
-rose from the fast tier gets its reviewer chosen for the stronger worker.
+Reviewer *identity* still follows the worker (the MEDIUM floor fit below, and
+de-confliction), so a MEDIUM route whose worker rose from the fast tier gets its
+reviewer chosen for the stronger worker.
+
+### The MEDIUM reviewer fits the floor (1.17.0, design 2026-09-25 DD-B5)
+
+A MEDIUM review seats one reviewer: the **lowest-tier** candidate in
+`review.MEDIUM.candidates` whose resolved model reaches max(the band's floor,
+the implementer's tier), cross-family first, ties in list order (a role whose
+model comes from a fallback loses a tie to one bound to it). With no
+cross-family candidate at that tier a same-family one is taken and
+`cross_family_review` is false; when no listed candidate reaches it every role
+is searched the same way, as de-confliction always did. Only when nothing
+reaches it is the strongest candidate seated — and the shortfall check, which at
+MEDIUM also counts the implementer's tier, gates it (`review_below_band`).
+Until 1.17.0 a per-implementer preference (`preferred_by_implementer`) put the
+tier-2 reasoning seat behind every tier-1 grok worker, one tier above the band.
 
 ## Implementation tiers
 

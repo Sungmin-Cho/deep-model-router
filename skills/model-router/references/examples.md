@@ -491,8 +491,8 @@ worker:      worker_balanced  ->  xai_frontier
 effort:      MEDIUM  (native: medium)
 review:
   band:            MEDIUM
-  reviewers:       reasoning_specialist
-  models:          openai_reasoning
+  reviewers:       worker_balanced_alt
+  models:          claude_worker_balanced
   effort:          HIGH
   required:        independent=True
   actual:          degraded
@@ -504,7 +504,7 @@ notes:
   - escalated above capability tier 0
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
 
-IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM; execution 5/18 -> EASY. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
+IMPLEMENTATION scored 5/18 (c=1 u=1 b=1 r=0) -> band MEDIUM; execution 5/18 -> EASY. Worker worker_balanced at MEDIUM effort. Review band MEDIUM: worker_balanced_alt, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast.
 ```
 
 Without the failure this routes to `worker_fast`. With it, the router refuses
@@ -625,7 +625,7 @@ overrides:   (none)
 TERMINAL:    HUMAN_REQUIRED  — no executable bindings emitted
 review (policy only — not dispatchable):
   band:            MEDIUM
-  reviewers:       reasoning_specialist
+  reviewers:       worker_balanced_alt
   required:        independent=True
   actual:          degraded
 cross_family_review: True
@@ -638,7 +638,7 @@ notes:
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
   - retry budget spent: 4 attempt(s) against a cap of 4 — stop retrying and surface what was tried to a human
 
-IMPLEMENTATION scored 6/18 (c=1 u=1 b=1 r=1) -> band MEDIUM; execution 5/18 -> EASY. TERMINAL: HUMAN_REQUIRED — no executable bindings emitted; routing confidence 0.8 after 4 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: reasoning_specialist, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast. Requires human confirmation before proceeding.
+IMPLEMENTATION scored 6/18 (c=1 u=1 b=1 r=1) -> band MEDIUM; execution 5/18 -> EASY. TERMINAL: HUMAN_REQUIRED — no executable bindings emitted; routing confidence 0.8 after 4 prior failure(s). Surface to a human with what was tried, what evidence accumulated, and the blocking uncertainty. Review band MEDIUM: worker_balanced_alt, independence_required=True, review_independence=degraded. No fallbacks applied. Excluded as already-failed: openai_worker_fast. Requires human confirmation before proceeding.
 ```
 
 **No executable bindings are emitted at all, and the CLI exits nonzero.**

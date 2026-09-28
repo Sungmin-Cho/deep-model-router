@@ -535,5 +535,13 @@ def test_t10_medium_reviewer_identity_follows_the_raised_worker():
     out = r(task_class="IMPLEMENTATION", complexity=3, blast_radius=1)     # risk 5 MEDIUM, exec 9 NORMAL
     assert out["selected_role"] == "worker_balanced"
     assert out["review"]["band"] == "MEDIUM" and out["review"]["effort"] == "HIGH"
-    assert out["review"]["reviewers"] == ["reasoning_specialist"]
-    assert out["review"]["reviewer_models"] == [ID("openai_reasoning")]
+    # DD-B5 (C4): the lowest cross-family candidate at max(floor, worker tier)
+    # — tier 1 for the tier-1 grok worker — where 1.16.1's preference table
+    # seated the tier-2 reasoning seat.
+    assert out["review"]["reviewers"] == ["worker_balanced_alt"]
+    assert out["review"]["reviewer_models"] == [ID("claude_worker_balanced")]
+    # And it still follows the worker: the table worker (luna, tier 0) of the
+    # same task without the execution axis's inputs gets the grok seat.
+    low = r(task_class="IMPLEMENTATION", complexity=1, blast_radius=1, reversibility=2)   # risk 5, exec 3
+    assert low["selected_role"] == "worker_fast"
+    assert low["review"]["reviewer_models"] == [ID("xai_frontier")]
