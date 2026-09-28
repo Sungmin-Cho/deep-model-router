@@ -668,3 +668,99 @@ def test_b6_the_rule_is_one_config_key():
     cfg["review"]["review_class_lead_counts"] = "yes"
     with pytest.raises(rt.ConfigError):
         rt.Policy(cfg)
+
+
+# --------------------------------------------------------------------------
+# B7 — family_quota (DD-B8, C7)
+# --------------------------------------------------------------------------
+
+def _quota(**levels):
+    return {"family_quota": dict(levels)}
+
+
+def test_b7_an_exhausted_family_is_withheld_from_every_seat():
+    code, out = _route(_req("IMPLEMENTATION", (2, 2, 1, 1),
+                            availability_snapshot=_quota(openai="exhausted")))
+    seated = [out["selected_model"], *out["review"]["reviewer_models"], out["review"]["judge_model"]]
+    assert out["terminal"] is None
+    assert not any(m and FAMILY[m] == "openai" for m in seated), seated
+    assert any(n.startswith("family_quota: openai exhausted") for n in out["notes"])
+    assert out["unavailable_models"] == []               # the caller's list, not this one
+
+
+def test_b7_low_moves_only_the_worker_to_a_same_tier_family():
+    # MEDIUM (7), exec 8: luna (openai, tier 0) is the worker.
+    _, before = _route(_req(*LUNA_TASK))
+    code, out = _route(_req(*LUNA_TASK, availability_snapshot=_quota(openai="low")))
+    assert before["selected_model"] == ID("openai_worker_fast")
+    assert TIER[out["selected_model"]] == 0 and FAMILY[out["selected_model"]] != "openai"
+    assert not out["fallbacks_applied"]                  # a binding choice, not an outage
+    assert out["routing_confidence"] == before["routing_confidence"]
+    assert any(n.startswith("family_quota: openai low") for n in out["notes"])
+
+
+def test_b7_low_does_not_move_review_seats():
+    """The review seat of a declared tier-2 implementer is sol either way —
+    `low` binds the worker seat only, independently of the MEDIUM fit."""
+    req = _req("IMPLEMENTATION", (2, 1, 1, 1), implementer={"model_id": ID("claude_senior")})
+    _, plain = _route(req)
+    _, low = _route({**req, "availability_snapshot": _quota(openai="low")})
+    assert low["review"]["reviewer_models"] == plain["review"]["reviewer_models"]
+    assert FAMILY[low["review"]["reviewer_models"][0]] == "openai"
+    assert low["selected_model"] == ID("claude_senior")
+
+
+def test_b7_low_stays_put_without_a_same_tier_seat_elsewhere():
+    _, out = _route(_req(*LUNA_TASK, local_policy={"allowed_families": ["openai"]},
+                         availability_snapshot=_quota(openai="low")))
+    assert out["selected_model"] == ID("openai_worker_fast")
+
+
+def test_b7_exhausted_meets_allowed_families_and_the_implementer():
+    code, out = _route(_req(*LUNA_TASK, local_policy={"allowed_families": ["openai"]},
+                            availability_snapshot=_quota(openai="exhausted")))
+    assert out["terminal"] in ("SUPPLY_EXHAUSTED", "UNSATISFIABLE_LOCAL_POLICY")
+    assert out["selected_model"] is None
+    # A declared implementer already ran: its family's quota does not unseat it.
+    _, out = _route(_req("IMPLEMENTATION", (2, 1, 1, 1),
+                         implementer={"model_id": ID("openai_reasoning")},
+                         availability_snapshot=_quota(openai="exhausted")))
+    assert out["selected_model"] == ID("openai_reasoning")
+    assert not any(FAMILY[m] == "openai" for m in out["review"]["reviewer_models"])
+
+
+def test_b7_low_does_not_move_a_reviewer_the_low_escape_seated():
+    req = _req("IMPLEMENTATION", (1, 0, 1, 0),
+               availability_snapshot={"checks_available": False, "family_quota": {"xai": "low"}})
+    _, plain = _route(_req("IMPLEMENTATION", (1, 0, 1, 0),
+                           availability_snapshot={"checks_available": False}))
+    _, low = _route(req)
+    assert plain["review"]["band"] == low["review"]["band"] == "MEDIUM"
+    assert low["review"]["reviewer_models"] == plain["review"]["reviewer_models"] == [ID("xai_frontier")]
+
+
+def test_b7_a_quota_outcome_still_needs_recovery_evidence():
+    """Removed in design R1: reading `quota_exhausted` as the family being out
+    would let one declaration release the OPERATIONAL_RECOVERY_REQUIRED hold.
+    A caller who knows says so in `family_quota`."""
+    code, out = _route(_req(*LUNA_TASK, attempt_outcomes=[_fail("openai_worker_fast", kind="quota_exhausted")]))
+    assert out["terminal"] == "OPERATIONAL_RECOVERY_REQUIRED"
+
+
+@pytest.mark.parametrize("quota", [{"anthropic": "low"}, {"openai": "empty"}, {"openai": 1}, ["openai"]])
+def test_b7_the_quota_reading_is_strict(quota):
+    assert _route(_req(*LUNA_TASK, availability_snapshot={"family_quota": quota}))[0] == 2
+
+
+def test_b7_family_quota_on_the_cli():
+    import json
+    import subprocess
+    script = HERE.parent / "scripts" / "route_task.py"
+    base = [sys.executable, str(script), "--class", "IMPLEMENTATION", "--complexity", "2",
+            "--uncertainty", "1", "--blast-radius", "1", "--reversibility", "1", "--format", "json"]
+    proc = subprocess.run(base + ["--family-quota", "openai=exhausted"], capture_output=True,
+                          text=True, timeout=60)
+    out = json.loads(proc.stdout)
+    assert FAMILY[out["selected_model"]] != "openai"
+    bad = subprocess.run(base + ["--family-quota", "openai"], capture_output=True, text=True, timeout=60)
+    assert bad.returncode == 2

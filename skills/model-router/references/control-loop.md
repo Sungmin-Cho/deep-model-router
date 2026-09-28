@@ -285,6 +285,29 @@ verifies with its own checker, and it never dispatched the LOW reviewer seat
 either, so for deep-loop this change is no change — and deep-loop does not
 enforce the LOW checks (open item L-8).
 
+## Quota readings
+
+`availability_snapshot.family_quota: {"<family>": "ok" | "low" | "exhausted"}`
+(CLI `--family-quota openai=low,xai=ok`) is the caller's reading of each
+provider's remaining quota (design 2026-09-25 DD-B8). The router reads no
+network and no user file for it; `model_sync.py quota` reports what the local
+codex rollout records say, without running codex.
+
+- `exhausted` withholds every model of the family from every seat, like
+  `unavailable_models` with the reason quota (not echoed in that list — it is
+  the caller's). A declared `implementer` is not unseated: it already ran.
+- `low` moves only the **worker** seat, to the first same-tier model of another
+  family when one exists — a binding choice with no confidence penalty, and no
+  move at all without a same-tier seat. Review seats are unaffected. The
+  execution cell is weighed without it, so a `low` reading never costs the
+  worker a tier.
+- `ok`, or no entry, changes nothing. Absent, the field leaves
+  `request_sha256` unchanged.
+
+A `quota_exhausted` attempt outcome still needs recovery evidence
+(`OPERATIONAL_RECOVERY_REQUIRED`): the typed history records what happened to
+one attempt; `family_quota` states the provider's standing.
+
 ## Declared implementer
 
 RouteRequestV1 `implementer: {"model_id": "<registry id>"}` says this write

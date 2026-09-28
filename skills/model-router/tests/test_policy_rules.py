@@ -58,6 +58,7 @@ CFG = rt.load_config()
 POLICY = rt.Policy.of(CFG)
 ID = lambda key: CFG["models"][key]["id"]                       # noqa: E731
 TIER_OF = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
+FAMILY_OF = {m["id"]: m["family"] for m in CFG["models"].values()}
 EFFORTS = list(CFG["effort_levels"])
 BANDS = list(CFG["router"]["bands"])
 FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
@@ -322,6 +323,23 @@ def _review_lead_check(req, prev, cur):
     return out
 
 
+def _c7_check(req, prev, cur):
+    if "error" in cur or cur["terminal"]:
+        return []
+    quota = req["availability_snapshot"]["family_quota"]
+    exhausted = {f for f, level in quota.items() if level == "exhausted"}
+    declared = (req.get("implementer") or {}).get("model_id")
+    seated = [m for m in (cur["selected_model"], *cur["review"]["reviewer_models"],
+                          cur["review"]["judge_model"]) if m and m != declared]
+    out = [f"{m} seated from an exhausted family" for m in seated if FAMILY_OF[m] in exhausted]
+    low = {f for f, level in quota.items() if level == "low"}
+    if (not exhausted and cur["selected_model"] != prev.get("selected_model")
+            and TIER_OF[cur["selected_model"]] != TIER_OF[prev["selected_model"]]
+            and FAMILY_OF[prev["selected_model"]] in low):
+        out.append("`low` moved the worker off its tier")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -350,7 +368,7 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "dispatch_seats", "terminal",
                            "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c1iii_check, changed_sample=2613, changed_full=7329),
+        check=_c1iii_check, changed_sample=2943, changed_full=7791),
     # The settled MEDIUM reviewer and what follows from it: the seat, its
     # records, cross-family, the (implementer-inclusive) shortfall gate, and a
     # compensation's effort. The band is not declared: a reviewer choice made
@@ -363,7 +381,7 @@ RULES: dict[str, Rule] = {
         fields=(frozenset({"dispatch_seats", "selected_role", "selected_model",
                            "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c4_check, changed_sample=1065, changed_full=8225),
+        check=_c4_check, changed_sample=1235, changed_full=8911),
     # The class table's effort for a LOW-risk task, capped at MEDIUM before
     # the floors: the worker's effort and nothing that does not read it.
     # `dispatch_seats`: a REVIEW task's lead is dispatched at the higher of
@@ -371,7 +389,7 @@ RULES: dict[str, Rule] = {
     "c2": Rule(
         "c2", predicate=_c2_admits,
         fields=EFFORT | frozenset({"effort_ceiling_applied", "dispatch_seats"}),
-        check=_c2_check, changed_sample=621, changed_full=2808),
+        check=_c2_check, changed_sample=729, changed_full=3132),
     # Every LOW-risk route: the review is the checks, or — escaped — a model
     # review at the lowest band that carries what the checks cannot. A route
     # 1.16.1 promoted off LOW may settle back on LOW: the promotion read the
@@ -383,7 +401,7 @@ RULES: dict[str, Rule] = {
                            "review.mode", "band_overrides_applied", "dispatch_seats", "terminal",
                            "selected_role", "selected_model", "selected_capability_tier"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_c3_check, changed_sample=1539, changed_full=6216),
+        check=_c3_check, changed_sample=1737, changed_full=6744),
     # The four conditions, all of them (plan B0 Step 3): the ladder's step up
     # is undone — role and model back to the failure-free plan's, the effort
     # one above every effort that failed — and what follows from the worker:
@@ -412,7 +430,20 @@ RULES: dict[str, Rule] = {
                            "review.independence_required", "review.review_independence",
                            "band_overrides_applied", "terminal", "excluded_prior_failures"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_review_lead_check, changed_sample=1035, changed_full=8640),
+        check=_review_lead_check, changed_sample=1173, changed_full=9024),
+    # A caller's quota reading: `exhausted` withholds a family from every seat
+    # (so anything can follow, a terminal included); `low` moves the worker
+    # seat to a same-tier model of another family, and the reviewers
+    # de-conflicted against that worker follow.
+    "c7": Rule(
+        "c7", predicate=lambda req, prev: "family_quota" in (req.get("availability_snapshot") or {}),
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_c7_check, changed_sample=857, changed_full=2309),
 }
 
 

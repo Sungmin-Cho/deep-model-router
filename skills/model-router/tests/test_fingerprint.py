@@ -220,6 +220,8 @@ def test_part_b_fields_present_move_the_request_hash():
             **r["availability_snapshot"], "checks_available": False}},
         "attempt effort": with_attempt(effort="HIGH"),
         "attempt retry evidence": with_attempt(effort="HIGH", retry_evidence_sha256="2" * 64),
+        "family_quota": lambda r: {**r, "availability_snapshot": {
+            **r["availability_snapshot"], "family_quota": {"openai": "low"}}},
     }
     seen = {PART_B_GOLDEN}
     for name, build in variants.items():

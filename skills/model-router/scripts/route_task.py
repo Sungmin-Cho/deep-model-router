@@ -68,8 +68,10 @@ REQUEST_V1_KEYS = frozenset({
 })
 AVAIL_KEYS = frozenset({
     "unavailable_roles", "unavailable_models", "isolation", "isolation_evidence",
-    "checks_available",
+    "checks_available", "family_quota",
 })
+# availability_snapshot.family_quota values (design 2026-09-25 DD-B8, C7).
+FAMILY_QUOTA_LEVELS = ("ok", "low", "exhausted")
 LOCAL_POLICY_KEYS = frozenset({
     "minimum_capability_tier", "minimum_effort", "minimum_reviewers",
     "minimum_provider_families", "allowed_families",
@@ -1258,6 +1260,9 @@ class Task:
     # availability_snapshot.checks_available (DD-B4): false when this repository
     # cannot run the deterministic checks a LOW review consists of. None = true.
     _checks_available: bool | None = field(default=None, repr=False, compare=False)
+    # availability_snapshot.family_quota (DD-B8): {family: ok|low|exhausted},
+    # the caller's reading of each provider's remaining quota.
+    _family_quota: dict | None = field(default=None, repr=False, compare=False)
     # Set by route() when the same-model retry rule holds (DD-B6): {"model": id,
     # "effort": level}. Not caller input and never part of request_sha256.
     _same_model_retry: dict | None = field(default=None, repr=False, compare=False)
@@ -1317,6 +1322,17 @@ class Task:
         self._validate_implementer(policy)
         if self._checks_available is not None:
             self._require_bool("availability_snapshot.checks_available", self._checks_available)
+        if self._family_quota is not None:
+            quota = self._family_quota
+            if not isinstance(quota, dict):
+                raise ValidationError("availability_snapshot.family_quota must be an object")
+            for family, level in quota.items():
+                if family not in policy.families:
+                    raise ValidationError(f"family_quota: unknown model family {family!r}")
+                if level not in FAMILY_QUOTA_LEVELS:
+                    raise ValidationError(
+                        f"family_quota.{family}: {level!r} is not one of {list(FAMILY_QUOTA_LEVELS)}")
+            self._family_quota = dict(sorted(quota.items()))
         self._policy = policy
 
     def _validate_implementer(self, policy: Policy) -> None:
@@ -2479,7 +2495,15 @@ class Resolver:
         # echoed on every route, terminal ones included. A local revocation is
         # not caller input, so it filters seats without being echoed.
         self.local_blocked = set(policy.local_blocked_ids)
-        self.unusable = self.blocked | self.failed | self.local_blocked
+        # DD-B8 (C7). `exhausted`: the family's models are withheld like the
+        # caller's `unavailable_models` (reason: quota) — not echoed there, it
+        # is not that list. `low`: consulted only for the worker seat.
+        quota = task._family_quota or {}
+        self.quota_exhausted = {m["id"] for m in cfg["models"].values()
+                                if quota.get(m["family"]) == "exhausted"}
+        self.quota_low = frozenset(f for f, level in quota.items() if level == "low")
+        self.quota_swaps: dict[str, str] = {}
+        self.unusable = self.blocked | self.failed | self.local_blocked | self.quota_exhausted
 
         # Does THIS route's worker seat have to write? Set by `route()`.
         #
@@ -2587,7 +2611,27 @@ class Resolver:
                         self.task.runtime, cfg["models"][k]["family"])):
                 continue
             out.append(k)
+        if self.quota_low and (write or role == self.write_seat_role):
+            out = self._quota_low_order(role, out)
         return out
+
+    def _quota_low_order(self, role: str, keys: list[str]) -> list[str]:
+        """DD-B8 `low`, the worker seat only: when the seat would land on a
+        model of a low-quota family, the first same-tier model of another
+        family goes first. A binding choice with no confidence penalty — not a
+        fallback — and nothing moves without a same-tier seat to move to."""
+        models = self.policy.cfg["models"]
+        usable = [k for k in keys if models[k]["id"] not in self.unusable]
+        if not usable or models[usable[0]]["family"] not in self.quota_low:
+            return keys
+        tier = self.policy.tier_of[models[usable[0]]["id"]]
+        swap = next((k for k in usable
+                     if self.policy.tier_of[models[k]["id"]] == tier
+                     and models[k]["family"] not in self.quota_low), None)
+        if swap is None:
+            return keys
+        self.quota_swaps[role] = models[swap]["id"]
+        return [swap] + [k for k in keys if k != swap]
 
     def peek(self, role: str, *, write: bool = False) -> str | None:
         """The model this role would resolve to, or None if nothing is usable.
@@ -2665,6 +2709,11 @@ class Resolver:
                 offered = self._candidates(role, write=write)
                 primary_id = cfg["models"][offered[0]]["id"] if offered else None
             chosen_id = self.peek(role, write=write)
+            if (chosen_id is not None and chosen_id == self.quota_swaps.get(role)
+                    and primary_id is not None and primary_id not in self.unusable):
+                # A low-quota family moved this seat on purpose (DD-B8): a
+                # binding decision, not a model that went missing.
+                primary_id = chosen_id
             if chosen_id is None:
                 # The fourth cause is new and is often the only true one: the
                 # candidate exists, is available, has not failed and the bridge
@@ -2922,6 +2971,8 @@ def request_sha256_of(task: Task) -> str:
         canonical["implementer"] = task._implementer
     if task._checks_available is not None:
         canonical["checks_available"] = task._checks_available
+    if task._family_quota is not None:
+        canonical["family_quota"] = task._family_quota
     return hashlib.sha256(_canonical_json(canonical).encode()).hexdigest()
 
 
@@ -3042,6 +3093,17 @@ class _Prelude:
     # DD-B2 (C1-iii): the double uncertainty weight alone lifted the band, and
     # the policy says not to charge it again when deciding a review promotion.
     uncertainty_counted_in_band: bool = False
+
+
+def _without_low_quota(task: Task) -> Task:
+    """`task` with its `low` quota readings dropped (DD-B8) — the same object
+    when it has none. `exhausted` stays: a withheld family is withheld from
+    every plan."""
+    quota = task._family_quota
+    if not quota or "low" not in quota.values():
+        return task
+    kept = {family: level for family, level in quota.items() if level != "low"}
+    return replace(task, _family_quota=kept or None)
 
 
 def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
@@ -3252,9 +3314,15 @@ def route(task: Task, cfg: dict | None = None, *,
             # the execution-cell plan still took one on its own fallback, make the
             # bands differ and yield the stronger worker: counting uncertainty once
             # is a review rule, and must never cost the worker a tier.
+            #
+            # DD-B8 likewise: a `low` quota reading is a binding preference for
+            # the worker the policy adopts, never a reason to adopt a weaker
+            # one, so the plans are weighed without it and it is applied to the
+            # adopted plan only.
             weigh = replace(pre, uncertainty_counted_in_band=False)
-            with_cell = _plan(task, policy, cfg, weigh, resolver, candidate)
-            without = _plan(task, policy, cfg, weigh, resolver, legacy)
+            weigh_task = _without_low_quota(task)
+            with_cell = _plan(weigh_task, policy, cfg, weigh, resolver, candidate)
+            without = _plan(weigh_task, policy, cfg, weigh, resolver, legacy)
             if with_cell["terminal"] and without["terminal"]:
                 adopted, note = legacy, None                          # both terminal: nothing to gain
             else:
@@ -3273,7 +3341,7 @@ def route(task: Task, cfg: dict | None = None, *,
                     adopted, note = candidate, "raised"
                 else:
                     adopted, note = legacy, f"execution band {exec_band} yielded {candidate.role}: {row}"
-            if pre.uncertainty_counted_in_band:
+            if pre.uncertainty_counted_in_band or weigh_task is not task:
                 result = _plan(task, policy, cfg, pre, resolver, adopted)
             else:
                 result = with_cell if adopted is candidate else without
@@ -3291,6 +3359,17 @@ def route(task: Task, cfg: dict | None = None, *,
     if _is_source_review(task, policy):
         result["dispatch_seats"] = _dispatch_seats(result, policy, lead=True)
         result["notes"].append("REVIEW task: dispatch dispatch_seats exactly once each; selected_* aliases the lead reviewer (reviewer-1), not an extra worker")
+    if task._family_quota:
+        exhausted = sorted(f for f, level in task._family_quota.items() if level == "exhausted")
+        low = sorted(f for f, level in task._family_quota.items() if level == "low")
+        if exhausted:
+            result["notes"].append(
+                f"family_quota: {', '.join(exhausted)} exhausted — every model of the family "
+                f"is withheld (reason: quota)")
+        if low:
+            result["notes"].append(
+                f"family_quota: {', '.join(low)} low — the worker seat prefers a same-tier "
+                f"model of another family; review seats are unaffected")
     if task._implementer is not None:
         result["dispatch_seats"] = _dispatch_seats(result, policy, lead=False)
         result["notes"].append(
@@ -4392,6 +4471,10 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
     p.add_argument("--checks-unavailable", action="store_true",
                    help="this repository cannot run the deterministic checks a LOW "
                         "review consists of; LOW review then seats a model reviewer")
+    p.add_argument("--family-quota", default="",
+                   help="comma-separated family=ok|low|exhausted — the caller's reading of "
+                        "each provider's remaining quota (exhausted withholds the family; "
+                        "low moves only the worker to a same-tier model of another family)")
     p.add_argument("--host-model", default=None)
     p.add_argument("--host-effort", default=None)
     p.add_argument("--policy-pin", dest="policy_pin", default=None,
@@ -4399,6 +4482,19 @@ def build_parser(policy: Policy) -> argparse.ArgumentParser:
                         "committed local model state (64 lowercase hex)")
     p.add_argument("--format", default="text", choices=["text", "json"])
     return p
+
+
+def _parse_family_quota(value: str) -> dict | None:
+    pairs = _split(value)
+    if not pairs:
+        return None
+    quota = {}
+    for pair in pairs:
+        family, sep, level = pair.partition("=")
+        if not sep or not family.strip() or family.strip() in quota:
+            raise ValidationError(f"--family-quota: expected family=level pairs, got {pair!r}")
+        quota[family.strip()] = level.strip()
+    return quota
 
 
 REQUIRED_JSON_FIELDS = ("task_class", "complexity", "uncertainty", "blast_radius", "reversibility")
@@ -4481,6 +4577,9 @@ def task_from_request_v1(payload: dict) -> Task:
     checks = snap.get("checks_available") if snap else None
     if checks is not None and not isinstance(checks, bool):
         raise ValidationError("availability_snapshot.checks_available must be true, false or null")
+    quota = snap.get("family_quota") if snap else None
+    if quota is not None and not isinstance(quota, dict):
+        raise ValidationError("availability_snapshot.family_quota must be an object or null")
     return Task(
         task_class=payload["task_class"],
         complexity=payload["complexity"],
@@ -4504,6 +4603,7 @@ def task_from_request_v1(payload: dict) -> Task:
         _policy_pin=pin,
         _implementer=implementer,
         _checks_available=checks,
+        _family_quota=quota,
     )
 
 
@@ -4561,6 +4661,7 @@ def main(argv: list[str] | None = None) -> int:
                 isolation_evidence=_split(args.isolation_evidence),
                 worker_seat=args.worker_seat,
                 _checks_available=False if args.checks_unavailable else None,
+                _family_quota=_parse_family_quota(args.family_quota),
             )
             if args.host_effort and not args.host_model:
                 raise ValidationError("--host-effort requires --host-model")
