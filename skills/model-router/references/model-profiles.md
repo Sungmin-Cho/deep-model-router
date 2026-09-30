@@ -174,17 +174,27 @@ This generation cannot turn thinking off, and its own default effort is
 medium. The router always passes an explicit `--effort` on this seat, so that
 default never takes effect on a routed dispatch.
 
+Like the architect seat, this generation keeps refusal classifiers, and the
+provider's fallback can rerun a declined request on another Claude model.
+The row therefore carries the same `security_sensitive` substitution
+disclosure. It was missing from the 1.16.0 bump and was added in 1.17.1.
+
 ### The OpenAI reasoning seat
 
 **Its tier is inherited, not current.** On 2026-09-26 the `openai_reasoning`
-id moved to the next Sol generation. A contained probe confirmed that the id
-is accepted, the low and max effort tokens, and a write-seat run through the
-maker recipe. The CLI echoing the requested id is id acceptance, not proof of
-the served model. The published prices were re-read from the provider's
-documentation: the list price went down, $2 / $10 per million input / output
-tokens against the predecessor's $4 / $20. No quality comparison was run on
-the new generation. `capability_tier` 2 comes from the lineage, not from a
-measurement, and the ledger says so in its own row.
+id moved to the next Sol generation, and on 2026-09-30 to that generation's
+point release. For the current id a contained probe confirmed that the id is
+accepted and the low and max effort tokens. The write seat was not re-probed
+through the maker recipe for it, and the ledger records that. The CLI echoing
+the requested id is id acceptance, not proof of the served model. The
+published prices were re-read from the provider's documentation: $2 / $10 per
+million input / output tokens as before, with cached input halved to $0.10.
+No quality comparison was run on the new id. `capability_tier` 2 comes from
+the lineage, not from a measurement, and the ledger says so in its own row.
+
+The point release rejects the `none` effort token that the OpenAI family map
+sends for MINIMAL, so this row maps MINIMAL to `low`, as the OpenAI frontier
+seat does.
 
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
@@ -290,6 +300,17 @@ generation's until a fresh head-to-head exists — and note that the binding
 and the tier below do rest on them, so what is inherited is the seat's
 fitness itself, not merely a promotion nobody took.
 
+**The alt seat's numbers are inherited too.** On 2026-09-30 the
+`claude_worker_balanced` id moved to the next Sonnet generation. A contained
+probe confirmed the id, the served model, and the low and max effort tokens.
+The write seat was not re-probed through the maker recipe. The published
+prices are unchanged at $2 / $10 per million input / output tokens with
+$0.20 cached input, and the full 1M window is still billed at standard
+rates. Both the 446-node head-to-head and the repeat eval measured the
+predecessor, and so did the latency fact the `latency_sensitive` swap rests
+on. This generation also keeps refusal classifiers, like the Claude senior
+seat, and its row carries the same substitution disclosure.
+
 **`capability_tier` is 1 on purpose.** Honesty first: the one measured
 comparison there is finished at the suite's ceiling, which separates nothing —
 promoting the model to tier 2 on it would treat an undiscriminating result as
@@ -301,3 +322,40 @@ lift the floor to 2 and start marking MEDIUM reviews as below band — a
 band-policy change with nothing to do with adding a model. If a harder eval
 later supports a raise, change the registry line and decide the floor
 question at the same time.
+
+## Tiers after the 2026-09-30 bumps
+
+The two generations promoted on 2026-09-30 moved further than a point release
+usually does, by their vendors' own numbers. The new Sonnet generation lands
+within a few points of the Claude senior seat on most of its launch table,
+and ahead of the previous Sol generation on several. The new Sol point
+release is reported level with the OpenAI frontier model on one coding
+benchmark, at about a fifth of the cost per task. The ledger row
+"Vendor-published benchmarks for the 2026-09-30 bumps" holds the figures.
+Both vendors still place these models in their middle line.
+
+No tier and no binding moved. Before deciding, each candidate change was
+replayed through the router over 33,792 routes: 16,896 fresh inputs plus
+one retry each after its own worker failed. The ledger row "Tier and binding
+counterfactuals after the 2026-09-30 bumps" has the counts.
+
+- **The Claude balanced seat to tier 2** would cut the summed output price
+  of the seated models by about 11%. It would also seat this model where a
+  tier-3 reviewer sits today on 6,942 routes. On 4,082 retries after this
+  seat fails, the next seat would be the tier-3 architect instead of the
+  senior. The whole saving rests on this model being tier-2 strength. No
+  measurement in this registry shows that, and even its tier-1 fitness is
+  inherited from its predecessor.
+- **The Claude balanced seat as the default `worker_balanced`** would raise
+  that price sum slightly. It would also stop the first escalation from
+  crossing family, which is the reason the xai seat holds that role.
+- **The OpenAI reasoning seat to tier 3** would raise that price sum by about
+  3%. On 1,018 retries after the Sol seat itself fails, the route would
+  become terminal instead of climbing to the OpenAI frontier seat, because
+  nothing sits above tier 3.
+
+What would move the first of these is a discriminating measurement of the
+Claude balanced seat against the two tier-2 seats on this router's review and
+implementation work. A suite that finishes at its ceiling, like the 446-node
+one, cannot provide it. Until then, a vendor's launch table is recorded as
+`documented`, never as the reason a tier moved.

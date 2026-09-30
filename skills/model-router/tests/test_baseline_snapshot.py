@@ -153,7 +153,7 @@ def test_the_floor_tables_did_not_move():
         assert now in new["models"], (key, now)
         assert {k: v for k, v in new["models"][now].items()
                 if k not in exempt} == {
-                    k: v for k, v in historical.items()
+                    k: v for k, v in models_as_declared(key, historical).items()
                     if k not in exempt
                 }, key
         chain = ID_SUCCESSION.get(key)
@@ -164,6 +164,41 @@ def test_the_floor_tables_did_not_move():
         # an earlier id, or pointing it at one the chain never names, fails.
         assert historical["id"] in chain, (key, historical["id"], chain)
         assert new["models"][now]["id"] == chain[-1], (key, chain)
+
+
+# Each deliberate edit to a pinned model field: `<key>@<id>` -> {field: value},
+# kept in the succession fixture because the id is the point (the generation
+# the edit was established on, e.g. a refusal-classifier disclosure or an
+# effort token that generation rejects — each has its own ledger row). When the
+# key's id moves again the edit stops applying, and this test fails until
+# someone re-decides it for the new generation instead of carrying it over.
+MODEL_EDITS = SUCCESSION["model_edits"]
+
+
+def models_as_declared(key: str, historical: dict) -> dict:
+    import copy
+    import route_task as live
+    row = copy.deepcopy(historical)
+    live_id = live.load_config()["models"][KEY_RENAMES.get(key, key)]["id"]
+    for field, value in MODEL_EDITS.get(f"{key}@{live_id}", {}).items():
+        row[field] = copy.deepcopy(value)
+    return row
+
+
+def test_every_model_edit_names_a_live_generation_of_a_pinned_key():
+    """An edit declared for an id the key no longer holds is stale: it would
+    silently stop applying and read as a regression of the field rather than
+    as a decision nobody made for the new generation. An edit for a key the
+    1.12.1 snapshot does not pin would apply to nothing."""
+    import route_task as live
+    models = live.load_config()["models"]
+    pinned = baseline_cfg(load_baseline())["models"]
+    assert MODEL_EDITS, "no declared edit; drop the fixture key and this test"
+    for name, fields in MODEL_EDITS.items():
+        key, _, model_id = name.partition("@")
+        assert key in pinned, name
+        assert models[key]["id"] == model_id, name
+        assert fields and all(models[key][f] == v for f, v in fields.items()), name
 
 
 # --- the 1.16.1 oracle (Part B, plan B0 Step 1) -------------------------------

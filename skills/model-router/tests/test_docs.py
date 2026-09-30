@@ -1034,14 +1034,16 @@ _LEDGER_ITEM_QUOTES = (
 
 # The one place a literal id is the POINT rather than a copy: the succession
 # fixture pins what each registry key moved from and to, the history-row key
-# renames, and the human-set prior-failure exits. Deriving any of it from the
+# renames, the human-set prior-failure exits, and the per-generation edits to
+# model fields the 1.12.1 snapshot otherwise pins. Deriving any of it from the
 # registry would make the guard assert the registry against itself and pass
 # any swap. It is JSON, and the guard below scans only `tests/test_*.py`, so
 # the exemption is by FILE TYPE rather than by an AST-resolved assignment —
 # every Python test file is scanned in full, with no statement exempt
 # (design 2026-09-25 DD-A3). Named here so the exemption is a decision, not
 # an accident of where the file happens to live.
-_ID_PIN_SITES = {"fixtures/id-succession.json": ("chains", "key_renames", "prior_failure_exit")}
+_ID_PIN_SITES = {"fixtures/id-succession.json": ("chains", "key_renames", "prior_failure_exit",
+                                                  "model_edits")}
 
 
 def _code_lines(src):

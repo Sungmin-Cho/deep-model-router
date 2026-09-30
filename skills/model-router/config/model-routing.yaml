@@ -552,10 +552,32 @@ models:
     price_per_mtok: { input: 1.00, output: 5.00, cached_input: 0.10 }
 
   claude_worker_balanced:
-    id: claude-sonnet-5
+    id: claude-sonnet-5-5
     lineage: { line: claude/sonnet, template: "claude-sonnet-{gen}", catalog_name: Sonnet }
     family: claude
     capability_tier: 1
+    verified: true
+    # Provider-side substitution disclosure, as on claude_architect: this
+    # generation keeps refusal classifiers, and the provider's fallback can
+    # rerun a declined request on another Claude model (see the "Claude Opus
+    # and Sonnet generations: provider-side model substitution" ledger row).
+    served_model_caveats: [security_sensitive]
+    price_per_mtok:
+      verified_on: "2026-09-30"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      input: 2.0
+      output: 10.0
+      cached_input: 0.2
+      cache_write: 2.5
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "claude_worker_balanced@claude-sonnet-5":
+    id: claude-sonnet-5
+    history_of: claude_worker_balanced
+    family: claude
+    capability_tier: 1
+    dispatchable: false
     verified: true
     price_per_mtok: { input: 2.00, output: 10.00, cached_input: 0.20 }
 
@@ -565,6 +587,8 @@ models:
     family: claude
     capability_tier: 2
     verified: true
+    # Same disclosure as claude_worker_balanced; missing since the 1.16.0 bump.
+    served_model_caveats: [security_sensitive]
     price_per_mtok:
       verified_on: "2026-09-25"
       source: "https://platform.claude.com/docs/en/about-claude/pricing"
@@ -676,10 +700,34 @@ models:
                       input: 4.00, output: 18.00, cached_input: 0.40 }
 
   openai_reasoning:
-    id: gpt-6-sol
+    id: gpt-6.1-sol
     lineage: { line: openai/sol, template: "gpt-{gen}-sol" }
     family: openai
     capability_tier: 2
+    verified: true
+    # This generation rejects `none` (live-probed 2026-09-30), so MINIMAL maps
+    # upward to native `low` for this model only, as on openai_frontier.
+    effort_map: { MINIMAL: low }
+    price_per_mtok:
+      verified_on: "2026-09-30"
+      max_age_days: 30
+      source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol"
+      input: 2.0
+      output: 10.0
+      cached_input: 0.1
+      cache_write: 2.5
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      cache_write: 5.00,
+                      input: 4.00, output: 15.00, cached_input: 0.20 }
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "openai_reasoning@gpt-6-sol":
+    id: gpt-6-sol
+    history_of: openai_reasoning
+    family: openai
+    capability_tier: 2
+    dispatchable: false
     verified: true
     price_per_mtok:
       verified_on: "2026-09-26"
@@ -2133,3 +2181,203 @@ verification_ledger:
         44c244a27c662ff76210bfe5f3a37270419bb8dc5298becd73e1561837460855
         equals the expected token's. Receipt sha256
         db607c44c9c1eb718f50441d501b452f38a859e0c93699950fd1b331235f6a5e.
+
+    - item: "gpt-6.1-sol model id"
+      status: verified
+      probed_on: "2026-09-30"
+      attempt_id: "p20260930T065236-0e8f20e5-1"
+      cli_version: "0.159.2"
+      argv: "codex exec -m gpt-6.1-sol -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
+      evidence: >
+        model_sync contained read-only probe of openai_reasoning (gpt-6-sol
+        -> gpt-6.1-sol): P1 smoke answered pong with termination confirmed;
+        P2 the CLI header reported the requested id (id accepted, not
+        served-model attestation); P3 boot input 27981 vs 27468 for the
+        current id (paired). Quality is not measured by this row.
+
+    - item: "gpt-6.1-sol reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-30"
+      evidence: >
+        Live-probed tokens for gpt-6.1-sol: low, max (accepted). Other
+        levels were not live-probed for this id; the ceiling is unchanged
+        from gpt-6-sol (none).
+
+    - item: "gpt-6.1-sol pricing and context window"
+      status: documented
+      probed_on: "2026-09-30"
+      source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-09-30:
+        input 2.0, output 10.0, cached_input 0.1, cache_write 2.5. A
+        reference record, not the marginal cost of a subscription dispatch.
+        Against gpt-6-sol only cached_input moved (0.2 -> 0.1). The same
+        source documents the >272K long-context tier (2x input and cache
+        rates, 1.5x output, for the full request: input 4.0, output 15.0,
+        cached_input 0.2, cache_write 5.0) and a 1,050,000-token context
+        window. The row leaves `context_window` unset: the predecessor row
+        had none, and the baseline snapshot pins that leaf across a
+        generation refresh.
+
+    - item: "openai_reasoning quality evidence after the gpt-6.1-sol id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "gpt-6-sol model id"
+        - "gpt-6-sol reasoning-effort values"
+        - "gpt-6-sol pricing and context window"
+        - "openai_reasoning quality evidence after the gpt-6-sol id bump"
+        - "gpt-6-sol maker seat"
+      evidence: >
+        capability_tier 2 is inherited from the openai_reasoning lineage; no
+        quality measurement of gpt-6.1-sol has been run. Earlier quality
+        rows about gpt-6-sol describe that id, not this one.
+
+    - item: "gpt-6.1-sol maker seat"
+      status: maker_not_reprobed
+      evidence: >
+        No attended probe-maker summary for gpt-6.1-sol. Containment of the
+        write seat is the transport recipe's and does not depend on the id;
+        whether this id's maker seat works was not re-probed.
+
+    - item: "claude-sonnet-5-5 model id"
+      status: verified
+      probed_on: "2026-09-29"
+      attempt_id: "p20260929T172406-ea419b06-1"
+      cli_version: "2.1.284"
+      argv: "claude -p --model claude-sonnet-5-5 --effort low --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config --output-format json"
+      evidence: >
+        model_sync contained read-only probe of claude_worker_balanced
+        (claude-sonnet-5 -> claude-sonnet-5-5): P1 smoke answered pong with
+        termination confirmed; P2 served_models ['claude-sonnet-5-5'] are
+        served forms of the id; P3 boot input 35987 vs 48443 for the current
+        id (paired). Quality is not measured by this row.
+
+    - item: "claude-sonnet-5-5 reasoning-effort values"
+      status: verified
+      probed_on: "2026-09-29"
+      evidence: >
+        Live-probed tokens for claude-sonnet-5-5: low, max (accepted). Other
+        levels were not live-probed for this id; the ceiling is unchanged
+        from claude-sonnet-5 (none).
+
+    - item: "claude-sonnet-5-5 pricing and context window"
+      status: documented
+      probed_on: "2026-09-30"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-09-30:
+        input 2.0, output 10.0, cached_input 0.2, cache_write 2.5. A
+        reference record, not the marginal cost of a subscription dispatch.
+        Identical to claude-sonnet-5 on every rate. The same source bills
+        the full 1M context window at standard rates for this generation (no
+        long-context tier). The row leaves `context_window` unset, as its
+        predecessor did.
+
+    - item: "claude_worker_balanced quality evidence after the claude-sonnet-5-5 id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
+        - "worker_balanced binding: grok-4.6 over claude-sonnet-5"
+        - "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
+        - "worker_balanced repeat eval"
+      evidence: >
+        capability_tier 1 is inherited from the claude_worker_balanced
+        lineage; no quality measurement of claude-sonnet-5-5 has been run.
+        Earlier quality rows about claude-sonnet-5 describe that id, not
+        this one. That includes the 446-node head-to-head and the repeat
+        eval, whose lower Sonnet latency is what the `latency_sensitive`
+        swap rests on: that swap now rests on the predecessor's numbers.
+
+    - item: "claude-sonnet-5-5 maker seat"
+      status: maker_not_reprobed
+      evidence: >
+        No attended probe-maker summary for claude-sonnet-5-5. Containment
+        of the write seat is the transport recipe's and does not depend on
+        the id; whether this id's maker seat works was not re-probed.
+
+    - item: "gpt-6.1-sol MINIMAL effort token"
+      status: verified
+      probed_on: "2026-09-30"
+      cli_version: "0.159.2"
+      argv: "codex exec --ignore-user-config --ephemeral -m gpt-6.1-sol -c model_reasoning_effort=none -s read-only --skip-git-repo-check --json -"
+      evidence: >
+        Rejected before any output: HTTP 400 invalid_request_error,
+        code unsupported_value, "Unsupported value: 'none' is not supported
+        with the 'gpt-6.1-sol' model. Supported values are: 'low',
+        'medium', 'high', 'xhigh', and 'max'." gpt-6-sol accepted `none`;
+        the provider's gpt-6.1-sol page lists low through max only. The
+        family map's MINIMAL -> none would therefore fail on this id, so
+        the row carries `effort_map: { MINIMAL: low }`, as openai_frontier
+        does. No `effort_by_work` entry names MINIMAL today, so no shipped
+        route emitted it; the override keeps the map true for this model.
+        model_sync's P0 checks LOW and above only, which is why the
+        automatic probe did not catch it.
+
+    - item: "Claude Opus and Sonnet generations: provider-side model substitution (refusal classifier)"
+      status: documented
+      probed_on: "2026-09-30"
+      source: "https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback"
+      evidence: >
+        Vendor documentation read 2026-09-30 (not an execution probe): the
+        Opus generation now seated on claude_senior and the Sonnet
+        generation now seated on claude_worker_balanced both include
+        safety classifiers (stop_reason "refusal" with a
+        stop_details.category, cyber among them), and the provider's
+        fallback can rerun a declined request on another Claude model
+        (for this Sonnet generation, its predecessor). Whether the
+        `claude -p` transport enables that is not probed here — the same
+        position as the Fable 5.1 row. Implication: under
+        security_sensitive the identity of either seat is declared_only,
+        disclosed per route by `served_model_caveats` on both rows. The
+        claude_senior row lacked it from the 1.16.0 bump until now.
+
+    - item: "Vendor-published benchmarks for the 2026-09-30 bumps"
+      status: documented
+      probed_on: "2026-09-30"
+      source: "https://www.anthropic.com/claude-sonnet-5-5"
+      evidence: >
+        Read from the vendors' launch material and press coverage, not
+        measured here. claude-sonnet-5-5 (Anthropic launch table, vs
+        claude-sonnet-5 and claude-opus-5-5): Terminal-Bench 4.0 70.6 /
+        10.3 / 66.4; CursorBench 4.0 55.5 / 34.1 / 57.8; FrontierCode 1.1
+        46.2 / 42.4 / 54.4; OSWorld 2.1 80.1 / 57.0 / 81.8; GDPval-AA 1844
+        / 1449 / 1846; Humanity's Last Exam 64.5 / 54.9 / 67.7. Press
+        coverage adds SWE-Bench Pro 81.3 / 63.2 / 89.9. The same table puts
+        gpt-6-sol at FrontierCode 49.3 and GDPval-AA 1487. gpt-6.1-sol
+        (provider page: "near-Astra performance for complex coding,
+        computer use, and professional work"; numbers from press coverage
+        of the launch, https://the-decoder.com/gpt-6-1-sol-comes-close-to-astra-at-a-fifth-of-the-price/):
+        DeepSWE v1.1 level with gpt-6-astra and 6.4 points above gpt-6-sol;
+        OSWorld 2.0 2.1 points below gpt-6-astra and 7 above gpt-6-sol;
+        roughly a fifth of gpt-6-astra's cost per task. Both vendors still
+        position these as their middle line (the Sonnet line below Opus,
+        the Sol line below Astra).
+
+    - item: "Tier and binding counterfactuals after the 2026-09-30 bumps"
+      status: verified
+      probed_on: "2026-09-30"
+      evidence: >
+        Deterministic replay of route_task.route over 16,896 fresh inputs
+        (11 task classes x complexity, uncertainty, blast radius and
+        reversibility 0-3 x the three runtimes x no flag or
+        large_context) plus one retry each after its own worker failed —
+        33,792 routes — under the shipped registry and three one-line
+        edits. Cost proxy: the sum of the seated worker's and reviewers'
+        output prices per MTok, no token weighting. (A) claude_worker_balanced
+        capability_tier 1 -> 2: 13,331 routes change, proxy -11.0%; 6,942
+        seat this seat where a tier-3 reviewer sat, 2,254 retries after the
+        xai seat fails climb to this seat instead of the tier-2 senior,
+        4,082 retries after this seat fails climb to the tier-3 architect
+        instead of the tier-2 senior, 96 gain a human gate, 244 change band.
+        (B) this seat bound as the default worker_balanced (xai as the
+        alt): 9,454 routes change, proxy +0.3%, and the first escalation
+        stops crossing family. (C) openai_reasoning capability_tier 2 -> 3:
+        11,358 routes change, proxy +3.0%, 442 gain a human gate, and the
+        1,018 retries after this Sol seat itself fails — which climb to the
+        tier-3 OpenAI seat today — become terminal, because nothing sits
+        above tier 3. None was adopted:
+        B and C are worse on their own terms, and A's saving rests on a
+        tier-2 strength claim that no measurement in this registry
+        supports — the seat's tier-1 fitness is itself inherited (see the
+        quality row above). The script and output are the local research
+        note docs/research/2026-09-30-tier-counterfactuals/.

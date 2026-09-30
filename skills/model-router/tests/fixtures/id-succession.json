@@ -3,8 +3,9 @@
     "claude_architect": ["claude-fable-5", "claude-fable-5-1"],
     "xai_frontier": ["grok-4.6", "grok-4.7"],
     "claude_senior": ["claude-opus-5", "claude-opus-5-5"],
-    "openai_reasoning": ["gpt-5.6-sol", "gpt-6-sol"],
-    "openai_worker_fast": ["gpt-5.6-luna", "gpt-6-luna"]
+    "openai_reasoning": ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"],
+    "openai_worker_fast": ["gpt-5.6-luna", "gpt-6-luna"],
+    "claude_worker_balanced": ["claude-sonnet-5", "claude-sonnet-5-5"]
   },
   "key_renames": {
     "claude_architect_retired": "claude_architect@claude-fable-5",
@@ -15,6 +16,21 @@
     "xai_frontier@grok-4.6": 0,
     "claude_senior@claude-opus-5": 0,
     "openai_reasoning@gpt-5.6-sol": 0,
-    "openai_worker_fast@gpt-5.6-luna": 0
+    "openai_worker_fast@gpt-5.6-luna": 0,
+    "openai_reasoning@gpt-6-sol": 0,
+    "claude_worker_balanced@claude-sonnet-5": 0
+  },
+  "model_edits": {
+    "claude_senior@claude-opus-5-5": {
+      "served_model_caveats": ["security_sensitive"]
+    },
+    "claude_worker_balanced@claude-sonnet-5-5": {
+      "served_model_caveats": ["security_sensitive"]
+    },
+    "openai_reasoning@gpt-6.1-sol": {
+      "effort_map": {
+        "MINIMAL": "low"
+      }
+    }
   }
 }

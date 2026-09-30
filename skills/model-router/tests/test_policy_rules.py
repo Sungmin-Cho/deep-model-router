@@ -38,6 +38,7 @@ import itertools
 import json
 import os
 import random
+import re
 import sys
 from collections import Counter
 from contextlib import ExitStack
@@ -526,13 +527,42 @@ PATCH_SWITCHES: dict[str, Callable[[ExitStack], None]] = {"c4": _c4_off}
 
 
 def project(req: dict) -> dict:
-    """The request 1.16.1 would have been sent (design DD-B11 "투영")."""
+    """The request 1.16.1 would have been sent (design DD-B11 "투영"), in the
+    snapshot's own model ids."""
     out = copy.deepcopy(req)
     for drop in REQUEST_SWITCHES.values():
         drop(out)
     if out.get("availability_snapshot") == {}:
         out.pop("availability_snapshot")
-    return out
+    return _rewrite_ids(out, TO_SNAPSHOT)
+
+
+# A model generation is not a Part B rule. Ids that were live in the 1.16.1
+# snapshot and have moved since (1.17.1: the Sol and Sonnet seats) are
+# translated at the snapshot's boundary — its request into its ids, its
+# decision back into the live ones — so the replay compares policy, not ids.
+# Only those ids, read from the succession fixture; a live route that seats a
+# superseded id still differs from the translated snapshot.
+_SUCCESSION = json.loads((HERE / "fixtures" / "id-succession.json").read_text())
+TO_LIVE = {old: chain[-1] for key, chain in _SUCCESSION["chains"].items()
+           if (old := baseline_1161_cfg()["models"].get(key, {}).get("id")) in chain[:-1]}
+TO_SNAPSHOT = {new: old for old, new in TO_LIVE.items()}
+
+
+def _rewrite_ids(node, table: dict):
+    if isinstance(node, str):
+        # Whole tokens only, also inside a record such as a fallback line
+        # ("<role>: <id> unavailable -> <id>"); `.` and `-` are id characters,
+        # so one id is never rewritten inside a longer one.
+        for old, new in table.items():
+            node = re.sub(r"(?<![A-Za-z0-9._-])" + re.escape(old) + r"(?![A-Za-z0-9._-])",
+                          new, node)
+        return node
+    if isinstance(node, list):
+        return [_rewrite_ids(v, table) for v in node]
+    if isinstance(node, dict):
+        return {k: _rewrite_ids(v, table) for k, v in node.items()}
+    return node
 
 
 _CFG_BY_RULES: dict[frozenset, dict] = {}
@@ -591,7 +621,8 @@ def route_live(req: dict, on: frozenset) -> dict:
 def route_snapshot(req: dict) -> dict:
     mod = load_baseline_1161()
     try:
-        return decision(mod.route(mod.task_from_request_v1(project(req)), baseline_1161_cfg()))
+        return _rewrite_ids(decision(mod.route(mod.task_from_request_v1(project(req)),
+                                               baseline_1161_cfg())), TO_LIVE)
     except mod.ValidationError as exc:
         return {"exit": 2, "error": str(exc)}
 
@@ -930,6 +961,17 @@ def test_the_grid_reaches_every_band_and_class():
     bands = Counter(route_snapshot(req)["review"]["band"] for _, req in rows[::7]
                     if "error" not in route_snapshot(req))
     assert set(bands) == set(CFG["router"]["bands"]), bands
+
+
+def test_the_snapshot_id_translation_covers_exactly_the_moved_seats():
+    """Every seat whose id moved after 1.16.1 is translated, and nothing else:
+    a missing entry would read an id bump as an unnamed decision change, an
+    extra one could hide a real seat change."""
+    snap = baseline_1161_cfg()["models"]
+    moved = {m["id"]: CFG["models"][k]["id"] for k, m in snap.items()
+             if "history_of" not in m and m.get("dispatchable", True) is not False
+             and k in CFG["models"] and CFG["models"][k]["id"] != m["id"]}
+    assert TO_LIVE and TO_LIVE == moved
 
 
 def test_every_decision_change_since_1161_has_a_named_rule():
