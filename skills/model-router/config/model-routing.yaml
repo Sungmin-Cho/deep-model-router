@@ -2357,26 +2357,30 @@ verification_ledger:
       status: verified
       probed_on: "2026-09-30"
       evidence: >
-        Deterministic replay of route_task.route over 16,896 fresh inputs
+        Deterministic replay of route_task.route over 16,896 grid points
         (11 task classes x complexity, uncertainty, blast radius and
         reversibility 0-3 x the three runtimes x no flag or
-        large_context) plus one retry each after its own worker failed —
-        33,792 routes — under the shipped registry and three one-line
-        edits. Cost proxy: the sum of the seated worker's and reviewers'
-        output prices per MTok, no token weighting. (A) claude_worker_balanced
-        capability_tier 1 -> 2: 13,331 routes change, proxy -11.0%; 6,942
-        seat this seat where a tier-3 reviewer sat, 2,254 retries after the
-        xai seat fails climb to this seat instead of the tier-2 senior,
-        4,082 retries after this seat fails climb to the tier-3 architect
-        instead of the tier-2 senior, 96 gain a human gate, 244 change band.
-        (B) this seat bound as the default worker_balanced (xai as the
-        alt): 9,454 routes change, proxy +0.3%, and the first escalation
-        stops crossing family. (C) openai_reasoning capability_tier 2 -> 3:
-        11,358 routes change, proxy +3.0%, 442 gain a human gate, and the
-        1,018 retries after this Sol seat itself fails — which climb to the
-        tier-3 OpenAI seat today — become terminal, because nothing sits
-        above tier 3. None was adopted:
-        B and C are worse on their own terms, and A's saving rests on a
+        large_context), each routed fresh and once more after that
+        config's own fresh worker failed — 33,792 routes per config, paired
+        by grid point and phase, never by model id — under the shipped
+        registry and three one-line edits. Cost proxy: the sum of the seated
+        worker's and reviewers' output prices per MTok over every route, no
+        token weighting. (A) claude_worker_balanced capability_tier 1 -> 2:
+        13,381 routes change, proxy -11.1%; 6,942 seat this seat where a
+        tier-3 reviewer sat, 2,254 retries after the xai seat fails climb to
+        this seat instead of the tier-2 senior, 4,082 retries after this
+        seat fails climb to the tier-3 architect instead of the tier-2
+        senior, 96 gain a human gate, 247 change band. (B) this seat bound
+        as the default worker_balanced (xai as the alt): 13,962 routes
+        change, proxy +0.3%, and the escalation from the balanced worker to
+        the senior seat stays inside one family (fast -> balanced still
+        crosses). (C) openai_reasoning capability_tier 2 -> 3: 11,886
+        routes change, proxy +1.6%; 5,048 retries after the senior seat
+        fails climb to this Sol seat instead of the tier-3 architect, 442
+        gain a human gate, and the 1,018 retries after this Sol seat itself
+        fails — which climb to the tier-3 OpenAI seat today — become
+        terminal, because nothing sits above tier 3. None was adopted: B
+        and C are worse on their own terms, and A's saving rests on a
         tier-2 strength claim that no measurement in this registry
         supports — the seat's tier-1 fitness is itself inherited (see the
         quality row above). The script and output are the local research

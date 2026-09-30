@@ -335,8 +335,9 @@ benchmark, at about a fifth of the cost per task. The ledger row
 Both vendors still place these models in their middle line.
 
 No tier and no binding moved. Before deciding, each candidate change was
-replayed through the router over 33,792 routes: 16,896 fresh inputs plus
-one retry each after its own worker failed. The ledger row "Tier and binding
+replayed through the router on 16,896 grid points. Each point was routed
+fresh and once more after that configuration's own worker failed, and the
+routes were compared point by point. The ledger row "Tier and binding
 counterfactuals after the 2026-09-30 bumps" has the counts.
 
 - **The Claude balanced seat to tier 2** would cut the summed output price
@@ -347,12 +348,14 @@ counterfactuals after the 2026-09-30 bumps" has the counts.
   measurement in this registry shows that, and even its tier-1 fitness is
   inherited from its predecessor.
 - **The Claude balanced seat as the default `worker_balanced`** would raise
-  that price sum slightly. It would also stop the first escalation from
-  crossing family, which is the reason the xai seat holds that role.
-- **The OpenAI reasoning seat to tier 3** would raise that price sum by about
-  3%. On 1,018 retries after the Sol seat itself fails, the route would
-  become terminal instead of climbing to the OpenAI frontier seat, because
-  nothing sits above tier 3.
+  that price sum slightly. The step from the fast worker would still cross
+  family, but the next step, from the balanced worker to the senior seat,
+  would stay inside the Claude family. Keeping that step cross-family is
+  why the xai seat holds the role.
+- **The OpenAI reasoning seat to tier 3** would raise that price sum by
+  under 2%. On 1,018 retries after the Sol seat itself fails, the route
+  would become terminal instead of climbing to the OpenAI frontier seat,
+  because nothing sits above tier 3.
 
 What would move the first of these is a discriminating measurement of the
 Claude balanced seat against the two tier-2 seats on this router's review and
