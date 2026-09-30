@@ -2048,9 +2048,13 @@ verification_ledger:
       supersedes:
         - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
       evidence: >
-        capability_tier 2 is inherited from the claude_senior lineage; no
-        quality measurement of claude-opus-5-5 has been run. Earlier quality
-        rows about claude-opus-5 describe that id, not this one.
+        capability_tier 2 is inherited from the claude_senior lineage and
+        has not been re-decided. The only quality measurement of
+        claude-opus-5-5 is its use as a tier-2 reference in the 2026-09-30
+        tier check of the balanced seat (the
+        row "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"),
+        which scored it but did not re-decide its tier. Earlier quality rows
+        about claude-opus-5 describe that id, not this one.
 
     - item: "claude-opus-5-5 maker seat"
       status: verified
@@ -2228,9 +2232,13 @@ verification_ledger:
         - "openai_reasoning quality evidence after the gpt-6-sol id bump"
         - "gpt-6-sol maker seat"
       evidence: >
-        capability_tier 2 is inherited from the openai_reasoning lineage; no
-        quality measurement of gpt-6.1-sol has been run. Earlier quality
-        rows about gpt-6-sol describe that id, not this one.
+        capability_tier 2 is inherited from the openai_reasoning lineage and
+        has not been re-decided. The only quality measurement of gpt-6.1-sol
+        is its use as a tier-2 reference in the 2026-09-30 tier check of the
+        balanced seat (the
+        row "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"),
+        which scored it but did not re-decide its tier. Earlier quality rows
+        about gpt-6-sol describe that id, not this one.
 
     - item: "gpt-6.1-sol maker seat"
       status: verified

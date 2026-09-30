@@ -166,9 +166,11 @@ id moved to the next Opus generation. A contained probe confirmed the id,
 the served model, the low and max effort tokens, and a write-seat run through
 the maker recipe. The published prices were re-read from the provider's
 documentation: the list price went down, $4 / $20 per million input / output
-tokens against the predecessor's $5 / $25. No quality comparison was run on
-the new generation. `capability_tier` 2 comes from the lineage, not from a
-measurement, and the ledger says so in its own row.
+tokens against the predecessor's $5 / $25. The 2026-09-30 tier check of the
+balanced seat scored this seat as a tier-2 reference (see "Tiers after the
+2026-09-30 bumps"), but no measurement re-decided its own tier:
+`capability_tier` 2 comes from the lineage, and the ledger says so in its own
+row.
 
 This generation cannot turn thinking off, and its own default effort is
 medium. The router always passes an explicit `--effort` on this seat, so that
@@ -189,8 +191,9 @@ maker recipe. The CLI echoing
 the requested id is id acceptance, not proof of the served model. The
 published prices were re-read from the provider's documentation: $2 / $10 per
 million input / output tokens as before, with cached input halved to $0.10.
-No quality comparison was run on the new id. `capability_tier` 2 comes from
-the lineage, not from a measurement, and the ledger says so in its own row.
+The 2026-09-30 tier check of the balanced seat scored this seat as a tier-2
+reference, but no measurement re-decided its own tier: `capability_tier` 2
+comes from the lineage, and the ledger says so in its own row.
 
 The point release rejects the `none` effort token that the OpenAI family map
 sends for MINIMAL, so this row maps MINIMAL to `low`, as the OpenAI frontier
@@ -375,7 +378,6 @@ Average recall over two runs:
 
 This seat closes 44% of the distance from the anchor to the tier-2 seats,
 short of the 75% the rule required. It stays at tier 1, now on measured
-evidence rather than inherited evidence. The ledger row "claude_worker_balanced
-tier measurement after the claude-sonnet-5-5 bump" has the method and its
-limits. A vendor's launch table is still recorded as `documented`, never as
+evidence rather than inherited evidence. The ledger row recording the balanced
+seat's tier measurement has the method and its limits. A vendor's launch table is still recorded as `documented`, never as
 the reason a tier moved.
