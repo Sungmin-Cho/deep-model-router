@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.2] — 2026-09-30
+
+### Changed
+
+- Record the attended maker-seat probes for GPT-6.1 Sol and Claude Sonnet 5.5. Both passed, so the verification ledger no longer lists either maker seat as unverified.
+- Measure whether Claude Sonnet 5.5 is tier-2 strength before moving its tier. On a replay of a real review from this repository, it found 21% of the known defects. The tier-2 seats found 31–42% and its predecessor 8%, so it falls short of the bar fixed before the run and stays at tier 1, now on measured evidence. The model profile and verification ledger give the method and its limits.
+
 ## [1.17.1] — 2026-09-30
 
 ### Changed
