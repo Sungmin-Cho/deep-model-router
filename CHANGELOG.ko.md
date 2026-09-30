@@ -9,9 +9,19 @@
 
 ## [Unreleased]
 
+## [1.17.1] — 2026-09-30
+
 ### Changed
 
+- 로컬 오버레이의 격리·effort 프로브를 거쳐 GPT-6.1 Sol을 reasoning specialist 모델로 앉혔습니다. 공표 가격은 입력/출력 백만 토큰당 $2 / $10으로 그대로이고, 캐시 입력만 $0.10으로 절반이 됐습니다. `capability_tier`는 Sol 계열에서 승계했고, 품질과 maker 좌석은 재확인하지 않았으며, 모델 프로파일과 검증 원장이 이를 명시합니다. GPT-6 Sol은 이력 입력으로 계속 유효합니다.
+- 같은 프로브를 거쳐 Claude Sonnet 5.5를 Claude 균형 모델로 앉혔습니다. 가격은 그대로입니다($2 / $10, 캐시 입력 $0.20). `capability_tier`는 Sonnet 계열에서 승계했고, 품질과 maker 좌석은 재확인하지 않았으며, 모델 프로파일과 검증 원장이 이를 명시합니다. Claude Sonnet 5는 이력 입력으로 계속 유효합니다.
+- 새 세대의 출시 벤치마크에도 불구하고 tier와 바인딩은 모두 그대로 둡니다. 모델 프로파일에 벤더 수치와 후보 변경(Sonnet을 tier 2로, Sonnet을 기본 균형 워커로, Sol을 tier 3으로)마다의 재생 결과를 기록했습니다.
 - README: deep-loop 1.25.0 이상은 `policy_pin`을 넘기므로 오버레이 발행으로는 진행 중인 deep-loop 실행이 멈추지 않습니다. `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 이제 이전 deep-loop 버전에서 긴 실행을 돌릴 때만 권합니다. 플러그인 업데이트 뒤에는 여전히 새 실행이 필요합니다.
+
+### Fixed
+
+- GPT-6.1 Sol은 OpenAI 가족 매핑이 보내는 `none` 토큰을 거부하므로, 이 모델에서는 MINIMAL effort를 `low`로 매핑합니다.
+- Claude senior·균형 좌석의 현 세대는 대체 경로가 있는 거절 분류기를 유지하므로, `security_sensitive` 작업에서 제공자 쪽 모델 대체 가능성을 공시합니다. senior 좌석은 1.16.0부터 이 공시가 빠져 있었습니다.
 
 ## [1.17.0] — 2026-09-28 (review sized to the band)
 

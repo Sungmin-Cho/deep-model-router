@@ -1004,17 +1004,27 @@ def test_served_model_caveat_discloses_exactly_when_flag_and_seat_meet():
     # silence the day a policy change made this fixture terminal.
     assert hit["terminal"] is None
     assert hit["requires_human_confirmation"]
-    assert "claude_architect" in [_KEY_OF[m] for m in
-                                  [hit["selected_model"], *hit["review"]["reviewer_models"]]
-                                  if m], "fixture must seat the caveat-bearing model"
+    seated = [_KEY_OF[m] for m in
+              [hit["selected_model"], *hit["review"]["reviewer_models"]] if m]
+    assert "claude_architect" in seated, "fixture must seat the caveat-bearing model"
+    # Exactly one note per seated MODEL whose row carries the flag (1.17.1 put
+    # the caveat on the senior and balanced Claude rows too), each naming its
+    # own registry key.
+    carriers = sorted({k for k in seated
+                       if "security_sensitive" in
+                       (CFG["models"][k].get("served_model_caveats") or [])})
     notes = [n for n in hit["notes"] if marker in n]
-    assert len(notes) == 1
-    assert "claude_architect" in notes[0]
-    assert "security_sensitive" in notes[0]
-    # The note names the seated model's FAMILY, never a model id (design §4 B5
-    # + round-1 review F3: a caveat on a non-claude row must not produce a note
-    # claiming "Claude").
-    assert "claude model" in notes[0]
+    assert len(notes) == len(carriers)
+    for key in carriers:
+        assert sum(f"identity of {key} is" in n for n in notes) == 1, key
+    for note in notes:
+        assert "security_sensitive" in note
+        # The note names the seated model's FAMILY, never a model id (design
+        # §4 B5 + round-1 review F3: a caveat on a non-claude row must not
+        # produce a note claiming "Claude").
+        assert "claude model" in note
+    for key in carriers:
+        assert CFG["models"][key]["id"] not in json.dumps(hit["notes"]), key
     assert ARCHITECT_ID not in json.dumps(hit["notes"])
     # 같은 좌석, flag 없음 -> 공시 없음
     miss = _route_of(task_class="ARCHITECTURE", complexity=3, uncertainty=3,

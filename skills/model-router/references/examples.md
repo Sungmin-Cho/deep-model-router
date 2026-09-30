@@ -587,6 +587,7 @@ fallbacks:   ['reasoning_specialist: openai_reasoning unavailable -> openai_fron
 confidence:  0.89
 notes:
   - worker_balanced: xai write seat on claude_code requires dispatch_agent --seat-profile grok-maker-v1
+  - provider may substitute another claude model for security_sensitive content; the requested identity of claude_senior is declared_only
 
 IMPLEMENTATION scored 9/18 (c=2 u=1 b=2 r=1) -> band HIGH; execution 8/18 -> EASY. Overrides applied: critical_domain. Overrides that fired but were already satisfied: critical_domain. Critical-domain flags: security_sensitive. Worker worker_balanced at HIGH effort. Review band HIGH: senior_engineer, reasoning_specialist, independence_required=True, review_independence=degraded. Fallbacks: reasoning_specialist: openai_reasoning unavailable -> openai_frontier.
 ```

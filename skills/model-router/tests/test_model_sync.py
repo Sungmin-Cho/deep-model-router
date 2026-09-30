@@ -1161,18 +1161,34 @@ runpy.run_path({sync!r}, run_name="__main__")
 """
 
 
+SUCCESSION = json.loads((SKILL / "tests" / "fixtures" / "id-succession.json").read_text())
+
+
 def captured_base() -> dict:
     base = copy.deepcopy(BASE)
     models = base["models"]
     for key in CAPTURE_REWOUND:
         was = EXPECTED["from_ids"][key]
-        if models[key]["id"] == was:
+        live = models[key]["id"]
+        if live == was:
             continue
-        # Promoted to exactly the captured successor, or the capture is stale
-        # and this rewind would hide it.
-        assert models[key]["id"] == EXPECTED["candidates"][key], key
+        # Promoted to the captured successor, or past it along the recorded
+        # chain (1.17.1 moved openai_reasoning one generation further).
+        # Anything else means the capture is stale and this rewind would hide it.
+        chain = SUCCESSION["chains"][key]
+        assert chain[-1] == live, key
+        assert chain.index(was) < chain.index(EXPECTED["candidates"][key]), key
         hist = models.pop(f"{key}@{was}")
         assert hist["history_of"] == key and hist["id"] == was, key
+        for later in chain[chain.index(was) + 1:-1]:
+            assert models.pop(f"{key}@{later}")["history_of"] == key, (key, later)
+        # A field edit declared for the live generation was not on the row
+        # the capture saw; the history row holds what that row had.
+        for field in SUCCESSION["model_edits"].get(f"{key}@{live}", {}):
+            if field in hist:
+                models[key][field] = hist[field]
+            else:
+                models[key].pop(field, None)
         models[key]["id"] = was
         models[key]["price_per_mtok"] = hist["price_per_mtok"]
     return base
@@ -2348,8 +2364,12 @@ def repo_copy(tmp_path) -> Path:
 
 
 def probed(key, **entry_kw):
-    """A passing probe summary the way the harness records one."""
+    """A passing probe summary the way the harness records one — including the
+    base row's own effort_map, which the harness copies into every summary
+    (an openai_reasoning row that overlays MINIMAL would otherwise read as an
+    effort change and be refused)."""
     new = successor(key)
+    entry_kw.setdefault("effort_map", BASE["models"][key].get("effort_map"))
     e = ov_entry(key, new, **entry_kw)
     s = ov_summary(key, e)
     child = ["cli", "-m", new]
@@ -2439,7 +2459,12 @@ def test_promote_rewrites_the_row_and_appends_history_ledger_and_chain(tmp_path,
     # docs guard (test_docs) follows, not a bare id it would iterate by char.
     sup = quality["supersedes"]
     assert isinstance(sup, list) and sup
-    assert all(item in items and _whole(old, item) for item in sup), sup
+    # ... or an earlier disclosure for this key: a key bumped twice before
+    # (openai_reasoning since 1.17.1) chains its new row to the older ones.
+    assert all(item in items and (
+        _whole(old, item) or (items[item]["status"] == "quality_inherited_not_remeasured"
+                              and key in item)) for item in sup), sup
+    assert any(_whole(old, item) for item in sup), sup
     assert items[f"{new} maker seat"]["status"] == "maker_not_reprobed"
     if BASE["models"][key]["family"] == "openai":
         assert "id accepted" in items[f"{new} model id"]["evidence"]
