@@ -2289,12 +2289,13 @@ verification_ledger:
         - "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
         - "worker_balanced repeat eval"
       evidence: >
-        capability_tier 1 is inherited from the claude_worker_balanced
-        lineage; no quality measurement of claude-sonnet-5-5 has been run.
-        Earlier quality rows about claude-sonnet-5 describe that id, not
-        this one. That includes the 446-node head-to-head and the repeat
-        eval, whose lower Sonnet latency is what the `latency_sensitive`
-        swap rests on: that swap now rests on the predecessor's numbers.
+        The quality rows listed here measured claude-sonnet-5, not this id,
+        and none was re-run on claude-sonnet-5-5. That includes the 446-node
+        head-to-head and the repeat eval, whose lower Sonnet latency is what
+        the `latency_sensitive` swap rests on: that swap now rests on the
+        predecessor's numbers. The tier itself was measured separately on
+        2026-09-30 and stays 1 on that evidence (see "claude_worker_balanced
+        tier measurement after the claude-sonnet-5-5 bump").
 
     - item: "claude-sonnet-5-5 maker seat"
       status: verified
@@ -2401,3 +2402,34 @@ verification_ledger:
         supports — the seat's tier-1 fitness is itself inherited (see the
         quality row above). The script and output are the local research
         note docs/research/2026-09-30-tier-counterfactuals/.
+
+    - item: "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"
+      status: verified
+      probed_on: "2026-09-30"
+      evidence: >
+        Should this seat move to tier 2? Four subjects at effort high over
+        the production recipes: claude-sonnet-5-5 (candidate),
+        claude-opus-5-5 and gpt-6.1-sol (the tier-2 seats), and
+        claude-sonnet-5 (tier-1 anchor). The decision rule was fixed
+        before each round: the suite must separate the tier-2 mean from the
+        anchor by at least 0.10, and the candidate must close at least 75%
+        of that gap and come within 0.05 of the weaker tier-2 seat. Round
+        1, six seeded-defect modules (four planted defects each, three
+        authored by Claude and three by gpt-6-astra, each proven by hidden
+        tests), 72 dispatches: every subject fixed 24/24 and found 24/24 in
+        review except the anchor (22/24), so the suite hit its ceiling and
+        was inconclusive. Round 2 replayed a real review from this
+        repository, the 1.17.0 Part B implementation review i1, against a
+        history-limited checkout of its target with the spec documents cut
+        to their pre-review state. The ground truth is the 12 defects that
+        review found and the author fixed. Two judges that were not
+        subjects (claude-fable-5-1, gpt-6-astra) graded blind; on the two
+        original reviews they reproduced the expected sets exactly, and
+        they agreed on 99% of the subject grades. Mean recall over two
+        reps: gpt-6.1-sol 0.417, claude-opus-5-5 0.312, claude-sonnet-5-5
+        0.208, claude-sonnet-5 0.083. The suite discriminates (gap 0.281),
+        and the candidate closes 44% of it (55% against claude-opus-5-5
+        alone), so capability_tier stays 1, now on measured evidence. The
+        ground truth came from two OpenAI-family reviewers, and real
+        defects outside it earn no credit. The plan, harness and raw
+        results are the local note docs/evals/2026-09-30-t2/.

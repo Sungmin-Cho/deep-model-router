@@ -309,7 +309,8 @@ $0.20 cached input, and the full 1M window is still billed at standard
 rates. Both the 446-node head-to-head and the repeat eval measured the
 predecessor, and so did the latency fact the `latency_sensitive` swap rests
 on. This generation also keeps refusal classifiers, like the Claude senior
-seat, and its row carries the same substitution disclosure.
+seat, and its row carries the same substitution disclosure. Its tier was
+measured separately; see "Tiers after the 2026-09-30 bumps" below.
 
 **`capability_tier` is 1 on purpose.** Honesty first: the one measured
 comparison there is finished at the suite's ceiling, which separates nothing —
@@ -344,9 +345,8 @@ counterfactuals after the 2026-09-30 bumps" has the counts.
   of the seated models by about 11%. It would also seat this model where a
   tier-3 reviewer sits today on 6,942 routes. On 4,082 retries after this
   seat fails, the next seat would be the tier-3 architect instead of the
-  senior. The whole saving rests on this model being tier-2 strength. No
-  measurement in this registry shows that, and even its tier-1 fitness is
-  inherited from its predecessor.
+  senior. The whole saving rests on this model being tier-2 strength, and
+  the measurement below says it is not there yet.
 - **The Claude balanced seat as the default `worker_balanced`** would raise
   that price sum slightly. The step from the fast worker would still cross
   family, but the next step, from the balanced worker to the senior seat,
@@ -357,8 +357,23 @@ counterfactuals after the 2026-09-30 bumps" has the counts.
   would become terminal instead of climbing to the OpenAI frontier seat,
   because nothing sits above tier 3.
 
-What would move the first of these is a discriminating measurement of the
-Claude balanced seat against the two tier-2 seats on this router's review and
-implementation work. A suite that finishes at its ceiling, like the 446-node
-one, cannot provide it. Until then, a vendor's launch table is recorded as
-`documented`, never as the reason a tier moved.
+**Measured on 2026-09-30.** The decision rule was fixed before each round
+ran. The first suite, seeded-defect modules with hidden tests, finished at its
+ceiling for every model, the tier-1 anchor included, so it decided nothing.
+The second replayed a real review from this repository against its original
+target: twelve defects that review had found and the author had fixed.
+Average recall over two runs:
+
+| Model | Recall |
+|---|---|
+| Sol seat | 42% |
+| Claude senior seat | 31% |
+| This seat | 21% |
+| Previous Sonnet generation (tier-1 anchor) | 8% |
+
+This seat closes 44% of the distance from the anchor to the tier-2 seats,
+short of the 75% the rule required. It stays at tier 1, now on measured
+evidence rather than inherited evidence. The ledger row "claude_worker_balanced
+tier measurement after the claude-sonnet-5-5 bump" has the method and its
+limits. A vendor's launch table is still recorded as `documented`, never as
+the reason a tier moved.
