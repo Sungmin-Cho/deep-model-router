@@ -2048,9 +2048,13 @@ verification_ledger:
       supersedes:
         - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
       evidence: >
-        capability_tier 2 is inherited from the claude_senior lineage; no
-        quality measurement of claude-opus-5-5 has been run. Earlier quality
-        rows about claude-opus-5 describe that id, not this one.
+        capability_tier 2 is inherited from the claude_senior lineage and
+        has not been re-decided. The only quality measurement of
+        claude-opus-5-5 is its use as a tier-2 reference in the 2026-09-30
+        tier check of the balanced seat (the
+        row "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"),
+        which scored it but did not re-decide its tier. Earlier quality rows
+        about claude-opus-5 describe that id, not this one.
 
     - item: "claude-opus-5-5 maker seat"
       status: verified
@@ -2228,16 +2232,28 @@ verification_ledger:
         - "openai_reasoning quality evidence after the gpt-6-sol id bump"
         - "gpt-6-sol maker seat"
       evidence: >
-        capability_tier 2 is inherited from the openai_reasoning lineage; no
-        quality measurement of gpt-6.1-sol has been run. Earlier quality
-        rows about gpt-6-sol describe that id, not this one.
+        capability_tier 2 is inherited from the openai_reasoning lineage and
+        has not been re-decided. The only quality measurement of gpt-6.1-sol
+        is its use as a tier-2 reference in the 2026-09-30 tier check of the
+        balanced seat (the
+        row "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"),
+        which scored it but did not re-decide its tier. Earlier quality rows
+        about gpt-6-sol describe that id, not this one.
 
     - item: "gpt-6.1-sol maker seat"
-      status: maker_not_reprobed
+      status: verified
+      probed_on: "2026-09-30"
+      attempt_id: "m20260930T102756-d3c7ce2f-1"
+      cli_version: "0.159.2"
+      argv: "codex exec -m gpt-6.1-sol -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check -"
       evidence: >
-        No attended probe-maker summary for gpt-6.1-sol. Containment of the
-        write seat is the transport recipe's and does not depend on the id;
-        whether this id's maker seat works was not re-probed.
+        Attended model_sync probe-maker through claude_code.to_openai
+        (mechanism): the maker recipe with -m gpt-6.1-sol, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        a32a895686d0903f3dbcd577529286995e8e8e28086fa190f936daa5f038685d
+        equals the expected token's. Receipt sha256
+        5da2bed7cddc66e8cb148c1e1c1ff9caf2b7add506e52d099b588deb061aef6a.
 
     - item: "claude-sonnet-5-5 model id"
       status: verified
@@ -2281,19 +2297,28 @@ verification_ledger:
         - "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
         - "worker_balanced repeat eval"
       evidence: >
-        capability_tier 1 is inherited from the claude_worker_balanced
-        lineage; no quality measurement of claude-sonnet-5-5 has been run.
-        Earlier quality rows about claude-sonnet-5 describe that id, not
-        this one. That includes the 446-node head-to-head and the repeat
-        eval, whose lower Sonnet latency is what the `latency_sensitive`
-        swap rests on: that swap now rests on the predecessor's numbers.
+        The quality rows listed here measured claude-sonnet-5, not this id,
+        and none was re-run on claude-sonnet-5-5. That includes the 446-node
+        head-to-head and the repeat eval, whose lower Sonnet latency is what
+        the `latency_sensitive` swap rests on: that swap now rests on the
+        predecessor's numbers. The tier itself was measured separately on
+        2026-09-30 and stays 1 on that evidence (see "claude_worker_balanced
+        tier measurement after the claude-sonnet-5-5 bump").
 
     - item: "claude-sonnet-5-5 maker seat"
-      status: maker_not_reprobed
+      status: verified
+      probed_on: "2026-09-30"
+      attempt_id: "m20260930T102750-75a2554b-1"
+      cli_version: "2.1.285"
+      argv: "claude -p --model claude-sonnet-5-5 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
       evidence: >
-        No attended probe-maker summary for claude-sonnet-5-5. Containment
-        of the write seat is the transport recipe's and does not depend on
-        the id; whether this id's maker seat works was not re-probed.
+        Attended model_sync probe-maker through codex.to_claude (mechanism):
+        the maker recipe with -m claude-sonnet-5-5, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        0673c912eb32722da3874bdc8e8b094f3cd2421a0f12e591c587243aefd87a03
+        equals the expected token's. Receipt sha256
+        bdbcb7c4cbdcdc2e33083866e4d43a6d02953f0e1b05b25a0bc85ea27ef9163f.
 
     - item: "gpt-6.1-sol MINIMAL effort token"
       status: verified
@@ -2380,8 +2405,39 @@ verification_ledger:
         gain a human gate, and the 1,018 retries after this Sol seat itself
         fails — which climb to the tier-3 OpenAI seat today — become
         terminal, because nothing sits above tier 3. None was adopted: B
-        and C are worse on their own terms, and A's saving rests on a
-        tier-2 strength claim that no measurement in this registry
-        supports — the seat's tier-1 fitness is itself inherited (see the
-        quality row above). The script and output are the local research
-        note docs/research/2026-09-30-tier-counterfactuals/.
+        and C are worse on their own terms, and A's saving rests on the
+        seat being tier-2 strength, which the row "claude_worker_balanced
+        tier measurement after the claude-sonnet-5-5 bump" measured and
+        rejected. The script and output are the local research note
+        docs/research/2026-09-30-tier-counterfactuals/.
+
+    - item: "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"
+      status: verified
+      probed_on: "2026-09-30"
+      evidence: >
+        Should this seat move to tier 2? Four subjects at effort high over
+        the production recipes: claude-sonnet-5-5 (candidate),
+        claude-opus-5-5 and gpt-6.1-sol (the tier-2 seats), and
+        claude-sonnet-5 (tier-1 anchor). The decision rule was fixed
+        before each round: the suite must separate the tier-2 mean from the
+        anchor by at least 0.10, and the candidate must close at least 75%
+        of that gap and come within 0.05 of the weaker tier-2 seat. Round
+        1, six seeded-defect modules (four planted defects each, three
+        authored by Claude and three by gpt-6-astra, each proven by hidden
+        tests), 72 dispatches: every subject fixed 24/24 and found 24/24 in
+        review except the anchor (22/24), so the suite hit its ceiling and
+        was inconclusive. Round 2 replayed a real review from this
+        repository, the 1.17.0 Part B implementation review i1, against a
+        history-limited checkout of its target with the spec documents cut
+        to their pre-review state. The ground truth is the 12 defects that
+        review found and the author fixed. Two judges that were not
+        subjects (claude-fable-5-1, gpt-6-astra) graded blind; on the two
+        original reviews they reproduced the expected sets exactly, and
+        they agreed on 99% of the subject grades. Mean recall over two
+        reps: gpt-6.1-sol 0.417, claude-opus-5-5 0.312, claude-sonnet-5-5
+        0.208, claude-sonnet-5 0.083. The suite discriminates (gap 0.281),
+        and the candidate closes 44% of it (55% against claude-opus-5-5
+        alone), so capability_tier stays 1, now on measured evidence. The
+        ground truth came from two OpenAI-family reviewers, and real
+        defects outside it earn no credit. The plan, harness and raw
+        results are the local note docs/evals/2026-09-30-t2/.
