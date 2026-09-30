@@ -358,8 +358,10 @@ counterfactuals after the 2026-09-30 bumps" has the counts.
   because nothing sits above tier 3.
 
 **Measured on 2026-09-30.** The decision rule was fixed before each round
-ran. The first suite, seeded-defect modules with hidden tests, finished at its
-ceiling for every model, the tier-1 anchor included, so it decided nothing.
+ran. The first suite used seeded-defect modules with hidden tests. Every
+model fixed all 24 defects, and the three strongest also found all 24 in
+review. The tier-1 anchor found 22, a gap too small to pass the rule's
+validity gate, so this suite decided nothing.
 The second replayed a real review from this repository against its original
 target: twelve defects that review had found and the author had fixed.
 Average recall over two runs:

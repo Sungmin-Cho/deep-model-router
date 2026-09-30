@@ -2397,11 +2397,11 @@ verification_ledger:
         gain a human gate, and the 1,018 retries after this Sol seat itself
         fails — which climb to the tier-3 OpenAI seat today — become
         terminal, because nothing sits above tier 3. None was adopted: B
-        and C are worse on their own terms, and A's saving rests on a
-        tier-2 strength claim that no measurement in this registry
-        supports — the seat's tier-1 fitness is itself inherited (see the
-        quality row above). The script and output are the local research
-        note docs/research/2026-09-30-tier-counterfactuals/.
+        and C are worse on their own terms, and A's saving rests on the
+        seat being tier-2 strength, which the row "claude_worker_balanced
+        tier measurement after the claude-sonnet-5-5 bump" measured and
+        rejected. The script and output are the local research note
+        docs/research/2026-09-30-tier-counterfactuals/.
 
     - item: "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"
       status: verified
