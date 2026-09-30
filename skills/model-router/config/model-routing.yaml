@@ -2233,11 +2233,19 @@ verification_ledger:
         rows about gpt-6-sol describe that id, not this one.
 
     - item: "gpt-6.1-sol maker seat"
-      status: maker_not_reprobed
+      status: verified
+      probed_on: "2026-09-30"
+      attempt_id: "m20260930T102756-d3c7ce2f-1"
+      cli_version: "0.159.2"
+      argv: "codex exec -m gpt-6.1-sol -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check -"
       evidence: >
-        No attended probe-maker summary for gpt-6.1-sol. Containment of the
-        write seat is the transport recipe's and does not depend on the id;
-        whether this id's maker seat works was not re-probed.
+        Attended model_sync probe-maker through claude_code.to_openai
+        (mechanism): the maker recipe with -m gpt-6.1-sol, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        a32a895686d0903f3dbcd577529286995e8e8e28086fa190f936daa5f038685d
+        equals the expected token's. Receipt sha256
+        5da2bed7cddc66e8cb148c1e1c1ff9caf2b7add506e52d099b588deb061aef6a.
 
     - item: "claude-sonnet-5-5 model id"
       status: verified
@@ -2289,11 +2297,19 @@ verification_ledger:
         swap rests on: that swap now rests on the predecessor's numbers.
 
     - item: "claude-sonnet-5-5 maker seat"
-      status: maker_not_reprobed
+      status: verified
+      probed_on: "2026-09-30"
+      attempt_id: "m20260930T102750-75a2554b-1"
+      cli_version: "2.1.285"
+      argv: "claude -p --model claude-sonnet-5-5 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
       evidence: >
-        No attended probe-maker summary for claude-sonnet-5-5. Containment
-        of the write seat is the transport recipe's and does not depend on
-        the id; whether this id's maker seat works was not re-probed.
+        Attended model_sync probe-maker through codex.to_claude (mechanism):
+        the maker recipe with -m claude-sonnet-5-5, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        0673c912eb32722da3874bdc8e8b094f3cd2421a0f12e591c587243aefd87a03
+        equals the expected token's. Receipt sha256
+        bdbcb7c4cbdcdc2e33083866e4d43a6d02953f0e1b05b25a0bc85ea27ef9163f.
 
     - item: "gpt-6.1-sol MINIMAL effort token"
       status: verified

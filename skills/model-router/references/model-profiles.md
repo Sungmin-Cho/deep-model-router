@@ -184,8 +184,8 @@ disclosure. It was missing from the 1.16.0 bump and was added in 1.17.1.
 **Its tier is inherited, not current.** On 2026-09-26 the `openai_reasoning`
 id moved to the next Sol generation, and on 2026-09-30 to that generation's
 point release. For the current id a contained probe confirmed that the id is
-accepted and the low and max effort tokens. The write seat was not re-probed
-through the maker recipe for it, and the ledger records that. The CLI echoing
+accepted, the low and max effort tokens, and a write-seat run through the
+maker recipe. The CLI echoing
 the requested id is id acceptance, not proof of the served model. The
 published prices were re-read from the provider's documentation: $2 / $10 per
 million input / output tokens as before, with cached input halved to $0.10.
@@ -302,8 +302,8 @@ fitness itself, not merely a promotion nobody took.
 
 **The alt seat's numbers are inherited too.** On 2026-09-30 the
 `claude_worker_balanced` id moved to the next Sonnet generation. A contained
-probe confirmed the id, the served model, and the low and max effort tokens.
-The write seat was not re-probed through the maker recipe. The published
+probe confirmed the id, the served model, the low and max effort tokens,
+and a write-seat run through the maker recipe. The published
 prices are unchanged at $2 / $10 per million input / output tokens with
 $0.20 cached input, and the full 1M window is still billed at standard
 rates. Both the 446-node head-to-head and the repeat eval measured the
