@@ -9,9 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.1] — 2026-09-30
+
 ### Changed
 
+- Seat GPT-6.1 Sol as the reasoning specialist model after contained and effort probes by the local overlay. Its list price is unchanged at $2 / $10 per million input / output tokens, with cached input halved to $0.10. Its `capability_tier` is inherited from the Sol lineage, and neither its quality nor its maker seat was re-probed; the model profile and verification ledger say so. GPT-6 Sol stays valid as history input.
+- Seat Claude Sonnet 5.5 as the Claude balanced model after the same probes, at unchanged prices ($2 / $10, $0.20 cached input). Its `capability_tier` is inherited from the Sonnet lineage, and neither its quality nor its maker seat was re-probed; the model profile and verification ledger say so. Claude Sonnet 5 stays valid as history input.
+- Keep every tier and binding in place despite the new generations' launch benchmarks. The model profile records the vendor figures and a replay of each candidate change: Sonnet to tier 2, Sonnet as the default balanced worker, and Sol to tier 3.
 - README: deep-loop 1.25.0 and later pass `policy_pin`, so an overlay publication no longer stops an in-flight deep-loop run; `DEEP_MODEL_ROUTER_AUTOUPGRADE=0` is now advised only for long runs on older deep-loop versions. A plugin update still needs a new run.
+
+### Fixed
+
+- Map MINIMAL effort to `low` for GPT-6.1 Sol, which rejects the `none` token the OpenAI family map sends.
+- Disclose possible provider-side model substitution for `security_sensitive` work on the Claude senior and balanced seats, whose current generations keep refusal classifiers with a fallback path. The senior seat had lacked this disclosure since 1.16.0.
 
 ## [1.17.0] — 2026-09-28 (review sized to the band)
 
