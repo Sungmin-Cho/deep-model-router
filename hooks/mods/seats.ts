@@ -11,10 +11,18 @@ export const TERMINAL = new Set([
   'TERMINATION_UNCONFIRMED', 'INVALID_OUTPUT',
 ])
 
-/** How long an attempt may sit without a receipt before tracking gives up on it. */
-export const PENDING_LIMIT_MS = 120_000
-/** `status` readings that may fail in a row before an attempt is dropped as unreadable. */
-export const FAILURE_LIMIT = 5
+/**
+ * After its Bash call returned, how long an attempt may sit without a receipt
+ * before it is flagged (NO_RECEIPT, still polled), and before tracking gives up.
+ * While the call still runs (a permission prompt, `npm test && … run …`) it waits.
+ */
+export const PENDING_GRACE_MS = 120_000
+export const PENDING_LIMIT_MS = 30 * 60_000
+/** `status` readings that fail in a row, for at least this long, end tracking as unreadable. */
+export const FAILURE_LIMIT = 3
+export const FAILING_FOR_MS = 120_000
+/** A claim sentinel with no receipt for this long has lost its supervisor. */
+export const CLAIM_STUCK_MS = 60_000
 /** How long past `deadline_at` a RUNNING receipt reads as overdue (grace + KILL + confirmation). */
 export const OVERDUE_AFTER_MS = 120_000
 /** How long a finished attempt stays on the status line. */
@@ -25,12 +33,18 @@ export function newSeat(run: Pick<DispatchRun, 'attemptId' | 'seat' | 'runtime' 
   return {
     attemptId: run.attemptId, receiptDir, seat: run.seat, runtime: run.runtime,
     modelId: run.modelId, cli: run.cli, deadlineSeconds: run.deadlineSeconds,
-    fingerprint: run.fingerprint, source, trackedAt: now, commandDone: false,
-    state: 'PENDING', startedAt: null, deadlineAt: null, finishedAt: null,
+    fingerprint: run.fingerprint, source, trackedAt: now,
+    // A seat added by hand has no Bash call to wait for.
+    returnedAt: source === 'manual' ? now : null, commandDone: false,
+    state: 'PENDING', stateSince: now, startedAt: null, deadlineAt: null, finishedAt: null,
     supervision: null, processAlive: null, verdict: null, detail: null,
-    final: false, finalAt: null, failures: 0, alerted: [],
+    final: false, finalAt: null, failures: 0, failingSince: null, alerted: [],
   }
 }
+
+/** The seat in `state`, `stateSince` moved only when the state really changed. */
+const inState = (seat: RouterSeat, state: string, now: number): RouterSeat =>
+  ({ ...seat, state, stateSince: seat.state === state ? seat.stateSince : now })
 
 export const sameAttempt = (a: Pick<RouterSeat, 'attemptId' | 'receiptDir'>,
   b: Pick<RouterSeat, 'attemptId' | 'receiptDir'>) =>
@@ -40,8 +54,8 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? 
 /** The last line of stderr: a traceback's verdict, or the supervisor's one-line refusal. */
 const lastLine = (text: string) => text.trim().split('\n').pop()?.slice(0, 300) ?? ''
 
-const finish = (seat: RouterSeat, now: number, patch: Partial<RouterSeat>): RouterSeat =>
-  ({ ...seat, ...patch, final: true, finalAt: now })
+const finish = (seat: RouterSeat, now: number, state: string, patch: Partial<RouterSeat> = {}): RouterSeat =>
+  ({ ...inState(seat, state, now), ...patch, final: true, finalAt: now })
 
 export type StatusReading = { exitCode: number; stdout: string; stderr: string }
 
@@ -60,15 +74,14 @@ export function applyStatus(seat: RouterSeat, reading: StatusReading, now: numbe
       return failed(seat, now, 'status printed no JSON')
     }
     if (doc['state'] === 'CLAIMED') {
-      return { ...seat, state: 'CLAIMED', detail: null, failures: 0 }
+      return { ...inState(seat, 'CLAIMED', now), detail: null, failures: 0, failingSince: null }
     }
     const result = (doc['result'] ?? {}) as Record<string, unknown>
     const timing = (doc['timing'] ?? {}) as Record<string, unknown>
     const state = str(result['state'])
     if (state === null) return failed(seat, now, 'receipt has no result.state')
     const next: RouterSeat = {
-      ...seat,
-      state,
+      ...inState(seat, state, now),
       seat: seat.seat ?? str(doc['seat']),
       runtime: seat.runtime ?? str(doc['runtime']),
       modelId: seat.modelId ?? str(doc['model_id']),
@@ -81,39 +94,48 @@ export function applyStatus(seat: RouterSeat, reading: StatusReading, now: numbe
       processAlive: typeof doc['process_alive'] === 'boolean' ? doc['process_alive'] : null,
       detail: null,
       failures: 0,
+      failingSince: null,
     }
-    return TERMINAL.has(state) ? finish(next, now, {}) : next
+    return TERMINAL.has(state) ? finish(next, now, state) : next
   }
   const said = lastLine(reading.stderr)
   if (reading.exitCode === 2 && said.includes('is unknown')) {
     // No receipt and no claim. A foreground dispatch that already returned
-    // never started (a refusal before spawn); otherwise wait a while.
-    const waited = now - seat.trackedAt
-    if (seat.commandDone || waited > PENDING_LIMIT_MS) {
-      return finish(seat, now, {
-        state: 'NO_RECEIPT',
-        detail: seat.commandDone ? 'the dispatch returned without a receipt (refused before spawn?)'
-          : 'no receipt appeared',
-      })
+    // never started (a refusal before spawn). A call still running may not
+    // have reached the dispatch yet; a backgrounded one gets a grace period,
+    // then a flag, and polling ends only at the limit.
+    if (seat.commandDone) {
+      return finish(seat, now, 'NO_RECEIPT', { detail: 'the dispatch returned without a receipt (refused before spawn?)' })
     }
-    return { ...seat, state: 'PENDING', detail: null }
+    const waited = seat.returnedAt === null ? 0 : now - seat.returnedAt
+    if (waited > PENDING_LIMIT_MS) return finish(seat, now, 'NO_RECEIPT', { detail: 'no receipt appeared' })
+    if (waited > PENDING_GRACE_MS) {
+      return { ...inState(seat, 'NO_RECEIPT', now), detail: 'no receipt yet: check the dispatch output' }
+    }
+    return { ...inState(seat, 'PENDING', now), detail: null }
   }
   if (reading.exitCode === 2 && said.includes('invalid completion receipt')) {
-    return finish(seat, now, { state: 'INVALID_RECEIPT', detail: said })
+    return finish(seat, now, 'INVALID_RECEIPT', { detail: said })
   }
   if (reading.exitCode === 5) {
     // A terminal write whose claim is still held, on an unconfirmed termination:
     // the same hold as TERMINATION_UNCONFIRMED itself.
-    return finish(seat, now, { state: 'TERMINATION_UNCONFIRMED', detail: said })
+    return finish(seat, now, 'TERMINATION_UNCONFIRMED', { detail: said })
   }
   return failed(seat, now, said || `status exited ${reading.exitCode}`)
 }
 
+/**
+ * One unreadable `status` call. Tracking ends only after several in a row
+ * spanning FAILING_FOR_MS, so a burst of refreshes during a transient window
+ * (a publication still in progress, a slow interpreter) does not end it.
+ */
 function failed(seat: RouterSeat, now: number, detail: string): RouterSeat {
   const failures = seat.failures + 1
-  return failures >= FAILURE_LIMIT
-    ? finish(seat, now, { state: 'UNREADABLE', detail, failures })
-    : { ...seat, detail, failures }
+  const failingSince = seat.failingSince ?? now
+  return failures >= FAILURE_LIMIT && now - failingSince >= FAILING_FOR_MS
+    ? finish(seat, now, 'UNREADABLE', { detail, failures, failingSince })
+    : { ...seat, detail, failures, failingSince }
 }
 
 const parseTime = (iso: string | null) => {
@@ -127,6 +149,8 @@ export function attention(seat: RouterSeat, now: number): string | undefined {
   if (seat.state === 'TERMINATION_UNCONFIRMED') return 'TERMINATION_UNCONFIRMED'
   if (seat.state === 'INVALID_RECEIPT') return 'invalid receipt'
   if (seat.state === 'UNREADABLE') return 'unreadable'
+  if (seat.state === 'NO_RECEIPT') return 'no receipt'
+  if (seat.state === 'CLAIMED' && now - seat.stateSince > CLAIM_STUCK_MS) return 'stuck claim'
   if (seat.state === 'RUNNING' || seat.state === 'STARTING') {
     if (seat.supervision === 'orphaned' || seat.supervision === 'stale') return seat.supervision
     const deadline = parseTime(seat.deadlineAt)
@@ -150,6 +174,10 @@ export function remedy(label: string): string {
       return 'status refused the claimed success: do not use it as review evidence'
     case 'unreadable':
       return 'status kept failing, so the mod stopped polling: press Status to see why'
+    case 'no receipt':
+      return 'the dispatch wrote no receipt: read its output (a refusal before spawn exits 2)'
+    case 'stuck claim':
+      return 'a claim with no receipt: once its supervisor is confirmed dead, remove the .claim file'
     default:
       return ''
   }

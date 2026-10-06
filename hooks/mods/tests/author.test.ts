@@ -35,6 +35,19 @@ describe('author-declaration check', () => {
     expect(w.toasts).toEqual([expect.stringMatching(/^reviewer-2 is this session's model model-sol/)])
   })
 
+  test('one decision is warned about once; a declared author gets the correction wording (review i1)', async ($, on) => {
+    let doc = route({ decision_fingerprint: 'f1' })
+    const w = world(on, { bash: () => ({ stdout: doc }) })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: ROUTE })
+    await $.tool.call({ tool: 'Bash', command: ROUTE })
+    expect(w.toasts).toHaveLength(1)
+    doc = route({ decision_fingerprint: 'f2', implementer_declared: true })
+    await $.tool.call({ tool: 'Bash', command: ROUTE })
+    expect(w.toasts).toHaveLength(2)
+    expect(w.toasts[1]).toMatch(/the route declares another author\. If this session wrote the work under review, correct the declaration/)
+  })
+
   test('no warning when the session model is not seated, or the route is terminal', async ($, on) => {
     let doc = route({ review: { reviewer_models: ['model-sol', 'grok-model'], judge_model: null } })
     const w = world(on, { bash: () => ({ stdout: doc }) })

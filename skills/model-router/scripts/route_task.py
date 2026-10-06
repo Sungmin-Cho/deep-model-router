@@ -3151,7 +3151,10 @@ def _seated_host_note(task: Task, result: dict) -> str | None:
                  for i, m in enumerate(rv["reviewer_models"])]
         if rv["judge_model"]:
             seats.append({"seat": "judge", "model_id": rv["judge_model"]})
-    hits = [s["seat"] for s in seats if s["model_id"] == host]
+    # A host may pass its session id as reported, context variant included
+    # (`<id>[1m]`); the seat is the same model.
+    base = host.split("[", 1)[0]
+    hits = [s["seat"] for s in seats if s["model_id"] == base]
     if not hits:
         return None
     return (f"host model {host} is seated as {', '.join(hits)} and no author is declared: "

@@ -32,6 +32,20 @@ describe('model-sync notice', () => {
     expect(w.toasts).toHaveLength(1)
   })
 
+  test('a surface that attaches late still gets the notice; none ever means no reading', async ($, on) => {
+    let surfaces: ('terminal' | 'desktop')[] = []
+    const w = world(on, {
+      surfaces: () => surfaces,
+      proc: argv => (isSync(argv) ? { stdout: status({ in_flight: [{ attempt_id: 'p1', receipt_dir: '/r' }] }) } : { exitCode: 2 }),
+    })
+    await startSession($)
+    await w.clock.advance(5_000)
+    expect(w.runs.filter(isSync)).toEqual([])
+    surfaces = ['desktop']
+    await w.clock.advance(25_000)
+    expect(w.toasts).toEqual(['model-sync: 1 probe run in flight — /router-sync'])
+  })
+
   test('nothing is shown when auto-upgrade is disabled or nothing needs a look', async ($, on) => {
     let doc = status({ auto_upgrade: 'disabled', retirement_notices: [{ key: 'k', id: 'm' }] })
     const w = world(on, { proc: argv => (isSync(argv) ? { stdout: doc } : { exitCode: 2 }) })

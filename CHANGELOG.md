@@ -14,9 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Show dispatched seats in Claude Code 2.1.287 and later: a `dispatch_agent.py run` in a Bash call is tracked from its command line and polled with `status` until it ends, on a status line such as `seats: codex·<model-id> RUNNING 4m/20m`.
-- Toast each seat that finishes, and flag the states that need a person: `TERMINATION_UNCONFIRMED`, an orphaned or stale supervisor, a `RUNNING` receipt well past its deadline, and a success `status` refused.
-- Add `/router-seats`, a pane per attempt whose Status, Cancel and Verify buttons only fill the prompt, with `/router-seats add <receipt-dir> <attempt-id>` for dispatches the mod cannot read and `/router-seats clear`.
-- Warn in Claude Code when a route's review seat holds this session's own model, give a `REVIEW` route without `review_context` a one-time hint, and flag `claude --bare` seats and long macOS dispatches outside `caffeinate -i`.
+- Toast each seat that finishes, and flag the states that need a person: `TERMINATION_UNCONFIRMED`, an orphaned or stale supervisor, a `RUNNING` receipt well past its deadline, a success `status` refused, a dispatch that wrote no receipt, and a claim left without one.
+- Add `/router-seats`, a pane per attempt whose Status, Cancel and Verify buttons only fill the prompt (Verify leaves the route's expectations to you), with `/router-seats add <receipt-dir> <attempt-id>` for dispatches the mod cannot read and `/router-seats clear`.
+- Warn in Claude Code, once per decision, when a route's review seat holds this session's own model, give a `REVIEW` route without `review_context` a one-time hint, and flag `claude --bare` seats and long macOS dispatches outside `caffeinate -i`.
 - Toast model-sync retirement notices, deferred probes due again and probe runs in flight once at session start, with details in `/router-sync`.
 - Note on every runtime when the declared host model holds a review seat and neither `implementer` nor `review_context` is declared; the seats stay as routed.
 

@@ -54,15 +54,22 @@ export function routeFindings(route: Record<string, unknown>, sessionModel: stri
   const findings: Finding[] = []
   const mine = normalizeModel(sessionModel)
   const hits = seatedModels(route).filter(s => normalizeModel(s.model) === mine)
-  if (hits.length > 0) {
-    findings.push({
-      text: `${hits.map(h => h.seat).join(', ')} is this session's model ${mine}. If this session wrote the work under review, `
-        + 'declare it (implementer.model_id, or review_context.author_model_ids for a REVIEW task) and route again — '
-        + 'the router never infers authorship from the host.',
-    })
-  }
   const declared = (route['review_context'] !== undefined && route['review_context'] !== null)
     || route['implementer_declared'] === true
+  if (hits.length > 0) {
+    // Once per decision: the same route printed again says nothing new.
+    const decision = typeof route['decision_fingerprint'] === 'string' ? route['decision_fingerprint'] : JSON.stringify(hits)
+    const seats = hits.map(h => h.seat).join(', ')
+    findings.push({
+      once: `seated:${decision}`,
+      text: declared
+        ? `${seats} is this session's model ${mine}, and the route declares another author. If this session wrote `
+          + 'the work under review, correct the declaration and route again.'
+        : `${seats} is this session's model ${mine}. If this session wrote the work under review, declare it `
+          + '(implementer.model_id, or review_context.author_model_ids for a REVIEW task) and route again — '
+          + 'the router never infers authorship from the host.',
+    })
+  }
   if (route['task_class'] === 'REVIEW' && !declared) {
     findings.push({
       once: 'review-undeclared',

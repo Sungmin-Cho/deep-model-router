@@ -111,7 +111,11 @@ describe('seat tracker', () => {
     await startSession($)
     await $.tool.call({ tool: 'Bash', command: DISPATCH })
     await w.clock.settle()
-    expect(w.statuses.at(-1)).toBe('seats: codex·model-sol NO_RECEIPT')
+    expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
+    expect(w.toasts).toEqual([expect.stringMatching(/^⚠ reviewer-1 codex·model-sol: no receipt — /)])
+    const polls = w.runs.filter(isStatus).length
+    await w.clock.advance(5 * 60_000)
+    expect(w.runs.filter(isStatus)).toHaveLength(polls)
   })
 
   test('a relative receipt dir follows a literal cd in the same command', async ($, on) => {
@@ -122,7 +126,8 @@ describe('seat tracker', () => {
       command: 'cd sub && nohup python3 ../dispatch_agent.py run --attempt-id=a1 --receipt-dir=../out/r --seat worker -- grok -p x > log 2>&1 &',
     })
     await w.clock.settle()
-    expect(w.runs.find(isStatus)).toEqual(expect.arrayContaining(['--receipt-dir', '/repo/out/r']))
+    // `..` is left for the operating system: folding it across a symbolic link names another directory.
+    expect(w.runs.find(isStatus)).toEqual(expect.arrayContaining(['--receipt-dir', '/repo/sub/../out/r']))
   })
 
   test('the seats pane draws each attempt and its buttons only fill the prompt', async ($, on) => {
@@ -159,7 +164,8 @@ describe('seat tracker', () => {
     })
     expect(await ui.find({ key: 'cancel-0' })).toBeUndefined()
     await ui.press({ key: 'verify-0' })
-    expect(w.fills.at(-1)).toMatch(/verify-evidence --receipt-dir \/home\/me\/receipts --ids r1-sol --expect-count 1 --expect-models model-sol$/)
+    // The expectations come from the route, never from the receipts under check.
+    expect(w.fills.at(-1)).toMatch(/verify-evidence --receipt-dir \/home\/me\/receipts --ids r1-sol --expect-count $/)
     await ui.press({ key: 'status-0' })
     expect(w.fills.at(-1)).toMatch(/ status --attempt-id r1-sol --receipt-dir \/home\/me\/receipts$/)
     expect(w.bash).toEqual([DISPATCH])
@@ -196,6 +202,136 @@ describe('seat tracker', () => {
     }
     expect(w.statuses.at(-1)).toBe('seats: reviewer-1 claude·model-haiku SUCCEEDED · reviewer-2 claude·model-haiku SUCCEEDED')
     expect(w.toasts).toContain('reviewer-1 claude·model-haiku SUCCEEDED in 42s')
+  })
+
+  test('an attempt is not given up on while its Bash call still runs (review i1)', async ($, on) => {
+    const unknown = { exitCode: 2, stderr: "attempt 'r1-sol' is unknown under /home/me/receipts — no receipt and no claim" }
+    let started = false
+    const w: ReturnType<typeof world> = world(on, {
+      proc: () => (started ? receipt('r1-sol', 'RUNNING') : unknown),
+      bash: async () => {
+        // A permission prompt, or `sleep 300 && … run …`, before the dispatch starts.
+        await w.clock.sleep(300_000)
+        started = true
+        return { background: true }
+      },
+    })
+    await startSession($)
+    const call = $.tool.call({ tool: 'Bash', command: DISPATCH })
+    await w.clock.advance(280_000)
+    expect(w.statuses.at(-1)).toBe('seats: codex·model-sol PENDING')
+    expect(w.toasts).toEqual([])
+    await w.clock.advance(40_000)
+    await call
+    await w.clock.advance(20_000)
+    expect(w.statuses.at(-1)).toMatch(/^seats: codex·model-sol RUNNING /)
+    expect(w.toasts).toEqual([])
+  })
+
+  test('a call another hook denies drops only what it added (review i1)', async ($, on) => {
+    let deny = false
+    const w = world(on, {
+      proc: statusSequence(receipt('r1-sol', 'RUNNING', { supervision: 'supervised' })),
+      bash: () => (deny ? { deny: 'not now' } : {}),
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.settle()
+    deny = true
+    // The same attempt again, denied: the record already tracked stays.
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toMatch(/^seats: codex·model-sol RUNNING/)
+    // A new attempt, denied: gone again.
+    await $.tool.call({ tool: 'Bash', command: DISPATCH.replace('r1-sol', 'r9-sol'), run_in_background: true })
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toMatch(/^seats: codex·model-sol RUNNING [^·]*$/)
+  })
+
+  test('running the same attempt again keeps what was announced (review i1)', async ($, on) => {
+    const w = world(on, {
+      proc: statusSequence(receipt('r1-sol', 'SUCCEEDED', { verdict: 'PASS', finishedAt: '2026-10-06T00:01:00Z' })),
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.settle()
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.advance(60_000)
+    expect(w.toasts).toEqual(['reviewer-1 codex·model-sol SUCCEEDED PASS in 1m'])
+  })
+
+  test('a foreground call the tool moved to the background is not taken for a refusal', async ($, on) => {
+    const unknown = { exitCode: 2, stderr: "attempt 'r1-sol' is unknown under /home/me/receipts — no receipt and no claim" }
+    const w = world(on, { proc: () => unknown, bash: () => ({ background: true }) })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH })
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toBe('seats: codex·model-sol PENDING')
+  })
+
+  test('polling stops when only flagged or finished seats remain; the line clears on time (review i1)', async ($, on) => {
+    const w = world(on, {
+      proc: argv => (argv.includes('r1-sol') ? receipt('r1-sol', 'TERMINATION_UNCONFIRMED')
+        : receipt('r2-sol', 'SUCCEEDED', { verdict: 'PASS' })),
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await $.tool.call({ tool: 'Bash', command: DISPATCH.replace('r1-sol', 'r2-sol'), run_in_background: true })
+    await w.clock.settle()
+    const polls = w.runs.filter(isStatus).length
+    await w.clock.advance(9 * 60_000)
+    expect(w.runs.filter(isStatus)).toHaveLength(polls)
+    expect(w.statuses.at(-1)).toMatch(/TERMINATION_UNCONFIRMED · reviewer-1 codex·model-sol SUCCEEDED PASS/)
+    await w.clock.advance(2 * 60_000)
+    expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol TERMINATION_UNCONFIRMED — /router-seats')
+    expect(w.runs.filter(isStatus)).toHaveLength(polls)
+  })
+
+  test('past the cap, finished records go and unfinished ones stay (review i1)', async ($, on) => {
+    const w = world(on, {
+      proc: argv => {
+        const id = argv[argv.indexOf('--attempt-id') + 1]!
+        return id === 'c0' ? receipt(id, 'RUNNING') : receipt(id, 'FAILED')
+      },
+    })
+    await startSession($)
+    for (let i = 0; i < 55; i += 1) {
+      await $.tool.call({ tool: 'Bash', command: DISPATCH.replace('r1-sol', `c${i}`), run_in_background: true })
+      await w.clock.settle()
+    }
+    await w.clock.advance(20_000)
+    expect(w.runs.filter(isStatus).at(-1)).toEqual(expect.arrayContaining(['--attempt-id', 'c0']))
+  })
+
+  test('the whole flow runs the same in a desktop session', async ($, on) => {
+    const w = world(on, {
+      surfaces: ['desktop'],
+      proc: statusSequence(
+        receipt('r1-sol', 'RUNNING', { supervision: 'supervised' }),
+        receipt('r1-sol', 'FAILED', { finishedAt: '2026-10-06T00:02:00Z' }),
+      ),
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.advance(20_000)
+    expect(w.toasts).toEqual(['reviewer-1 codex·model-sol FAILED in 2m'])
+    await $.command.run(command('router-seats'))
+    const ui = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'router-seats', props: paneProps('Router seats'),
+    })
+    expect(await ui.find({ type: 'Text', text: /FAILED/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a session start with seats still running picks the poll up again', async ($, on) => {
+    const w = world(on, { proc: statusSequence(receipt('r1-sol', 'RUNNING', { supervision: 'supervised' })) })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.settle()
+    const polls = w.runs.filter(isStatus).length
+    await startSession($)
+    await w.clock.advance(20_000)
+    expect(w.runs.filter(isStatus).length).toBeGreaterThan(polls)
   })
 
   test('nothing is tracked where no surface draws (a -p child seat)', async ($, on) => {

@@ -20,6 +20,10 @@ export type Segment = {
   words: Word[]
   /** Ended by a lone `&`: the shell does not wait for it. */
   background: boolean
+  /** Subshell depth (`(` … `)`) the segment starts at. */
+  depth: number
+  /** Feeds a pipe (`|`), or is fed by one: either way it runs in a subshell. */
+  piped: boolean
 }
 
 const NAME_START = /[A-Za-z_]/
@@ -33,6 +37,9 @@ export function segments(command: string): Segment[] {
   let text = ''
   let inWord = false
   let skipNext = false
+  let depth = 0
+  let segDepth = 0
+  let fedByPipe = false
   const heredocs: { delimiter: string; stripTabs: boolean }[] = []
   let i = 0
   const n = command.length
@@ -45,11 +52,13 @@ export function segments(command: string): Segment[] {
     text = ''
     inWord = false
   }
-  const endSegment = (background = false) => {
+  const endSegment = (background = false, pipe = false) => {
     endWord()
     skipNext = false
-    if (words.length > 0) out.push({ words, background })
+    if (words.length > 0) out.push({ words, background, depth: segDepth, piped: pipe || fedByPipe })
     words = []
+    segDepth = depth
+    fedByPipe = pipe
   }
   const takeHeredocs = () => {
     // `i` sits just past a newline: drop each pending body up to its delimiter line.
@@ -66,19 +75,33 @@ export function segments(command: string): Segment[] {
   }
   /** Reads a balanced `$( … )` / `( … )` body from `i` (just past the opening paren). */
   const skipBalanced = (open: string, close: string) => {
-    let depth = 1
-    while (i < n && depth > 0) {
+    let level = 1
+    while (i < n && level > 0) {
       const c = command[i]
       if (c === '\\') { i += 2; continue }
       if (c === "'") { const j = command.indexOf("'", i + 1); i = j === -1 ? n : j + 1; continue }
-      if (c === open) depth += 1
-      else if (c === close) depth -= 1
+      if (c === '"') {
+        i += 1
+        while (i < n && command[i] !== '"') i += command[i] === '\\' ? 2 : 1
+        i += 1
+        continue
+      }
+      if (c === open) level += 1
+      else if (c === close) level -= 1
       i += 1
     }
   }
   const readExpansion = () => {
     // `i` is at `$`.
     const next = command[i + 1]
+    if (next === "'" || next === '"') {
+      // $'…' (ANSI-C escapes) and $"…" (locale translation): not read here.
+      let j = i + 2
+      while (j < n && command[j] !== next) j += command[j] === '\\' ? 2 : 1
+      i = j + 1
+      text += COMPLEX
+      return
+    }
     if (next === '(') {
       i += 2
       skipBalanced('(', ')')
@@ -178,10 +201,17 @@ export function segments(command: string): Segment[] {
     }
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i += 1; continue }
     if (c === ';') { endSegment(); i += command[i + 1] === ';' ? 2 : 1; continue }
-    if (c === '(' || c === ')') { endSegment(); i += 1; continue }
-    if (c === '|') {
+    if (c === '(' || c === ')') {
       endSegment()
-      i += command[i + 1] === '|' || command[i + 1] === '&' ? 2 : 1
+      depth = Math.max(0, depth + (c === '(' ? 1 : -1))
+      segDepth = depth
+      i += 1
+      continue
+    }
+    if (c === '|') {
+      const or = command[i + 1] === '|'
+      endSegment(false, !or)
+      i += or || command[i + 1] === '&' ? 2 : 1
       continue
     }
     if (c === '&') {
@@ -232,6 +262,20 @@ export function segments(command: string): Segment[] {
       i += 1
       if (command[i] === '>' || command[i] === '&' || command[i] === '|') i += 1
       skipNext = true
+      continue
+    }
+    if (c === '*' || c === '?' || c === '[') {
+      // A pathname pattern: the shell may expand it to something else.
+      text += COMPLEX
+      inWord = true
+      i += 1
+      continue
+    }
+    if (c === '{' && !(inWord === false && /[\s;]/.test(command[i + 1] ?? ' '))) {
+      // Brace expansion (`r{1,2}`); a lone `{` opening a group stays a word.
+      text += COMPLEX
+      inWord = true
+      i += 1
       continue
     }
     text += c
@@ -295,19 +339,26 @@ const valueOf = (text: string | undefined, home: string | undefined) =>
  * Every `dispatch_agent.py run` in the command whose attempt id and receipt
  * directory can be read for certain. A run with an unreadable one is skipped.
  */
-export function findDispatchRuns(command: string, home?: string): DispatchRun[] {
+export function findDispatchRuns(command: string, homeDir?: string): DispatchRun[] {
   const runs: DispatchRun[] = []
   const cds: (string | undefined)[] = []
-  for (const seg of segments(command)) {
+  const all = segments(command)
+  // A command that reassigns HOME (`HOME=/x python3 …`, `export HOME=…`) makes `~` unknowable.
+  const home = all.some(seg => seg.words.some(w => /^HOME=/.test(w.text))) ? undefined : homeDir
+  for (const seg of all) {
     const words = seg.words.map(w => w.text)
-    if (words[0] === 'cd') {
-      // `cd`, `cd -` and `cd -P dir` leave the directory unknown.
-      const target = words.length === 2 && words[1] !== '-' ? valueOf(words[1], home) : undefined
-      cds.push(target)
+    const lead = words.findIndex(w => !KEYWORDS.has(w) && !ASSIGNMENT.test(w))
+    if (lead !== -1 && DIRECTORY_CHANGERS.has(words[lead]!)) {
+      // Only a plain top-level `cd <dir>` moves the shell the dispatch runs in;
+      // one in a subshell, a pipe, the background, a condition or a group, and
+      // `cd`, `cd -`, `cd -P dir`, `pushd`, `popd`, leave the directory unknown.
+      const plain = lead === 0 && words[0] === 'cd' && words.length === 2 && words[1] !== '-'
+        && seg.depth === 0 && !seg.piped && !seg.background
+      cds.push(plain ? valueOf(words[1], home) : undefined)
       continue
     }
     const at = words.findIndex(w => basename(w) === 'dispatch_agent.py')
-    if (at === -1 || words[at + 1] !== 'run') continue
+    if (at === -1 || words[at + 1] !== 'run' || !isLauncher(words.slice(0, at))) continue
     const opts = new Map<string, string | undefined>()
     let k = at + 2
     let child: string[] = []
@@ -351,21 +402,51 @@ export function findDispatchRuns(command: string, home?: string): DispatchRun[] 
   return runs
 }
 
+const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd'])
+/** Words that put the next word in command position. */
+const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time'])
+
+/** Programs that run the rest of their arguments as a command. */
+const WRAPPERS = new Set(['env', 'caffeinate', 'nohup', 'timeout', 'gtimeout', 'time', 'exec', 'command', 'nice', 'stdbuf'])
+const PYTHON = /^python(\d+(\.\d+)?)?$/
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+const NUMBER = /^\d+(\.\d+)?[smhd]?$/
+
+/**
+ * Whether the words in front of the script launch it: assignments, known
+ * wrappers with their flags and durations, and a Python interpreter — nothing
+ * else. `echo python3 dispatch_agent.py run …` or `ssh host python3 …` does not
+ * run the supervisor here, so it is not tracked.
+ */
+export function isLauncher(prefix: readonly string[]): boolean {
+  let sawPython = false
+  for (const word of prefix) {
+    const name = basename(word)
+    if (sawPython) {
+      if (!word.startsWith('-')) return false
+    } else if (PYTHON.test(name)) {
+      sawPython = true
+    } else if (!(ASSIGNMENT.test(word) || WRAPPERS.has(name) || word.startsWith('-') || NUMBER.test(word))) {
+      return false
+    }
+  }
+  return true
+}
+
 /** True when some simple command in it runs `route_task.py`. */
 export function callsRouteTask(command: string): boolean {
   return segments(command).some(seg => seg.words.some(w => basename(w.text) === 'route_task.py'))
 }
 
-/** Joins a possibly relative path onto a base directory, `.`/`..` folded. */
+/**
+ * Joins a possibly relative path onto a base directory. `.` and empty pieces
+ * go; `..` stays, because folding it across a symbolic link names another
+ * directory than the one the operating system resolves.
+ */
 export function joinPath(base: string, ...parts: string[]): string {
   let path = base
   for (const part of parts) path = part.startsWith('/') ? part : `${path}/${part}`
-  const out: string[] = []
-  for (const piece of path.split('/')) {
-    if (piece === '' || piece === '.') continue
-    if (piece === '..') out.pop()
-    else out.push(piece)
-  }
+  const out = path.split('/').filter(piece => piece !== '' && piece !== '.')
   return `/${out.join('/')}`
 }
 

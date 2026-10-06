@@ -52,13 +52,57 @@ describe('shell reading', () => {
     expect(findDispatchRuns("python3 dispatch_agent.py run --attempt-id a --receipt-dir '~/r' -- x", '/h')[0]!.receiptDir).toBe('~/r')
   })
 
+  test('only a command that launches the supervisor counts (review i1)', () => {
+    const tail = 'dispatch_agent.py run --attempt-id a --receipt-dir /r -- codex exec -'
+    expect(findDispatchRuns(`echo ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`echo python3 ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`ssh host python3 ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`grep -n ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`timeout 3600 python3 -u ${tail}`)).toHaveLength(1)
+    expect(findDispatchRuns(`./${tail}`)).toHaveLength(1)
+    expect(findDispatchRuns(`FOO=1 nohup python3.14 ${tail} &`)).toHaveLength(1)
+  })
+
+  test('a cd counts only where it moves the dispatching shell (review i1)', () => {
+    const run = 'python3 dispatch_agent.py run --attempt-id a --receipt-dir r -- x'
+    expect(findDispatchRuns(`cd sub && ${run}`)[0]!.cds).toEqual(['sub'])
+    for (const command of [
+      `(cd /other); ${run}`, `(cd /other && make) ; ${run}`, `cd /other & ${run}`, `cd /other | cat; ${run}`,
+      `pushd sub && ${run}`, `if cd sub; then ${run}; fi`, `{ cd sub; ${run}; }`, `cd -P sub && ${run}`,
+    ]) {
+      expect(findDispatchRuns(command), command).toEqual([])
+    }
+    // An absolute receipt directory does not depend on any of that.
+    expect(findDispatchRuns(`(cd /other); ${run.replace('--receipt-dir r', '--receipt-dir /abs')}`)).toHaveLength(1)
+    // A path that merely ends in cd is no cd.
+    expect(findDispatchRuns(`${run.replace('-- x', '--child-cwd /w/cd -- x')}`)).toHaveLength(1)
+  })
+
+  test('patterns, ANSI-C quotes and a reassigned HOME are opaque (review i1)', () => {
+    const run = (dir: string) => `python3 dispatch_agent.py run --attempt-id a --receipt-dir ${dir} -- x`
+    expect(findDispatchRuns(run('r*'), '/h')).toEqual([])
+    expect(findDispatchRuns(run('r?'), '/h')).toEqual([])
+    expect(findDispatchRuns(run('r[12]'), '/h')).toEqual([])
+    expect(findDispatchRuns(run('r{1,2}'), '/h')).toEqual([])
+    expect(findDispatchRuns(run("$'receipts'"), '/h')).toEqual([])
+    expect(findDispatchRuns(run("'r*'"), '/h')[0]!.receiptDir).toBe('r*')
+    expect(findDispatchRuns(`HOME=/other ${run('~/r')}`, '/h')).toEqual([])
+    expect(findDispatchRuns(`export HOME=/other; ${run('$HOME/r')}`, '/h')).toEqual([])
+    expect(findDispatchRuns(`{ ${run('/abs')}; }`, '/h')).toEqual([])
+  })
+
+  test('a command substitution with quotes inside it stays one word', () => {
+    const [run] = findDispatchRuns('python3 dispatch_agent.py run --attempt-id a --receipt-dir /r --seat "$(echo ")")" -- x')
+    expect(run).toMatchObject({ attemptId: 'a', receiptDir: '/r', seat: null })
+  })
+
   test('route_task.py calls are found in any simple command', () => {
     expect(callsRouteTask('cd x && python3 "$SKILL_DIR"/scripts/route_task.py --format json')).toBe(true)
     expect(callsRouteTask('grep route_task README.md')).toBe(false)
   })
 
   test('paths and quoting', () => {
-    expect(joinPath('/a/b', 'c', '../d', './e')).toBe('/a/b/d/e')
+    expect(joinPath('/a/b', 'c', '../d', './e')).toBe('/a/b/c/../d/e')
     expect(joinPath('/a', '/abs', 'x')).toBe('/abs/x')
     expect(shellQuote('/plain/path-1.json')).toBe('/plain/path-1.json')
     expect(shellQuote("it's here")).toBe("'it'\\''s here'")

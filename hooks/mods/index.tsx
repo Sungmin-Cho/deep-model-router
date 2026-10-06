@@ -14,10 +14,10 @@ import type { RouterSeat, RouterSyncReport } from '../../types'
 import { dispatchFindings, parseRoute, routeFindings } from './author'
 import type { Finding } from './author'
 import {
-  announcements, attention, newSeat, remedy, sameAttempt, seatLabel, stateText, statusLine, visibleSeats,
+  SHOW_FINISHED_MS, announcements, applyStatus, attention, newSeat, remedy, sameAttempt, seatLabel, stateText,
+  statusLine,
 } from './seats'
-import { applyStatus } from './seats'
-import { callsRouteTask, findDispatchRuns, joinPath, shellQuote } from './shell'
+import { callsRouteTask, findDispatchRuns, joinPath, resolveWord, segments, shellQuote } from './shell'
 import { syncNotice, syncReport } from './sync'
 
 type Engine = EngineInterface
@@ -29,15 +29,18 @@ const shownAtom = atom({ plugin: 'deep-model-router', key: 'shown' } as const, [
 const SEATS_PANE = 'router-seats'
 const SYNC_PANE = 'router-sync'
 const POLL_MS = 20_000
-const SYNC_DELAY_MS = 5_000
+/** When the model-sync notice is tried after a start: a surface may attach late (the desktop app). */
+const SYNC_DELAYS_MS = [5_000, 30_000, 120_000]
 const STATUS_TIMEOUT_MS = 20_000
 const MAX_SEATS = 50
 const TOAST_MS = 10_000
 
 // Module variables start over on a hot reload; `session.start` fires again then.
 let poller: { cancel: () => void } | undefined
+let expiry: { cancel: () => void } | undefined
 let polling = false
-let platform: string | undefined
+let generation = 0
+let platform: Promise<string> | undefined
 let home: string | undefined
 
 const script = ($: Engine, name: string) => `${$.plugin.root}/skills/model-router/scripts/${name}`
@@ -75,11 +78,34 @@ async function runScript($: Engine, argv: string[]) {
   }
 }
 
-async function showStatus($: Engine): Promise<number> {
-  const seats = await read($, seatsAtom)
+/** `uname -s`, once per module load and never on a tool call's path. */
+const detectPlatform = ($: Engine): Promise<string> =>
+  (platform ??= $.process.run(['uname', '-s'], { timeoutMs: 5_000 }).then(r => r.stdout.trim(), () => ''))
+
+/**
+ * Redraws the status line and sets the timers from the seats as they stand:
+ * the poll runs while any attempt is unfinished; otherwise one timer clears
+ * finished seats off the line when their time is up (flagged ones stay until
+ * cleared). Every change to the seats ends here, and only the newest call
+ * decides, so a slower one cannot cancel a poll a newer seat needs.
+ */
+async function reconcile($: Engine): Promise<void> {
+  const mine = ++generation
   const now = await $.clock.now()
+  const seats = await read($, seatsAtom)
+  if (mine !== generation) return
   $.ui.status(statusLine(seats, now))
-  return visibleSeats(seats, now).length
+  expiry?.cancel()
+  expiry = undefined
+  if (seats.some(s => !s.final)) {
+    arm($)
+    return
+  }
+  disarm()
+  const due = seats
+    .filter(s => s.finalAt !== null && attention(s, now) === undefined && now - s.finalAt < SHOW_FINISHED_MS)
+    .map(s => s.finalAt! + SHOW_FINISHED_MS - now)
+  if (due.length > 0) expiry = $.clock.after(Math.min(...due) + 1_000, () => background(reconcile($)))
 }
 
 /** Polls `dispatch_agent.py status` for every unfinished attempt and announces what changed. */
@@ -106,10 +132,10 @@ async function refresh($: Engine): Promise<void> {
       return out.seats
     })
     for (const text of toasts) $.ui.toast(text, { timeoutMs: TOAST_MS })
-    if ((await showStatus($)) === 0) disarm()
   } finally {
     polling = false
   }
+  await reconcile($)
 }
 
 function arm($: Engine): void {
@@ -122,13 +148,27 @@ function disarm(): void {
   poller = undefined
 }
 
-async function track($: Engine, seats: RouterSeat[]): Promise<void> {
+/**
+ * Adds the attempts not already tracked and returns the ones it added. A
+ * tracked attempt keeps its record (and what was announced for it); only one
+ * that never had a receipt is replaced, since a dispatch refused before spawn
+ * may be fixed and run again under the same id. Past MAX_SEATS the oldest
+ * finished records go; an unfinished one is never dropped.
+ */
+async function track($: Engine, seats: RouterSeat[]): Promise<RouterSeat[]> {
+  let added: RouterSeat[] = []
   await update($, seatsAtom, list => {
-    const kept = list.filter(s => !seats.some(a => sameAttempt(a, s)))
-    return [...kept, ...seats].slice(-MAX_SEATS)
+    added = seats.filter(a => {
+      const old = list.find(s => sameAttempt(a, s))
+      return old === undefined || (old.final && old.state === 'NO_RECEIPT')
+    })
+    const kept = list.filter(s => !added.some(a => sameAttempt(a, s)))
+    const all = [...kept, ...added]
+    let excess = all.length - MAX_SEATS
+    return all.filter(s => !(excess > 0 && s.final && excess-- > 0))
   })
-  await showStatus($)
-  arm($)
+  await reconcile($)
+  return added
 }
 
 /** The route JSON a Bash call printed, read from stdout or (on a nonzero exit) the error text. */
@@ -163,15 +203,16 @@ export const statusCommand = ($: Engine, s: RouterSeat) =>
 export const cancelCommand = ($: Engine, s: RouterSeat) =>
   cmd($, 'cancel', ['--attempt-id', s.attemptId, '--receipt-dir', s.receiptDir])
 
-/** verify-evidence over the succeeded attempts that share this one's receipt dir and decision. */
+/**
+ * verify-evidence over the succeeded attempts that share this one's receipt
+ * dir and decision, the expectations left to the person: the count, models
+ * and fingerprint must come from the route, and filling them from the
+ * receipts being checked would make the check pass by construction.
+ */
 export function verifyCommand($: Engine, seats: readonly RouterSeat[], s: RouterSeat): string {
   const group = seats.filter(o => o.state === 'SUCCEEDED' && o.receiptDir === s.receiptDir
     && o.fingerprint === s.fingerprint)
-  const args = ['--receipt-dir', s.receiptDir, '--ids', group.map(o => o.attemptId).join(','),
-    '--expect-count', String(group.length)]
-  if (s.fingerprint !== null) args.push('--expect-fingerprint', s.fingerprint)
-  if (group.every(o => o.modelId !== null)) args.push('--expect-models', group.map(o => o.modelId).join(','))
-  return cmd($, 'verify-evidence', args)
+  return `${cmd($, 'verify-evidence', ['--receipt-dir', s.receiptDir, '--ids', group.map(o => o.attemptId).join(',')])} --expect-count `
 }
 
 const fill = ($: Engine, text: string) => $.prompt.fill({ text, mode: 'replace' })
@@ -187,13 +228,17 @@ export const register: Register = on => {
       name: 'router-sync',
       description: 'model-sync status: retirement notices, deferred probes, probe runs in flight',
     })
-    // A hot reload drops the module's timer, not the session's seats.
-    if ((await showStatus($)) > 0) arm($)
-    $.clock.after(SYNC_DELAY_MS, () => {
-      background((async () => {
-        if (await hasSurface($)) await syncCheck($, true)
-      })())
-    })
+    // A hot reload drops the module's timers, not the session's seats.
+    await reconcile($)
+    const trySync = (attempt: number): void => {
+      $.clock.after(SYNC_DELAYS_MS[attempt]! - (SYNC_DELAYS_MS[attempt - 1] ?? 0), () => {
+        background((async () => {
+          if (await hasSurface($)) await syncCheck($, true)
+          else if (attempt + 1 < SYNC_DELAYS_MS.length) trySync(attempt + 1)
+        })())
+      })
+    }
+    trySync(0)
     return next(e)
   })
 
@@ -205,30 +250,30 @@ export const register: Register = on => {
     const runs = findDispatchRuns(command, home)
     let added: RouterSeat[] = []
     if (runs.length > 0) {
-      if (platform === undefined) {
-        const uname = await $.process.run(['uname', '-s']).catch(() => undefined)
-        platform = uname?.stdout.trim() ?? ''
-      }
       const cwd = await $.session.cwd()
       const now = await $.clock.now()
-      added = runs.map(run => newSeat(run, joinPath(cwd, ...run.cds, run.receiptDir), now, 'command'))
-      for (const run of runs) for (const f of dispatchFindings(run, platform)) await say($, f)
-      await track($, added)
+      added = await track($, runs.map(run =>
+        newSeat(run, joinPath(cwd, ...run.cds, run.receiptDir), now, 'command')))
+      // Hints wait for nothing on the call's path; `uname` runs at most once.
+      background((async () => {
+        const os = await detectPlatform($)
+        for (const run of runs) for (const f of dispatchFindings(run, os)) await say($, f)
+      })())
     }
     const ran = await next(e)
     if (added.length > 0) {
       if (ran.deny !== undefined) {
-        // Refused before it ran: nothing to watch.
+        // Refused before it ran: drop what this call added, nothing else.
         await update($, seatsAtom, list => list.filter(s => !added.some(a => sameAttempt(a, s))))
-        await showStatus($)
+        await reconcile($)
       } else {
+        const now = await $.clock.now()
         const backgrounded = e.run_in_background === true
           || (ran.isError !== true && ran.result?.backgroundTaskId !== undefined)
-        const done = added.filter((_, i) => !backgrounded && !runs[i]!.background)
-        if (done.length > 0) {
-          await update($, seatsAtom, list =>
-            list.map(s => (done.some(d => sameAttempt(d, s)) ? { ...s, commandDone: true } : s)))
-        }
+        const isDone = (s: RouterSeat) => !backgrounded
+          && runs.some(r => r.attemptId === s.attemptId && !r.background)
+        await update($, seatsAtom, list => list.map(s => (added.some(a => sameAttempt(a, s))
+          ? { ...s, returnedAt: now, commandDone: s.commandDone || isDone(s) } : s)))
         background(refresh($))
       }
     }
@@ -242,19 +287,21 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'router-seats' }, async ($, e) => {
-    const args = e.args.trim().split(/\s+/).filter(Boolean)
+    // Read like a shell line, so a directory with spaces can be quoted.
+    const args = (segments(e.args)[0]?.words ?? []).map(w => w.text)
     if (args[0] === 'add') {
-      const [, dir, id] = args
-      if (dir === undefined || id === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) {
-        return { text: 'Usage: /router-seats add <receipt-dir> <attempt-id>' }
+      const usage = { text: 'Usage: /router-seats add <receipt-dir> <attempt-id> (quote a directory with spaces)' }
+      const dir = args.length === 3 ? resolveWord(args[1]!, await $.env.get('HOME')) : undefined
+      const id = args[2]
+      if (dir === undefined || dir === '' || id === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) {
+        return usage
       }
       const now = await $.clock.now()
-      const base = dir.startsWith('~/') ? `${await $.env.get('HOME') ?? ''}/${dir.slice(2)}` : dir
       const seat = newSeat({ attemptId: id, seat: null, runtime: null, modelId: null, cli: null,
-        deadlineSeconds: null, fingerprint: null }, joinPath(await $.session.cwd(), base), now, 'manual')
-      await track($, [seat])
+        deadlineSeconds: null, fingerprint: null }, joinPath(await $.session.cwd(), dir), now, 'manual')
+      const added = await track($, [seat])
       background(refresh($))
-      return { text: `Tracking ${id} in ${seat.receiptDir}.` }
+      return { text: added.length > 0 ? `Tracking ${id} in ${seat.receiptDir}.` : `Already tracking ${id} in ${seat.receiptDir}.` }
     }
     if (args[0] === 'clear') {
       // A person asking to clear has seen what is flagged; unfinished seats stay.
@@ -264,7 +311,7 @@ export const register: Register = on => {
         dropped = list.length - kept.length
         return kept
       })
-      await showStatus($)
+      await reconcile($)
       return { text: `Cleared ${dropped} finished seat(s).` }
     }
     await $.ui.open({ id: SEATS_PANE, title: 'Router seats' })
@@ -318,6 +365,9 @@ export const register: Register = on => {
           )
         })}
         {seats.length > rows.length && <Text dimColor>{seats.length - rows.length} older seat(s) not shown.</Text>}
+        {seats.some(s => s.state === 'SUCCEEDED') && (
+          <Text dimColor>Verify fills the ids; finish it from the route: --expect-count, --expect-fingerprint, --expect-models.</Text>
+        )}
       </Box>
     )
   })

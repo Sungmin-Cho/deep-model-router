@@ -95,3 +95,24 @@ def test_a_terminal_route_carries_no_note():
     out = _route(host_seat={"model": host}, prior_failures=[worker] * 5)
     assert out["terminal"] is not None
     assert _notes(out) == []
+
+
+def test_a_context_variant_of_the_host_id_is_the_same_model():
+    """A session reports `<id>[1m]` for the 1M-context variant (review i1)."""
+    host = ID("claude_senior")
+    out = _route(host_seat={"model": f"{host}[1m]"})
+    assert len(_notes(out)) == 1 and f"host model {host}[1m] is seated as " in _notes(out)[0]
+
+
+def test_the_cli_host_model_flag_reaches_the_note():
+    import json
+    import subprocess
+    host = ID("claude_senior")
+    proc = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "route_task.py"), "--class", "IMPLEMENTATION",
+         "--complexity", "2", "--uncertainty", "2", "--blast-radius", "1", "--reversibility", "1",
+         "--runtime", "claude_code", "--host-model", host, "--format", "json"],
+        capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    notes = [n for n in json.loads(proc.stdout)["notes"] if n.startswith("host model ")]
+    assert len(notes) == 1 and notes[0].startswith(f"host model {host} is seated as ")

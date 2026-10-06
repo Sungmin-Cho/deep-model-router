@@ -10,6 +10,7 @@ export const PLUGIN = 'deep-model-router'
 export const T0 = Date.parse('2026-10-06T00:00:00Z')
 
 export type Proc = { exitCode?: number; stdout?: string; stderr?: string }
+export type BashAnswer = Proc & { background?: boolean; isError?: boolean; deny?: string }
 
 export type World = {
   clock: MockClock
@@ -24,12 +25,13 @@ export type World = {
 export type WorldOptions = {
   model?: string
   cwd?: string
-  surfaces?: ('terminal' | 'desktop')[]
+  /** The surfaces drawing; a function when they change during the test. */
+  surfaces?: ('terminal' | 'desktop')[] | (() => ('terminal' | 'desktop')[])
   platform?: string
   /** Answers `$.process.run` for everything but `uname`. */
   proc?: (argv: readonly string[]) => Proc
-  /** Answers the Bash tool beneath the plugins. */
-  bash?: (command: string) => Proc & { background?: boolean; isError?: boolean }
+  /** Answers the Bash tool beneath the plugins (it may take its time, or refuse). */
+  bash?: (command: string) => BashAnswer | Promise<BashAnswer>
 }
 
 export function world(on: On, options: WorldOptions = {}): World {
@@ -39,7 +41,10 @@ export function world(on: On, options: WorldOptions = {}): World {
   }
   mock.env(on, { HOME: '/home/me' })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('session.surfaces', () => ({ value: options.surfaces ?? ['terminal'] }))
+  on('session.surfaces', () => {
+    const surfaces = options.surfaces ?? ['terminal']
+    return { value: typeof surfaces === 'function' ? surfaces() : surfaces }
+  })
   on('session.cwd', () => ({ value: options.cwd ?? '/work' }))
   on('session.model', () => ({ value: options.model ?? 'model-opus[1m]' }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -71,9 +76,10 @@ export function world(on: On, options: WorldOptions = {}): World {
       },
     }
   })
-  on('tool.call', { tool: 'Bash' }, ($, e) => {
+  on('tool.call', { tool: 'Bash' }, async ($, e) => {
     w.bash.push(e.command)
-    const p = options.bash?.(e.command) ?? {}
+    const p = (await options.bash?.(e.command)) ?? {}
+    if (p.deny !== undefined) return { deny: p.deny }
     const stdout = p.stdout ?? ''
     if (p.isError === true) return { isError: true as const, result: stdout, text: `Exit code ${p.exitCode ?? 1}\n${stdout}` }
     return {

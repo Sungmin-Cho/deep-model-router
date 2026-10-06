@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  FAILURE_LIMIT, PENDING_LIMIT_MS, announcements, applyStatus, attention, newSeat, statusLine,
+  CLAIM_STUCK_MS, FAILING_FOR_MS, FAILURE_LIMIT, PENDING_GRACE_MS, PENDING_LIMIT_MS, announcements, applyStatus,
+  attention, newSeat, statusLine,
 } from '../seats'
 import { T0, receipt } from './world'
 
@@ -22,11 +23,29 @@ describe('reading `status`', () => {
     expect(applyStatus(seat(), claimed, T0)).toMatchObject({ state: 'CLAIMED', final: false })
   })
 
-  test('an unknown attempt waits, then ends as NO_RECEIPT; at once when its command already returned', () => {
+  test('an unknown attempt waits while its call runs, is flagged after a grace, and ends at the limit', () => {
     const unknown = { exitCode: 2, stdout: '', stderr: "attempt 'a1' is unknown under /r — no receipt and no claim" }
-    expect(applyStatus(seat(), unknown, T0 + 1000)).toMatchObject({ state: 'PENDING', final: false })
-    expect(applyStatus(seat(), unknown, T0 + PENDING_LIMIT_MS + 1)).toMatchObject({ state: 'NO_RECEIPT', final: true })
-    expect(applyStatus(seat({ commandDone: true }), unknown, T0 + 1)).toMatchObject({ state: 'NO_RECEIPT', final: true })
+    // The Bash call has not returned (a permission prompt, `sleep 180 && … run …`): no clock runs out.
+    expect(applyStatus(seat(), unknown, T0 + PENDING_LIMIT_MS * 2)).toMatchObject({ state: 'PENDING', final: false })
+    const returned = seat({ returnedAt: T0 })
+    expect(applyStatus(returned, unknown, T0 + PENDING_GRACE_MS)).toMatchObject({ state: 'PENDING', final: false })
+    const flagged = applyStatus(returned, unknown, T0 + PENDING_GRACE_MS + 1)
+    expect(flagged).toMatchObject({ state: 'NO_RECEIPT', final: false })
+    expect(attention(flagged, T0 + PENDING_GRACE_MS + 1)).toBe('no receipt')
+    // A receipt that shows up late is still picked up.
+    expect(applyStatus(flagged, ok('a1', 'RUNNING'), T0 + PENDING_GRACE_MS + 2)).toMatchObject({ state: 'RUNNING', final: false })
+    expect(applyStatus(returned, unknown, T0 + PENDING_LIMIT_MS + 1)).toMatchObject({ state: 'NO_RECEIPT', final: true })
+    // A foreground call that returned without a receipt never started.
+    expect(applyStatus(seat({ commandDone: true, returnedAt: T0 }), unknown, T0 + 1)).toMatchObject({ state: 'NO_RECEIPT', final: true })
+  })
+
+  test('a claim with no receipt is flagged once it outlives a supervisor\'s start', () => {
+    const claimed = { exitCode: 0, stdout: '{"attempt_id": "a1", "state": "CLAIMED"}', stderr: '' }
+    const s = applyStatus(seat(), claimed, T0)
+    expect(attention(s, T0 + CLAIM_STUCK_MS)).toBeUndefined()
+    const later = applyStatus(s, claimed, T0 + CLAIM_STUCK_MS + 1)
+    expect(later.stateSince).toBe(T0)
+    expect(attention(later, T0 + CLAIM_STUCK_MS + 1)).toBe('stuck claim')
   })
 
   test('a refused success and an unconfirmed termination with a held claim need a person', () => {
@@ -40,15 +59,16 @@ describe('reading `status`', () => {
     expect(attention(h, T0)).toBe('TERMINATION_UNCONFIRMED')
   })
 
-  test('readings that keep failing end as UNREADABLE, flagged; one good reading resets the count', () => {
+  test('readings that keep failing end as UNREADABLE only after a while; one good reading resets', () => {
     const bad = { exitCode: 8, stdout: '', stderr: 'receipt publication is incomplete (claim retained): SUCCEEDED' }
     let s = seat()
-    for (let i = 1; i < FAILURE_LIMIT; i += 1) {
-      s = applyStatus(s, bad, T0)
+    // A burst of refreshes in a transient window does not end tracking.
+    for (let i = 1; i <= FAILURE_LIMIT + 2; i += 1) {
+      s = applyStatus(s, bad, T0 + i)
       expect(s).toMatchObject({ final: false, failures: i, detail: expect.stringContaining('claim retained') })
     }
-    expect(applyStatus(s, ok('a1', 'RUNNING'), T0)).toMatchObject({ failures: 0, detail: null })
-    s = applyStatus(s, { exitCode: -1, stdout: '', stderr: 'Error: spawn python3 ENOENT' }, T0)
+    expect(applyStatus(s, ok('a1', 'RUNNING'), T0)).toMatchObject({ failures: 0, failingSince: null, detail: null })
+    s = applyStatus(s, { exitCode: -1, stdout: '', stderr: 'Error: spawn python3 ENOENT' }, T0 + FAILING_FOR_MS + 1)
     expect(s).toMatchObject({ state: 'UNREADABLE', final: true })
     expect(attention(s, T0)).toBe('unreadable')
     expect(applyStatus(seat(), { exitCode: 0, stdout: 'not json', stderr: '' }, T0)).toMatchObject({ failures: 1, final: false })

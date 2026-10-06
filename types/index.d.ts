@@ -21,6 +21,8 @@ export type RouterSeat = {
   source: 'command' | 'manual'
   /** When tracking started, ms since the epoch. */
   trackedAt: number
+  /** When the dispatching Bash call returned; null while it still runs. */
+  returnedAt: number | null
   /** The dispatching Bash call finished in the foreground (no receipt then means it never started). */
   commandDone: boolean
   /**
@@ -29,6 +31,8 @@ export type RouterSeat = {
    * UNREADABLE.
    */
   state: string
+  /** When `state` last changed, ms since the epoch. */
+  stateSince: number
   startedAt: string | null
   deadlineAt: string | null
   finishedAt: string | null
@@ -44,6 +48,8 @@ export type RouterSeat = {
   finalAt: number | null
   /** Consecutive `status` calls that could not be read. */
   failures: number
+  /** When the current run of unreadable `status` calls began. */
+  failingSince: number | null
   /** Attention labels already toasted for this attempt. */
   alerted: string[]
 }
