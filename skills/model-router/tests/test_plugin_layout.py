@@ -159,3 +159,41 @@ def test_codex_manifest_and_sidecar_name_both_axes():
     import yaml
     spec = yaml.safe_load((root / "skills" / "model-router" / "agents" / "openai.yaml").read_text(encoding="utf-8"))
     assert "difficulty" in spec["interface"]["short_description"] and "risk" in spec["interface"]["short_description"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #53 — the Claude Code mod rides a Claude-only hooks file
+# ---------------------------------------------------------------------------
+
+def test_claude_mod_is_wired_through_a_claude_only_hooks_file():
+    """Claude Code loads hooks/hooks.json for every plugin and also the file
+    the Claude manifest's `hooks` names; Codex reads neither the manifest
+    field nor that file. A plugin gets ONE module: a second `modules` in
+    hooks/hooks.json would make Claude Code load neither."""
+    root = _repo_root()
+    manifest = _read_json(root, ".claude-plugin/plugin.json")
+    assert manifest["hooks"] == "./hooks/hooks.claude.json"
+    assert manifest["types"] == "./types/index.d.ts"
+    assert (root / "types" / "index.d.ts").is_file()
+    claude_hooks = _read_json(root, "hooks/hooks.claude.json")
+    assert set(claude_hooks) == {"description", "modules"}
+    (module,) = claude_hooks["modules"]
+    assert (root / "hooks" / module).resolve().is_file()
+    assert "modules" not in _read_json(root, "hooks/hooks.json")
+    codex = _read_json(root, ".codex-plugin/plugin.json")
+    assert "hooks" not in codex and "types" not in codex
+
+
+def test_claude_mod_imports_nothing_but_the_host_and_itself():
+    """No package dependencies (CONTRIBUTING.md): the module imports only the
+    types the host provides and its own files."""
+    root = _repo_root()
+    sources = sorted((root / "hooks" / "mods").rglob("*.ts")) + \
+        sorted((root / "hooks" / "mods").rglob("*.tsx"))
+    assert sources
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        assert "import(" not in text, path
+        for spec in re.findall(r"""\bfrom\s+['"]([^'"]+)['"]""", text):
+            assert spec in ("claude-code", "claude-code/testing") or spec.startswith("."), (path, spec)
+    assert "dependencies" not in _read_json(root, "package.json")

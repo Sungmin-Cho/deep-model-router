@@ -135,6 +135,20 @@ exit status도 계약입니다. **0** 디스패치 가능, **1** terminal, **2**
 - **끄기.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`은 틱과 발행을 멈춥니다. `DEEP_MODEL_ROUTER_OVERLAY=off`는 비상 스위치입니다: 라우터가 오버레이 항목을 무시하되 폐기는 유지하며, 이미 좌석에 앉혔던 오버레이 id는 재시도 이력 입력으로 계속 유효합니다. 손상된 committed 상태는 그래도 fail closed(`MODEL_STATE_UNAVAILABLE`)입니다 — `repair`를 쓰세요. 승인 검사를 통과하지 못한 상태 루트(내가 소유한 0700 모드 디렉터리가 아님)도 마찬가지이며, 라우트 note가 `chmod 700` 조치를 알려 줍니다.
 - **진행 중인 deep-loop 실행.** deep-loop 1.25.0 이상은 실행의 고정 정책 다이제스트를 `policy_pin`으로 넘기므로, 오버레이 발행으로는 진행 중인 실행이 멈추지 않습니다. 플러그인 업데이트(번들 정책이 바뀜), 이후의 폐기, 세대 소실은 pin으로도 재현할 수 없습니다. 이때 deep-loop는 `router-policy-pin:<사유>`를 보고하고 `HIGH`/`CRITICAL` 작업을 멈추므로, 업데이트 전에 실행을 마무리하거나 멈춘 실행을 새로 시작하세요. deep-loop 1.25.0 미만에서는 오버레이 발행도 실행을 멈추므로, 긴 실행 동안에는 `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`을 설정하세요.
 
+
+---
+
+## Claude Code 상태 표시
+
+Claude Code 2.1.287 이상은 이 플러그인의 작은 mod(`hooks/hooks.claude.json`)도 함께 불러옵니다. mod는 스크립트가 이미 아는 것을 보여 줄 뿐이며 라우트·영수증·리뷰 하한을 바꾸지 않습니다. 스스로 실행하는 명령은 상태를 읽기만 합니다(`dispatch_agent.py status`, `model_sync.py status`, `uname`). Cancel을 비롯한 버튼은 입력창을 채우기만 합니다. Codex와 Grok은 이 mod를 불러오지 않습니다 — 모든 호스트에 필요한 검사는 스크립트에 있습니다.
+
+- **디스패치된 좌석.** Bash 호출 안의 `dispatch_agent.py run`을 명령줄에서 읽어 추적을 시작하고, 끝날 때까지 20초마다 `dispatch_agent.py status`로 확인합니다. 상태줄은 `seats: codex·<model-id> RUNNING 4m/20m · <model-id> SUCCEEDED PASS`처럼 보입니다. 끝날 때마다 토스트가 뜨고, 사람이 처리해야 하는 상태에는 ⚠가 붙습니다: `TERMINATION_UNCONFIRMED`, `orphaned`·`stale` 감독, 마감을 한참 넘긴 `RUNNING` 영수증, `status`가 거부한 성공, 영수증을 남기지 않은 디스패치, 영수증 없이 남은 claim. `/router-seats`는 attempt별 패널을 열며, Status·Cancel·Verify 버튼은 명령을 입력창에 채우기만 합니다. Verify는 attempt id만 채우고 기대값(`--expect-count`, `--expect-fingerprint`, `--expect-models`)은 라우트를 보고 직접 넣도록 남깁니다. mod가 확실히 읽지 못하는 디스패치(변수나 패턴에 든 id·영수증 디렉터리, heredoc, 같은 명령에서 디렉터리를 바꾼 뒤의 상대 영수증 디렉터리(명령 맨 앞의 `cd /절대/경로 &&`는 예외))는 건드리지 않습니다. `/router-seats add <receipt-dir> <attempt-id>`로 직접 추가하세요. `/router-seats clear`는 처리를 마친 끝난 좌석과 표시된 좌석을 지웁니다.
+- **작성자 선언.** JSON을 출력한 `route_task.py` 호출 뒤, 리뷰 좌석에 이 세션의 모델이 앉아 있으면 결정마다 한 번 토스트로 경고합니다. 이 세션이 작업을 작성했다면 `implementer`나 `review_context`를 선언(또는 선언을 정정)하고 다시 라우팅하세요. `review_context`가 없는 `REVIEW` 라우트에는 힌트가 한 번 뜹니다. 모든 호스트에서, `--host-model`로 넘긴 모델이 리뷰 좌석에 앉았는데 작성자 선언이 없으면 라우트 자체가 note를 남깁니다.
+- **디스패치 힌트.** `claude --bare` 좌석은 경고합니다(`Not logged in`으로 실패합니다). macOS에서 `caffeinate -i` 없이 10분 이상의 디스패치를 띄우면 힌트가 한 번 뜹니다(유휴 수면이 감독 프로세스를 멈춥니다).
+- **model-sync 알림.** 세션 시작 5초 뒤 `model_sync.py status`를 한 번 읽습니다. 퇴역 알림, 다시 시도할 때가 된 보류 프로브, 진행 중인 프로브 실행이 있으면 토스트를 한 번 띄웁니다. 자세한 내용은 `/router-sync`에서 봅니다. 자동 업그레이드가 꺼져 있으면 아무것도 표시하지 않습니다.
+
+Claude Code가 플러그인 hook을 끄는 곳(`disableAllHooks`, 관리형 hook 전용 정책, bare 모드, 신뢰하지 않은 워크스페이스)과 그릴 화면이 없는 headless `claude -p` 세션에서는 mod가 동작하지 않습니다.
+
 ---
 
 ## deep-suite 링크

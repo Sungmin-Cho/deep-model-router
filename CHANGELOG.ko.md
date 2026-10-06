@@ -9,6 +9,21 @@
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-10-06 (Claude Code status view)
+
+### Added
+
+- Claude Code 2.1.287 이상에서 디스패치된 좌석을 보여 줍니다. Bash 호출 안의 `dispatch_agent.py run`을 명령줄에서 읽어 추적하고, 끝날 때까지 `status`로 확인해 `seats: codex·<model-id> RUNNING 4m/20m` 같은 상태줄에 표시합니다.
+- 좌석이 끝날 때마다 토스트를 띄우고, 사람이 처리해야 하는 상태를 표시합니다: `TERMINATION_UNCONFIRMED`, orphaned·stale 감독, 마감을 한참 넘긴 `RUNNING` 영수증, `status`가 거부한 성공, 영수증을 남기지 않은 디스패치, 영수증 없이 남은 claim.
+- `/router-seats`를 추가했습니다. attempt별 패널의 Status·Cancel·Verify 버튼은 입력창을 채우기만 하며(Verify는 라우트의 기대값을 사용자에게 남깁니다), mod가 읽지 못한 디스패치용 `/router-seats add <receipt-dir> <attempt-id>`와 `/router-seats clear`가 함께 있습니다.
+- Claude Code에서 라우트의 리뷰 좌석에 이 세션의 모델이 앉으면 결정마다 한 번 경고하고, `review_context` 없는 `REVIEW` 라우트에 힌트를 한 번 보여 주며, `claude --bare` 좌석과 `caffeinate -i` 밖의 긴 macOS 디스패치를 표시합니다.
+- 세션 시작 시 model-sync 퇴역 알림, 다시 시도할 때가 된 보류 프로브, 진행 중인 프로브 실행을 토스트로 한 번 알리고, 자세한 내용은 `/router-sync`에서 보여 줍니다.
+- 선언된 호스트 모델이 리뷰 좌석에 앉았는데 `implementer`도 `review_context`도 선언되지 않으면, 모든 런타임에서 라우트에 note를 남깁니다. 좌석은 라우팅된 그대로입니다.
+
+### Changed
+
+- `claude -p --bare` 좌석이 `Not logged in`으로 실패한다는 점과, 유휴 수면이 디스패치와 그 감독 프로세스를 멈춘다는 점(긴 macOS 디스패치는 `caffeinate -i`로 감쌀 것)을 문서화했습니다.
+
 ## [1.17.2] — 2026-09-30
 
 ### Changed

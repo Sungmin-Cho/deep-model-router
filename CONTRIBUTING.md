@@ -4,9 +4,11 @@ Thanks for improving **deep-model-router**, the shared decision plane for the
 [Deep Suite](https://github.com/Sungmin-Cho/deep-suite) plugin family
 across Claude Code, Codex, and Grok.
 
-This plugin ships one skill, a YAML policy, and two Python CLIs. Keep routing
+This plugin ships one skill, a YAML policy, two Python CLIs, and a Claude Code
+mod (`hooks/mods/`, TypeScript run by Claude Code itself). Keep routing
 deterministic: classification stays with the caller, and `route_task.py` must
-emit the same RouteDecisionV1 for the same inputs.
+emit the same RouteDecisionV1 for the same inputs. The mod only shows state;
+anything every host must enforce belongs in the scripts.
 
 ## Requirements
 
@@ -31,10 +33,16 @@ Run both commands from the repository root:
 ```text
 python3 -m pytest skills/model-router/tests/ -q
 claude plugin validate .
+claude plugin test .
 ```
 
-`npm test` and `npm run verify` wrap the same pytest suite. Everything must be
-green before a pull request.
+`npm test` and `npm run verify` wrap the same pytest suite. `claude plugin test`
+runs the mod's `hooks/mods/tests/*.test.ts` against Claude Code's own engine
+(2.1.287 or later); the mod has no npm dependencies. To type-check it, load the
+plugin once with `claude --plugin-dir .`: Claude Code lays the API declarations
+in `.claude-plugin/types/` (ignored by its own `.gitignore`), which the root
+`tsconfig.json` extends, so `tsc -p .` then works. Everything must be green
+before a pull request.
 
 ## Conventions
 

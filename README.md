@@ -135,6 +135,20 @@ Vendors ship new model generations faster than releases. `skills/model-router/sc
 - **Off switches.** `DEEP_MODEL_ROUTER_AUTOUPGRADE=0` stops ticks and publication. `DEEP_MODEL_ROUTER_OVERLAY=off` is the emergency switch: the router ignores overlay entries but keeps revocations, and an overlay id it already seated stays valid retry history. Corrupt committed state still fails closed (`MODEL_STATE_UNAVAILABLE`) — use `repair`. So does a state root that fails admission (not a directory you own with mode 0700); the route's note names the `chmod 700` fix.
 - **In-flight deep-loop runs.** deep-loop 1.25.0 and later send a run's frozen policy digest as `policy_pin`, so an overlay publication no longer stops an in-flight run. A pin cannot survive a plugin update (the bundled policy moved), a later revocation or a missing generation; deep-loop then reports `router-policy-pin:<reason>` and stops `HIGH`/`CRITICAL` work, so finish runs before updating or start a stopped run afresh. With deep-loop before 1.25.0 an overlay publication stops the run too; for long runs there, set `DEEP_MODEL_ROUTER_AUTOUPGRADE=0`.
 
+
+---
+
+## Claude Code status view
+
+Claude Code 2.1.287 and later also load a small mod from this plugin (`hooks/hooks.claude.json`). It only shows what the scripts already know and changes no route, receipt or review floor. The only commands it runs on its own read state (`dispatch_agent.py status`, `model_sync.py status`, `uname`); Cancel and the other buttons only fill the prompt. Codex and Grok do not load it — the checks that every host needs live in the scripts.
+
+- **Dispatched seats.** A `dispatch_agent.py run` in a Bash call is picked up from the command line, then polled with `dispatch_agent.py status` every 20 s until it ends. The status line reads like `seats: codex·<model-id> RUNNING 4m/20m · <model-id> SUCCEEDED PASS`. A toast marks each finish, and ⚠ marks what needs a person: `TERMINATION_UNCONFIRMED`, an `orphaned` or `stale` supervisor, a `RUNNING` receipt well past its deadline, a success `status` refused, a dispatch that wrote no receipt, or a claim left without one. `/router-seats` opens a pane per attempt whose Status, Cancel and Verify buttons only fill the prompt with the command; Verify fills the attempt ids and leaves the expectations (`--expect-count`, `--expect-fingerprint`, `--expect-models`) to you, from the route. A dispatch the mod cannot read for certain (an id or receipt directory in a variable or a pattern, a heredoc, a relative receipt directory after a directory change in the same command other than an opening `cd /absolute/dir &&`) is left alone; add it with `/router-seats add <receipt-dir> <attempt-id>`. `/router-seats clear` drops finished and flagged seats once you have dealt with them.
+- **Author declaration.** After a `route_task.py` call that prints JSON, a toast warns (once per decision) when a review seat holds this session's own model: if the session wrote the work, declare `implementer` or `review_context` (or correct the declaration) and route again. A `REVIEW` route without `review_context` gets a one-time hint. On every host, the route itself adds a note when the model you pass as `--host-model` holds a review seat and no author is declared.
+- **Dispatch hints.** A `claude --bare` seat is flagged (it fails `Not logged in`), and on macOS a dispatch of 10 minutes or more outside `caffeinate -i` gets a one-time hint (idle sleep freezes the supervisor).
+- **model-sync notice.** Five seconds after a session starts, `model_sync.py status` is read once; retirement notices, deferred probes that are due again and probe runs in flight get one toast. `/router-sync` shows the details. Nothing is shown while auto-upgrade is disabled.
+
+The mod is off wherever Claude Code turns plugin hooks off (`disableAllHooks`, managed-hooks-only policy, bare mode, an untrusted workspace) and in headless `claude -p` sessions, which have no surface to draw on.
+
 ---
 
 ## deep-suite links
