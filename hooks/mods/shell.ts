@@ -50,6 +50,7 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
   let text = ''
   let inWord = false
   let skipNext = false
+  let redirected = false
   let depth = 0
   let segDepth = 0
   let fedByPipe = false
@@ -67,13 +68,16 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
   }
   const endSegment = (background = false, pipe = false, endedBy = '') => {
     endWord()
-    // `name ()` with a space: a function definition too (review i4).
-    if (endedBy === '(' && words.length === 1 && !words[0]!.text.includes(MARK) && !words[0]!.text.includes('=')
-      && /^\s*\)/.test(command.slice(i + 1))) opaque = true
+    // Empty parentheses in shell syntax (`f()`, `f ()`, `then f () {`) define a
+    // function, whatever stands before them (reviews i4, i5).
+    if (endedBy === '(' && /^\s*\)/.test(command.slice(i + 1))) opaque = true
     skipNext = false
-    if (words.length > 0) out.push({ words, background, depth: segDepth, piped: pipe || fedByPipe, endedBy })
+    // A command of redirections alone (`>log`, `2>&1`) has no words but still
+    // ends with an operator the `&&` chain needs (review i5).
+    if (words.length > 0 || redirected) out.push({ words, background, depth: segDepth, piped: pipe || fedByPipe, endedBy })
     // `( … ) &`: the `&` follows the closing parenthesis, after the last inner segment.
     else if (background && out.length > 0) out[out.length - 1]!.background = true
+    redirected = false
     words = []
     segDepth = depth
     fedByPipe = pipe
@@ -228,7 +232,7 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
       text += COMPLEX
       continue
     }
-    if (c === '(' && inWord && !text.includes(MARK) && !text.includes('=') && /^\s*\)/.test(command.slice(i + 1))) {
+    if (c === '(' && inWord && /^\s*\)/.test(command.slice(i + 1))) {
       // `name()` (any name bash takes, `ns.f` included): a function definition,
       // whose body runs only if called.
       opaque = true
@@ -252,6 +256,7 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
       if (d === '>') {
         // `&>` / `&>>`: a redirection, its target the next word.
         endWord()
+        redirected = true
         i += command[i + 2] === '>' ? 3 : 2
         skipNext = true
         continue
@@ -264,6 +269,7 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
       // An fd number glued to the operator (`2>`) is part of it, not a word.
       if (inWord && /^[0-9]+$/.test(text)) { text = ''; inWord = false }
       endWord()
+      redirected = true
       if (c === '<' && command.startsWith('<<<', i)) {
         i += 3
         skipNext = true
@@ -456,19 +462,14 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
 /** Commands that may change the shell's directory (`eval`, `source` and `.` may run a `cd`). */
 const DIRECTORY_CHANGERS = new Set(['cd', 'chdir', 'pushd', 'popd', 'eval', 'source', '.'])
 
-/**
- * Whether a simple command (from its command word on) may change the shell's
- * directory. `command` and `builtin` count only when they run a `cd`-like
- * word; `command -v x` looks something up and changes nothing (review i4).
- */
+/** Whether a simple command (from its command word on) may change the shell's directory. */
 function changesDirectory(words: readonly string[]): boolean {
   const name = basename(words[0] ?? '')
-  if (name === 'command' || name === 'builtin') {
-    if (words.slice(1).some(w => w === '-v' || w === '-V')) return false
-    const wrapped = words.slice(1).find(w => !w.startsWith('-'))
-    return wrapped !== undefined && DIRECTORY_CHANGERS.has(basename(wrapped))
-  }
-  return DIRECTORY_CHANGERS.has(name)
+  // `command -v x` / `command -V x` only look a name up. Any other `command` or
+  // `builtin` may run a cd (nested, through eval, or behind a variable), so it
+  // is assumed to (review i5).
+  if (name === 'command') return !(words[1] === '-v' || words[1] === '-V')
+  return name === 'builtin' || DIRECTORY_CHANGERS.has(name)
 }
 /** Words that put the next word in command position. */
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time'])
