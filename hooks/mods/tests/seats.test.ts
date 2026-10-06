@@ -111,6 +111,9 @@ describe('seat tracker', () => {
     await startSession($)
     await $.tool.call({ tool: 'Bash', command: DISPATCH })
     await w.clock.settle()
+    // The first reading may precede the supervisor's claim: one more poll confirms.
+    expect(w.statuses.at(-1)).toBe('seats: codex·model-sol PENDING')
+    await w.clock.advance(20_000)
     expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
     expect(w.toasts).toEqual([expect.stringMatching(/^⚠ reviewer-1 codex·model-sol: no receipt — /)])
     const polls = w.runs.filter(isStatus).length
@@ -118,16 +121,22 @@ describe('seat tracker', () => {
     expect(w.runs.filter(isStatus)).toHaveLength(polls)
   })
 
-  test('a relative receipt dir follows a literal cd in the same command', async ($, on) => {
+  test('a relative receipt dir resolves against the shell directory, unless the command moved it', async ($, on) => {
     const w = world(on, { cwd: '/repo', proc: statusSequence(receipt('a1', 'RUNNING')) })
     await startSession($)
     await $.tool.call({
       tool: 'Bash', run_in_background: true,
-      command: 'cd sub && nohup python3 ../dispatch_agent.py run --attempt-id=a1 --receipt-dir=../out/r --seat worker -- grok -p x > log 2>&1 &',
+      command: 'nohup python3 ../dispatch_agent.py run --attempt-id=a1 --receipt-dir=../out/r --seat worker -- grok -p x > log 2>&1 &',
     })
     await w.clock.settle()
     // `..` is left for the operating system: folding it across a symbolic link names another directory.
-    expect(w.runs.find(isStatus)).toEqual(expect.arrayContaining(['--receipt-dir', '/repo/sub/../out/r']))
+    expect(w.runs.find(isStatus)).toEqual(expect.arrayContaining(['--receipt-dir', '/repo/../out/r']))
+    await $.tool.call({
+      tool: 'Bash', run_in_background: true,
+      command: 'cd sub && python3 dispatch_agent.py run --attempt-id a2 --receipt-dir r -- grok -p x',
+    })
+    await w.clock.settle()
+    expect(w.runs.filter(isStatus).some(argv => argv.includes('a2'))).toBe(false)
   })
 
   test('the seats pane draws each attempt and its buttons only fill the prompt', async ($, on) => {
@@ -332,6 +341,101 @@ describe('seat tracker', () => {
     await startSession($)
     await w.clock.advance(20_000)
     expect(w.runs.filter(isStatus).length).toBeGreaterThan(polls)
+  })
+
+  test('a poll in flight when the Bash call returns keeps the return (review i2)', async ($, on) => {
+    const unknown = { exitCode: 2, stderr: "attempt 'r1-sol' is unknown under /home/me/receipts — no receipt and no claim" }
+    const w: ReturnType<typeof world> = world(on, {
+      // Each status reading takes 15 s; the Bash call returns 30 s in, mid-poll.
+      proc: async () => { await w.clock.sleep(15_000); return unknown },
+      bash: async () => { await w.clock.sleep(30_000); return { background: true } },
+    })
+    await startSession($)
+    const call = $.tool.call({ tool: 'Bash', command: DISPATCH })
+    await w.clock.advance(31_000)
+    await call
+    await w.clock.advance(5 * 60_000)
+    expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
+  })
+
+  test('a dispatch backgrounded by a group, subshell or pipeline is not read as waited for (review i2)', async ($, on) => {
+    const w = world(on, {
+      proc: argv => ({ exitCode: 2, stderr: `attempt '${argv[argv.indexOf('--attempt-id') + 1]}' is unknown under /r — no receipt and no claim` }),
+    })
+    await startSession($)
+    for (const command of [
+      '( python3 dispatch_agent.py run --attempt-id g1 --receipt-dir /r --seat s1 -- x ) &',
+      'python3 dispatch_agent.py run --attempt-id g2 --receipt-dir /r --seat s2 -- x 2>&1 | tee log &',
+    ]) await $.tool.call({ tool: 'Bash', command })
+    await w.clock.advance(60_000)
+    expect(w.statuses.at(-1)).toBe('seats: s1 x PENDING · s2 x PENDING')
+  })
+
+  test('one id twice in one call is one seat; the same id in two directories is two', async ($, on) => {
+    const w = world(on, { proc: argv => receipt(argv[argv.indexOf('--attempt-id') + 1]!, 'RUNNING', { supervision: 'supervised' }) })
+    await startSession($)
+    await $.tool.call({
+      tool: 'Bash', run_in_background: true,
+      command: 'python3 dispatch_agent.py run --attempt-id a --receipt-dir /r --seat s1 -- x || '
+        + 'python3 dispatch_agent.py run --attempt-id a --receipt-dir /r --seat s1 -- x; '
+        + 'python3 dispatch_agent.py run --attempt-id a --receipt-dir /other --seat s2 -- x',
+    })
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toMatch(/^seats: s1 x·model-sol RUNNING \S+ · s2 x·model-sol RUNNING \S+$/)
+  })
+
+  test('a retried attempt that is denied puts the flagged record back (review i2)', async ($, on) => {
+    let deny = false
+    const w = world(on, {
+      proc: () => ({ exitCode: 2, stderr: "attempt 'r1-sol' is unknown under /home/me/receipts — no receipt and no claim" }),
+      bash: () => (deny ? { deny: 'not now' } : { isError: true, exitCode: 2 }),
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH })
+    await w.clock.advance(20_000)
+    expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
+    deny = true
+    await $.tool.call({ tool: 'Bash', command: DISPATCH })
+    await w.clock.settle()
+    expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
+    // Clearing drops a seat that never wrote a receipt.
+    expect((await $.command.run(command('router-seats', 'clear'))).text).toBe('Cleared 1 finished seat(s).')
+    expect(w.statuses.at(-1)).toBeUndefined()
+  })
+
+  test('a backgrounded dispatch with no receipt is flagged after the grace and dropped at the limit', async ($, on) => {
+    const w = world(on, {
+      proc: () => ({ exitCode: 2, stderr: "attempt 'r1-sol' is unknown under /home/me/receipts — no receipt and no claim" }),
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await w.clock.advance(100_000)
+    expect(w.statuses.at(-1)).toBe('seats: codex·model-sol PENDING')
+    await w.clock.advance(40_000)
+    expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
+    expect(w.toasts).toHaveLength(1)
+    await w.clock.advance(30 * 60_000)
+    const polls = w.runs.filter(isStatus).length
+    await w.clock.advance(5 * 60_000)
+    expect(w.runs.filter(isStatus)).toHaveLength(polls)
+    expect(w.toasts).toHaveLength(1)
+  })
+
+  test('seats that finish together get one toast (the engine draws only the newest)', async ($, on) => {
+    let done = false
+    const w = world(on, {
+      proc: argv => {
+        const id = argv[argv.indexOf('--attempt-id') + 1]!
+        return done ? receipt(id, 'SUCCEEDED', { verdict: 'PASS' }) : receipt(id, 'RUNNING')
+      },
+    })
+    await startSession($)
+    await $.tool.call({ tool: 'Bash', command: DISPATCH, run_in_background: true })
+    await $.tool.call({ tool: 'Bash', command: DISPATCH.replace('r1-sol', 'r2-sol'), run_in_background: true })
+    await w.clock.settle()
+    done = true
+    await w.clock.advance(20_000)
+    expect(w.toasts).toEqual(['reviewer-1 codex·model-sol SUCCEEDED PASS · reviewer-1 codex·model-sol SUCCEEDED PASS'])
   })
 
   test('nothing is tracked where no surface draws (a -p child seat)', async ($, on) => {

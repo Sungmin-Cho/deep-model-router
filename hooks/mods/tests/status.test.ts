@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  CLAIM_STUCK_MS, FAILING_FOR_MS, FAILURE_LIMIT, PENDING_GRACE_MS, PENDING_LIMIT_MS, announcements, applyStatus,
+  CLAIM_STUCK_MS, CONFIRM_MS, FAILING_FOR_MS, FAILURE_LIMIT, PENDING_GRACE_MS, PENDING_LIMIT_MS, announcements, applyStatus,
   attention, newSeat, statusLine,
 } from '../seats'
 import { T0, receipt } from './world'
@@ -35,8 +35,9 @@ describe('reading `status`', () => {
     // A receipt that shows up late is still picked up.
     expect(applyStatus(flagged, ok('a1', 'RUNNING'), T0 + PENDING_GRACE_MS + 2)).toMatchObject({ state: 'RUNNING', final: false })
     expect(applyStatus(returned, unknown, T0 + PENDING_LIMIT_MS + 1)).toMatchObject({ state: 'NO_RECEIPT', final: true })
-    // A foreground call that returned without a receipt never started.
-    expect(applyStatus(seat({ commandDone: true, returnedAt: T0 }), unknown, T0 + 1)).toMatchObject({ state: 'NO_RECEIPT', final: true })
+    // A foreground call that returned without a receipt never started — once a later reading confirms it.
+    expect(applyStatus(seat({ commandDone: true, returnedAt: T0 }), unknown, T0 + 1)).toMatchObject({ state: 'PENDING', final: false })
+    expect(applyStatus(seat({ commandDone: true, returnedAt: T0 }), unknown, T0 + CONFIRM_MS)).toMatchObject({ state: 'NO_RECEIPT', final: true })
   })
 
   test('a claim with no receipt is flagged once it outlives a supervisor\'s start', () => {
@@ -72,6 +73,13 @@ describe('reading `status`', () => {
     expect(s).toMatchObject({ state: 'UNREADABLE', final: true })
     expect(attention(s, T0)).toBe('unreadable')
     expect(applyStatus(seat(), { exitCode: 0, stdout: 'not json', stderr: '' }, T0)).toMatchObject({ failures: 1, final: false })
+    // A recognized "unknown attempt" answer ends the run of failures too (review i2).
+    const spawn = { exitCode: -1, stdout: '', stderr: 'Error: spawn python3 ENOENT' }
+    const unknown = { exitCode: 2, stdout: '', stderr: "attempt 'a1' is unknown under /r — no receipt and no claim" }
+    let t = applyStatus(applyStatus(seat(), spawn, T0), spawn, T0 + 1_000)
+    t = applyStatus(t, unknown, T0 + 30_000)
+    expect(t).toMatchObject({ failures: 0, failingSince: null })
+    expect(applyStatus(t, spawn, T0 + 125_000)).toMatchObject({ final: false, failures: 1 })
   })
 
   test('announcements name a finish once and each attention label once', () => {
@@ -87,7 +95,7 @@ describe('reading `status`', () => {
   test('more than four visible seats collapse into counts', () => {
     const many = [1, 2, 3, 4, 5].map(i => seat({ attemptId: `a${i}`, state: i < 3 ? 'RUNNING' : 'SUCCEEDED',
       final: i >= 3, finalAt: i >= 3 ? T0 : null, supervision: i === 1 ? 'stale' : null }))
-    expect(statusLine(many, T0)).toBe('seats: 2 running · 3 finished · ⚠ 1 need a person — /router-seats')
+    expect(statusLine(many, T0)).toBe('seats: 1 running · 3 finished · ⚠ 1 need a person — /router-seats')
     expect(statusLine(many.map(s => ({ ...s, final: true, finalAt: T0, supervision: null })), T0 + 11 * 60_000)).toBeUndefined()
   })
 })

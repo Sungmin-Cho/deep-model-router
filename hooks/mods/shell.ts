@@ -56,6 +56,8 @@ export function segments(command: string): Segment[] {
     endWord()
     skipNext = false
     if (words.length > 0) out.push({ words, background, depth: segDepth, piped: pipe || fedByPipe })
+    // `( … ) &`: the `&` follows the closing parenthesis, after the last inner segment.
+    else if (background && out.length > 0) out[out.length - 1]!.background = true
     words = []
     segDepth = depth
     fedByPipe = pipe
@@ -201,6 +203,13 @@ export function segments(command: string): Segment[] {
     }
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i += 1; continue }
     if (c === ';') { endSegment(); i += command[i + 1] === ';' ? 2 : 1; continue }
+    if (c === '(' && inWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(text)) {
+      // An array literal (`CMD=( … )`) holds words, not a command to run.
+      i += 1
+      skipBalanced('(', ')')
+      text += COMPLEX
+      continue
+    }
     if (c === '(' || c === ')') {
       endSegment()
       depth = Math.max(0, depth + (c === '(' ? 1 : -1))
@@ -308,7 +317,7 @@ export function basename(text: string): string {
   return slash === -1 ? plain : plain.slice(slash + 1)
 }
 
-/** `dispatch_agent.py run` options that take a value (the rest of its `--` options are flags). */
+/** `dispatch_agent.py run` options that take no value; every other `--` option takes one. */
 const RUN_FLAGS = new Set(['--require-artifact-allow-unchanged', '--require-single-linked-cwd'])
 
 const ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -328,8 +337,6 @@ export type DispatchRun = {
   /** Words before `dispatch_agent.py` in the same simple command (`caffeinate -i python3`). */
   wrappers: string[]
   background: boolean
-  /** `cd <dir>` targets earlier in the same command, in order. */
-  cds: string[]
 }
 
 const valueOf = (text: string | undefined, home: string | undefined) =>
@@ -341,20 +348,25 @@ const valueOf = (text: string | undefined, home: string | undefined) =>
  */
 export function findDispatchRuns(command: string, homeDir?: string): DispatchRun[] {
   const runs: DispatchRun[] = []
-  const cds: (string | undefined)[] = []
+  // A function definition's body runs only when called, perhaps never: a command
+  // that defines one is not read at all (review i2).
+  if (/(^|[\s;&|(])(function\s+[A-Za-z_][\w-]*|[A-Za-z_][\w-]*\s*\(\s*\))\s*[{(]/.test(command)) return runs
+  // Whether the shell may have left its starting directory before this point.
+  // Following `cd` through conditions, groups, subshells, background lists and
+  // symbolic links is a shell's job, not this reader's: after any directory
+  // change a relative receipt directory is left untracked (review i2).
+  let moved = false
   const all = segments(command)
+  // A list ended by `&` anywhere (`( … ) &`, `run | tee log &`, `{ …; } &`) may
+  // hold the dispatch; the reader cannot tell which, so none counts as waited for.
+  const anyBackground = all.some(seg => seg.background)
   // A command that reassigns HOME (`HOME=/x python3 …`, `export HOME=…`) makes `~` unknowable.
   const home = all.some(seg => seg.words.some(w => /^HOME=/.test(w.text))) ? undefined : homeDir
   for (const seg of all) {
     const words = seg.words.map(w => w.text)
     const lead = words.findIndex(w => !KEYWORDS.has(w) && !ASSIGNMENT.test(w))
-    if (lead !== -1 && DIRECTORY_CHANGERS.has(words[lead]!)) {
-      // Only a plain top-level `cd <dir>` moves the shell the dispatch runs in;
-      // one in a subshell, a pipe, the background, a condition or a group, and
-      // `cd`, `cd -`, `cd -P dir`, `pushd`, `popd`, leave the directory unknown.
-      const plain = lead === 0 && words[0] === 'cd' && words.length === 2 && words[1] !== '-'
-        && seg.depth === 0 && !seg.piped && !seg.background
-      cds.push(plain ? valueOf(words[1], home) : undefined)
+    if (lead !== -1 && DIRECTORY_CHANGERS.has(basename(words[lead]!))) {
+      moved = true
       continue
     }
     const at = words.findIndex(w => basename(w) === 'dispatch_agent.py')
@@ -377,7 +389,7 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
     const receiptDir = valueOf(opts.get('--receipt-dir'), home)
     if (attemptId === undefined || !ATTEMPT_ID.test(attemptId)) continue
     if (receiptDir === undefined || receiptDir === '') continue
-    if (cds.includes(undefined) && !receiptDir.startsWith('/')) continue
+    if (moved && !receiptDir.startsWith('/')) continue
     const deadline = Number(valueOf(opts.get('--deadline-seconds'), undefined))
     const plain = (name: string) => {
       const v = valueOf(opts.get(name), undefined)
@@ -395,20 +407,22 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
       cli: child.length > 0 ? basename(child[0]!) || null : null,
       childArgv: childPlain,
       wrappers: words.slice(0, at).map(basename),
-      background: seg.background,
-      cds: cds.filter((d): d is string => d !== undefined),
+      background: seg.background || anyBackground,
     })
   }
   return runs
 }
 
-const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd'])
+/** Commands that may change the shell's directory (`eval`, `source` and `.` may run a `cd`). */
+const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd', 'builtin', 'eval', 'source', '.'])
 /** Words that put the next word in command position. */
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time'])
 
 /** Programs that run the rest of their arguments as a command. */
-const WRAPPERS = new Set(['env', 'caffeinate', 'nohup', 'timeout', 'gtimeout', 'time', 'exec', 'command', 'nice', 'stdbuf'])
+const WRAPPERS = new Set(['env', 'caffeinate', 'nohup', 'timeout', 'gtimeout', 'time', 'exec', 'nice', 'stdbuf'])
 const PYTHON = /^python(\d+(\.\d+)?)?$/
+/** Interpreter flags that still run the next word as a script (`-c` and `-m` do not). */
+const PYTHON_FLAGS = /^-[BIsSuEOqvdb]+$/
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const NUMBER = /^\d+(\.\d+)?[smhd]?$/
 
@@ -423,7 +437,7 @@ export function isLauncher(prefix: readonly string[]): boolean {
   for (const word of prefix) {
     const name = basename(word)
     if (sawPython) {
-      if (!word.startsWith('-')) return false
+      if (!PYTHON_FLAGS.test(word)) return false
     } else if (PYTHON.test(name)) {
       sawPython = true
     } else if (!(ASSIGNMENT.test(word) || WRAPPERS.has(name) || word.startsWith('-') || NUMBER.test(word))) {

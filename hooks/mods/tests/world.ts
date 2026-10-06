@@ -28,8 +28,8 @@ export type WorldOptions = {
   /** The surfaces drawing; a function when they change during the test. */
   surfaces?: ('terminal' | 'desktop')[] | (() => ('terminal' | 'desktop')[])
   platform?: string
-  /** Answers `$.process.run` for everything but `uname`. */
-  proc?: (argv: readonly string[]) => Proc
+  /** Answers `$.process.run` for everything but `uname` (it may take its time). */
+  proc?: (argv: readonly string[]) => Proc | Promise<Proc>
   /** Answers the Bash tool beneath the plugins (it may take its time, or refuse). */
   bash?: (command: string) => BashAnswer | Promise<BashAnswer>
 }
@@ -64,11 +64,11 @@ export function world(on: On, options: WorldOptions = {}): World {
     w.opened.push(e.id)
     return { value: { isPlaced: true } }
   })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     w.runs.push([...e.argv])
     const p: Proc = e.argv[0] === 'uname'
       ? { stdout: `${options.platform ?? 'Darwin'}\n` }
-      : options.proc?.(e.argv) ?? { exitCode: 2, stderr: 'no answer in this test' }
+      : (await options.proc?.(e.argv)) ?? { exitCode: 2, stderr: 'no answer in this test' }
     return {
       value: {
         exitCode: p.exitCode ?? 0, stdout: p.stdout ?? '', stderr: p.stderr ?? '',

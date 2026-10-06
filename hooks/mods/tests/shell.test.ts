@@ -58,24 +58,29 @@ describe('shell reading', () => {
     expect(findDispatchRuns(`echo python3 ${tail}`)).toEqual([])
     expect(findDispatchRuns(`ssh host python3 ${tail}`)).toEqual([])
     expect(findDispatchRuns(`grep -n ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`command -v python3 ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`python3 -c ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`python3 -m ${tail}`)).toEqual([])
+    expect(findDispatchRuns(`python3 -I -u ${tail}`)).toHaveLength(1)
     expect(findDispatchRuns(`timeout 3600 python3 -u ${tail}`)).toHaveLength(1)
     expect(findDispatchRuns(`./${tail}`)).toHaveLength(1)
     expect(findDispatchRuns(`FOO=1 nohup python3.14 ${tail} &`)).toHaveLength(1)
   })
 
-  test('a cd counts only where it moves the dispatching shell (review i1)', () => {
+  test('after any directory change, a relative receipt dir is left untracked (review i2)', () => {
     const run = 'python3 dispatch_agent.py run --attempt-id a --receipt-dir r -- x'
-    expect(findDispatchRuns(`cd sub && ${run}`)[0]!.cds).toEqual(['sub'])
     for (const command of [
-      `(cd /other); ${run}`, `(cd /other && make) ; ${run}`, `cd /other & ${run}`, `cd /other | cat; ${run}`,
-      `pushd sub && ${run}`, `if cd sub; then ${run}; fi`, `{ cd sub; ${run}; }`, `cd -P sub && ${run}`,
+      `cd sub && ${run}`, `(cd /other); ${run}`, `cd /other & ${run}`, `cd /other && true & ${run}`,
+      `pushd sub && ${run}`, `if false; then :; cd /other; fi; ${run}`, `cd /var; cd ..; ${run}`,
+      `source env.sh; ${run}`, `. ./env.sh && ${run}`, `eval "$SETUP"; ${run}`, `builtin cd x; ${run}`,
     ]) {
       expect(findDispatchRuns(command), command).toEqual([])
     }
     // An absolute receipt directory does not depend on any of that.
-    expect(findDispatchRuns(`(cd /other); ${run.replace('--receipt-dir r', '--receipt-dir /abs')}`)).toHaveLength(1)
-    // A path that merely ends in cd is no cd.
-    expect(findDispatchRuns(`${run.replace('-- x', '--child-cwd /w/cd -- x')}`)).toHaveLength(1)
+    expect(findDispatchRuns(`cd /other && ${run.replace('--receipt-dir r', '--receipt-dir /abs')}`)).toHaveLength(1)
+    // A directory change after the dispatch, or a path that merely ends in cd, changes nothing.
+    expect(findDispatchRuns(`${run}; cd /other`)).toHaveLength(1)
+    expect(findDispatchRuns(run.replace('-- x', '--child-cwd /w/cd -- x'))).toHaveLength(1)
   })
 
   test('patterns, ANSI-C quotes and a reassigned HOME are opaque (review i1)', () => {
@@ -89,6 +94,18 @@ describe('shell reading', () => {
     expect(findDispatchRuns(`HOME=/other ${run('~/r')}`, '/h')).toEqual([])
     expect(findDispatchRuns(`export HOME=/other; ${run('$HOME/r')}`, '/h')).toEqual([])
     expect(findDispatchRuns(`{ ${run('/abs')}; }`, '/h')).toEqual([])
+  })
+
+  test('an array literal or a function body is not a dispatch (review i2)', () => {
+    const tail = 'python3 dispatch_agent.py run --attempt-id a --receipt-dir /abs -- codex exec -'
+    expect(findDispatchRuns(`CMD=(${tail}); echo defined`)).toEqual([])
+    expect(findDispatchRuns(`CMD+=(${tail})`)).toEqual([])
+    expect(findDispatchRuns(`d() { echo; ${tail}; }`)).toEqual([])
+    expect(findDispatchRuns(`function d { ${tail}; }`)).toEqual([])
+    // A grouped or subshelled dispatch backgrounded as a whole is not waited for.
+    expect(findDispatchRuns(`( ${tail} ) &`)[0]!.background).toBe(true)
+    expect(findDispatchRuns(`${tail} 2>&1 | tee log &`)[0]!.background).toBe(true)
+    expect(findDispatchRuns(`${tail} 2>&1 | tee log`)[0]!.background).toBe(false)
   })
 
   test('a command substitution with quotes inside it stays one word', () => {

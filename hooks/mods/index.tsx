@@ -1,8 +1,9 @@
 // deep-model-router's Claude Code mod: a visibility layer over the router's
 // scripts. It shows dispatched seats, warns when a route seats this session's
 // own model, and surfaces model-sync notices. It never changes a route, a
-// receipt or a review floor, and never runs a command a person did not press
-// Enter on: Cancel and the rest only fill the prompt.
+// receipt or a review floor. The commands it runs on its own only read state
+// (`dispatch_agent.py status`, `model_sync.py status`, `uname`); Cancel and the
+// other buttons only fill the prompt.
 //
 // Claude Code only. Codex and Grok load hooks/hooks.json, which this module is
 // not listed in; anything policy must enforce lives in the scripts instead.
@@ -56,17 +57,25 @@ const background = (work: Promise<unknown>): void => {
 
 const hasSurface = async ($: Engine) => (await $.session.surfaces()).length > 0
 
-async function say($: Engine, finding: Finding): Promise<void> {
-  if (finding.once !== undefined) {
-    const key = finding.once
-    let fresh = false
+/**
+ * One toast for everything one event has to say: the engine draws only a
+ * plugin's newest toast, so several raised together would drop all but one.
+ */
+function toast($: Engine, texts: readonly string[]): void {
+  if (texts.length > 0) $.ui.toast(texts.join(' · '), { timeoutMs: TOAST_MS })
+}
+
+/** Toasts the findings, each `once` key at most once per session. */
+async function say($: Engine, findings: readonly Finding[]): Promise<void> {
+  const once = findings.map(f => f.once).filter((k): k is string => k !== undefined)
+  let fresh: string[] = []
+  if (once.length > 0) {
     await update($, shownAtom, shown => {
-      fresh = !shown.includes(key)
-      return fresh ? [...shown, key] : shown
+      fresh = once.filter(k => !shown.includes(k))
+      return fresh.length > 0 ? [...shown, ...fresh] : shown
     })
-    if (!fresh) return
   }
-  $.ui.toast(finding.text, { timeoutMs: TOAST_MS })
+  toast($, findings.filter(f => f.once === undefined || fresh.includes(f.once)).map(f => f.text))
 }
 
 async function runScript($: Engine, argv: string[]) {
@@ -122,16 +131,18 @@ async function refresh($: Engine): Promise<void> {
     }
     let toasts: string[] = []
     await update($, seatsAtom, current => {
-      // A tool.call hook may have marked the command done while this poll ran.
+      // The tool.call hook owns when the command returned, and may have set it
+      // while this poll ran: the poll's older copy never overwrites it.
       const merged = current.map(s => {
         const r = readings.find(o => sameAttempt(o, s))
-        return r === undefined ? s : { ...r, commandDone: r.commandDone || s.commandDone }
+        return r === undefined ? s
+          : { ...r, returnedAt: s.returnedAt ?? r.returnedAt, commandDone: r.commandDone || s.commandDone }
       })
       const out = announcements(current, merged, now)
       toasts = out.toasts
       return out.seats
     })
-    for (const text of toasts) $.ui.toast(text, { timeoutMs: TOAST_MS })
+    toast($, toasts)
   } finally {
     polling = false
   }
@@ -155,20 +166,34 @@ function disarm(): void {
  * may be fixed and run again under the same id. Past MAX_SEATS the oldest
  * finished records go; an unfinished one is never dropped.
  */
-async function track($: Engine, seats: RouterSeat[]): Promise<RouterSeat[]> {
+async function track($: Engine, seats: RouterSeat[]): Promise<{ added: RouterSeat[]; replaced: RouterSeat[] }> {
+  const now = await $.clock.now()
+  // One attempt may appear twice in one command (`run a || run a`).
+  const unique = seats.filter((a, i) => seats.findIndex(b => sameAttempt(a, b)) === i)
   let added: RouterSeat[] = []
+  let replaced: RouterSeat[] = []
   await update($, seatsAtom, list => {
-    added = seats.filter(a => {
+    replaced = []
+    added = unique.filter(a => {
       const old = list.find(s => sameAttempt(a, s))
-      return old === undefined || (old.final && old.state === 'NO_RECEIPT')
+      if (old !== undefined && old.final && old.state === 'NO_RECEIPT') replaced.push(old)
+      return old === undefined || replaced.includes(old)
     })
     const kept = list.filter(s => !added.some(a => sameAttempt(a, s)))
-    const all = [...kept, ...added]
-    let excess = all.length - MAX_SEATS
-    return all.filter(s => !(excess > 0 && s.final && excess-- > 0))
+    return capped([...kept, ...added], now)
   })
   await reconcile($)
-  return added
+  return { added, replaced }
+}
+
+/** Past MAX_SEATS: plain finished records go first, then flagged ones; unfinished never. */
+function capped(all: RouterSeat[], now: number): RouterSeat[] {
+  let excess = all.length - MAX_SEATS
+  if (excess <= 0) return all
+  const order = [...all.filter(s => s.final && attention(s, now) === undefined), ...all.filter(s => s.final && attention(s, now) !== undefined)]
+  const drop = new Set(order.slice(0, excess))
+  excess = 0
+  return all.filter(s => !drop.has(s))
 }
 
 /** The route JSON a Bash call printed, read from stdout or (on a nonzero exit) the error text. */
@@ -189,7 +214,7 @@ async function syncCheck($: Engine, toast: boolean): Promise<RouterSyncReport> {
   const report = syncReport(r.stdout, r.exitCode, r.stderr, await $.clock.now())
   await update($, syncAtom, () => report)
   const notice = toast ? syncNotice(report) : undefined
-  if (notice !== undefined) await say($, { once: 'sync-notice', text: notice })
+  if (notice !== undefined) await say($, [{ once: 'sync-notice', text: notice }])
   return report
 }
 
@@ -249,29 +274,33 @@ export const register: Register = on => {
     if (home === undefined) home = await $.env.get('HOME')
     const runs = findDispatchRuns(command, home)
     let added: RouterSeat[] = []
+    let replaced: RouterSeat[] = []
+    let seated: { run: (typeof runs)[number]; seat: RouterSeat }[] = []
     if (runs.length > 0) {
       const cwd = await $.session.cwd()
       const now = await $.clock.now()
-      added = await track($, runs.map(run =>
-        newSeat(run, joinPath(cwd, ...run.cds, run.receiptDir), now, 'command')))
+      seated = runs.map(run => ({ run, seat: newSeat(run, joinPath(cwd, run.receiptDir), now, 'command') }))
+      ;({ added, replaced } = await track($, seated.map(p => p.seat)))
       // Hints wait for nothing on the call's path; `uname` runs at most once.
       background((async () => {
         const os = await detectPlatform($)
-        for (const run of runs) for (const f of dispatchFindings(run, os)) await say($, f)
+        await say($, runs.flatMap(run => dispatchFindings(run, os)))
       })())
     }
     const ran = await next(e)
     if (added.length > 0) {
       if (ran.deny !== undefined) {
-        // Refused before it ran: drop what this call added, nothing else.
-        await update($, seatsAtom, list => list.filter(s => !added.some(a => sameAttempt(a, s))))
+        // Refused before it ran: drop what this call added and put back what it replaced.
+        await update($, seatsAtom, list => [
+          ...list.filter(s => !added.some(a => sameAttempt(a, s))), ...replaced])
         await reconcile($)
       } else {
         const now = await $.clock.now()
         const backgrounded = e.run_in_background === true
           || (ran.isError !== true && ran.result?.backgroundTaskId !== undefined)
+        // Matched by attempt AND directory: one id may be dispatched twice in one call.
         const isDone = (s: RouterSeat) => !backgrounded
-          && runs.some(r => r.attemptId === s.attemptId && !r.background)
+          && seated.some(p => sameAttempt(p.seat, s) && !p.run.background)
         await update($, seatsAtom, list => list.map(s => (added.some(a => sameAttempt(a, s))
           ? { ...s, returnedAt: now, commandDone: s.commandDone || isDone(s) } : s)))
         background(refresh($))
@@ -280,7 +309,7 @@ export const register: Register = on => {
     if (ran.deny === undefined && callsRouteTask(command)) {
       const route = routeOf(ran)
       if (route !== undefined) {
-        for (const f of routeFindings(route, await $.session.model())) await say($, f)
+        await say($, routeFindings(route, await $.session.model()))
       }
     }
     return ran
@@ -299,15 +328,16 @@ export const register: Register = on => {
       const now = await $.clock.now()
       const seat = newSeat({ attemptId: id, seat: null, runtime: null, modelId: null, cli: null,
         deadlineSeconds: null, fingerprint: null }, joinPath(await $.session.cwd(), dir), now, 'manual')
-      const added = await track($, [seat])
+      const { added } = await track($, [seat])
       background(refresh($))
       return { text: added.length > 0 ? `Tracking ${id} in ${seat.receiptDir}.` : `Already tracking ${id} in ${seat.receiptDir}.` }
     }
     if (args[0] === 'clear') {
-      // A person asking to clear has seen what is flagged; unfinished seats stay.
+      // A person asking to clear has seen what is flagged. A seat that may still
+      // run stays; one that never wrote a receipt goes.
       let dropped = 0
       await update($, seatsAtom, list => {
-        const kept = list.filter(s => !s.final)
+        const kept = list.filter(s => !s.final && s.state !== 'NO_RECEIPT')
         dropped = list.length - kept.length
         return kept
       })

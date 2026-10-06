@@ -23,6 +23,13 @@ export const FAILURE_LIMIT = 3
 export const FAILING_FOR_MS = 120_000
 /** A claim sentinel with no receipt for this long has lost its supervisor. */
 export const CLAIM_STUCK_MS = 60_000
+/**
+ * A foreground call that returned with no receipt ends tracking only on a
+ * reading this long after the return: the supervisor writes its claim after
+ * preflight, and a call read as foreground may have backgrounded the dispatch
+ * in a way the reader cannot see (review i2).
+ */
+export const CONFIRM_MS = 15_000
 /** How long past `deadline_at` a RUNNING receipt reads as overdue (grace + KILL + confirmation). */
 export const OVERDUE_AFTER_MS = 120_000
 /** How long a finished attempt stays on the status line. */
@@ -104,15 +111,17 @@ export function applyStatus(seat: RouterSeat, reading: StatusReading, now: numbe
     // never started (a refusal before spawn). A call still running may not
     // have reached the dispatch yet; a backgrounded one gets a grace period,
     // then a flag, and polling ends only at the limit.
-    if (seat.commandDone) {
-      return finish(seat, now, 'NO_RECEIPT', { detail: 'the dispatch returned without a receipt (refused before spawn?)' })
-    }
+    // A recognized answer: the run of unreadable readings is over.
+    const read = { ...seat, failures: 0, failingSince: null }
     const waited = seat.returnedAt === null ? 0 : now - seat.returnedAt
-    if (waited > PENDING_LIMIT_MS) return finish(seat, now, 'NO_RECEIPT', { detail: 'no receipt appeared' })
-    if (waited > PENDING_GRACE_MS) {
-      return { ...inState(seat, 'NO_RECEIPT', now), detail: 'no receipt yet: check the dispatch output' }
+    if (seat.commandDone && waited >= CONFIRM_MS) {
+      return finish(read, now, 'NO_RECEIPT', { detail: 'the dispatch returned without a receipt (refused before spawn?)' })
     }
-    return { ...inState(seat, 'PENDING', now), detail: null }
+    if (waited > PENDING_LIMIT_MS) return finish(read, now, 'NO_RECEIPT', { detail: 'no receipt appeared' })
+    if (waited > PENDING_GRACE_MS) {
+      return { ...inState(read, 'NO_RECEIPT', now), detail: 'no receipt yet: check the dispatch output' }
+    }
+    return { ...inState(read, 'PENDING', now), detail: null }
   }
   if (reading.exitCode === 2 && said.includes('invalid completion receipt')) {
     return finish(seat, now, 'INVALID_RECEIPT', { detail: said })
@@ -228,9 +237,10 @@ export function statusLine(seats: readonly RouterSeat[], now: number): string | 
     const parts = shown.map((s, i) => `${attention(s, now) !== undefined ? '⚠ ' : ''}${named[i]} ${stateText(s, now)}`)
     return `seats: ${parts.join(' · ')}${flagged.length > 0 ? ' — /router-seats' : ''}`
   }
-  const running = shown.filter(s => !s.final).length
-  const done = shown.length - running
-  const parts = [`${running} running`, `${done} finished`]
+  // Three disjoint counts: a flagged seat is counted once, as needing a person.
+  const plain = shown.filter(s => attention(s, now) === undefined)
+  const running = plain.filter(s => !s.final).length
+  const parts = [`${running} running`, `${plain.length - running} finished`]
   if (flagged.length > 0) parts.push(`⚠ ${flagged.length} need a person`)
   return `seats: ${parts.join(' · ')} — /router-seats`
 }
