@@ -1,0 +1,4 @@
+{
+  "description": "deep-model-router, Claude Code only: a visibility mod (dispatched-seat status line and /router-seats pane, author-declaration warnings, model-sync notice with /router-sync). It changes no route, receipt or review floor; Codex and Grok load hooks/hooks.json, which does not list it.",
+  "modules": ["./mods/index.tsx"]
+}

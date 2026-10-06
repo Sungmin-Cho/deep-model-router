@@ -288,7 +288,9 @@ claude -p --model <id> \
 ```
 
 Also a separate process with a fresh session. `--effort` is required: without
-it the band's level does not cross the bridge.
+it the band's level does not cross the bridge. Do not add `--bare`: it skips
+the keychain, so a subscription login reads as `Not logged in` (Claude Code
+2.1.291, 2026-10-06) and the seat fails before it reviews anything.
 
 **To xai models:** the same seat strings as above — argv does not depend on
 the host. Verification does: the seat probes ran from a Claude Code host, so
@@ -811,6 +813,14 @@ expiry means TERM, a grace period, KILL, then confirmation of the whole
 process group. `TERMINATION_UNCONFIRMED` blocks every write-capable retry:
 re-route with `route_task.py --flags termination_unconfirmed` and the
 route holds for a human.
+
+**A sleeping machine enforces no deadline.** On a laptop, idle sleep freezes
+the child and its supervisor together: the receipt stays `RUNNING` long past
+`deadline_at`, and once the supervisor is gone `status` reports it `orphaned`
+or `stale`. On macOS, wrap a dispatch that may outlast the idle timer in
+`caffeinate -i` (it does not prevent lid-close sleep). A receipt still
+`RUNNING` well past its deadline is a cue to check for sleep or a dropped
+network before anything else, then `cancel` it.
 
 ### Invoking the supervisor
 

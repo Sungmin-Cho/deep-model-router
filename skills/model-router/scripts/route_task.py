@@ -3133,6 +3133,33 @@ def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
     return seats
 
 
+def _seated_host_note(task: Task, result: dict) -> str | None:
+    """The declared host model holds a review seat and no author is declared
+    (issue #53). Advisory only: the seats stay as routed, because the router
+    never infers authorship from the host — the note says so, so a host that
+    wrote the work can declare itself and route again. Every runtime gets it;
+    the Claude Code mod repeats the check against the session's real model."""
+    host = (task._host_seat or {}).get("model")
+    if not host or result["terminal"] is not None:
+        return None
+    if task._review_context is not None or task._implementer is not None:
+        return None
+    seats = result.get("dispatch_seats")
+    if seats is None:
+        rv = result["review"]
+        seats = [{"seat": f"reviewer-{i + 1}", "model_id": m}
+                 for i, m in enumerate(rv["reviewer_models"])]
+        if rv["judge_model"]:
+            seats.append({"seat": "judge", "model_id": rv["judge_model"]})
+    hits = [s["seat"] for s in seats if s["model_id"] == host]
+    if not hits:
+        return None
+    return (f"host model {host} is seated as {', '.join(hits)} and no author is declared: "
+            "if this session wrote the work under review, declare it (implementer.model_id, "
+            "or review_context.author_model_ids for a REVIEW task) and route again; the "
+            "router never infers authorship from the host")
+
+
 def _same_model_retry(task: Task, policy: Policy, cfg: dict, history_note: str | None,
                       budget_spent: bool) -> tuple[str, str, str] | None:
     """(role, model, effort) when a capability failure may be retried on the
@@ -3397,6 +3424,9 @@ def route(task: Task, cfg: dict | None = None, *,
             "implementer is caller-declared: the worker seat already executed, so dispatch "
             "only dispatch_seats; review independence relies on this declaration, which the "
             "router does not authenticate")
+    seated_host = _seated_host_note(task, result)
+    if seated_host is not None:
+        result["notes"].append(seated_host)
     if task._attempt_outcomes is not None:
         history = task._attempt_outcomes
         result["attempt_outcomes"] = [dict(row) for row in history]

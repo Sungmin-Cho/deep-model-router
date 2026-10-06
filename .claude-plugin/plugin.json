@@ -1,9 +1,11 @@
 {
   "name": "deep-model-router",
-  "version": "1.17.2",
+  "version": "1.18.0",
   "description": "Deterministic model/effort/review router for Claude Code, Codex, and Grok",
   "author": { "name": "Sungmin-Cho" },
   "repository": "https://github.com/Sungmin-Cho/deep-model-router.git",
   "license": "MIT",
-  "keywords": ["routing", "model-selection", "review-policy", "harness"]
+  "keywords": ["routing", "model-selection", "review-policy", "harness"],
+  "hooks": "./hooks/hooks.claude.json",
+  "types": "./types/index.d.ts"
 }

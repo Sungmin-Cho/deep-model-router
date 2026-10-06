@@ -167,6 +167,11 @@ history IDs, exclude those IDs only; `author_families` additionally excludes
 whole provider families. All executable seats for this REVIEW task are filtered,
 including its lead reviewer, peer reviewers and judge. The actual
 host remains advisory and is never used to infer who wrote the source artifact.
+When the declared host model (`--host-model`, `host_seat`) holds one of the
+route's review seats and neither `review_context` nor `implementer` is
+declared, the route adds a note that says so and leaves every seat where it
+is: the host may be orchestrating someone else's work. A host that wrote the
+work declares itself and routes again.
 
 The context is normalized and included in request identity and the decision
 fingerprint. Changing the target or authors changes that identity. Omitted/null

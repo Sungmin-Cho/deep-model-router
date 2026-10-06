@@ -18,10 +18,19 @@ skills/model-router/
   scripts/dispatch_agent.py
   references/
   tests/
+hooks/hooks.json          # SessionStart tick, shared by Claude Code and Codex
+hooks/hooks.claude.json   # Claude Code only: names the one mod module
+hooks/mods/               # the Claude Code mod (TypeScript) and its tests
+types/index.d.ts          # the mod's $.state contract
 ```
 
 Every path in the skill is `$SKILL_DIR`-relative. `$SKILL_DIR` is the
 directory that contains `SKILL.md`.
+
+The mod under `hooks/mods/` is a Claude Code visibility layer: it never
+changes a route, a receipt or a review floor. A check every host needs goes
+in the scripts. Keep `modules` out of `hooks/hooks.json` (Codex loads that
+file, and a plugin gets one module).
 
 ## Invocation
 
@@ -42,4 +51,5 @@ plugin cache. See `docs/locator.md`.
 ```bash
 python3 -m pytest skills/model-router/tests/ -q
 claude plugin validate .
+claude plugin test .        # the mod's hooks/mods/tests/*.test.ts
 ```
