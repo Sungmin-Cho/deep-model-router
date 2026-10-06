@@ -66,7 +66,9 @@ function toast($: Engine, texts: readonly string[]): void {
 }
 
 /** Toasts the findings, each `once` key at most once per session. */
-async function say($: Engine, findings: readonly Finding[]): Promise<void> {
+async function say($: Engine, all: readonly Finding[]): Promise<void> {
+  // A once-only hint raised twice in one batch is still said once.
+  const findings = all.filter((f, n) => f.once === undefined || all.findIndex(g => g.once === f.once) === n)
   const once = findings.map(f => f.once).filter((k): k is string => k !== undefined)
   let fresh: string[] = []
   if (once.length > 0) {
@@ -134,7 +136,9 @@ async function refresh($: Engine): Promise<void> {
       // The tool.call hook owns when the command returned, and may have set it
       // while this poll ran: the poll's older copy never overwrites it.
       const merged = current.map(s => {
-        const r = readings.find(o => sameAttempt(o, s))
+        // Only into the record the poll read: a record put back by a denied
+        // retry, or replaced meanwhile, is another one (review i3).
+        const r = readings.find(o => sameAttempt(o, s) && o.trackedAt === s.trackedAt && !s.final)
         return r === undefined ? s
           : { ...r, returnedAt: s.returnedAt ?? r.returnedAt, commandDone: r.commandDone || s.commandDone }
       })
@@ -188,11 +192,10 @@ async function track($: Engine, seats: RouterSeat[]): Promise<{ added: RouterSea
 
 /** Past MAX_SEATS: plain finished records go first, then flagged ones; unfinished never. */
 function capped(all: RouterSeat[], now: number): RouterSeat[] {
-  let excess = all.length - MAX_SEATS
+  const excess = all.length - MAX_SEATS
   if (excess <= 0) return all
   const order = [...all.filter(s => s.final && attention(s, now) === undefined), ...all.filter(s => s.final && attention(s, now) !== undefined)]
   const drop = new Set(order.slice(0, excess))
-  excess = 0
   return all.filter(s => !drop.has(s))
 }
 
@@ -333,8 +336,9 @@ export const register: Register = on => {
       return { text: added.length > 0 ? `Tracking ${id} in ${seat.receiptDir}.` : `Already tracking ${id} in ${seat.receiptDir}.` }
     }
     if (args[0] === 'clear') {
-      // A person asking to clear has seen what is flagged. A seat that may still
-      // run stays; one that never wrote a receipt goes.
+      // A person asking to clear has seen what is flagged: finished seats go, and
+      // so do seats that never wrote a receipt (even one still polled). A seat
+      // that has a receipt and has not finished stays.
       let dropped = 0
       await update($, seatsAtom, list => {
         const kept = list.filter(s => !s.final && s.state !== 'NO_RECEIPT')
@@ -342,7 +346,7 @@ export const register: Register = on => {
         return kept
       })
       await reconcile($)
-      return { text: `Cleared ${dropped} finished seat(s).` }
+      return { text: `Cleared ${dropped} finished or never-started seat(s).` }
     }
     await $.ui.open({ id: SEATS_PANE, title: 'Router seats' })
     background(refresh($))

@@ -32,7 +32,18 @@ const SPECIAL_PARAM = /[0-9?#@*!$-]/
 
 /** Splits a command into simple commands (`;`, `&&`, `||`, `|`, `&`, newline, parentheses). */
 export function segments(command: string): Segment[] {
+  return scan(command).segments
+}
+
+/**
+ * The simple commands, and whether the command holds a construct whose words
+ * this reader cannot place: an array literal (`CMD=( … )`) or a function
+ * definition (`f() …`), read from the shell syntax itself, so quoted text and
+ * heredoc bodies never count.
+ */
+export function scan(command: string): { segments: Segment[]; opaque: boolean } {
   const out: Segment[] = []
+  let opaque = false
   let words: Word[] = []
   let text = ''
   let inWord = false
@@ -204,11 +215,18 @@ export function segments(command: string): Segment[] {
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i += 1; continue }
     if (c === ';') { endSegment(); i += command[i + 1] === ';' ? 2 : 1; continue }
     if (c === '(' && inWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(text)) {
-      // An array literal (`CMD=( … )`) holds words, not a command to run.
+      // An array literal (`CMD=( … )`) holds words, not a command to run, and
+      // its end is not certain to this reader (quotes inside substitutions).
+      opaque = true
       i += 1
       skipBalanced('(', ')')
       text += COMPLEX
       continue
+    }
+    if (c === '(' && inWord && !text.includes(MARK) && !text.includes('=') && /^\s*\)/.test(command.slice(i + 1))) {
+      // `name()` (any name bash takes, `ns.f` included): a function definition,
+      // whose body runs only if called.
+      opaque = true
     }
     if (c === '(' || c === ')') {
       endSegment()
@@ -292,7 +310,7 @@ export function segments(command: string): Segment[] {
     i += 1
   }
   endSegment()
-  return out
+  return { segments: out, opaque }
 }
 
 /** True when the word holds an expansion this module cannot resolve. */
@@ -348,25 +366,35 @@ const valueOf = (text: string | undefined, home: string | undefined) =>
  */
 export function findDispatchRuns(command: string, homeDir?: string): DispatchRun[] {
   const runs: DispatchRun[] = []
-  // A function definition's body runs only when called, perhaps never: a command
-  // that defines one is not read at all (review i2).
-  if (/(^|[\s;&|(])(function\s+[A-Za-z_][\w-]*|[A-Za-z_][\w-]*\s*\(\s*\))\s*[{(]/.test(command)) return runs
-  // Whether the shell may have left its starting directory before this point.
+  // Where the shell is before each command, as far as this reader can say.
   // Following `cd` through conditions, groups, subshells, background lists and
-  // symbolic links is a shell's job, not this reader's: after any directory
-  // change a relative receipt directory is left untracked (review i2).
+  // symbolic links is a shell's job, not this reader's: after a directory
+  // change a relative receipt directory is left untracked (review i2). The one
+  // exception is the common opening `cd /absolute/dir && …` of a command with
+  // no background list: an absolute literal with no `..`, run first, in the
+  // shell itself (review i3).
   let moved = false
-  const all = segments(command)
+  let base: string | undefined
+  const scanned = scan(command)
+  const all = scanned.segments
+  // A function body runs only if called; an array literal holds words. A command
+  // with either is not read at all (reviews i2, i3).
+  if (scanned.opaque || all.some(seg => seg.words[0]?.text === 'function')) return runs
   // A list ended by `&` anywhere (`( … ) &`, `run | tee log &`, `{ …; } &`) may
   // hold the dispatch; the reader cannot tell which, so none counts as waited for.
   const anyBackground = all.some(seg => seg.background)
   // A command that reassigns HOME (`HOME=/x python3 …`, `export HOME=…`) makes `~` unknowable.
   const home = all.some(seg => seg.words.some(w => /^HOME=/.test(w.text))) ? undefined : homeDir
+  const first = all[0]?.words.map(w => w.text) ?? []
+  if (first[0] === 'cd' && first.length === 2 && !anyBackground && all[0]!.depth === 0 && !all[0]!.piped) {
+    const dir = valueOf(first[1], home)
+    if (dir !== undefined && dir.startsWith('/') && !dir.split('/').includes('..')) base = dir
+  }
   for (const seg of all) {
     const words = seg.words.map(w => w.text)
     const lead = words.findIndex(w => !KEYWORDS.has(w) && !ASSIGNMENT.test(w))
     if (lead !== -1 && DIRECTORY_CHANGERS.has(basename(words[lead]!))) {
-      moved = true
+      if (!(seg === all[0] && base !== undefined)) moved = true
       continue
     }
     const at = words.findIndex(w => basename(w) === 'dispatch_agent.py')
@@ -390,6 +418,7 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
     if (attemptId === undefined || !ATTEMPT_ID.test(attemptId)) continue
     if (receiptDir === undefined || receiptDir === '') continue
     if (moved && !receiptDir.startsWith('/')) continue
+    const located = receiptDir.startsWith('/') || base === undefined ? receiptDir : `${base}/${receiptDir}`
     const deadline = Number(valueOf(opts.get('--deadline-seconds'), undefined))
     const plain = (name: string) => {
       const v = valueOf(opts.get(name), undefined)
@@ -398,7 +427,7 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
     const childPlain = child.map(w => resolveWord(w, home) ?? w.replaceAll(MARK, ''))
     runs.push({
       attemptId,
-      receiptDir,
+      receiptDir: located,
       seat: plain('--seat'),
       runtime: plain('--runtime'),
       modelId: plain('--model-id'),
@@ -414,7 +443,7 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
 }
 
 /** Commands that may change the shell's directory (`eval`, `source` and `.` may run a `cd`). */
-const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd', 'builtin', 'eval', 'source', '.'])
+const DIRECTORY_CHANGERS = new Set(['cd', 'chdir', 'pushd', 'popd', 'builtin', 'command', 'eval', 'source', '.'])
 /** Words that put the next word in command position. */
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time'])
 

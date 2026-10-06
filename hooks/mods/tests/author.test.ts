@@ -104,6 +104,15 @@ describe('author-declaration check', () => {
     expect(w.toasts.filter(t => t.includes('caffeinate'))).toHaveLength(1)
   })
 
+  test('two long dispatches in one call give the caffeinate hint once (review i3)', async ($, on) => {
+    const w = world(on, { platform: 'Darwin', proc: () => receipt('r1-sol', 'RUNNING') })
+    await startSession($)
+    const bare = DISPATCH.replace('caffeinate -i ', '')
+    await $.tool.call({ tool: 'Bash', command: `${bare} &\n${bare.replace('r1-sol', 'r2-sol')} &`, run_in_background: true })
+    expect(w.toasts).toHaveLength(1)
+    expect(w.toasts[0]!.match(/caffeinate -i/g)).toHaveLength(1)
+  })
+
   test('no caffeinate hint off macOS', async ($, on) => {
     const w = world(on, { platform: 'Linux', proc: () => receipt('r1-sol', 'RUNNING') })
     await startSession($)

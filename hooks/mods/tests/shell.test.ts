@@ -70,14 +70,22 @@ describe('shell reading', () => {
   test('after any directory change, a relative receipt dir is left untracked (review i2)', () => {
     const run = 'python3 dispatch_agent.py run --attempt-id a --receipt-dir r -- x'
     for (const command of [
-      `cd sub && ${run}`, `(cd /other); ${run}`, `cd /other & ${run}`, `cd /other && true & ${run}`,
+      `cd sub && ${run}`, `(cd /other); ${run}`, `true; cd /other && ${run}`, `cd /other & ${run}`, `cd /other && true & ${run}`,
       `pushd sub && ${run}`, `if false; then :; cd /other; fi; ${run}`, `cd /var; cd ..; ${run}`,
       `source env.sh; ${run}`, `. ./env.sh && ${run}`, `eval "$SETUP"; ${run}`, `builtin cd x; ${run}`,
+      `command cd /tmp; ${run}`,
     ]) {
       expect(findDispatchRuns(command), command).toEqual([])
     }
     // An absolute receipt directory does not depend on any of that.
     expect(findDispatchRuns(`cd /other && ${run.replace('--receipt-dir r', '--receipt-dir /abs')}`)).toHaveLength(1)
+    // The common opening `cd /absolute && …` is followed (review i3); not with `..`, a later cd, or a background list.
+    expect(findDispatchRuns(`cd /abs/repo && ${run}`)[0]!.receiptDir).toBe('/abs/repo/r')
+    expect(findDispatchRuns(`cd ~/repo && ${run}`, '/h')[0]!.receiptDir).toBe('/h/repo/r')
+    for (const command of [`cd /abs/../x && ${run}`, `cd /abs && cd sub && ${run}`, `cd /abs && ${run} &`, `cd rel && ${run}`, `chdir /abs; ${run}`]) {
+      expect(findDispatchRuns(command), command).toEqual([])
+    }
+    expect(findDispatchRuns(`cd /abs; ns.f() { ${run}; }`)).toEqual([])
     // A directory change after the dispatch, or a path that merely ends in cd, changes nothing.
     expect(findDispatchRuns(`${run}; cd /other`)).toHaveLength(1)
     expect(findDispatchRuns(run.replace('-- x', '--child-cwd /w/cd -- x'))).toHaveLength(1)
@@ -102,6 +110,12 @@ describe('shell reading', () => {
     expect(findDispatchRuns(`CMD+=(${tail})`)).toEqual([])
     expect(findDispatchRuns(`d() { echo; ${tail}; }`)).toEqual([])
     expect(findDispatchRuns(`function d { ${tail}; }`)).toEqual([])
+    // Nested quotes inside an array literal, a compound function body (review i3).
+    expect(findDispatchRuns(`CMD=("$(echo ")")" ${tail}); echo defined`)).toEqual([])
+    expect(findDispatchRuns(`f()\nif true; then\n${tail}\nfi`)).toEqual([])
+    // Function-like text in quotes or a heredoc is data, not a definition (review i3).
+    expect(findDispatchRuns("python3 dispatch_agent.py run --attempt-id a --receipt-dir /abs -- claude -p 'Review function f() { return 1; }'")).toHaveLength(1)
+    expect(findDispatchRuns(`cat <<'EOF' > p.txt\nf() { :; }\nEOF\n${tail}`)).toHaveLength(1)
     // A grouped or subshelled dispatch backgrounded as a whole is not waited for.
     expect(findDispatchRuns(`( ${tail} ) &`)[0]!.background).toBe(true)
     expect(findDispatchRuns(`${tail} 2>&1 | tee log &`)[0]!.background).toBe(true)

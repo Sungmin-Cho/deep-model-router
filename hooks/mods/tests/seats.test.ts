@@ -68,7 +68,7 @@ describe('seat tracker', () => {
     await w.clock.advance(15 * 60_000)
     expect(w.statuses.at(-1)).toMatch(/^seats: ⚠ codex·model-sol TERMINATION_UNCONFIRMED/)
     const cleared = await $.command.run(command('router-seats', 'clear'))
-    expect(cleared.text).toBe('Cleared 1 finished seat(s).')
+    expect(cleared.text).toBe('Cleared 1 finished or never-started seat(s).')
     expect(w.statuses.at(-1)).toBeUndefined()
   })
 
@@ -191,7 +191,7 @@ describe('seat tracker', () => {
     const bad = await $.command.run(command('router-seats', 'add receipts ../x'))
     expect(bad.text).toMatch(/^Usage/)
     const cleared = await $.command.run(command('router-seats', 'clear'))
-    expect(cleared.text).toBe('Cleared 1 finished seat(s).')
+    expect(cleared.text).toBe('Cleared 1 finished or never-started seat(s).')
     expect(w.statuses.at(-1)).toBeUndefined()
   })
 
@@ -399,7 +399,7 @@ describe('seat tracker', () => {
     await w.clock.settle()
     expect(w.statuses.at(-1)).toBe('seats: ⚠ codex·model-sol NO_RECEIPT — /router-seats')
     // Clearing drops a seat that never wrote a receipt.
-    expect((await $.command.run(command('router-seats', 'clear'))).text).toBe('Cleared 1 finished seat(s).')
+    expect((await $.command.run(command('router-seats', 'clear'))).text).toBe('Cleared 1 finished or never-started seat(s).')
     expect(w.statuses.at(-1)).toBeUndefined()
   })
 
