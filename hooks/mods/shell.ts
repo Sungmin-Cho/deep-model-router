@@ -24,6 +24,8 @@ export type Segment = {
   depth: number
   /** Feeds a pipe (`|`), or is fed by one: either way it runs in a subshell. */
   piped: boolean
+  /** The operator that ended it: `&&`, `||`, `;`, `&`, `|`, a newline or parenthesis, or '' at the end. */
+  endedBy: string
 }
 
 const NAME_START = /[A-Za-z_]/
@@ -63,10 +65,13 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
     text = ''
     inWord = false
   }
-  const endSegment = (background = false, pipe = false) => {
+  const endSegment = (background = false, pipe = false, endedBy = '') => {
     endWord()
+    // `name ()` with a space: a function definition too (review i4).
+    if (endedBy === '(' && words.length === 1 && !words[0]!.text.includes(MARK) && !words[0]!.text.includes('=')
+      && /^\s*\)/.test(command.slice(i + 1))) opaque = true
     skipNext = false
-    if (words.length > 0) out.push({ words, background, depth: segDepth, piped: pipe || fedByPipe })
+    if (words.length > 0) out.push({ words, background, depth: segDepth, piped: pipe || fedByPipe, endedBy })
     // `( … ) &`: the `&` follows the closing parenthesis, after the last inner segment.
     else if (background && out.length > 0) out[out.length - 1]!.background = true
     words = []
@@ -207,13 +212,13 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
       continue
     }
     if (c === '\n') {
-      endSegment()
+      endSegment(false, false, '\n')
       i += 1
       takeHeredocs()
       continue
     }
     if (c === ' ' || c === '\t' || c === '\r') { endWord(); i += 1; continue }
-    if (c === ';') { endSegment(); i += command[i + 1] === ';' ? 2 : 1; continue }
+    if (c === ';') { endSegment(false, false, ';'); i += command[i + 1] === ';' ? 2 : 1; continue }
     if (c === '(' && inWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(text)) {
       // An array literal (`CMD=( … )`) holds words, not a command to run, and
       // its end is not certain to this reader (quotes inside substitutions).
@@ -229,7 +234,7 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
       opaque = true
     }
     if (c === '(' || c === ')') {
-      endSegment()
+      endSegment(false, false, c)
       depth = Math.max(0, depth + (c === '(' ? 1 : -1))
       segDepth = depth
       i += 1
@@ -237,13 +242,13 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
     }
     if (c === '|') {
       const or = command[i + 1] === '|'
-      endSegment(false, !or)
+      endSegment(false, !or, or ? '||' : '|')
       i += or || command[i + 1] === '&' ? 2 : 1
       continue
     }
     if (c === '&') {
       const d = command[i + 1]
-      if (d === '&') { endSegment(); i += 2; continue }
+      if (d === '&') { endSegment(false, false, '&&'); i += 2; continue }
       if (d === '>') {
         // `&>` / `&>>`: a redirection, its target the next word.
         endWord()
@@ -251,7 +256,7 @@ export function scan(command: string): { segments: Segment[]; opaque: boolean } 
         skipNext = true
         continue
       }
-      endSegment(true)
+      endSegment(true, false, '&')
       i += 1
       continue
     }
@@ -379,22 +384,27 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
   const all = scanned.segments
   // A function body runs only if called; an array literal holds words. A command
   // with either is not read at all (reviews i2, i3).
-  if (scanned.opaque || all.some(seg => seg.words[0]?.text === 'function')) return runs
+  if (scanned.opaque || all.some(seg => seg.words.find(w => !KEYWORDS.has(w.text))?.text === 'function')) return runs
   // A list ended by `&` anywhere (`( … ) &`, `run | tee log &`, `{ …; } &`) may
   // hold the dispatch; the reader cannot tell which, so none counts as waited for.
   const anyBackground = all.some(seg => seg.background)
   // A command that reassigns HOME (`HOME=/x python3 …`, `export HOME=…`) makes `~` unknowable.
   const home = all.some(seg => seg.words.some(w => /^HOME=/.test(w.text))) ? undefined : homeDir
   const first = all[0]?.words.map(w => w.text) ?? []
-  if (first[0] === 'cd' && first.length === 2 && !anyBackground && all[0]!.depth === 0 && !all[0]!.piped) {
+  if (first[0] === 'cd' && first.length === 2 && !anyBackground && all[0]!.depth === 0 && !all[0]!.piped
+    && all[0]!.endedBy === '&&') {
     const dir = valueOf(first[1], home)
     if (dir !== undefined && dir.startsWith('/') && !dir.split('/').includes('..')) base = dir
   }
-  for (const seg of all) {
+  // The opening `cd` holds for a segment only along an unbroken `&&` chain from
+  // it: there the segment runs only if the `cd` succeeded (review i4).
+  let chained = base !== undefined
+  for (const [index, seg] of all.entries()) {
     const words = seg.words.map(w => w.text)
     const lead = words.findIndex(w => !KEYWORDS.has(w) && !ASSIGNMENT.test(w))
-    if (lead !== -1 && DIRECTORY_CHANGERS.has(basename(words[lead]!))) {
-      if (!(seg === all[0] && base !== undefined)) moved = true
+    if (index > 0 && all[index - 1]!.endedBy !== '&&') chained = false
+    if (lead !== -1 && changesDirectory(words.slice(lead))) {
+      if (index > 0 || base === undefined) moved = true
       continue
     }
     const at = words.findIndex(w => basename(w) === 'dispatch_agent.py')
@@ -418,6 +428,7 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
     if (attemptId === undefined || !ATTEMPT_ID.test(attemptId)) continue
     if (receiptDir === undefined || receiptDir === '') continue
     if (moved && !receiptDir.startsWith('/')) continue
+    if (base !== undefined && !chained && !receiptDir.startsWith('/')) continue
     const located = receiptDir.startsWith('/') || base === undefined ? receiptDir : `${base}/${receiptDir}`
     const deadline = Number(valueOf(opts.get('--deadline-seconds'), undefined))
     const plain = (name: string) => {
@@ -443,7 +454,22 @@ export function findDispatchRuns(command: string, homeDir?: string): DispatchRun
 }
 
 /** Commands that may change the shell's directory (`eval`, `source` and `.` may run a `cd`). */
-const DIRECTORY_CHANGERS = new Set(['cd', 'chdir', 'pushd', 'popd', 'builtin', 'command', 'eval', 'source', '.'])
+const DIRECTORY_CHANGERS = new Set(['cd', 'chdir', 'pushd', 'popd', 'eval', 'source', '.'])
+
+/**
+ * Whether a simple command (from its command word on) may change the shell's
+ * directory. `command` and `builtin` count only when they run a `cd`-like
+ * word; `command -v x` looks something up and changes nothing (review i4).
+ */
+function changesDirectory(words: readonly string[]): boolean {
+  const name = basename(words[0] ?? '')
+  if (name === 'command' || name === 'builtin') {
+    if (words.slice(1).some(w => w === '-v' || w === '-V')) return false
+    const wrapped = words.slice(1).find(w => !w.startsWith('-'))
+    return wrapped !== undefined && DIRECTORY_CHANGERS.has(basename(wrapped))
+  }
+  return DIRECTORY_CHANGERS.has(name)
+}
 /** Words that put the next word in command position. */
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', '{', 'time'])
 

@@ -122,6 +122,25 @@ describe('shell reading', () => {
     expect(findDispatchRuns(`${tail} 2>&1 | tee log`)[0]!.background).toBe(false)
   })
 
+  test('the round-4 reproductions (both reviewers)', () => {
+    const run = 'python3 dispatch_agent.py run --attempt-id a --receipt-dir /abs -- x'
+    // Function definitions with a space before `()`, and `function` after a keyword.
+    for (const command of [
+      `f () {\n  ${run}\n}`, `f () { :; ${run}; }`, `f ( )\n{ ${run}; }`, `if true; then function f { :; ${run}; }; fi`,
+    ]) expect(findDispatchRuns(command), command).toEqual([])
+    // The opening cd counts only along an unbroken && chain to the dispatch.
+    const rel = run.replace('--receipt-dir /abs', '--receipt-dir receipts')
+    for (const command of [
+      `cd /missing || ${rel}`, `cd /missing && true; ${rel}`, `cd /abs; ${rel}`, `cd /abs && true || ${rel}`,
+    ]) expect(findDispatchRuns(command), command).toEqual([])
+    expect(findDispatchRuns(`cd /abs && true && ${rel}`)[0]!.receiptDir).toBe('/abs/receipts')
+    // `command -v` looks up; `command cd` moves.
+    expect(findDispatchRuns(`command -v codex >/dev/null && ${rel}`)[0]!.receiptDir).toBe('receipts')
+    expect(findDispatchRuns(`cd /abs && command -v codex && ${rel}`)[0]!.receiptDir).toBe('/abs/receipts')
+    expect(findDispatchRuns(`command cd /tmp; ${rel}`)).toEqual([])
+    expect(findDispatchRuns(`builtin cd /tmp && ${rel}`)).toEqual([])
+  })
+
   test('a command substitution with quotes inside it stays one word', () => {
     const [run] = findDispatchRuns('python3 dispatch_agent.py run --attempt-id a --receipt-dir /r --seat "$(echo ")")" -- x')
     expect(run).toMatchObject({ attemptId: 'a', receiptDir: '/r', seat: null })
