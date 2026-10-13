@@ -121,8 +121,17 @@ def test_the_floor_tables_did_not_move():
     mod = load_baseline()
     old, new = baseline_cfg(mod), live.load_config()
     for key in ("worker_selection", "effort_by_work",
-                "role_tiers", "effort_map", "worker_balanced_selection"):
+                "role_tiers", "worker_balanced_selection"):
         assert new[key] == old[key], key
+    # `effort_map` is keyed by family, so a family the registry gains adds a
+    # key. Every family 1.12.1 had keeps its map exactly; a NEW family is
+    # allowed only where ADDED_FAMILIES names it — an undeclared family, or an
+    # edit to an existing family's spelling, fails here.
+    assert {f: m for f, m in new["effort_map"].items() if f in old["effort_map"]} \
+        == old["effort_map"], "effort_map"
+    assert set(new["effort_map"]) - set(old["effort_map"]) == set(ADDED_FAMILIES), "effort_map"
+    assert {m["family"] for m in new["models"].values()} - set(old["effort_map"]) \
+        == set(ADDED_FAMILIES), "models"
     # `review` is the table Part B changes on purpose (U-1). It is held to the
     # 1.16.1 snapshot plus exactly the edits each rule declares below
     # (plan B4, design DD-B11) — an edit no rule names fails here.
@@ -164,6 +173,12 @@ def test_the_floor_tables_did_not_move():
         # an earlier id, or pointing it at one the chain never names, fails.
         assert historical["id"] in chain, (key, historical["id"], chain)
         assert new["models"][now]["id"] == chain[-1], (key, chain)
+
+
+# Families the registry gained after 1.12.1, each with the release that added
+# it (design 2026-10-13 DD-7). A literal on purpose: derived from the registry,
+# it would accept any family the registry happens to hold.
+ADDED_FAMILIES = {"meta": "1.19.0"}
 
 
 # Each deliberate edit to a pinned model field: `<key>@<id>` -> {field: value},

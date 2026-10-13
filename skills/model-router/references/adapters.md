@@ -35,7 +35,7 @@ Before the first route in a session, establish what you can actually invoke:
 ```yaml
 capabilities:
   runtime: claude_code | codex | grok | unknown
-  available_families: [claude, openai, xai]
+  available_families: [claude, openai, xai, meta]
   available_models: []          # resolved ids only
   effort_control: native | approximate | none
   effort_values: []             # values the CLI actually accepts
@@ -129,6 +129,24 @@ MAX:       xhigh      # unreachable: the clamp runs before this lookup and
                       # the only xai model's ceiling is VERY_HIGH
 ```
 
+### meta family
+
+Accepted values: `minimal | low | medium | high | xhigh | max` for the seated
+model (the account catalogue lists exactly these; each round-tripped). The CLI
+refuses `none` for this provider before any request is sent, and its `ultra`
+is not a tier the catalogue lists, so neither is mapped.
+
+```yaml
+MINIMAL:   minimal
+LOW:       low
+MEDIUM:    medium
+HIGH:      high
+VERY_HIGH: xhigh
+MAX:       max
+```
+
+Set it with `--reasoning-effort <value>`.
+
 ### When effort control is unavailable
 
 If `effort_control: none`, approximate in this order of preference:
@@ -154,6 +172,9 @@ Verification is per direction, not a blanket "the bridges work":
   host) — verified (darwin grok host, 2026-08-29; see the ledger)
 - Codex → xai — assumed (same mechanism, the hosted direction was not
   probed)
+- Claude Code → meta (the muse reviewer seat profile) — verified. Codex and
+  grok hosts are not offered this family at all: no transport entry, and no
+  fallback list on those runtimes names it
 
 **Passing the prompt.** A reviewer's prompt contains the diff, and diffs
 contain quotes, backticks, `$`, and newlines. Build argv programmatically —
@@ -243,6 +264,21 @@ the custom `dmr-maker-v1` profile, and `--expect-sandbox-enforced`. See
 "Grok seat profiles".
 
 Also a separate process with a fresh session.
+
+**To meta models:** the reviewer seat only — see "Muse seat profile" below.
+
+```bash
+muse exec --json --model <id> --reasoning-effort <native-effort> \
+    --contributor-mode off --permission-profile :read-only \
+    --disable-write --disable-shell --disable-web-tools \
+    --disable-reminders --no-foreign-personal-context --no-session-log \
+    --prompt-file /dev/stdin
+```
+
+There is no maker string: `write_verified` is false, so the router never
+seats this family where the work writes. Declare
+`--output-envelope muse-exec-jsonl-v1` to the supervisor; a `.to_meta`
+dispatch without it is refused before spawn.
 
 **Aliases float; the registry does not.** The Claude Code `Agent` tool takes
 only family aliases (`fable`, `opus`, `sonnet`, `haiku`) and always serves
@@ -574,6 +610,38 @@ over these two bridges as supervised separate processes with distinct
 receipt attempt ids; the native `--agents` surface remains outside that
 claim and a review built on it stays degraded.
 
+### Muse seat profile
+
+What each flag of the meta reviewer string is for, measured on Muse Code
+1.4.7 (macOS, 2026-10-13; the ledger rows name the attempts):
+
+- `--permission-profile :read-only --disable-write --disable-shell` remove the
+  write and shell tools outright. Asked to write a file or run a command, the
+  model reports it has no such tool and the turn still completes — nothing
+  waits on an approval. What remains is reading, searching, the CLI's own
+  memory and skill readers, a todo list, and a `workflow` tool whose child runs
+  inherit the read-only profile (asked to write through one, the child created
+  nothing). Reading is not confined to the workspace: like the claude and
+  codex reviewer seats, it can read any file the user can.
+- `--contributor-mode off`. A Muse Code subscription defaults to contributor
+  mode, in which the provider may use the content to train its models. The
+  stream reports the requested model id either way, so the mode is requested,
+  never attested — this flag is the whole control.
+- `--disable-reminders` drops the CLI's own reminder sub-agents;
+  `--no-foreign-personal-context` keeps the user's personal skills from other
+  agents (a 32 KB catalogue on the probing host) out of the prompt and out of
+  the provider's hands.
+- `--no-session-log` keeps no transcript on disk. It also rules out
+  `--session-id`, which needs a retained log, so the envelope's session id is
+  recorded and never cross-checked.
+- No argv flag stops the launcher's hourly self-update
+  (`MUSE_UPDATE_INTERVAL_SECONDS`), so the ledger records the CLI version a
+  probe ran on, and the envelope format is versioned: a changed stream shape
+  fails closed rather than grading under the old meaning.
+
+The receipt guard (`--receipt-guard darwin-sandbox-v1`) runs this seat
+cleanly: with the shell disabled, the CLI starts no nested sandbox.
+
 ### Confirming a transport
 
 Before setting `cross_provider: available`, confirm three things:
@@ -599,7 +667,7 @@ permission posture carries across.
 
 Layer B owns the time axis after a route is emitted. Every background
 dispatch that uses a subprocess/CLI bridge transport (`codex exec`,
-`claude -p`, `grok -p`) — worker or reviewer — runs under
+`claude -p`, `grok -p`, `muse exec`) — worker or reviewer — runs under
 `scripts/dispatch_agent.py`, which enforces the rules below. A foreground
 dispatch a human is actively watching may skip the supervisor; it may never
 skip the rules.
@@ -911,8 +979,9 @@ never grade its fragments.
 
 Stdout and stderr must be new paths: a pre-existing regular file, FIFO,
 symlink, or hardlink causes `START_FAILED` without spawning or truncation.
-Plain stdout and receipt reads, like envelope reads, are bounded to 4 MiB and
-refuse symlinks and nonregular files without blocking. Oversized or unreadable
+Plain stdout and receipt reads, like envelope reads, are bounded to 4 MiB (a
+`muse-exec-jsonl-v1` envelope to 16 MiB, below) and refuse symlinks and
+nonregular files without blocking. Oversized or unreadable
 plain stdout is invalid output; a nonregular receipt is not completion proof.
 
 **The envelope is a contract too, and it is graded first.** With
@@ -941,6 +1010,22 @@ declare it failed — and every reason that applies is reported, because the sto
 reason is what tells a recipe defect from a model failure.
 
 **Codex has two line-based formats.** `codex-exec-text-v1` (plain mode) grades stdout as the answer and records stderr evidence: the banner's `model:` as `header_model` (header-reported, not `served_models`), a `Model metadata for` warning as `metadata_warning`, and the footer as `footer_tokens_uncached` (it excludes cached input); `codex-exec-json-v1` (`--json`) parses JSONL by event name, requires a final `turn.completed`, fails on `turn.failed`/`error`, and records `turn.completed.usage` (total `input_tokens`) — that mode names no model anywhere.
+
+**Muse has one line-based format.** `muse-exec-jsonl-v1` parses `muse exec
+--json` JSONL by `payload_type`: every non-empty line must be an event, or the
+whole stream is `envelope_unparseable` (the launcher's own notices go to
+stderr, so a foreign stdout line is a CLI or recipe defect). The finishing
+record is the last `run.terminal.*` event and must be `run.terminal.completed`;
+any other terminal event anywhere is the stream's own failure report, so a
+completion after a failure does not pass. The verdict grammar applies to that
+terminal event's `payload.text` alone — the echoed prompt
+(`run.lifecycle.started`), the streamed `run.output.delta` chunks and every
+`tool.result` (the files the seat read) are never read as the answer, though
+each can carry a `verdict:` line. The stream has no token counts and no
+served-model record: the receipt keeps `run.model.configured`'s id as
+`configured_model`, the id the CLI was asked for, and leaves `served_models`
+null. The budget is 16 MiB, because the stream carries every file the seat
+read; over it is `evidence_oversized`, a recipe defect, not a model failure.
 
 **Both formats carry `usage`**, and the receipt's envelope carries it too, so a
 caller measuring boot or context cost reads the receipt instead of scraping the
@@ -1009,7 +1094,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `meta_worker_balanced` (seats that read), then `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1043,6 +1128,19 @@ entry. `codex.to_xai` carries the same argv but stays unverified for that
 host direction, so a Codex-hosted write route still will not name grok as
 the worker. No `--unavailable-models` route-around is needed for this, and
 none should be used for it: it withholds the model from the review seats too.
+
+**The meta seat reads, on Claude Code only.** `meta_worker_balanced` is bound
+to no role. It is the first fallback of `worker_balanced` on a Claude Code host,
+so it is seated wherever the xai seat does not resolve for the route: the
+caller withholds it, it failed, its family is exhausted or excluded by
+`allowed_families`, a `review_context` names xai as the author, or a `low` xai
+quota moves a read-only worker seat to the first same-tier model of another
+family. It never fills a seat that writes. Because the write requirement binds
+the whole role (above), a route whose worker writes from `worker_balanced`
+seats the claude model there and the meta model nowhere; that route gains the
+note `worker_balanced: no write-capable meta seat on claude_code; seated the
+claude one`. Where it does seat, it is a tier-1 seat of a fourth family:
+`model-profiles.md` ("The meta reviewer seat") lists what that changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The

@@ -103,8 +103,9 @@ delegation time — you have already paid for a fresh context window — so it
 should be made on merit.
 
 Not every bridge is verified in every direction. Claude Code → openai,
-Codex → claude, Claude Code → xai, grok → claude, and grok → openai have
-been probed. Codex → xai uses the same command and is recorded as assumed.
+Codex → claude, Claude Code → xai, grok → claude, grok → openai and Claude
+Code → meta have been probed. Codex → xai uses the same command and is
+recorded as assumed. The meta family is offered on Claude Code hosts only.
 A route that depends on an assumed edge still has to be invocable in the
 session that emits it — see `adapters.md`.
 
@@ -134,6 +135,58 @@ escalation still has a seat when `xai_frontier` is unreachable. Reaching for
 it by default would skip the xai step the ladder was just given.
 
 Degraded bindings for when a bridge is down are in `adapters.md`.
+
+### The meta reviewer seat
+
+`meta_worker_balanced` is a fourth family's tier-1 model, bound to no role. On
+a Claude Code host it is the first fallback of `worker_balanced`, through a
+read-only recipe and no write recipe, so it takes that role's seats that read
+whenever the xai seat does not resolve for the route (`adapters.md`, "The meta
+seat reads, on Claude Code only"). With the xai seat available, no route
+changes: a replay of 16,896 grid points, each routed fresh and after its own
+worker failed, moved none. Codex and grok hosts never seat it.
+
+**Its tier is provisional.** No eval in this repository has measured it.
+Third-party benchmarks put it level with the previous Sonnet generation —
+this registry's tier-1 anchor — and below the current Claude balanced seat, at
+roughly a sixth of that seat's cost per task. The ledger row "meta_worker_balanced
+tier evidence (external, not measured)" holds the figures. Until a measurement
+like the one below exists, read tier 1 as an assumption, and do not bind the
+seat to a role on it. While a caller withholds the xai seat, this seat is in
+effect the tier-1 cross-family seat on Claude Code; a caller who wants neither
+withholds this model's id as well (`--unavailable-models`, or an
+`allowed_families` list without `meta`).
+
+Where it seats, the same replay shows what changes. The counts are routes out
+of 33,792 per scenario:
+
+- **Read-only leads.** With the xai seat out, the lead of a REVIEW or an
+  INVESTIGATION route (its worker, which reads) moves from the Claude balanced
+  seat to this one (142 fresh routes, 30 retries). So does a REVIEW whose
+  declared author is the xai family (85), and an INVESTIGATION whose xai quota
+  reads `low` (87). Equal tier, but by outside numbers a weaker model. Its own
+  reviewer then only needs to be another family at tier 1, so on 69 of those
+  routes the OpenAI reasoning seat gives way to the Claude balanced seat. A
+  caller's read-only override does the same for a write class.
+- **A fourth family for review under scarcity.** When OpenAI or Claude is also
+  exhausted, the router gains a cross-family reviewer on 3,125 and 5,762
+  routes respectively. It gains it by the existing rules: the lowest tier that
+  meets the floor, cross-family first. So this tier-1 seat takes review seats a
+  same-family tier-2 or tier-3 model held (Claude senior 310, OpenAI reasoning
+  64, Claude architect 22). Where that leaves a seat below its band, the route
+  still says so (`review_depth_reduced`) and the gate still holds.
+- **A weaker worker to keep that review.** Seating the execution cell must not
+  make the review contract worse. When this is the only cross-family reviewer
+  left, the stronger same-family worker yields to the risk-table worker:
+  Claude balanced → Claude fast with OpenAI exhausted, OpenAI balanced →
+  OpenAI fast with Claude exhausted, mostly on IMPLEMENTATION and DEBUGGING.
+- **Different retries.** A different first worker means a different retry. 37
+  retries with OpenAI exhausted no longer pay a fallback penalty, so their
+  review band is not promoted (HIGH → MEDIUM) and 28 `review_below_band` gates
+  are not raised.
+- **One more note.** Every write route that seats its worker on
+  `worker_balanced` with the xai seat out now notes that the meta seat could
+  not write there.
 
 ### The OpenAI frontier seat
 

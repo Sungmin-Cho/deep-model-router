@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] — 2026-10-13 (Muse Spark reviewer seat)
+
+### Added
+
+- Add Meta's Muse Spark 1.3 as a read-only reviewer seat on Claude Code hosts, a fourth model family. It is bound to no role and is the balanced worker's first fallback there, so it reviews and reads wherever the xAI seat is unavailable for a route; it never fills a seat that writes, and Codex and Grok hosts never seat it. Its tier (1) is provisional: read from third-party benchmarks, not measured here.
+- Grade `muse exec --json` output with `--output-envelope muse-exec-jsonl-v1`. The verdict comes from the final terminal event only, a failure reported anywhere in the stream fails the attempt, the receipt keeps the requested model and the provider's failure reason, and the stream may reach 16 MiB. A `.to_meta` dispatch without this envelope is refused before it starts, and `verify-evidence` and observation receipt checks accept the format.
+
+### Changed
+
+- With the xAI seat unavailable for a route on a Claude Code host, REVIEW and INVESTIGATION leads and some MEDIUM reviewers move from Claude Sonnet 5.5 to Muse Spark 1.3. Under an OpenAI or Claude shortage the router now finds a cross-family reviewer, sometimes in place of a stronger same-family one, and may give write work to the fast worker to keep that review. Write routes on the balanced worker note that the meta seat could not write there. The model profile lists what moves.
+- Pin `--contributor-mode off` on the Muse seat: a Muse Code subscription defaults to letting the provider train on content, and the stream cannot show which mode ran.
+
 ## [1.18.0] — 2026-10-06 (Claude Code status view)
 
 ### Added

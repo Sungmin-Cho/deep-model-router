@@ -9,6 +9,18 @@
 
 ## [Unreleased]
 
+## [1.19.0] — 2026-10-13 (Muse Spark 리뷰어 좌석)
+
+### Added
+
+- Meta의 Muse Spark 1.3을 Claude Code 호스트의 읽기 전용 리뷰어 좌석으로 추가합니다. 네 번째 모델 가족입니다. 어느 역할에도 묶이지 않고 그 호스트에서 balanced 워커의 첫 폴백이라, 라우트에 xAI 좌석을 쓸 수 없을 때 리뷰와 읽기를 맡습니다. 쓰는 좌석에는 앉지 않으며, Codex·Grok 호스트에서는 앉지 않습니다. tier(1)는 잠정값입니다. 외부 벤치마크로 읽은 값이며 이 리포에서 측정하지 않았습니다.
+- `muse exec --json` 출력을 `--output-envelope muse-exec-jsonl-v1`로 판정합니다. verdict는 마지막 종료 이벤트에서만 읽고, 스트림 어디서든 실패가 보고되면 시도가 실패하며, 영수증에는 요청한 모델과 제공자의 실패 사유가 남고, 스트림은 16 MiB까지 허용합니다. 이 envelope 없이 `.to_meta`를 디스패치하면 시작 전에 거부되고, `verify-evidence`와 observation 영수증 검사가 이 형식을 받습니다.
+
+### Changed
+
+- Claude Code 호스트에서 라우트에 xAI 좌석을 쓸 수 없으면, REVIEW·INVESTIGATION의 리드와 일부 MEDIUM 리뷰어가 Claude Sonnet 5.5에서 Muse Spark 1.3으로 바뀝니다. OpenAI나 Claude가 부족할 때는 교차 가족 리뷰어를 찾게 되는데, 때로는 같은 가족의 더 강한 리뷰어 대신이고, 그 리뷰를 지키려고 쓰는 작업을 fast 워커에 줄 수 있습니다. balanced 워커의 쓰기 라우트에는 meta 좌석이 거기서 쓸 수 없었다는 알림이 붙습니다. 무엇이 바뀌는지는 모델 프로필에 있습니다.
+- Muse 좌석에 `--contributor-mode off`를 고정합니다. Muse Code 구독은 기본적으로 제공자가 내용을 학습에 쓰게 하며, 스트림으로는 어느 모드로 돌았는지 알 수 없습니다.
+
 ## [1.18.0] — 2026-10-06 (Claude Code status view)
 
 ### Added
