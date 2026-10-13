@@ -161,7 +161,24 @@ GROK_ENVELOPE_FORMAT = "grok-headless-json-v1"
 CODEX_TEXT_FORMAT = "codex-exec-text-v1"
 CODEX_JSON_FORMAT = "codex-exec-json-v1"
 CODEX_FORMATS = (CODEX_TEXT_FORMAT, CODEX_JSON_FORMAT)
-ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS)
+# 2026-10-13 (design DD-5). `muse exec --json` writes one JSON event per line,
+# named by `payload_type`. The turn's result is the LAST `run.terminal.*`
+# event: `run.terminal.completed` carries the answer in `payload.text`, any
+# other terminal carries a `payload.reason`. Streamed text
+# (`run.output.delta`), tool output (`tool.result`) and the echoed prompt
+# (`run.lifecycle.started`) are never read as the answer — a `verdict:` line
+# in any of them is the review's input, not its result. The stream has no
+# token usage and no served-model record (measured, Muse Code 1.4.7):
+# `run.model.configured` echoes the REQUESTED id, which the receipt keeps as
+# `configured_model` and never as `served_models`.
+MUSE_JSONL_FORMAT = "muse-exec-jsonl-v1"
+MUSE_TERMINAL_PREFIX = "run.terminal."
+MUSE_OK_TERMINAL = "run.terminal.completed"
+# A failed terminal's `payload.reason` (e.g. a model the account cannot use,
+# with the provider's request id) is evidence, so the receipt keeps it, bounded.
+MUSE_ERROR_REASON_MAX_CHARS = 500
+ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS,
+                    MUSE_JSONL_FORMAT)
 
 # Which document key carries each envelope field, per format. The shapes are
 # analogous, not identical: grok discriminates a failure with a top-level
@@ -181,12 +198,26 @@ ENVELOPE_FIELDS = {
     # agreement check below still covers every declared format.
     CODEX_TEXT_FORMAT: {},
     CODEX_JSON_FORMAT: {},
+    # Line-based too; decoded by `_decode_muse_jsonl`.
+    MUSE_JSONL_FORMAT: {},
 }
 # The envelope is a GATE surface, so its read is bounded: an unbounded
 # JSON parse of a child-controlled file is a denial-of-service surface on
 # the supervisor itself. Over budget is a typed refusal
 # (`evidence_oversized`), never a best-effort partial parse.
 ENVELOPE_MAX_BYTES = 4 * 1024 * 1024
+# Per format where one budget does not fit (design 2026-10-13 DD-5). A muse
+# stream carries every file a seat read (`tool.result`) and its answer
+# streamed as `run.output.delta` events, so a review that reads a few
+# megabytes of source is still a normal review. Still a hard bound, and the
+# SAME bound for grading, the recorded digest and every later re-read.
+ENVELOPE_MAX_BYTES_BY_FORMAT = {MUSE_JSONL_FORMAT: 16 * 1024 * 1024}
+
+
+def _envelope_budget(fmt: str | None) -> int:
+    return ENVELOPE_MAX_BYTES_BY_FORMAT.get(fmt, ENVELOPE_MAX_BYTES)
+
+
 # The only stop reason that leaves an attempt a success candidate. Every
 # other member of the official vocabulary (`max_tokens`,
 # `max_turn_requests`, `refusal`, `cancelled`), every unknown value, and
@@ -202,6 +233,7 @@ ENVELOPE_OK_STOP_REASONS = {
     "claude-print-json-v1": ENVELOPE_OK_STOP_REASON,
     CODEX_TEXT_FORMAT: None,
     CODEX_JSON_FORMAT: "turn.completed",
+    MUSE_JSONL_FORMAT: MUSE_OK_TERMINAL,
 }
 # Codex plain-mode stderr reads: the banner and any metadata warning are at
 # the head, the `tokens used` footer at the tail. Both are bounded.
@@ -228,6 +260,12 @@ UUID_RE = re.compile(
 # host dispatching INTO grok). The child's identity travels in the
 # `to_<target>` half of `--transport-id`.
 XAI_TRANSPORT_SUFFIX = ".to_xai"
+# Same trigger for muse (design 2026-10-13 DD-6). A failed muse turn exits
+# nonzero, so the hazard is not grok's: it is that the stdout is a JSONL
+# stream whose streamed deltas and echoed prompt can carry a `verdict:` line
+# that is not the answer. Only the declared format grades the terminal event
+# alone, so the format is required.
+META_TRANSPORT_SUFFIX = ".to_meta"
 
 # --- Required artifacts (DD-2) ----------------------------------------
 #
@@ -1514,7 +1552,7 @@ def _read_envelope(stdout_path: Path, fmt: str,
     channel (`evidence_oversized` / `envelope_unreadable`) so a caller can
     tell an over-budget stdout from a merely malformed one.
     """
-    data, oversized = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+    data, oversized = _capped_bytes(stdout_path, _envelope_budget(fmt))
     envelope = _decode_envelope(data, fmt, oversized=oversized)
     if fmt == CODEX_TEXT_FORMAT:
         envelope.update(_codex_stderr_view(
@@ -1606,7 +1644,9 @@ def _decode_codex_json(envelope: dict, text: str) -> dict:
             continue
         try:
             event = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError and CPython's refusal of an
+            # integer literal over 4,300 digits, which is not a decode error.
             return envelope
         if not isinstance(event, dict) or not isinstance(event.get("type"), str):
             return envelope
@@ -1628,6 +1668,65 @@ def _decode_codex_json(envelope: dict, text: str) -> dict:
                 and item.get("type") == "agent_message" \
                 and isinstance(item.get("text"), str):
             envelope["text"] = item["text"]
+    return envelope
+
+
+def _decode_muse_jsonl(envelope: dict, text: str) -> dict:
+    """`muse exec --json` JSONL, parsed line by line and by `payload_type`.
+
+    Every non-empty line must be a JSON object with a string `payload_type`,
+    or the whole stream is unparseable. The finishing record is the LAST
+    `run.terminal.*` event, and the answer is that event's own `payload.text`
+    — nothing else in the stream is. A terminal event other than
+    `run.terminal.completed` ANYWHERE is the stream's own failure report, so a
+    completion after a failure does not wash it out, and the first such event
+    names the failure in `error_type` (its `payload_type`) and `error_reason`
+    (its `payload.reason`, capped). The session id is the session stream's id,
+    recorded and never cross-checked: the seat keeps no session log to check
+    it against.
+
+    Lines split on `\\n` only. `str.splitlines()` also breaks on U+2028,
+    U+2029 and U+0085, which JSON leaves unescaped inside a string, so a file a
+    seat read could cut one event in two and fail the whole stream.
+    """
+    envelope["configured_model"] = None
+    envelope["error_reason"] = None
+    events = []
+    for line in text.split("\n"):
+        line = line.removesuffix("\r")
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError and CPython's refusal of an
+            # integer literal over 4,300 digits, which is not a decode error.
+            return envelope
+        if not isinstance(event, dict) or not isinstance(event.get("payload_type"), str):
+            return envelope
+        events.append(event)
+    envelope["parse_ok"] = True
+    for event in events:
+        kind = event["payload_type"]
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        stream = event.get("stream")
+        if (envelope["session_id"] is None and isinstance(stream, dict)
+                and stream.get("kind") == "session" and isinstance(stream.get("id"), str)):
+            envelope["session_id"] = stream["id"]
+        if kind == "run.model.configured" and isinstance(payload.get("model_id"), str):
+            envelope["configured_model"] = payload["model_id"]
+        if kind.startswith(MUSE_TERMINAL_PREFIX):
+            envelope["stop_reason"] = kind
+            answer = payload.get("text")
+            envelope["text"] = answer if isinstance(answer, str) else None
+            if kind != MUSE_OK_TERMINAL and not envelope["reported_error"]:
+                envelope["reported_error"] = True
+                envelope["error_type"] = kind
+                reason = payload.get("reason")
+                if isinstance(reason, str):
+                    envelope["error_reason"] = reason[:MUSE_ERROR_REASON_MAX_CHARS]
     return envelope
 
 
@@ -1655,9 +1754,17 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
         envelope["parse_ok"] = True
         envelope["text"] = text
         return envelope
+    if fmt == MUSE_JSONL_FORMAT:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return envelope
+        return _decode_muse_jsonl(envelope, text)
     try:
         doc = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # ValueError: a decode error, or an integer literal over CPython's
+        # 4,300-digit limit — both an unparseable document, never a crash.
         return envelope
     if not isinstance(doc, dict):
         # A bare array or scalar parses as JSON but is not an envelope.
@@ -1690,17 +1797,24 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
 CODEX_TEXT_RECEIPT_KEYS = ("header_model", "header_model_basis",
                            "metadata_warning", "footer_tokens_uncached",
                            "cli_version")
+# The id the muse CLI was asked for, echoed by `run.model.configured` — kept
+# apart from `served_models` on purpose: it is a request, not an attestation —
+# and the reason a failed terminal gave.
+MUSE_RECEIPT_KEYS = ("configured_model", "error_reason")
 
 
 def _receipt_envelope(envelope: dict) -> dict:
     """The six keys an envelope contributes to a receipt. `session_id` is
     here as the audit evidence for what the attempt-binding cross-proof
     (DD-3) actually compared; `text` is deliberately absent. Plain-mode codex
-    adds its stderr evidence (DD-B9) and nothing else."""
+    adds its stderr evidence (DD-B9), muse the id it was asked for and a
+    failure's reason, and nothing else."""
     keys = ("parse_ok", "stop_reason", "session_id", "served_models",
             "error_type", "usage")
     if envelope.get("fmt") == CODEX_TEXT_FORMAT:
         keys = keys + CODEX_TEXT_RECEIPT_KEYS
+    elif envelope.get("fmt") == MUSE_JSONL_FORMAT:
+        keys = keys + MUSE_RECEIPT_KEYS
     return {k: envelope.get(k) for k in keys}
 
 
@@ -1805,8 +1919,8 @@ def _verdict_of(text: str) -> tuple[str | None, bool]:
     return None, False
 
 
-def _stdout_digest(stdout_path: Path) -> str | None:
-    data, _ = _capped_bytes(stdout_path, ENVELOPE_MAX_BYTES)
+def _stdout_digest(stdout_path: Path, fmt: str | None = None) -> str | None:
+    data, _ = _capped_bytes(stdout_path, _envelope_budget(fmt))
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
@@ -1924,14 +2038,15 @@ def _success_evidence_problems(receipt_dir: Path, receipt: dict, attempt_id: str
         problems.append("success carries invalid reasons")
     if receipt.get("output_schema") not in ("none", "review"):
         problems.append("output_schema is missing or invalid")
-    data, _ = _capped_bytes(receipt_dir / f"{attempt_id}.stdout", ENVELOPE_MAX_BYTES)
+    fmt = receipt.get("output_envelope")
+    data, _ = _capped_bytes(receipt_dir / f"{attempt_id}.stdout",
+                            _envelope_budget(fmt if isinstance(fmt, str) else None))
     digest = result.get("output_sha256")
     if not isinstance(digest, str) or not HEX64_RE.fullmatch(digest):
         problems.append("output digest is missing or malformed")
     elif data is None or digest != hashlib.sha256(data).hexdigest():
         problems.append("output digest does not match readable stdout")
     if data is not None:
-        fmt = receipt.get("output_envelope")
         text = data.decode(errors="replace")
         if fmt is not None:
             if not isinstance(fmt, str) or fmt not in ENVELOPE_FIELDS:
@@ -2315,6 +2430,15 @@ def _run_attempt(args, pins: list[dict]) -> int:
                   f"declaration; see references/adapters.md \"Dispatch "
                   f"contract\".", file=sys.stderr)
             return 2
+    if (args.transport_id and args.transport_id.endswith(META_TRANSPORT_SUFFIX)
+            and args.output_envelope != MUSE_JSONL_FORMAT):
+        print(f"--transport-id {args.transport_id!r} dispatches into muse, so it "
+              f"requires --output-envelope {MUSE_JSONL_FORMAT!r}, not "
+              f"{args.output_envelope!r}: without it the verdict is searched for "
+              f"in a JSONL stream whose streamed deltas and echoed prompt can "
+              f"carry a `verdict:` line that is not the answer. See "
+              f"references/adapters.md \"Muse seat profile\".", file=sys.stderr)
+        return 2
 
     # --- Guard vs a nested codex sandbox (2026-09-25 DD-B9) -------------
     # Seatbelt does not nest: a codex child inside the receipt guard runs its
@@ -2728,7 +2852,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                             receipt["result"]["envelope"] = _receipt_envelope(
                                 envelope)
                             receipt["result"]["output_sha256"] = _stdout_digest(
-                                stdout_path)
+                                stdout_path, args.output_envelope)
                             reasons = _grade_envelope(envelope)
                             if not reasons:
                                 # With an envelope declared the verdict
@@ -3209,6 +3333,16 @@ def cmd_verify_evidence(args) -> int:
                     f"{declared_format!r} — another vendor's document shape "
                     f"was graded, so this receipt says nothing about a "
                     f"cancelled grok turn")
+        if transport_id.endswith(META_TRANSPORT_SUFFIX) and (
+                receipt.get("output_envelope") != MUSE_JSONL_FORMAT
+                or envelope is None):
+            # The second net behind the muse preflight, for a receipt the
+            # preflight never saw (hand-assembled, or from a supervisor
+            # without it).
+            problems.append(
+                f"{attempt_id}: transport_id {transport_id!r} dispatches into "
+                f"muse but the receipt does not carry a {MUSE_JSONL_FORMAT!r} "
+                f"envelope — its verdict was not read from the terminal event")
         if receipt.get("result", {}).get("verdict_recovered") is True:
             # Not a problem: the verdict WAS recovered and the review did run.
             # It is a signal, and the one person who can fix the recipe is the

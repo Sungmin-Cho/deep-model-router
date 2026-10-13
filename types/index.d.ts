@@ -12,7 +12,7 @@ export type RouterSeat = {
   runtime: string | null
   /** `--model-id`, else the receipt's declared model id. */
   modelId: string | null
-  /** The child CLI's basename (codex, grok, claude), read from the argv after `--`. */
+  /** The child CLI's basename (codex, grok, claude, muse), read from the argv after `--`. */
   cli: string | null
   deadlineSeconds: number | null
   /** `--decision-fingerprint`, for the Verify command. */

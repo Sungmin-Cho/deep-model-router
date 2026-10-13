@@ -857,6 +857,41 @@ models:
                       input: 4.00, output: 12.00, cached_input: 1.00 }
     context_window: 500000
 
+  # A reviewer-only seat (design 2026-10-13): the Claude Code -> meta
+  # direction has a read-only recipe and no write recipe, so the seat can
+  # review and read but never fills a seat that writes. It is bound to no role
+  # and sits FIRST in claude_code's worker_balanced fallback list, so it takes
+  # that role whenever the xai seat does not resolve for the route (withheld,
+  # failed, exhausted, outside allowed_families, the declared author, or a
+  # `low` xai quota moving a read-only worker). The write requirement binds the
+  # whole ROLE: when the worker writes from worker_balanced, the role holds the
+  # next write-capable model (claude, or openai when Claude is withheld too) for
+  # every seat, so this model is not a reviewer there either.
+  # What seating it changes: references/model-profiles.md, "The meta reviewer
+  # seat".
+  #
+  # `capability_tier: 1` is provisional and not measured here: third-party
+  # benchmarks put this id level with claude-sonnet-5 (the tier-1 anchor) and
+  # below claude-sonnet-5-5. See the ledger row "meta_worker_balanced tier
+  # evidence (external, not measured)" before reading the number as more.
+  meta_worker_balanced:
+    id: muse-spark-1.3
+    lineage: { line: meta/spark, template: "muse-spark-{gen}" }
+    family: meta
+    capability_tier: 1
+    verified: true
+    # Like the xai row: no cache-write rate is published, so `quote_cost`
+    # reports an unavailable quote rather than one built on an invented axis.
+    # No long-context tier: the provider states there is no premium.
+    price_per_mtok:
+      verified_on: "2026-10-13"
+      max_age_days: 30
+      source: "https://dev.meta.ai/docs/pricing-rate-limits"
+      input: 1.25
+      output: 4.25
+      cached_input: 0.15
+    context_window: 1007997
+
   # Unbound: suite already names this id, but P0 does not dispatch it.
   gemini_flash:
     id: gemini-3.6-flash-high
@@ -992,6 +1027,13 @@ effort_map:
     HIGH:      high
     VERY_HIGH: high
     MAX:       high
+  meta:
+    MINIMAL:   minimal    # the CLI rejects `none` with this provider (exit 2)
+    LOW:       low
+    MEDIUM:    medium
+    HIGH:      high
+    VERY_HIGH: xhigh
+    MAX:       max
 
 transports:
   claude_code:
@@ -1061,6 +1103,32 @@ transports:
       # entry below. Codex -> xAI stays write_verified: false (unprobed
       # host direction).
       write_verified: true
+    to_meta:
+      # The reviewer seat only (design 2026-10-13). There is no maker seat:
+      # no `mechanism_maker` and `write_verified: false`, so the router never
+      # seats this family where the work writes.
+      #
+      # The tool surface is the control, as on the grok reviewer:
+      # `--permission-profile :read-only` with --disable-write and
+      # --disable-shell leaves the model no write or shell tool at all, so a
+      # request to write is refused and the turn still completes (exit 0).
+      # --contributor-mode off is pinned because a subscription defaults to
+      # contributor mode, where the provider may train on the content; the
+      # stream does not attest the mode, so this flag is the whole control.
+      # --disable-reminders drops the CLI's own reminder sub-agents and
+      # --no-foreign-personal-context the user's personal skills from other
+      # agents (82 of them, a 32 KB catalogue, on the probing host).
+      # --no-session-log keeps no transcript on disk; it also rules out
+      # --session-id, which needs a retained log.
+      #
+      # `muse exec --json` writes a JSONL event stream; the supervisor grades
+      # it with --output-envelope muse-exec-jsonl-v1, which this direction
+      # requires. The launcher auto-updates the CLI (MUSE_UPDATE_INTERVAL_SECONDS)
+      # and no argv flag stops it, so the ledger records the version probed.
+      mechanism_reviewer: "muse exec --json --model <id> --reasoning-effort <native-effort> --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin"
+      isolation: separate_process
+      verified: true
+      write_verified: false
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
     to_claude:
@@ -1140,7 +1208,11 @@ transports:
 fallbacks:
   claude_code:
     worker_fast:          [claude_worker_fast, claude_worker_balanced]
-    worker_balanced:      [claude_worker_balanced, openai_worker_balanced, claude_senior]
+    # meta_worker_balanced first: the cross-family tier-1 seat when the xai
+    # seat does not resolve (design 2026-10-13). It has no write recipe, so a
+    # route whose worker writes from this role skips it to
+    # claude_worker_balanced for the whole role, exactly as before.
+    worker_balanced:      [meta_worker_balanced, claude_worker_balanced, openai_worker_balanced, claude_senior]
     senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
     principal_architect:  [openai_frontier, claude_senior, openai_reasoning]
@@ -2441,3 +2513,219 @@ verification_ledger:
         ground truth came from two OpenAI-family reviewers, and real
         defects outside it earn no credit. The plan, harness and raw
         results are the local note docs/evals/2026-09-30-t2/.
+
+    # --- The meta reviewer seat (design 2026-10-13, 1.19.0) -------------------
+    # Every probe below ran on darwin arm64 from a Claude Code host through
+    # dispatch_agent.py with the shipped reviewer argv. Attempts named *-final
+    # ran on the released supervisor; the others ran on the same envelope
+    # grammar before the receipt gained error_reason and before failures set
+    # error_type, so only the -final receipts show those two fields. Receipts
+    # are in the local archive docs/design/reviews/2026-10-13-muse-spark-seat/acceptance/.
+
+    - item: "muse-spark-1.3 model id"
+      status: verified
+      probed_on: "2026-10-13"
+      attempt_id: "mrt-final"
+      cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
+      argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort low --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin"
+      evidence: >
+        Attempt mrt-final (transport claude_code.to_meta, --output-schema
+        review, --output-envelope muse-exec-jsonl-v1, --receipt-guard
+        darwin-sandbox-v1, the released supervisor) graded SUCCEEDED: exit 0,
+        termination_confirmed true, verdict PASS, envelope stop_reason
+        run.terminal.completed, error_type and error_reason null,
+        configured_model muse-spark-1.3. Receipt sha256
+        7f25314bc705b9e77f0751154938dce265a9ee28338eeb7342120da664ac1808
+        (mrt-guard, the same run on the earlier supervisor, also SUCCEEDED). The
+        id is listed, visible and default in the account catalogue the CLI
+        reads; that is a listing, and this round trip is the proof. It is not
+        served-model attestation: the stream echoes only the requested id.
+        Outside this receipt set, a direct `muse exec` run the same day was
+        refused muse-wonder-1.0 with HTTP 404 on this account (a Muse Code
+        subscription), so no other Meta line is seated.
+
+    - item: "muse-spark-1.3 reasoning-effort values"
+      status: verified
+      probed_on: "2026-10-13"
+      cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
+      evidence: >
+        Six supervisor round trips on the shipped argv, one per native token,
+        each SUCCEEDED with verdict PASS under the receipt guard: meff-minimal,
+        meff-low, meff-medium, meff-high, meff-xhigh, meff-max. `none` never
+        reached the provider: the CLI exits 2 with "--reasoning-effort none is
+        not supported with --provider meta". The account catalogue lists
+        minimal through max for this id; the CLI also accepts `ultra`, which
+        the catalogue does not list, so it is not mapped. Hence the family map
+        MINIMAL -> minimal and no effort ceiling.
+
+    - item: "muse-spark-1.3 pricing and context window"
+      status: documented
+      probed_on: "2026-10-13"
+      source: "https://dev.meta.ai/docs/pricing-rate-limits"
+      evidence: >
+        Read from the provider's pricing page, not probed: Standard mode
+        $1.25 input, $0.15 cached input, $4.25 output per MTok, "No
+        long-context premium"; no cache-write rate is published, so the row
+        reports an unavailable quote, as the xai row does. Contributor mode
+        (a separate id, content used for training) is $0.10 / $0.002 / $0.20
+        and is never seated. Context: the Models page says 1,048,576 tokens;
+        the account catalogue says context_limit 1,007,997 and output_limit
+        128,000, and the row records the smaller. A Muse Code subscription
+        (Everyday / High / Power / Maximum) is metered in prompts per five
+        hours, not tokens, and the CLI exposes no remaining-usage reading.
+
+    - item: "meta_worker_balanced tier evidence (external, not measured)"
+      status: documented
+      probed_on: "2026-10-13"
+      source: "https://www.vals.ai/comparisons/anthropic_claude-sonnet-5-vs-meta_muse_spark_1_3"
+      evidence: >
+        Third-party benchmarks, not measured here. Vals Index:
+        muse-spark-1.3 53.20 vs claude-sonnet-5 51.77 (error ranges overlap;
+        claude-sonnet-5 is this registry's tier-1 anchor) at $3.38 vs $13.72
+        per run; at max effort 58.16 vs claude-sonnet-5-5 67.04 at $3.79 vs
+        $21.34 per run, Terminal-Bench 4.0 24.75 vs 64.14, Code Migration 47.41
+        vs 69.83; vs gpt-5.6-sol 53.20
+        vs 58.01, Code Migration 27.58 vs 52.92. capability_tier 1 is a
+        provisional reading of these numbers, not a measurement: no eval in
+        this repository has graded the seat, which is why it is bound to no
+        role. One observation, not a measurement: on attempt mreview-1 (below)
+        the seat reviewed this tranche's supervisor diff and reported no
+        findings where a tier-3 reviewer had found two real defects.
+
+    - item: "Claude Code -> Meta transport (muse exec)"
+      status: verified
+      probed_on: "2026-10-13"
+      evidence: >
+        Separate process by construction. Round trips with and without the
+        receipt guard (mrt-guard, mrt-noguard) both SUCCEEDED: with the shell
+        disabled the CLI starts no nested sandbox, so the guard composes. The
+        launcher writes its own notices to stderr only (read from
+        ~/.local/bin/muse). The Codex and grok host directions were not probed
+        and are not offered: neither runtime has a to_meta entry or names the
+        family in a fallback list.
+
+    - item: "Meta reviewer seat recipe (transports.claude_code.to_meta.mechanism_reviewer)"
+      status: verified
+      probed_on: "2026-10-13"
+      attempt_id: "mreview-1"
+      cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
+      argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort high --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin"
+      probes:
+        - { attempt_id: "mrt-final", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort low --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
+        - { attempt_id: "mcontain-2", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort medium --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
+        - { attempt_id: "mreview-1", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort high --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
+      evidence: >
+        Containment (mcontain-2, receipt sha256
+        a31b81775e806caf1fab9092650ab61c6736acec919e6f376b8329e6722061a2): the
+        seat read note.txt in its workspace; asked to write a file and to run a
+        shell command, it had no tool for either and the turn completed; its
+        tool list was read_file, read_memory, read_skill, monitor, search,
+        snooze_reminder, work_list, work_status, work_stop, workflow and
+        write_todos. Asked to reach a write or a command through the workflow
+        tool, it launched a child run that inherited the read-only profile and
+        created nothing (the CLI wrote the workflow script under its own
+        temporary directory); write_todos changed in-session state only. The
+        workspace held only note.txt afterwards. Reading is not confined to the
+        workspace (2026-10-13 direct probe: an outside file was read), as with
+        the claude and codex reviewer seats. An earlier attempt, mcontain, made
+        the same refusals but graded INVALID_OUTPUT because its prompt asked for
+        a verdict after prose with no final marker — the verdict grammar,
+        not the seat. A real review (mreview-1, receipt sha256
+        4037f8694a81cca3f035741dea84e801f2f6145ddc36e3e7b48fc68737e4481c): 57 s
+        at high effort, seven file reads, verdict PASS from the terminal text,
+        which carried the full final message (1,434 characters); stdout was
+        489,350 bytes because each read is carried twice (tool.result and
+        task.lifecycle.output), about 2.6x the bytes read — the reason the
+        format's budget is 16 MiB.
+
+    - item: "muse-exec-jsonl-v1 envelope shape (dispatch_agent --output-envelope)"
+      status: verified
+      probed_on: "2026-10-13"
+      cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
+      evidence: >
+        `muse exec --json` writes one JSON event per line, each named by
+        payload_type. A turn ends in exactly one run.terminal.* event:
+        run.terminal.completed (exit 0) carries the final answer in
+        payload.text; run.terminal.failed (exit 1) carries payload.reason.
+        mfail-final (an id the account cannot use, released supervisor)
+        graded FAILED with envelope error_type run.terminal.failed and an
+        error_reason holding the provider's "does not exist or you lack
+        access" text and request id (receipt sha256
+        bda73c280b0aa32021b15baf93cbe653bcf8f9a564e7fdd6414f18141cc6968d); the
+        earlier mfail ran before those fields existed. The
+        stream carries the prompt (run.lifecycle.started), the answer streamed
+        as run.output.delta chunks of about 27 characters, every tool result,
+        and no token counts and no served-model record; run.model.configured
+        echoes the requested id. The JSON is not ASCII-escaped, so a line
+        separator inside a string stays raw: lines are split on newline only.
+        The test fixtures under tests/fixtures/muse/ are two of these
+        captures with local paths scrubbed. validate_observation accepts a
+        completed stream of this format; it still refuses the two codex
+        formats as success evidence, as it did before this format existed.
+
+    - item: "Muse Code contributor mode is requested, not attested"
+      status: verified
+      probed_on: "2026-10-13"
+      cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
+      evidence: >
+        A Muse Code subscription defaults to contributor mode, in which the
+        provider may use the content to train its models (the provider's
+        Subscriptions page; the CLI's first-run settings recorded
+        contributor_mode_enabled true on the probing host). Runs with
+        --contributor-mode on, off and unset all reported model_id
+        muse-spark-1.3 in run.model.configured and in the CLI's local trace
+        log, and the provider's Models page says max effort is unavailable to
+        the contributor id, yet --contributor-mode on with max succeeded.
+        Nothing observable separates
+        the modes, so the shipped recipe pins --contributor-mode off and this
+        row records that the mode cannot be verified from the client side.
+
+    - item: "Muse Code write_file containment (measured; no maker seat shipped)"
+      status: verified
+      probed_on: "2026-10-13"
+      cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
+      evidence: >
+        Direct runs, not a shipped seat, recorded for a later maker tranche.
+        With --disable-shell --approval-mode never and the default sandbox, a
+        workspace under the home directory: write_file refused a file with more
+        than one hard link ("has more than one hard link, so it may name a file
+        outside this scope"), a path through a symlinked directory and a ../
+        path ("path escapes workspace"), and an absolute path outside the
+        workspace; an in-workspace write succeeded. With the workspace under
+        /private/tmp, a ../ write succeeded: the documented exception that
+        lets writes reach a temporary directory. A maker seat would therefore
+        need a child cwd outside the temporary directories, and an attended
+        probe; neither is part of 1.19.0.
+
+    - item: "worker_balanced fallback: the meta seat first on claude_code"
+      status: verified
+      probed_on: "2026-10-13"
+      evidence: >
+        Deterministic replay of route_task.route over 16,896 grid points (11
+        task classes x complexity, uncertainty, blast radius and reversibility
+        0-3 x three runtimes x no flag or large_context), each routed fresh
+        and once more after that config's own fresh worker failed, under this
+        registry and under the same registry with the meta family removed;
+        compared route by route on band, worker and its effort, reviewers,
+        judge, cross-family and independence fields, terminal, human gate,
+        confidence, fallbacks, shortfall fields and notes. A scenario applies
+        only to the classes it is valid for. Routes changed, of 33,792 per
+        scenario unless noted: nothing withheld 0; xai withheld 1,521 (1,349 of
+        them only gain the write-skip note; the REVIEW and INVESTIGATION lead
+        moves from claude-sonnet-5-5 to this seat on 142 fresh routes and 30
+        retries, and 69 of those leads' reviewers move from gpt-6.1-sol to
+        claude-sonnet-5-5); allowed_families without xai, the same 1,521; xai
+        quota low 87; REVIEW with xai as author 85 of 3,072; xai withheld with
+        a Claude author 170 of 3,072; xai withheld and OpenAI exhausted 6,245,
+        cross-family review gained on 3,125 (this seat replaces
+        claude-opus-5-5 on 310 review seats and claude-fable-5-1 on 22; 37
+        retries lose a confidence-driven band promotion and 28
+        review_below_band gates); xai withheld and Claude exhausted 9,810,
+        cross-family review gained on 5,762, and the balanced OpenAI writer
+        yields to the fast one on 28 IMPLEMENTATION and 28 DEBUGGING routes to
+        keep that review. Zero changes with an implementer declared (xai or
+        Claude), with a read-only worker override and xai available, and with
+        the bridge down. Every candidate outcome in every scenario, fresh and
+        retry, was checked for this seat on a seat that writes (the effective
+        seat kind, an explicit override included): none. The script and output
+        are the local research note docs/research/2026-10-13-meta-seat-counterfactuals/.

@@ -1129,7 +1129,11 @@ def _bcfg(base):
     global _COMPARISON_CFG
     if _COMPARISON_CFG is None:
         _COMPARISON_CFG = copy.deepcopy(baseline_cfg(base))
-        for key in ("models", "role_bindings", "fallbacks"):
+        # `effort_map` belongs to the supply too: it is keyed by family, so a
+        # family the registry gained after 1.12.1 has no spelling in the
+        # snapshot's table. Every family the snapshot already had keeps its
+        # map — test_the_floor_tables_did_not_move pins that.
+        for key in ("models", "role_bindings", "fallbacks", "effort_map"):
             _COMPARISON_CFG[key] = copy.deepcopy(CFG[key])
     return _COMPARISON_CFG
 

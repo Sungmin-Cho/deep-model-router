@@ -496,8 +496,11 @@ model at all: the supervisor could not remove the placeholder it created for
 an absent required path, so that file is still there and the receipt says so.
 Read it with the `artifact_missing:*` it accompanies — the seat produced
 nothing — and clear the leftover before re-dispatching, or the next attempt's
-baseline starts from the supervisor's own bytes. Who reports failure history
-is always the caller; the router changes nothing here.
+baseline starts from the supervisor's own bytes. A muse seat's
+`envelope_unparseable` (a stdout line that is not one of its events) and
+`evidence_oversized` (a stream past the format's 16 MiB) are the same class: a
+CLI or recipe defect, never the model failing the review. Who reports failure
+history is always the caller; the router changes nothing here.
 
 ## Reading verdicts
 

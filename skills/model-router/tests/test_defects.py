@@ -192,7 +192,8 @@ def test_d1_a_failed_model_is_never_re_emitted_under_a_new_role():
     # because the original probe used them; grok-4.6 is the family that was
     # missing. A family added to the registry without a prior here is a
     # retry path nobody exercises.
-    priors = (ID("claude_worker_balanced"), ID("claude_senior"), ID("openai_reasoning"), ID("xai_frontier"))
+    priors = (ID("claude_worker_balanced"), ID("claude_senior"), ID("openai_reasoning"),
+              ID("xai_frontier"), ID("meta_worker_balanced"))
     fam = {m["id"]: m["family"] for m in CFG["models"].values()}
     dispatchable_fams = {
         m["family"] for m in CFG["models"].values()
@@ -1079,6 +1080,9 @@ DOCUMENTED_BUT_UNREAD = {
         "routing input",
     "transports.claude_code.to_xai.mechanism_reviewer": "see mechanism above",
     "transports.claude_code.to_xai.isolation": "see isolation above",
+    "transports.claude_code.to_meta.mechanism_reviewer": "see mechanism above; "
+        "the direction ships no write recipe, so write_capable reads only its flags",
+    "transports.claude_code.to_meta.isolation": "see isolation above",
     "transports.codex.to_claude.mechanism": "see mechanism above",
     "transports.codex.to_claude.isolation": "see isolation above",
     "transports.codex.to_xai.mechanism_reviewer": "see mechanism above",
@@ -2450,6 +2454,10 @@ EXPECTED_NATIVE = {
                "HIGH": "high", "VERY_HIGH": "xhigh", "MAX": "xhigh"},
     "gemini": {"MINIMAL": "low",  "LOW": "low", "MEDIUM": "medium",
                "HIGH": "high", "VERY_HIGH": "high", "MAX": "high"},
+    # Probed 2026-10-13 (Muse Code 1.4.7): the CLI refuses `none` for this
+    # provider before any request; minimal through max each round-tripped.
+    "meta":   {"MINIMAL": "minimal", "LOW": "low", "MEDIUM": "medium",
+               "HIGH": "high", "VERY_HIGH": "xhigh", "MAX": "max"},
 }
 ACCEPTED_CLI_TOKENS = {f: set(m.values()) for f, m in EXPECTED_NATIVE.items()}
 

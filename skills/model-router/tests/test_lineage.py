@@ -135,7 +135,7 @@ def test_the_shipped_registry_declares_a_lineage_on_every_dispatchable_row():
     cfg = load_config()
     Policy(cfg)
     rows = {k: m for k, m in cfg["models"].items() if m.get("dispatchable", True) is not False}
-    assert len(rows) == 9, sorted(rows)
+    assert len(rows) == 10, sorted(rows)
     for key, row in rows.items():
         lin = row["lineage"]
         assert parse(lin["template"], row["id"]) is not None, key
