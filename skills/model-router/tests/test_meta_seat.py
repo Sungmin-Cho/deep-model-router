@@ -488,6 +488,87 @@ def test_the_muse_budget_admits_a_stream_past_the_shared_four_mib(tmp_path):
     assert check.returncode == 0, check.stderr
 
 
+MUSE_BUDGET = 16 * 1024 * 1024     # the documented figure, pinned apart from the code
+
+
+def _exactly(total: int) -> bytes:
+    """A valid stream of exactly `total` bytes: padding events, then the
+    captured review, with the first padding chunk sized to land on `total`."""
+    body = REVIEW_STREAM.read_bytes()
+    stream = _events()[0]["stream"]
+
+    def pad(n):
+        e = {"schema_version": 1, "stream": stream, "payload_type": "run.output.delta",
+             "payload": {"kind": "output_delta", "chunk": "x" * n}}
+        return (json.dumps(e) + "\n").encode()
+
+    unit = pad(60000)
+    room = total - len(body)
+    full, rest = divmod(room, len(unit))
+    head = pad(rest - len(pad(0))) if rest else b""
+    if rest and len(head) != rest:
+        raise AssertionError("padding arithmetic")
+    data = head + unit * full + body
+    assert len(data) == total
+    return data
+
+
+def test_the_muse_budget_is_the_documented_sixteen_mib():
+    assert dispatch_agent._envelope_budget("muse-exec-jsonl-v1") == MUSE_BUDGET
+
+
+def test_a_stream_exactly_at_the_budget_passes_and_one_byte_more_does_not(tmp_path):
+    at, over = tmp_path / "at", tmp_path / "over"
+    at.mkdir(), over.mkdir()
+    _, receipt = _run(at, _replay(at, _exactly(MUSE_BUDGET)))
+    assert receipt["result"]["state"] == "SUCCEEDED", receipt["result"]
+    _, receipt = _run(over, _replay(over, _exactly(MUSE_BUDGET + 1)))
+    assert receipt["result"]["invalid_reasons"] == ["evidence_oversized"]
+
+
+def test_the_receipt_read_keeps_the_shared_bound(tmp_path):
+    """The muse budget widens stdout reads only; a receipt JSON past 4 MiB
+    is still refused."""
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    (receipts / "big.json").write_text(json.dumps({"pad": "x" * dispatch_agent.ENVELOPE_MAX_BYTES}))
+    with pytest.raises(OSError):
+        dispatch_agent.read_receipt(receipts, "big")
+
+
+def test_an_integer_past_the_parser_limit_is_unparseable_not_a_crash(tmp_path):
+    """design review i1 sol F1: CPython refuses an integer literal over 4,300
+    digits with a bare ValueError, which is not a JSONDecodeError."""
+    events = _events()
+    events[0]["payload"]["huge"] = 0
+    data = _dump(events).replace(b'"huge": 0', b'"huge": ' + b"9" * 5000, 1)
+    proc, receipt = _run(tmp_path, _replay(tmp_path, data))
+    assert receipt["result"]["invalid_reasons"] == ["envelope_unparseable"], proc.stderr
+
+
+@pytest.mark.parametrize("fmt", ["claude-print-json-v1", "grok-headless-json-v1",
+                                 "codex-exec-json-v1"])
+def test_the_other_json_envelopes_refuse_the_same_integer(fmt):
+    data = b'{"type": "result", "n": ' + b"9" * 5000 + b"}"
+    env = dispatch_agent._decode_envelope(data + (b"\n" if "codex" in fmt else b""), fmt)
+    assert env["parse_ok"] is False
+
+
+def test_a_failed_terminal_with_exit_zero_is_invalid_output(tmp_path):
+    """design review i1 fable F2: the CLI self-updates, so its exit code can
+    drift; the envelope alone must still refuse a failed turn."""
+    _, receipt = _run(tmp_path, _replay(tmp_path, FAILED_STREAM.read_bytes(), exit_code=0))
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert receipt["result"]["invalid_reasons"] == [
+        "envelope_reported_error", "envelope_stop_reason:run.terminal.failed"]
+
+
+def test_an_empty_stream_is_not_a_finished_turn(tmp_path):
+    _, receipt = _run(tmp_path, _replay(tmp_path, b""))
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "envelope_stop_reason:<absent>" in receipt["result"]["invalid_reasons"]
+
+
 def test_the_muse_budget_is_still_a_bound(tmp_path):
     data = _padded(dispatch_agent._envelope_budget("muse-exec-jsonl-v1") + 1)
     _, receipt = _run(tmp_path, _replay(tmp_path, data))
@@ -560,6 +641,17 @@ def test_verify_evidence_refuses_a_meta_receipt_without_the_muse_envelope(tmp_pa
     assert "dispatches into muse" in proc.stderr
 
 
+def test_verify_evidence_refuses_a_meta_receipt_graded_as_another_format(tmp_path):
+    _promote(tmp_path, "v1", envelope_fmt="muse-exec-jsonl-v1")
+    path = tmp_path / "receipts" / "v1.json"
+    receipt = json.loads(path.read_text())
+    receipt["output_envelope"] = "claude-print-json-v1"
+    path.write_text(json.dumps(receipt))
+    proc = _verify(tmp_path, "v1")
+    assert proc.returncode == 1
+    assert "dispatches into muse" in proc.stderr
+
+
 # ---------------------------------------------------------------------------
 # RouteObservationV1 receipts (design DD-6b)
 # ---------------------------------------------------------------------------
@@ -613,25 +705,25 @@ def test_the_configured_model_never_attests_a_served_model(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_the_effort_map_pin_refuses_an_undeclared_family_or_a_moved_spelling():
-    """The pin in test_the_floor_tables_did_not_move, exercised against
-    mutated maps so that a later edit to it cannot quietly disarm it."""
+    """The guard test_the_floor_tables_did_not_move calls, fed mutated
+    configs so that weakening it fails here (design review i1 sol)."""
     from _baseline import baseline_cfg, load_baseline
-    from test_baseline_snapshot import ADDED_FAMILIES
+    from test_baseline_snapshot import effort_map_drift
     old = baseline_cfg(load_baseline())["effort_map"]
+    assert effort_map_drift(old, CFG) == []
 
-    def pinned(new_map):
-        same = {f: m for f, m in new_map.items() if f in old} == old
-        return same and set(new_map) - set(old) == set(ADDED_FAMILIES)
-
-    assert pinned(CFG["effort_map"])
-    extra = copy.deepcopy(CFG["effort_map"])
-    extra["mistral"] = dict(extra["meta"])
-    assert not pinned(extra)
-    moved = copy.deepcopy(CFG["effort_map"])
-    moved["openai"]["HIGH"] = "medium"
-    assert not pinned(moved)
-    missing = {f: m for f, m in CFG["effort_map"].items() if f not in ADDED_FAMILIES}
-    assert not pinned({**missing, "meta2": CFG["effort_map"]["meta"]})
+    extra = copy.deepcopy(CFG)
+    extra["effort_map"]["mistral"] = dict(extra["effort_map"]["meta"])
+    assert effort_map_drift(old, extra)
+    moved = copy.deepcopy(CFG)
+    moved["effort_map"]["openai"]["HIGH"] = "medium"
+    assert effort_map_drift(old, moved)
+    renamed = copy.deepcopy(CFG)
+    renamed["effort_map"]["meta2"] = renamed["effort_map"].pop("meta")
+    assert effort_map_drift(old, renamed)
+    unmapped = copy.deepcopy(CFG)
+    unmapped["models"]["x"] = dict(unmapped["models"][META_KEY], family="mistral")
+    assert effort_map_drift(old, unmapped)
 
 
 def test_model_sync_reports_the_meta_line_without_a_catalog():
@@ -669,6 +761,19 @@ def test_a_document_format_keeps_the_four_mib_bound(tmp_path):
     _, receipt = _run(tmp_path, _replay(tmp_path, json.dumps(doc).encode()),
                       extra=("--output-envelope", "claude-print-json-v1"))
     assert receipt["result"]["invalid_reasons"] == ["evidence_oversized"]
+
+
+def test_model_sync_tick_and_status_run_with_the_meta_row(tmp_path):
+    from test_model_sync import cli_sync, fake_bin, fake_home, new_root, sync_env
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    tick = cli_sync(env, "tick")
+    assert tick.returncode == 0, tick.stderr + tick.stdout
+    status = cli_sync(env, "status")
+    assert status.returncode == 0, status.stderr + status.stdout
+    json.loads(status.stdout)
 
 
 def test_a_model_sync_run_on_the_meta_key_probes_nothing(tmp_path):

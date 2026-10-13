@@ -142,9 +142,10 @@ Degraded bindings for when a bridge is down are in `adapters.md`.
 a Claude Code host it is the first fallback of `worker_balanced`, through a
 read-only recipe and no write recipe, so it takes that role's seats that read
 whenever the xai seat does not resolve for the route (`adapters.md`, "The meta
-seat reads, on Claude Code only"). With the xai seat available, no route
-changes: a replay of 16,896 grid points, each routed fresh and after its own
-worker failed, moved none. Codex and grok hosts never seat it.
+seat reads, on Claude Code only"). With the xai seat available and not the
+declared author, no route changes: a replay of 16,896 grid points, each routed
+fresh and after its own worker failed, moved none. Codex and grok hosts never
+seat it.
 
 **Its tier is provisional.** No eval in this repository has measured it.
 Third-party benchmarks put it level with the previous Sonnet generation —
@@ -158,7 +159,7 @@ withholds this model's id as well (`--unavailable-models`, or an
 `allowed_families` list without `meta`).
 
 Where it seats, the same replay shows what changes. The counts are routes out
-of 33,792 per scenario:
+of 33,792 per scenario (out of 3,072 for the REVIEW-only author scenario):
 
 - **Read-only leads.** With the xai seat out, the lead of a REVIEW or an
   INVESTIGATION route (its worker, which reads) moves from the Claude balanced

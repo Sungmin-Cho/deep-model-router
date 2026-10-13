@@ -21,6 +21,10 @@
 - Claude Code 호스트에서 라우트에 xAI 좌석을 쓸 수 없으면, REVIEW·INVESTIGATION의 리드와 일부 MEDIUM 리뷰어가 Claude Sonnet 5.5에서 Muse Spark 1.3으로 바뀝니다. OpenAI나 Claude가 부족할 때는 교차 가족 리뷰어를 찾게 되는데, 때로는 같은 가족의 더 강한 리뷰어 대신이고, 그 리뷰를 지키려고 쓰는 작업을 fast 워커에 줄 수 있습니다. balanced 워커의 쓰기 라우트에는 meta 좌석이 거기서 쓸 수 없었다는 알림이 붙습니다. 무엇이 바뀌는지는 모델 프로필에 있습니다.
 - Muse 좌석에 `--contributor-mode off`를 고정합니다. Muse Code 구독은 기본적으로 제공자가 내용을 학습에 쓰게 하며, 스트림으로는 어느 모드로 돌았는지 알 수 없습니다.
 
+### Fixed
+
+- CPython의 4,300자리 한도를 넘는 정수 리터럴이 든 JSON envelope을 supervisor 크래시 대신 파싱 불가(`INVALID_OUTPUT`)로 판정합니다.
+
 ## [1.18.0] — 2026-10-06 (Claude Code status view)
 
 ### Added

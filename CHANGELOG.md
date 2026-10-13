@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With the xAI seat unavailable for a route on a Claude Code host, REVIEW and INVESTIGATION leads and some MEDIUM reviewers move from Claude Sonnet 5.5 to Muse Spark 1.3. Under an OpenAI or Claude shortage the router now finds a cross-family reviewer, sometimes in place of a stronger same-family one, and may give write work to the fast worker to keep that review. Write routes on the balanced worker note that the meta seat could not write there. The model profile lists what moves.
 - Pin `--contributor-mode off` on the Muse seat: a Muse Code subscription defaults to letting the provider train on content, and the stream cannot show which mode ran.
 
+### Fixed
+
+- Grade a JSON envelope holding an integer literal longer than CPython's 4,300-digit limit as unparseable (`INVALID_OUTPUT`) instead of crashing the supervisor.
+
 ## [1.18.0] — 2026-10-06 (Claude Code status view)
 
 ### Added

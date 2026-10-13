@@ -1644,7 +1644,9 @@ def _decode_codex_json(envelope: dict, text: str) -> dict:
             continue
         try:
             event = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError and CPython's refusal of an
+            # integer literal over 4,300 digits, which is not a decode error.
             return envelope
         if not isinstance(event, dict) or not isinstance(event.get("type"), str):
             return envelope
@@ -1696,7 +1698,9 @@ def _decode_muse_jsonl(envelope: dict, text: str) -> dict:
             continue
         try:
             event = json.loads(line)
-        except (json.JSONDecodeError, RecursionError):
+        except (ValueError, RecursionError):
+            # ValueError covers JSONDecodeError and CPython's refusal of an
+            # integer literal over 4,300 digits, which is not a decode error.
             return envelope
         if not isinstance(event, dict) or not isinstance(event.get("payload_type"), str):
             return envelope
@@ -1758,7 +1762,9 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
         return _decode_muse_jsonl(envelope, text)
     try:
         doc = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # ValueError: a decode error, or an integer literal over CPython's
+        # 4,300-digit limit — both an unparseable document, never a crash.
         return envelope
     if not isinstance(doc, dict):
         # A bare array or scalar parses as JSON but is not an envelope.

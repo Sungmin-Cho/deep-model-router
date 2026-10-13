@@ -865,7 +865,8 @@ models:
   # failed, exhausted, outside allowed_families, the declared author, or a
   # `low` xai quota moving a read-only worker). The write requirement binds the
   # whole ROLE: when the worker writes from worker_balanced, the role holds the
-  # claude model for every seat, so this model is not a reviewer there either.
+  # next write-capable model (claude, or openai when Claude is withheld too) for
+  # every seat, so this model is not a reviewer there either.
   # What seating it changes: references/model-profiles.md, "The meta reviewer
   # seat".
   #
@@ -2515,27 +2516,33 @@ verification_ledger:
 
     # --- The meta reviewer seat (design 2026-10-13, 1.19.0) -------------------
     # Every probe below ran on darwin arm64 from a Claude Code host through
-    # dispatch_agent.py with the shipped reviewer argv. Receipts are in the
-    # local archive docs/design/reviews/2026-10-13-muse-spark-seat/acceptance/.
+    # dispatch_agent.py with the shipped reviewer argv. Attempts named *-final
+    # ran on the released supervisor; the others ran on the same envelope
+    # grammar before the receipt gained error_reason and before failures set
+    # error_type, so only the -final receipts show those two fields. Receipts
+    # are in the local archive docs/design/reviews/2026-10-13-muse-spark-seat/acceptance/.
 
     - item: "muse-spark-1.3 model id"
       status: verified
       probed_on: "2026-10-13"
-      attempt_id: "mrt-guard"
+      attempt_id: "mrt-final"
       cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
       argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort low --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin"
       evidence: >
-        Attempt mrt-guard (transport claude_code.to_meta, --output-schema
+        Attempt mrt-final (transport claude_code.to_meta, --output-schema
         review, --output-envelope muse-exec-jsonl-v1, --receipt-guard
-        darwin-sandbox-v1) graded SUCCEEDED: exit 0, termination_confirmed
-        true, verdict PASS, envelope stop_reason run.terminal.completed,
+        darwin-sandbox-v1, the released supervisor) graded SUCCEEDED: exit 0,
+        termination_confirmed true, verdict PASS, envelope stop_reason
+        run.terminal.completed, error_type and error_reason null,
         configured_model muse-spark-1.3. Receipt sha256
-        723e45c12a7dcb69199e240fce9c84f1c0f7a5ffe8bd7791e506c7dd954dea7c. The
+        7f25314bc705b9e77f0751154938dce265a9ee28338eeb7342120da664ac1808
+        (mrt-guard, the same run on the earlier supervisor, also SUCCEEDED). The
         id is listed, visible and default in the account catalogue the CLI
         reads; that is a listing, and this round trip is the proof. It is not
         served-model attestation: the stream echoes only the requested id.
-        The account (a Muse Code subscription) is refused muse-wonder-1.0 with
-        HTTP 404, so no other Meta line is seated.
+        Outside this receipt set, a direct `muse exec` run the same day was
+        refused muse-wonder-1.0 with HTTP 404 on this account (a Muse Code
+        subscription), so no other Meta line is seated.
 
     - item: "muse-spark-1.3 reasoning-effort values"
       status: verified
@@ -2575,8 +2582,9 @@ verification_ledger:
         Third-party benchmarks, not measured here. Vals Index:
         muse-spark-1.3 53.20 vs claude-sonnet-5 51.77 (error ranges overlap;
         claude-sonnet-5 is this registry's tier-1 anchor) at $3.38 vs $13.72
-        per run; at max effort 58.16 vs claude-sonnet-5-5 67.04, Terminal-Bench
-        4.0 24.75 vs 64.14, Code Migration 47.41 vs 69.83; vs gpt-5.6-sol 53.20
+        per run; at max effort 58.16 vs claude-sonnet-5-5 67.04 at $3.79 vs
+        $21.34 per run, Terminal-Bench 4.0 24.75 vs 64.14, Code Migration 47.41
+        vs 69.83; vs gpt-5.6-sol 53.20
         vs 58.01, Code Migration 27.58 vs 52.92. capability_tier 1 is a
         provisional reading of these numbers, not a measurement: no eval in
         this repository has graded the seat, which is why it is bound to no
@@ -2603,7 +2611,7 @@ verification_ledger:
       cli_version: "Muse Code 1.4.7 (1.4.7-R6101.1)"
       argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort high --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin"
       probes:
-        - { attempt_id: "mrt-guard", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort low --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
+        - { attempt_id: "mrt-final", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort low --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
         - { attempt_id: "mcontain-2", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort medium --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
         - { attempt_id: "mreview-1", outcome: SUCCEEDED, argv: "muse exec --json --model muse-spark-1.3 --reasoning-effort high --contributor-mode off --permission-profile :read-only --disable-write --disable-shell --disable-web-tools --disable-reminders --no-foreign-personal-context --no-session-log --prompt-file /dev/stdin" }
       evidence: >
@@ -2638,17 +2646,22 @@ verification_ledger:
         `muse exec --json` writes one JSON event per line, each named by
         payload_type. A turn ends in exactly one run.terminal.* event:
         run.terminal.completed (exit 0) carries the final answer in
-        payload.text; run.terminal.failed (exit 1) carries payload.reason. mfail
-        (an id the account cannot use) graded FAILED with error_type
-        run.terminal.failed and the provider's reason recorded (receipt sha256
-        7ec2116598a3552364a2bddfa15879df492c7f92c11b73f197bbe6986dc6ba46). The
+        payload.text; run.terminal.failed (exit 1) carries payload.reason.
+        mfail-final (an id the account cannot use, released supervisor)
+        graded FAILED with envelope error_type run.terminal.failed and an
+        error_reason holding the provider's "does not exist or you lack
+        access" text and request id (receipt sha256
+        bda73c280b0aa32021b15baf93cbe653bcf8f9a564e7fdd6414f18141cc6968d); the
+        earlier mfail ran before those fields existed. The
         stream carries the prompt (run.lifecycle.started), the answer streamed
         as run.output.delta chunks of about 27 characters, every tool result,
         and no token counts and no served-model record; run.model.configured
         echoes the requested id. The JSON is not ASCII-escaped, so a line
         separator inside a string stays raw: lines are split on newline only.
         The test fixtures under tests/fixtures/muse/ are two of these
-        captures with local paths scrubbed.
+        captures with local paths scrubbed. validate_observation accepts a
+        completed stream of this format; it still refuses the two codex
+        formats as success evidence, as it did before this format existed.
 
     - item: "Muse Code contributor mode is requested, not attested"
       status: verified

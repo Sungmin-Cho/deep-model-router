@@ -642,6 +642,12 @@ What each flag of the meta reviewer string is for, measured on Muse Code
 The receipt guard (`--receipt-guard darwin-sandbox-v1`) runs this seat
 cleanly: with the shell disabled, the CLI starts no nested sandbox.
 
+Declare both halves. A `muse exec` dispatch that names neither the
+`.to_meta` transport nor the envelope is invisible to the supervisor as muse —
+it never reads argv — and is graded as plain text over the whole stream, where
+the echoed prompt and the streamed chunks can carry a `verdict:` line. That
+residue belongs to the recipe, as it does for grok.
+
 ### Confirming a transport
 
 Before setting `cross_provider: available`, confirm three things:
@@ -1137,9 +1143,10 @@ caller withholds it, it failed, its family is exhausted or excluded by
 quota moves a read-only worker seat to the first same-tier model of another
 family. It never fills a seat that writes. Because the write requirement binds
 the whole role (above), a route whose worker writes from `worker_balanced`
-seats the claude model there and the meta model nowhere; that route gains the
+seats the next write-capable model there — the claude one, or the openai one
+when Claude is withheld too — and the meta model nowhere; that route gains the
 note `worker_balanced: no write-capable meta seat on claude_code; seated the
-claude one`. Where it does seat, it is a tier-1 seat of a fourth family:
+<family> one`. Where it does seat, it is a tier-1 seat of a fourth family:
 `model-profiles.md` ("The meta reviewer seat") lists what that changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
