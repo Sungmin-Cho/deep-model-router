@@ -505,9 +505,11 @@ def _exactly(total: int) -> bytes:
     unit = pad(60000)
     room = total - len(body)
     full, rest = divmod(room, len(unit))
+    if 0 < rest < len(pad(0)):
+        # Too little left for an event of its own: fold one full unit in, so
+        # the head is sized from rest + one unit (design review i2 fable F1).
+        full, rest = full - 1, rest + len(unit)
     head = pad(rest - len(pad(0))) if rest else b""
-    if rest and len(head) != rest:
-        raise AssertionError("padding arithmetic")
     data = head + unit * full + body
     assert len(data) == total
     return data
@@ -641,6 +643,46 @@ def test_verify_evidence_refuses_a_meta_receipt_without_the_muse_envelope(tmp_pa
     assert "dispatches into muse" in proc.stderr
 
 
+def _promote_stdout(tmp_path, attempt, data: bytes):
+    """A hand-assembled SUCCEEDED `.to_meta` receipt over arbitrary stdout,
+    digest matching, as a forged or stale evidence set would present it."""
+    _promote(tmp_path, attempt, envelope_fmt="muse-exec-jsonl-v1")
+    receipts = tmp_path / "receipts"
+    (receipts / f"{attempt}.stdout").write_bytes(data)
+    path = receipts / f"{attempt}.json"
+    receipt = json.loads(path.read_text())
+    receipt["result"]["output_sha256"] = hashlib.sha256(data).hexdigest()
+    path.write_text(json.dumps(receipt))
+
+
+def _status(tmp_path, attempt):
+    return subprocess.run([sys.executable, str(SCRIPT), "status", "--attempt-id", attempt,
+                           "--receipt-dir", str(tmp_path / "receipts")],
+                          capture_output=True, text=True, timeout=60)
+
+
+def test_a_success_claimed_over_a_failed_stream_is_refused_on_every_reader(tmp_path):
+    """design review i2 sol: the revalidation readers re-decode the stdout, so
+    a SUCCEEDED receipt over a failed muse stream is refused by `status` and
+    `verify-evidence` — typed, not a crash."""
+    _promote_stdout(tmp_path, "v1", FAILED_STREAM.read_bytes())
+    assert _verify(tmp_path, "v1").returncode == 1
+    status = _status(tmp_path, "v1")
+    assert status.returncode == 2, status.stdout + status.stderr
+    assert "Traceback" not in status.stderr
+
+
+def test_an_over_long_integer_is_refused_by_the_revalidation_readers(tmp_path):
+    events = _events()
+    events[0]["payload"]["huge"] = 0
+    data = _dump(events).replace(b'"huge": 0', b'"huge": ' + b"9" * 5000, 1)
+    _promote_stdout(tmp_path, "v1", data)
+    check = _verify(tmp_path, "v1")
+    assert check.returncode == 1 and "Traceback" not in check.stderr, check.stderr
+    status = _status(tmp_path, "v1")
+    assert status.returncode == 2 and "Traceback" not in status.stderr, status.stderr
+
+
 def test_verify_evidence_refuses_a_meta_receipt_graded_as_another_format(tmp_path):
     _promote(tmp_path, "v1", envelope_fmt="muse-exec-jsonl-v1")
     path = tmp_path / "receipts" / "v1.json"
@@ -706,7 +748,8 @@ def test_the_configured_model_never_attests_a_served_model(tmp_path):
 
 def test_the_effort_map_pin_refuses_an_undeclared_family_or_a_moved_spelling():
     """The guard test_the_floor_tables_did_not_move calls, fed mutated
-    configs so that weakening it fails here (design review i1 sol)."""
+    configs so that weakening it fails here (design review i1 sol). The call
+    site itself is the one line in that test; this covers the predicate."""
     from _baseline import baseline_cfg, load_baseline
     from test_baseline_snapshot import effort_map_drift
     old = baseline_cfg(load_baseline())["effort_map"]
@@ -764,13 +807,17 @@ def test_a_document_format_keeps_the_four_mib_bound(tmp_path):
 
 
 def test_model_sync_tick_and_status_run_with_the_meta_row(tmp_path):
-    from test_model_sync import cli_sync, fake_bin, fake_home, new_root, sync_env
+    """In process, with `spawn` captured: a due candidate from the fixture
+    catalogs must not leave a detached `run` behind the test (design review
+    i2 fable F2). The meta row is discovery_unavailable and never spawned."""
+    from test_model_sync import NOW, cli_sync, fake_bin, fake_home, new_root, sync_env
     bindir, _ = fake_bin(tmp_path)
     home = fake_home(tmp_path)
     root = new_root(tmp_path)
     env = sync_env(tmp_path, root, home, bindir)
-    tick = cli_sync(env, "tick")
-    assert tick.returncode == 0, tick.stderr + tick.stdout
+    spawned = []
+    model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert all(META_KEY not in keys for keys in spawned)
     status = cli_sync(env, "status")
     assert status.returncode == 0, status.stderr + status.stdout
     json.loads(status.stdout)

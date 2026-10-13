@@ -123,6 +123,8 @@ def test_the_floor_tables_did_not_move():
     for key in ("worker_selection", "effort_by_work",
                 "role_tiers", "worker_balanced_selection"):
         assert new[key] == old[key], key
+    # The predicate is fed mutated configs in test_meta_seat.py
+    # (test_the_effort_map_pin_refuses_an_undeclared_family_or_a_moved_spelling).
     assert effort_map_drift(old["effort_map"], new) == []
     # `review` is the table Part B changes on purpose (U-1). It is held to the
     # 1.16.1 snapshot plus exactly the edits each rule declares below
