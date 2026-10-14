@@ -136,13 +136,18 @@ def test_the_adapters_fence_mirrors_the_recipe():
 # ---------------------------------------------------------------------------
 
 def without_meta(cfg):
+    """The registry before 1.19.0: no meta seat, and no gemini seat either —
+    1.20.0 added that one behind this one, and leaving it in would let it
+    stand in for the meta seat in exactly the comparisons below."""
     out = copy.deepcopy(cfg)
     keys = [k for k, m in out["models"].items() if m["family"] == "meta"]
+    keys.append("gemini_worker_balanced")
     for k in keys:
         del out["models"][k]
     del out["effort_map"]["meta"]
     for entries in out["transports"].values():
         entries.pop("to_meta", None)
+        entries.pop("to_gemini", None)
     for per_role in out["fallbacks"].values():
         for role, lst in per_role.items():
             per_role[role] = [k for k in lst if k not in keys]

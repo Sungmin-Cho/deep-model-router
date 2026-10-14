@@ -1,0 +1,16 @@
+I1014 11:50:52.488894       1 printmode.go:202] Print mode: starting (promptLength=776, model="gemini-3.8-flash", conversationID="")
+I1014 11:50:52.489193       1 cli_setting_manager.go:156] applyUserSettings: no shared config permissions from /HOME/.gemini/config/config.json
+I1014 11:50:52.489212       1 cli_setting_manager.go:92] CLI settings initialized: permissions=<nil>, toolPermission=always-proceed
+I1014 11:50:54.108061       1 model_resolver.go:155] model alias "gemini-3.8-flash" resolved to "gemini-3.8-flash-medium"
+I1014 11:50:56.292323      73 model_resolver.go:155] model alias "gemini-3.8-flash" resolved to "gemini-3.8-flash-medium"
+I1014 11:50:56.292420     270 model_resolver.go:155] model alias "gemini-3.8-flash" resolved to "gemini-3.8-flash-medium"
+I1014 11:50:56.309385       1 model_resolver.go:155] model alias "gemini-3.8-flash" resolved to "gemini-3.8-flash-medium"
+I1014 11:50:56.309474       1 server.go:1187] Conversation using project ID: dmr-reviewer-v1
+W1014 11:50:56.313661       1 permissions.go:216] Invalid "unsandboxed" permission rules found; they are ignored and grant nothing:
+  ~/.gemini/config/projects/dmr-reviewer-v1.json:
+    • unsandboxed(*)
+
+Fix: replace "unsandboxed" with "command" (e.g. command(git status)), or remove the rule. Edit the file directly or use /permissions.
+I1014 11:50:56.314090       1 cli_setting_manager.go:211] ApplyProjectPermissionGrants: stored 0 allow, 6 deny grants from project "dmr-reviewer-v1"
+I1014 11:50:56.314446       1 session.go:194] Print mode: conversation=7847d401-f736-4e7f-95d2-0ba18e2caf7e, sending message
+I1014 11:50:56.314452       1 printmode.go:894] Print mode: slash command expansion disabled

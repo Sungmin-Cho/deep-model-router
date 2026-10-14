@@ -968,6 +968,8 @@ RECEIPT_KEYS = {
     "child_cwd", "grok_home", "seat_profile", "require_single_linked_cwd", "receipt_guard",
     # 2026-09-25 DD-B9 — the nested-sandbox opt-in, null when undeclared.
     "allow_nested_sandbox",
+    # 2026-10-14 DD-5 — the agy reviewer seat's reserved log, null when undeclared.
+    "agy_log",
 }
 RECEIPT_PROCESS_KEYS = {"pid", "process_group_id", "supervisor_pid"}
 RECEIPT_TIMING_KEYS = {
@@ -990,6 +992,8 @@ RECEIPT_RESULT_KEYS = {
     "artifacts",
     # Issue #19 — ProfileApplied.enforced evidence, null when undeclared.
     "sandbox_events",
+    # 2026-10-14 DD-5 — the agy deny-rule load lines, null when undeclared.
+    "agy_project_grants",
 }
 
 

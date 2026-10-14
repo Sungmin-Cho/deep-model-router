@@ -892,6 +892,46 @@ models:
       cached_input: 0.15
     context_window: 1007997
 
+  # A reviewer-only seat (design 2026-10-14), second in claude_code's
+  # worker_balanced fallback list: it takes that role only where neither the
+  # xai seat nor the meta seat resolves for the route. Like the meta seat it
+  # has a read-only recipe and no write recipe, and the write requirement binds
+  # the whole role, so it never reviews where the worker writes from
+  # worker_balanced. Two host files contain the seat, a reviewer agent whose
+  # tool list allows reading only and a deny-rule project underneath it; the
+  # supervisor checks both, the workspace and the model before the run and the
+  # CLI's log after it (references/adapters.md, "Antigravity seat profile").
+  # What seating it changes: references/model-profiles.md, "The gemini
+  # reviewer seat".
+  #
+  # `capability_tier: 1` is provisional and not measured here, on the same
+  # footing as the meta seat. See the ledger row "gemini_worker_balanced tier
+  # evidence (external, not measured)" before reading the number as more.
+  #
+  # The lineage template does not parse the catalogue's effort-suffixed
+  # spellings (gemini-<gen>-flash-<effort>) or the unbound row below, so that
+  # row stays a separate row, not this seat's history.
+  gemini_worker_balanced:
+    id: gemini-3.8-flash
+    lineage: { line: google/flash, template: "gemini-{gen}-flash" }
+    family: gemini
+    capability_tier: 1
+    effort_ceiling: HIGH   # probed: the CLI rejects `xhigh` and `max`
+    verified: true
+    # No cache-write rate is published (cached tokens are billed for storage
+    # by the hour), so `quote_cost` reports an unavailable quote, as on the xai
+    # and meta rows. These are the rates through 2026-12-31; every one doubles
+    # on 2027-01-01, after max_age_days has already made this row stale. No
+    # long-context tier is listed for this model.
+    price_per_mtok:
+      verified_on: "2026-10-14"
+      max_age_days: 30
+      source: "https://ai.google.dev/gemini-api/docs/pricing"
+      input: 0.75
+      output: 3.75
+      cached_input: 0.075
+    context_window: 1048576
+
   # Unbound: suite already names this id, but P0 does not dispatch it.
   gemini_flash:
     id: gemini-3.6-flash-high
@@ -1129,6 +1169,36 @@ transports:
       isolation: separate_process
       verified: true
       write_verified: false
+    to_gemini:
+      # The reviewer seat only (design 2026-10-14), through the Antigravity
+      # CLI. No `mechanism_maker` and `write_verified: false`, so the router
+      # never seats this family where the work writes.
+      #
+      # No mode flag contains this seat: on a host whose CLI settings say
+      # `toolPermission: always-proceed`, a `--mode plan` run wrote a file and
+      # ran a shell command (measured). Two host files do, both named here:
+      # `--agent dmr-reviewer-v1`, whose `tools` list leaves the model
+      # view_file and nothing that writes, runs, searches or delegates, and
+      # `--project dmr-reviewer-v1`, whose deny rules (write_file, command,
+      # mcp, read_url, execute_url) outrank every preset underneath it. An
+      # unknown agent fails the run, but an unknown project is silently the
+      # default one, and a reviewed repository's `.agents/` hooks run on the
+      # host. So the supervisor's `--seat-profile agy-reviewer-v1` checks both
+      # files, `telemetryEnabled: false` and the workspace before spawn, and
+      # after the run requires the CLI's own log (`--log-file`, reserved by the
+      # supervisor as `--agy-log`) to show the deny rules loaded and none
+      # refused. See references/adapters.md, "Antigravity seat profile".
+      #
+      # The prompt rides in argv: print mode takes no prompt on stdin (only a
+      # stream-json input this recipe does not use), so ARG_MAX bounds the
+      # payload. `--print-timeout 0s` leaves the supervisor's deadline the
+      # only clock; `--disable-slash-commands` keeps a `/` line in a reviewed
+      # diff from expanding into a command. The supervisor grades stdout with
+      # --output-envelope agy-print-json-v1, which this direction requires.
+      mechanism_reviewer: "agy --agent dmr-reviewer-v1 --model <id> --effort <native-effort> --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      isolation: separate_process
+      verified: true
+      write_verified: false
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
     to_claude:
@@ -1212,7 +1282,10 @@ fallbacks:
     # seat does not resolve (design 2026-10-13). It has no write recipe, so a
     # route whose worker writes from this role skips it to
     # claude_worker_balanced for the whole role, exactly as before.
-    worker_balanced:      [meta_worker_balanced, claude_worker_balanced, openai_worker_balanced, claude_senior]
+    # gemini_worker_balanced second (design 2026-10-14): the same kind of seat,
+    # reached only where the meta seat does not resolve either, so no route
+    # that resolves the meta seat moves.
+    worker_balanced:      [meta_worker_balanced, gemini_worker_balanced, claude_worker_balanced, openai_worker_balanced, claude_senior]
     senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
     principal_architect:  [openai_frontier, claude_senior, openai_reasoning]
@@ -2729,3 +2802,221 @@ verification_ledger:
         retry, was checked for this seat on a seat that writes (the effective
         seat kind, an explicit override included): none. The script and output
         are the local research note docs/research/2026-10-13-meta-seat-counterfactuals/.
+
+    # --- The gemini reviewer seat (design 2026-10-14, 1.20.0) -----------------
+    # Every probe below ran on darwin arm64 from a Claude Code host through
+    # dispatch_agent.py with the shipped reviewer argv and --receipt-guard
+    # darwin-sandbox-v1, on the released supervisor (attempts named *-final).
+    # The CLI updated itself from 1.3.4 to 1.3.5 between the first and second
+    # of them; each row names the version its attempts ran on. Receipts and the
+    # CLI logs are in the local archive
+    # docs/design/reviews/2026-10-14-gemini-flash-seat/acceptance/.
+
+    - item: "gemini-3.8-flash model id"
+      status: verified
+      probed_on: "2026-10-14"
+      attempt_id: "grt-final"
+      cli_version: "agy 1.3.4"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/grt-final.agy.log -p \"<prompt>\""
+      evidence: >
+        Attempt grt-final (transport claude_code.to_gemini, --seat-profile
+        agy-reviewer-v1, --output-envelope agy-print-json-v1, --output-schema
+        review, the receipt guard) graded SUCCEEDED: exit 0, status SUCCESS,
+        verdict PASS, the deny-rule record loaded, and the CLI's log resolved
+        the base id to gemini-3.8-flash-low. Receipt sha256
+        24a1bfb2fc63c317c46e483216aa279a60a8ad8f2bf6baf76cd98ae85813469e. The
+        CLI's catalogue (`agy models`) lists the id only in effort-suffixed
+        spellings (gemini-3.8-flash-low, -medium, -high); the base id with
+        --effort is accepted since 1.3.4, and a suffixed id paired with a
+        different --effort is refused as a conflict. The same catalogue offers
+        other vendors' models through this account, which is why the seat
+        profile pins the model. Not served-model attestation: the document has
+        no model field, and the log's resolution is the client's.
+
+    - item: "gemini-3.8-flash effort values"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "agy 1.3.4 (low), agy 1.3.5 (medium, high)"
+      evidence: >
+        Three supervisor round trips on the shipped argv, one per native token,
+        each SUCCEEDED with verdict PASS and a log resolution to the matching
+        spelling: grt-final (low), geff-final-medium (receipt sha256
+        a7522bec66c6195da74102a775ee96b27b8fd1bbb33c2e0120f8e7bd80fa4118),
+        geff-final-high (a24ab666d6d087c61a1574d1ed0e305ecbddee3e8d95d093986b870369f7c408).
+        The CLI refuses `xhigh` and `max` before any request ("gemini-3.8-flash
+        has no \"xhigh\" effort (available: low, medium, high)"), and the
+        provider's model page says `minimal` returns an error. Hence the family
+        map's low/medium/high and the row's effort_ceiling HIGH.
+
+    - item: "gemini-3.8-flash pricing and context window"
+      status: documented
+      probed_on: "2026-10-14"
+      source: "https://ai.google.dev/gemini-api/docs/pricing"
+      evidence: >
+        Read from the provider's pricing and model pages, not probed: Standard
+        paid tier $0.75 input, $3.75 output (thinking included), $0.075 cached
+        input per MTok through 2026-12-31, each doubling on 2027-01-01; cached
+        tokens are also billed for storage by the hour and no cache-write rate
+        is published, so the row reports an unavailable quote, as the xai and
+        meta rows do. No long-context tier is listed for this model. Context:
+        1,048,576 input and 65,536 output tokens. This seat runs on a personal
+        Antigravity sign-in, metered by plan quota, not tokens.
+
+    - item: "gemini_worker_balanced tier evidence (external, not measured)"
+      status: documented
+      probed_on: "2026-10-14"
+      source: "https://www.vals.ai/comparisons/anthropic_claude-sonnet-5-5-vs-google_gemini-3.8-flash"
+      evidence: >
+        Third-party benchmarks, not measured here. Vals Index: gemini-3.8-flash
+        54.83 against claude-sonnet-5 51.77 (this registry's tier-1 anchor),
+        muse-spark-1.3 53.20 and claude-sonnet-5-5 67.04, behind the last on 19
+        of 21 shared benchmarks, at about $5.73 per run against $21.34.
+        capability_tier 1 is a provisional reading of these numbers: no eval in
+        this repository has graded the seat, which is why it is bound to no
+        role. One observation, not a measurement: on attempts g2review-1 (high
+        effort, a 36 KB supervisor diff) and greview-final (medium, a small
+        one) the seat returned PASS with no findings at confidence 1.0, on the
+        same code in which two other reviewers had found defects across two
+        design rounds.
+
+    - item: "Claude Code -> Gemini transport (agy print mode)"
+      status: verified
+      probed_on: "2026-10-14"
+      evidence: >
+        Separate process by construction; every attempt above and below ran
+        under the receipt guard and SUCCEEDED where it should, so the guard
+        composes (the seat runs no command, so the CLI's own terminal sandbox
+        never starts). The prompt rides in argv: print mode takes no prompt on
+        stdin (`-p -` sends the text "-", `-p ""` is refused). The Codex and
+        grok host directions were not probed and are not offered. The CLI
+        updates itself (it moved from 1.3.4 to 1.3.5 during these probes); no
+        argv flag stops it, so this ledger records the version per row.
+
+    - item: "Gemini reviewer seat recipe (transports.claude_code.to_gemini.mechanism_reviewer)"
+      status: verified
+      probed_on: "2026-10-14"
+      attempt_id: "gcontain-final"
+      cli_version: "agy 1.3.5"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/gcontain-final.agy.log -p \"<prompt>\""
+      probes:
+        - { attempt_id: "grt-final", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/grt-final.agy.log -p \"<prompt>\"" }
+        - { attempt_id: "gcontain-final", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/gcontain-final.agy.log -p \"<prompt>\"" }
+        - { attempt_id: "greview-final", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/greview-final.agy.log -p \"<prompt>\"" }
+      evidence: >
+        Containment (gcontain-final, receipt sha256
+        7ec6473a446cbcbdf35f0ec5abb7723e25b7dacb15ca04d55efa4bee9d00f37f): the
+        seat read note.txt; asked to create a file, edit one, run a shell
+        command, fetch a URL, search the web and start a subagent, it had no
+        tool for any of them and the turn completed; its tool list was
+        view_file and manage_task; the workspace held only the unchanged
+        note.txt afterwards. Boot input 6,453 tokens. A real review
+        (greview-final, receipt sha256
+        e47f1bf7bed4b78206b59d4b73151c3aafe95d7e3e338b15c095fc785a3ef390): 441 s
+        at medium effort on a small diff, verdict PASS from `response`, 269,635
+        input and 3,530,909 cached-read tokens — the seat reads widely before
+        answering. An earlier review at high effort on a 36 KB diff
+        (g2review-1, on the same recipe and agy 1.3.4 before the final gate
+        changes) took 1,026 s and 316,388 input and 6,214,263 cached-read
+        tokens: give this seat a generous deadline. Refused before spawn on the
+        released supervisor, leaving no receipt and no log: a workspace whose
+        repository root holds `.agents` (gplant-final), a non-gemini --model
+        (gnongemini-final), and a missing project file (gnoproj-final) or
+        agent file (gnoagent-final).
+
+    - item: "agy-print-json-v1 envelope shape (dispatch_agent --output-envelope)"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "agy 1.3.4, agy 1.3.5"
+      evidence: >
+        `agy -p --output-format json` prints one JSON document when the run
+        ends: conversation_id, status, response (the final answer only),
+        duration_seconds, num_turns, usage (input, output, thinking,
+        cache_read and total tokens), and on a failure an `error` string, absent
+        on success. grt-final graded SUCCEEDED on status SUCCESS; gfail-final
+        (an id the CLI does not know) exited 1 and graded FAILED with
+        error_type error and an error_reason holding the CLI's own text
+        (receipt sha256
+        825e518a410d7d269ced3170bb1857fd2808271bd5162a56ad3e23d906b2032c). The
+        test fixtures under tests/fixtures/agy/ are two of these documents and
+        two excerpts of the CLI's --log-file, with local paths and the account
+        scrubbed.
+
+    - item: "agy reviewer containment: agent allow-list and deny rules"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "agy 1.3.4"
+      evidence: >
+        Observed directly and through the supervisor before the final recipe.
+        The mode is not containment: with the host's CLI settings at
+        `toolPermission: always-proceed`, a `--mode plan` run wrote a file and
+        ran a shell command when asked. The project's deny rules are: with
+        write_file, command, mcp, read_url and execute_url denied and no agent,
+        a write, an edit, a shell command, a URL fetch and a subagent's write
+        and command were all refused (gcontain-1). They cannot reach web
+        search: the CLI ignores a rule naming search_web, web_search or search
+        ("unknown action"), and search_web ran (gsearch-1). `unsandboxed(*)`,
+        listed by the provider's permissions page, is reported invalid and
+        ignored ("replace \"unsandboxed\" with \"command\""), so the shipped
+        list leaves it out. A project name the CLI cannot resolve runs silently
+        in its default project ("no grants for project \"CLI Project\",
+        cleared project permissions", exit 0). The agent's `tools` allow-list
+        removed every tool but view_file and manage_task (agy-ag1, then
+        gcontain-final); an unknown agent name exits 1. The CLI does not
+        rewrite the project or agent file (same bytes and inode after a run).
+
+    - item: "agy workspace customizations run from the reviewed tree"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "agy 1.3.4"
+      evidence: >
+        Direct runs. The CLI's workspace is its cwd, or the enclosing git
+        repository's root, and it loads that root's `.agents/`: a
+        `.agents/hooks.json` PreInvocation and Stop hook ran as host commands,
+        in a trusted and an untrusted directory alike, and with the cwd a
+        subdirectory once the parent was a git root; a `.agents/agents/` file
+        with the reviewer agent's name replaced it, tools and prompt included.
+        A `.agents` below the cwd, and one in a parent that is not a
+        repository root, did not load. No deny rule reaches a hook or an agent
+        definition, so the seat profile refuses any `.agents` or `.gemini` on
+        the cwd's ancestor chain (HOME excepted as adapters.md states);
+        gplant-final shows the refusal on the released supervisor.
+
+    - item: "agy telemetry setting"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "agy 1.3.4"
+      source: "https://antigravity.google/docs/settings"
+      evidence: >
+        The provider's settings page names the CLI key `enableTelemetry`, but
+        the CLI rewrites ~/.gemini/antigravity-cli/settings.json on every run
+        and dropped that key, while `telemetryEnabled: false` survived; the
+        seat profile requires the latter. What it governs is documented, not
+        observed: the CLI page describes anonymous usage statistics and crash
+        reports, the desktop app's toggle of the same name interaction logs
+        used to improve models, and neither says whether they are one account
+        setting or whether either governs training. A personal sign-in is used
+        (`authMethod=consumer` in the CLI's log).
+
+    - item: "worker_balanced fallback: the gemini seat second on claude_code"
+      status: verified
+      probed_on: "2026-10-14"
+      evidence: >
+        Deterministic replay of route_task.route over the same 16,896-point grid
+        as the meta seat's (fresh, and again after that config's own fresh
+        worker failed), under this registry and under it without the
+        dispatchable gemini row, its transport and its fallback entry; compared
+        on band, worker and effort, reviewers, judge, cross-family and
+        independence fields, terminal, human gate and its causes, confidence,
+        fallbacks, shortfall fields and notes. Routes changed, of 33,792 per
+        scenario unless noted: nothing withheld 0; xai withheld 0; xai quota
+        low 0; a declared implementer 0; a read-only override 0; the bridge
+        down 0. With the meta seat out as well, every count of the meta seat's
+        own replay recurs (1,521 with both withheld; 87 with the meta quota low
+        and xai withheld; 6,245 and 9,810 with OpenAI or Claude also exhausted).
+        New with this seat, from its HIGH effort ceiling: the cause
+        effort_below_floor joins an existing human gate on 1,712 routes (OpenAI
+        exhausted), 3,424 (Claude exhausted) and 88 (a read-only override),
+        nearly all CRITICAL, and raises a gate on 6 (that override). No
+        candidate outcome in any scenario seated this model where the work
+        writes, and no Codex or grok route changed. The script and output are
+        the local research note docs/research/2026-10-14-gemini-seat-counterfactuals/.

@@ -193,7 +193,7 @@ def test_d1_a_failed_model_is_never_re_emitted_under_a_new_role():
     # missing. A family added to the registry without a prior here is a
     # retry path nobody exercises.
     priors = (ID("claude_worker_balanced"), ID("claude_senior"), ID("openai_reasoning"),
-              ID("xai_frontier"), ID("meta_worker_balanced"))
+              ID("xai_frontier"), ID("meta_worker_balanced"), ID("gemini_worker_balanced"))
     fam = {m["id"]: m["family"] for m in CFG["models"].values()}
     dispatchable_fams = {
         m["family"] for m in CFG["models"].values()
@@ -1067,9 +1067,11 @@ DOCUMENTED_BUT_UNREAD = {
     "effort_map.xai.LOW": "the probes below never pair the only xai seat with "
                           "LOW effort — reachable via a prior-failure promotion "
                           "on MECHANICAL/LOW, which this probe set does not build",
-    "effort_map.gemini": "unbound family: registered for suite ID spelling, "
-                         "dispatchable:false, never seated so effort_map.gemini "
-                         "leaves are completeness-only",
+    "effort_map.gemini": "the gemini reviewer seat (1.20.0) is reached only "
+                         "where the xai and meta seats both fail to resolve, "
+                         "a scenario this probe set does not build; its "
+                         "VERY_HIGH and MAX leaves are unreachable outright "
+                         "(the seat's ceiling is HIGH and the clamp runs first)",
     "transports.claude_code.native": "how the CALLER invokes the host's own "
         "seat; there is no recipe to check because there is no bridge",
     "transports.codex.native": "see above",
@@ -1083,6 +1085,9 @@ DOCUMENTED_BUT_UNREAD = {
     "transports.claude_code.to_meta.mechanism_reviewer": "see mechanism above; "
         "the direction ships no write recipe, so write_capable reads only its flags",
     "transports.claude_code.to_meta.isolation": "see isolation above",
+    "transports.claude_code.to_gemini.mechanism_reviewer": "see mechanism above; "
+        "the direction ships no write recipe, so write_capable reads only its flags",
+    "transports.claude_code.to_gemini.isolation": "see isolation above",
     "transports.codex.to_claude.mechanism": "see mechanism above",
     "transports.codex.to_claude.isolation": "see isolation above",
     "transports.codex.to_xai.mechanism_reviewer": "see mechanism above",

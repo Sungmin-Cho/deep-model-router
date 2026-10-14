@@ -499,8 +499,12 @@ nothing — and clear the leftover before re-dispatching, or the next attempt's
 baseline starts from the supervisor's own bytes. A muse seat's
 `envelope_unparseable` (a stdout line that is not one of its events) and
 `evidence_oversized` (a stream past the format's 16 MiB) are the same class: a
-CLI or recipe defect, never the model failing the review. Who reports failure
-history is always the caller; the router changes nothing here.
+CLI or recipe defect, never the model failing the review. So are an agy
+seat's `agy_project_grants:*` (its log did not show the deny-rule project
+loaded — fix the host's project file or the recipe, and treat the run as one
+that was not contained) and `agy_log_identity_replaced:*`; a pre-spawn refusal
+of that seat is a host configuration defect and never reaches a receipt. Who
+reports failure history is always the caller; the router changes nothing here.
 
 ## Reading verdicts
 

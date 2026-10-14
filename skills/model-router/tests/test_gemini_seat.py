@@ -1,0 +1,1101 @@
+"""The gemini reviewer seat (design 2026-10-14, model-router 1.20.0).
+
+A dispatchable row in the gemini family, reachable from Claude Code hosts only,
+through a read-only `agy` print-mode recipe and no write recipe. It is bound to
+no role and sits SECOND in claude_code's worker_balanced fallback list, after
+the meta seat, so it is seated only where neither the xai seat nor the meta
+seat resolves for the route — and never where the work writes.
+
+No agy flag contains this seat. The supervisor's `agy-reviewer-v1` profile
+checks the reviewer agent, the deny-rule project, the telemetry setting and
+the workspace before spawn, and the CLI's own log after the run. Every file
+under fixtures/agy/ is a real agy 1.3.4 capture (the logs are excerpts) with
+local paths and the account scrubbed; the fake `agy` below writes log lines in
+the same spelling, which test_the_real_log_excerpts_grade_as_captured pins.
+Nothing here runs the CLI or a model.
+
+Run:  python3 -m pytest skills/model-router/tests/test_gemini_seat.py -q
+"""
+
+import copy
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SKILL = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SKILL / "scripts"))
+
+import dispatch_agent  # noqa: E402
+import lineage  # noqa: E402
+import model_sync  # noqa: E402
+from route_task import Policy, Task, load_config, route  # noqa: E402
+
+CFG = load_config()
+ID = lambda key: CFG["models"][key]["id"]                        # noqa: E731
+POLICY = Policy.of(CFG)
+SEAT_KEY = "gemini_worker_balanced"
+GEMINI = ID(SEAT_KEY)
+META = ID("meta_worker_balanced")
+XAI = ID("xai_frontier")
+BOTH_OUT = [XAI, META]
+SCRIPT = SKILL / "scripts" / "dispatch_agent.py"
+FIXTURES = SKILL / "tests" / "fixtures" / "agy"
+RECIPE = CFG["transports"]["claude_code"]["to_gemini"]["mechanism_reviewer"]
+LOADED = dispatch_agent.AGY_GRANTS_LOADED
+PROJECT = dispatch_agent.AGY_REVIEWER_PROJECT
+
+
+# ---------------------------------------------------------------------------
+# The registry row, the family map and the transport
+# ---------------------------------------------------------------------------
+
+def test_the_row_is_a_dispatchable_tier_1_seat_bound_to_no_role():
+    row = CFG["models"][SEAT_KEY]
+    assert row["family"] == "gemini"
+    assert row["capability_tier"] == 1
+    assert row.get("dispatchable", True) is True
+    assert row["effort_ceiling"] == "HIGH"
+    bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
+    assert SEAT_KEY not in bound
+
+
+def test_the_unbound_gemini_row_is_untouched_and_outside_the_lineage():
+    """deep-loop pins the unbound row's id; the seat's lineage must not adopt
+    it as history, nor the catalogue's effort-suffixed spellings as successors."""
+    old = CFG["models"]["gemini_flash"]
+    assert old["dispatchable"] is False and old["verified"] is False
+    template = CFG["models"][SEAT_KEY]["lineage"]["template"]
+    assert lineage.parse(template, GEMINI) is not None
+    assert lineage.parse(template, old["id"]) is None
+    for effort in ("low", "medium", "high"):
+        assert lineage.parse(template, f"{GEMINI}-{effort}") is None
+
+
+def test_the_ceiling_keeps_every_routed_effort_inside_the_probed_tokens():
+    """The CLI accepts low, medium and high only; the ceiling clamps before the
+    family map is read, so VERY_HIGH and MAX never reach it for this seat."""
+    assert POLICY.ceiling_of[GEMINI] == "HIGH"
+    probed = {"low", "medium", "high"}
+    for level in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
+        assert CFG["effort_map"]["gemini"][level] in probed, level
+
+
+def test_only_claude_code_offers_the_seat_and_only_to_read():
+    for runtime, entries in CFG["transports"].items():
+        assert ("to_gemini" in entries) == (runtime == "claude_code"), runtime
+    entry = CFG["transports"]["claude_code"]["to_gemini"]
+    assert entry["verified"] is True and entry["write_verified"] is False
+    assert set(k for k in entry if k.startswith("mechanism")) == {"mechanism_reviewer"}
+    for runtime in CFG["runtimes"]:
+        assert POLICY.write_capable(runtime, "gemini") is False, runtime
+
+
+def test_the_fallback_lists_name_the_seat_second_on_claude_code_only():
+    for runtime, per_role in CFG["fallbacks"].items():
+        for role, keys in per_role.items():
+            if runtime == "claude_code" and role == "worker_balanced":
+                assert keys == ["meta_worker_balanced", SEAT_KEY, "claude_worker_balanced",
+                                "openai_worker_balanced", "claude_senior"], keys
+            else:
+                assert SEAT_KEY not in keys, (runtime, role)
+
+
+def _recipe_argv(log="/abs/agy.log", prompt="review this"):
+    toks = RECIPE.replace('"<prompt>"', "<prompt>").split()
+    subs = {"<id>": GEMINI, "<native-effort>": "medium", "<agy-log>": log, "<prompt>": prompt}
+    return [subs.get(t, t) for t in toks]
+
+
+def test_the_reviewer_recipe_is_the_profile_argv():
+    """The shipped string, with its slots filled, is exactly what the
+    supervisor admits — so the YAML and the gate cannot drift apart."""
+    argv = _recipe_argv()
+    assert dispatch_agent._agy_argv_problem(argv, Path("/abs/agy.log"), GEMINI) is None
+    flags, _ = dispatch_agent._agy_flag_view(argv)
+    assert flags["agent"] == dispatch_agent.AGY_REVIEWER_AGENT
+    assert flags["project"] == PROJECT
+    assert flags["output-format"] == "json"
+    assert flags["print-timeout"] == "0s"
+    assert flags["disable-slash-commands"] == "true"
+    for forbidden in ("--mode", "--dangerously-skip-permissions", "--add-dir",
+                      "--sandbox", "--continue", "|"):
+        assert forbidden not in RECIPE.split(), forbidden
+
+
+def test_the_ledger_row_binds_the_shipped_recipe():
+    from test_docs import _assert_direction_row_binds, _whole_token
+    needle = "transports.claude_code.to_gemini.mechanism_reviewer"
+    rows = [e for e in CFG["verification_ledger"]["entries"]
+            if _whole_token(needle, str(e.get("item", "")))]
+    assert rows, "no ledger row vouches for the gemini reviewer recipe"
+    for row in rows:
+        assert row["status"] == "verified", row["item"]
+        _assert_direction_row_binds(RECIPE, row, row["item"])
+
+
+def test_the_adapters_fences_mirror_the_recipe_and_the_project():
+    text = (SKILL / "references" / "adapters.md").read_text()
+    fences = re.findall(r"```bash\n(agy [^`]*)```", text)
+    assert fences, "adapters.md has no agy fence"
+    want = RECIPE.split()
+    assert any([t for t in f.split() if t != "\\"] == want for f in fences), fences
+    docs = re.findall(r"```json\n(\{[^`]*\"" + PROJECT + r"\"[^`]*)```", text)
+    assert docs, "adapters.md does not show the reviewer project document"
+    assert json.loads(docs[0]) == dispatch_agent.AGY_REVIEWER_PROJECT_DOC
+    agents = re.findall(r"```markdown\n(---\nname: " + dispatch_agent.AGY_REVIEWER_AGENT
+                        + r"\n[^`]*)```", text)
+    assert agents == [dispatch_agent.AGY_REVIEWER_AGENT_TEXT], agents
+
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+
+def without_seat(cfg):
+    out = copy.deepcopy(cfg)
+    del out["models"][SEAT_KEY]
+    for entries in out["transports"].values():
+        entries.pop("to_gemini", None)
+    for per_role in out["fallbacks"].values():
+        for role, lst in per_role.items():
+            per_role[role] = [k for k in lst if k != SEAT_KEY]
+    return out
+
+
+BASE = without_seat(CFG)
+CLASSES = list(CFG["worker_selection"])
+
+
+def _project(r):
+    rv = r.get("review") or {}
+    return (r.get("terminal"), r.get("selected_model"), r.get("selected_effort_effective"),
+            tuple(rv.get("reviewer_models") or ()), rv.get("judge_model"), rv.get("band"),
+            r.get("cross_family_review"), r.get("routing_confidence"),
+            tuple(r.get("notes") or ()), tuple(r.get("fallbacks_applied") or ()))
+
+
+def _emitted(r):
+    rv = r.get("review") or {}
+    return {r.get("selected_model"), rv.get("judge_model"), *(rv.get("reviewer_models") or ())}
+
+
+@pytest.mark.parametrize("withheld", [[], [XAI]], ids=["all_up", "xai_out"])
+@pytest.mark.parametrize("runtime", sorted(CFG["runtimes"]))
+def test_while_the_meta_seat_resolves_no_route_moves(runtime, withheld):
+    for cls in CLASSES:
+        for dims in ((0, 0, 0, 0), (1, 1, 1, 1), (2, 1, 2, 1), (3, 2, 3, 2)):
+            kw = dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                      blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
+                      unavailable_models=withheld)
+            assert _project(route(Task(**kw), CFG)) == _project(route(Task(**kw), BASE)), (cls, dims)
+
+
+@pytest.mark.parametrize("extra", [
+    {"_family_quota": {"xai": "low"}},
+    {"_review_context": {"target_sha256": "0" * 64, "author_families": ["xai"]}},
+    "allowed-without-xai",
+], ids=["xai-low", "xai-author", "allowed-without-xai"])
+def test_the_other_ways_the_xai_seat_drops_out_move_nothing_either(extra):
+    """design review r1 fable: the replay covers these; the suite pins them."""
+    if extra == "allowed-without-xai":
+        extra = {"_local_policy": {"allowed_families": sorted(
+            f for f in POLICY.families if f != "xai")}}
+    for cls in CLASSES:
+        if "_review_context" in extra and cls != "REVIEW":
+            continue
+        for dims in ((1, 1, 1, 0), (2, 1, 2, 1), (3, 2, 3, 2)):
+            kw = dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                      blast_radius=dims[2], reversibility=dims[3], runtime="claude_code",
+                      **copy.deepcopy(extra))
+            assert _project(route(Task(**kw), CFG)) == _project(route(Task(**kw), BASE)), (cls, dims)
+
+
+def test_the_high_ceiling_adds_its_cause_to_a_gate_already_raised():
+    """r2 sol: most of the disclosed cases join an existing CRITICAL gate."""
+    kw = dict(task_class="DOCUMENTATION", complexity=0, uncertainty=1, blast_radius=3,
+              reversibility=3, runtime="claude_code", unavailable_models=BOTH_OUT,
+              worker_seat="read_only")
+    after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+    assert before["requires_human_confirmation"] is True
+    assert "effort_below_floor" not in (before.get("human_control_causes") or [])
+    assert "effort_below_floor" in after["human_control_causes"]
+
+
+def test_the_high_ceiling_can_raise_a_human_gate_and_says_why():
+    """design review r1 sol F4 / fable F2: where this seat becomes a worker a
+    floor wanted at VERY_HIGH, the effort is capped at HIGH and the route asks
+    for a human with `effort_below_floor`; the registry without the seat seated
+    a model that reached the floor."""
+    kw = dict(task_class="DOCUMENTATION", complexity=3, uncertainty=3, blast_radius=0,
+              reversibility=0, runtime="claude_code", unavailable_models=BOTH_OUT,
+              worker_seat="read_only")
+    after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+    assert after["selected_model"] == GEMINI
+    assert after["selected_effort_effective"] == "HIGH"
+    assert "effort_below_floor" in after["human_control_causes"]
+    assert after["requires_human_confirmation"] is True
+    assert "effort_below_floor" not in (before.get("human_control_causes") or [])
+    assert before["requires_human_confirmation"] is False
+
+
+@pytest.mark.parametrize("runtime", ["codex", "grok"])
+def test_no_other_host_ever_seats_the_gemini_model(runtime):
+    for cls in CLASSES:
+        for extra in ({"unavailable_models": BOTH_OUT},
+                      {"unavailable_models": BOTH_OUT, "_family_quota": {"openai": "exhausted"}},
+                      {"unavailable_models": BOTH_OUT, "_family_quota": {"claude": "exhausted"}}):
+            out = route(Task(task_class=cls, complexity=1, uncertainty=1, blast_radius=1,
+                             reversibility=1, runtime=runtime, **extra), CFG)
+            assert GEMINI not in _emitted(out), (cls, extra)
+
+
+def test_a_read_route_with_xai_and_meta_out_seats_gemini_as_the_lead():
+    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="claude_code", unavailable_models=BOTH_OUT), CFG)
+    assert out["selected_model"] == GEMINI
+    assert out["review"]["reviewer_models"] == [GEMINI]
+    assert any(f.endswith(f"-> {GEMINI}") for f in out["fallbacks_applied"])
+
+
+def test_an_exhausted_meta_quota_is_the_meta_seat_out():
+    out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=0, runtime="claude_code", unavailable_models=[XAI],
+                     _family_quota={"meta": "exhausted"}), CFG)
+    assert out["selected_model"] == GEMINI
+
+
+def test_an_author_excluded_meta_seat_seats_gemini_with_xai_out():
+    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="claude_code", unavailable_models=[XAI],
+                     _review_context={"target_sha256": "0" * 64,
+                                      "author_families": ["meta"]}), CFG)
+    assert out["selected_model"] == GEMINI
+
+
+WRITE_AT_BALANCED = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1,
+                         blast_radius=2, reversibility=1, runtime="claude_code",
+                         unavailable_models=BOTH_OUT)
+
+
+def test_the_write_filter_is_per_role_so_a_balanced_writer_keeps_gemini_off_review():
+    out = route(Task(**WRITE_AT_BALANCED), CFG)
+    assert out["selected_role"] == "worker_balanced"
+    assert out["selected_model"] == ID("claude_worker_balanced")
+    assert GEMINI not in _emitted(out)
+    assert any("no write-capable gemini seat on claude_code" in n for n in out["notes"]), \
+        out["notes"]
+
+
+@pytest.mark.parametrize("cls", ["IMPLEMENTATION", "DEBUGGING", "MIGRATION", "REFACTORING"])
+def test_the_gemini_model_never_fills_a_write_seat(cls):
+    for dims in ((1, 1, 1, 1), (2, 1, 2, 1), (2, 2, 2, 1), (3, 3, 2, 2)):
+        for extra in ({"unavailable_models": BOTH_OUT},
+                      {"unavailable_models": BOTH_OUT, "_family_quota": {"openai": "exhausted"}},
+                      {"unavailable_models": BOTH_OUT, "_family_quota": {"claude": "exhausted"}},
+                      {"unavailable_models": [XAI], "_family_quota": {"meta": "low"}}):
+            out = route(Task(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                             blast_radius=dims[2], reversibility=dims[3],
+                             runtime="claude_code", **extra), CFG)
+            assert out["selected_model"] != GEMINI, (cls, dims, extra)
+
+
+def test_a_write_override_on_a_read_class_never_seats_gemini():
+    for cls in ("REVIEW", "INVESTIGATION"):
+        out = route(Task(task_class=cls, complexity=1, uncertainty=1, blast_radius=1,
+                         reversibility=1, runtime="claude_code", worker_seat="write",
+                         unavailable_models=BOTH_OUT), CFG)
+        assert out["selected_model"] != GEMINI, cls
+
+
+def test_an_allowed_families_list_of_gemini_alone_cannot_staff_a_write_route():
+    out = route(Task(task_class="IMPLEMENTATION", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="claude_code",
+                     _local_policy={"allowed_families": ["gemini"]}), CFG)
+    assert out["terminal"] is not None
+    assert out["selected_model"] is None
+
+
+def test_the_unbound_gemini_row_is_still_never_emitted():
+    for extra in ({}, {"unavailable_models": BOTH_OUT}):
+        out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                         reversibility=1, runtime="claude_code", **extra), CFG)
+        assert ID("gemini_flash") not in _emitted(out)
+
+
+def test_a_downed_bridge_never_reaches_the_gemini_seat():
+    for cls in CLASSES:
+        out = route(Task(task_class=cls, complexity=1, uncertainty=1, blast_radius=1,
+                         reversibility=1, runtime="claude_code", flags=["bridge_down"],
+                         unavailable_models=BOTH_OUT), CFG)
+        assert GEMINI not in _emitted(out), cls
+
+
+# ---------------------------------------------------------------------------
+# The supervisor: agy-print-json-v1 and agy-reviewer-v1
+# ---------------------------------------------------------------------------
+
+SUCCESS_DOC = FIXTURES / "agy-1.3.4-success.json"
+ERROR_DOC = FIXTURES / "agy-1.3.4-error.json"
+REVIEW_TEXT = "Looked at the diff; nothing blocks it.\n=== REVIEW ===\nverdict: PASS\nconfidence: 0.9\n"
+
+
+def _home(tmp_path, *, project=None, settings=None, agent=None) -> Path:
+    home = tmp_path / "home"
+    projects = home / ".gemini" / "config" / "projects"
+    projects.mkdir(parents=True, exist_ok=True)
+    agents = home / ".gemini" / "config" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    text = dispatch_agent.AGY_REVIEWER_AGENT_TEXT if agent is None else agent
+    if text is not False:
+        (agents / f"{dispatch_agent.AGY_REVIEWER_AGENT}.md").write_text(text)
+    cli = home / ".gemini" / "antigravity-cli"
+    cli.mkdir(parents=True, exist_ok=True)
+    doc = dispatch_agent.AGY_REVIEWER_PROJECT_DOC if project is None else project
+    if doc is not False:
+        (projects / f"{PROJECT}.json").write_text(json.dumps(doc))
+    conf = {"toolPermission": "always-proceed", "telemetryEnabled": False} \
+        if settings is None else settings
+    if conf is not False:
+        (cli / "settings.json").write_text(json.dumps(conf))
+    return home
+
+
+def _fake_agy(tmp_path, *, doc=None, exit_code=0, grants=(LOADED,), resolved=None,
+              replace_log=False, extra_lines=()) -> Path:
+    """An executable named `agy` that writes the given log lines to its
+    `--log-file` and the given document to stdout."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    resolved = resolved or f"{GEMINI}-medium"
+    body = json.loads(SUCCESS_DOC.read_text()) if doc is None else doc
+    if doc is None:
+        body["response"] = REVIEW_TEXT
+    lines = [f'I1014 11:00:00.000000       1 model_resolver.go:155] model alias '
+             f'"{GEMINI}" resolved to "{resolved}"']
+    lines += [f"I1014 11:00:01.000000       1 cli_setting_manager.go:211] "
+              f"ApplyProjectPermissionGrants: {g}" for g in grants]
+    lines += list(extra_lines)
+    fake = bindir / "agy"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "log = args[args.index('--log-file') + 1]\n"
+        f"if {replace_log!r}:\n"
+        "    os.unlink(log)\n"
+        f"with open(log, 'a') as f:\n"
+        f"    f.write({json.dumps(chr(10).join(lines) + chr(10))})\n"
+        f"sys.stdout.write({json.dumps(json.dumps(body))})\n"
+        "sys.stdout.flush()\n"
+        f"sys.exit({exit_code})\n")
+    fake.chmod(0o755)
+    return fake
+
+
+def _argv(fake: Path, log: Path, **override):
+    argv = _recipe_argv(log=str(log), prompt="Review the diff. End with a verdict line.")
+    argv[0] = str(fake)
+    for flag, value in override.items():
+        i = argv.index(flag)
+        argv[i + 1] = value
+    return argv
+
+
+def _workspace(tmp_path) -> Path:
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    return ws
+
+
+def _run(tmp_path, argv, *, home, log, attempt="g1", extra=None, transport="claude_code.to_gemini",
+         schema="review", cwd=None, model_id=GEMINI):
+    base = ["--output-envelope", "agy-print-json-v1", "--seat-profile", "agy-reviewer-v1",
+            "--agy-log", str(log), "--transport-id", transport,
+            "--child-cwd", str(cwd or _workspace(tmp_path))]
+    if model_id is not None:
+        base += ["--model-id", model_id]
+    env = {**os.environ, "HOME": str(home)}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "run", "--attempt-id", attempt,
+         "--receipt-dir", str(tmp_path / "receipts"), "--deadline-seconds", "60",
+         "--grace-seconds", "1", "--seat", "reviewer-1", "--output-schema", schema,
+         *(base if extra is None else extra), "--", *argv],
+        capture_output=True, text=True, timeout=120, env=env)
+    path = tmp_path / "receipts" / f"{attempt}.json"
+    return proc, (json.loads(path.read_text()) if path.exists() else None)
+
+
+def test_a_contained_review_is_succeeded_with_its_verdict_and_grants(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path), log), home=home, log=log)
+    assert proc.returncode == 0, proc.stderr
+    result = receipt["result"]
+    assert result["state"] == "SUCCEEDED" and result["verdict"] == "PASS"
+    assert result["envelope"]["stop_reason"] == "SUCCESS"
+    assert result["envelope"]["error_type"] is None
+    assert result["envelope"]["usage"]["input_tokens"] > 0
+    assert result["agy_project_grants"]["lines"] == [LOADED]
+    assert result["agy_project_grants"]["resolved_model"] == f"{GEMINI}-medium"
+    assert receipt["seat_profile"] == "agy-reviewer-v1"
+    assert receipt["agy_log"] == str(log)
+    assert set(result["envelope"]) == {"parse_ok", "stop_reason", "session_id",
+                                       "served_models", "error_type", "usage", "error_reason"}
+
+
+def test_a_failed_document_is_failed_and_says_why(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path, doc=json.loads(ERROR_DOC.read_text()), exit_code=1)
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert receipt["result"]["state"] == "FAILED"
+    env = receipt["result"]["envelope"]
+    assert env["error_type"] == "error" and env["stop_reason"] == "ERROR"
+    assert "not recognized" in env["error_reason"]
+
+
+@pytest.mark.parametrize("doc", [
+    {"status": "SUCCESS", "response": REVIEW_TEXT, "error": ""},
+    {"status": "SUCCESS", "response": REVIEW_TEXT, "error": None},
+    {"status": "CANCELED", "response": REVIEW_TEXT},
+    {"status": "INTERRUPTED", "response": REVIEW_TEXT},
+    {"response": REVIEW_TEXT},
+    {"status": "success", "response": REVIEW_TEXT},
+    {"status": "SUCCESS"},
+    {"status": "SUCCESS", "response": None},
+    {"status": "SUCCESS", "response": 123},
+    {"status": "SUCCESS", "response": [REVIEW_TEXT]},
+], ids=["empty-error", "null-error", "canceled", "interrupted", "no-status", "lowercase",
+        "no-response", "null-response", "numeric-response", "array-response"])
+def test_anything_but_a_clean_success_document_is_invalid_output(tmp_path, doc):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path, doc=doc), log), home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT", receipt["result"]
+    assert receipt["result"]["verdict"] is None
+
+
+def test_an_error_reason_is_capped():
+    env = dispatch_agent._decode_envelope(
+        json.dumps({"status": "ERROR", "error": "x" * 5000}).encode(),
+        dispatch_agent.AGY_JSON_FORMAT)
+    assert len(env["error_reason"]) == dispatch_agent.AGY_ERROR_REASON_MAX_CHARS
+
+
+@pytest.mark.parametrize("data", [b"[]", b"PONG", b'{"status": "SUCCESS", "response": 1e999999}',
+                                  b'{"status": "SUCCESS", "n": ' + b"9" * 5000 + b"}"],
+                         ids=["array", "text", "huge-float", "long-int"])
+def test_a_document_that_is_not_one_object_is_unparseable(data):
+    env = dispatch_agent._decode_envelope(data, dispatch_agent.AGY_JSON_FORMAT)
+    # A non-string `response` (Python reads 1e999999 as inf) parses but
+    # carries no answer, so no verdict can be read from it.
+    assert dispatch_agent._grade_envelope(env) == ["envelope_unparseable"] or env["text"] is None
+
+
+def test_the_document_keeps_the_shared_four_mib_budget():
+    assert dispatch_agent._envelope_budget("agy-print-json-v1") == dispatch_agent.ENVELOPE_MAX_BYTES
+
+
+# --- the grants gate ------------------------------------------------------
+
+@pytest.mark.parametrize("grants,why", [
+    ((), "none"),
+    (('no grants for project "CLI Project", cleared project permissions',), "cleared"),
+    (('stored 0 allow, 6 deny grants from project "other"',), "other"),
+    ((LOADED, 'no grants for project "CLI Project", cleared project permissions'), "mixed"),
+    (('stored 1 allow, 6 deny grants from project "dmr-reviewer-v1"',), "an-allow"),
+    (('stored 0 allow, 6 deny grants from project "dmr-reviewer-v1"',), "six-denies"),
+], ids=lambda v: v if isinstance(v, str) else None)
+def test_a_run_whose_log_does_not_show_the_deny_rules_loaded_is_invalid(tmp_path, grants, why):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path, grants=grants), log),
+                         home=home, log=log)
+    result = receipt["result"]
+    assert result["state"] == "INVALID_OUTPUT", (why, result)
+    assert any(r.startswith("agy_project_grants:") for r in result["invalid_reasons"]), why
+
+
+def test_a_replaced_log_is_refused_by_identity(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path, replace_log=True), log),
+                         home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert any(r.startswith("agy_log_identity_replaced:")
+               for r in receipt["result"]["invalid_reasons"])
+
+
+def test_an_oversized_log_fails_closed(tmp_path, monkeypatch):
+    log = tmp_path / "big.log"
+    log.write_bytes(b"x" * (dispatch_agent.AGY_LOG_MAX_BYTES + 1))
+    view, reasons = dispatch_agent._grade_agy_log(log, {})
+    assert reasons == ["agy_project_grants:log_oversized"]
+
+
+# --- the preflight --------------------------------------------------------
+
+def _refused(tmp_path, argv=None, *, home=None, log=None, extra=None, transport="claude_code.to_gemini",
+             cwd=None):
+    home = home or _home(tmp_path)
+    log = log or tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path)
+    proc, receipt = _run(tmp_path, argv or _argv(fake, log), home=home, log=log,
+                         extra=extra, transport=transport, cwd=cwd)
+    assert proc.returncode == 2, (proc.returncode, proc.stderr)
+    assert receipt is None
+    return proc.stderr
+
+
+@pytest.mark.parametrize("extra", [
+    [],
+    ["--output-envelope", "agy-print-json-v1"],
+    ["--output-envelope", "claude-print-json-v1", "--seat-profile", "agy-reviewer-v1",
+     "--agy-log", "LOG"],
+    ["--seat-profile", "agy-reviewer-v1", "--agy-log", "LOG"],
+], ids=["nothing", "envelope-only", "other-envelope", "profile-only"])
+def test_a_gemini_transport_requires_the_envelope_and_the_profile(tmp_path, extra):
+    log = tmp_path / "agy.log"
+    extra = [str(log) if t == "LOG" else t for t in extra] + ["--transport-id", "claude_code.to_gemini"]
+    _refused(tmp_path, log=log, extra=extra)
+    assert not log.exists()
+
+
+def test_a_log_without_the_profile_and_a_profile_without_a_log_are_refused(tmp_path):
+    log = tmp_path / "agy.log"
+    _refused(tmp_path, log=log, extra=["--output-envelope", "agy-print-json-v1",
+                                       "--agy-log", str(log)], transport=None)
+    _refused(tmp_path, log=log, extra=["--output-envelope", "agy-print-json-v1",
+                                       "--seat-profile", "agy-reviewer-v1"], transport=None)
+
+
+@pytest.mark.parametrize("mutate,why", [
+    (lambda a: a + ["--mode", "plan"], "mode"),
+    (lambda a: a + ["--dangerously-skip-permissions"], "bypass"),
+    (lambda a: a + ["-add-dir", "/"], "add-dir"),
+    (lambda a: a + ["extra"], "positional"),
+    (lambda a: a + ["-p", "second prompt"], "two-prompts"),
+    (lambda a: [x.replace("dmr-reviewer-v1", "default-cli-project") for x in a], "project"),
+    (lambda a: [x for x in a if x != "--disable-slash-commands"], "slash"),
+    (lambda a: [("--disable-slash-commands=false" if x == "--disable-slash-commands" else x)
+                for x in a], "slash-false"),
+    (lambda a: [x.replace("json", "text") if x == "json" else x for x in a], "text"),
+    (lambda a: a[:1] + a[3:], "no-model"),
+], ids=lambda v: v if isinstance(v, str) else None)
+def test_an_argv_outside_the_recipe_is_refused_before_spawn(tmp_path, mutate, why):
+    log = tmp_path / "agy.log"
+    argv = mutate(_argv(_fake_agy(tmp_path), log))
+    _refused(tmp_path, argv, log=log)
+
+
+def test_the_profile_requires_the_review_schema(tmp_path):
+    """design review r1 sol F3: under schema `none` an answer that is missing
+    or not a string would leave nothing to fail on."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path), log), home=home, log=log,
+                         schema="none")
+    assert proc.returncode == 2 and receipt is None
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("raw", [
+    # A widening value followed by the canonical one: an ordinary parser keeps
+    # the last and would compare equal (design review r1 sol F2).
+    '{"id": "dmr-reviewer-v1", "name": "dmr-reviewer-v1", '
+    '"projectResources": {"resources": [{"folderUri": "file:///"}]}, "projectResources": {}, '
+    '"permissionGrants": {"permissionGrants": {"deny": ' + json.dumps(
+        list(dispatch_agent.AGY_REVIEWER_DENY)) + '}}}',
+    '{"id": "dmr-reviewer-v1", "name": "dmr-reviewer-v1", "projectResources": {}, '
+    '"permissionGrants": {"permissionGrants": {"deny": [], "deny": ' + json.dumps(
+        list(dispatch_agent.AGY_REVIEWER_DENY)) + '}}}',
+], ids=["duplicate-resources", "duplicate-deny"])
+def test_a_project_file_with_duplicate_keys_is_refused(tmp_path, raw):
+    home = _home(tmp_path)
+    home.joinpath(*dispatch_agent.AGY_PROJECT_RELPATH).write_text(raw)
+    _refused(tmp_path, home=home)
+
+
+def test_settings_with_a_duplicate_telemetry_key_are_refused(tmp_path):
+    home = _home(tmp_path)
+    home.joinpath(*dispatch_agent.AGY_SETTINGS_RELPATH).write_text(
+        '{"telemetryEnabled": true, "telemetryEnabled": false}')
+    _refused(tmp_path, home=home)
+
+
+def test_go_flag_spellings_are_one_flag():
+    log = Path("/abs/agy.log")
+    argv = ["agy", "-agent=dmr-reviewer-v1", f"-model={GEMINI}", "-effort", "low",
+            "-project=dmr-reviewer-v1", "-disable-slash-commands", "--output-format=json",
+            f"-log-file={log}", "--p", "x"]
+    assert dispatch_agent._agy_argv_problem(argv, log, GEMINI) is None
+    assert "repeats" in dispatch_agent._agy_argv_problem(argv + ["-p", "y"], log, GEMINI)
+    assert "repeats" in dispatch_agent._agy_argv_problem(argv + ["-project", "x"], log, GEMINI)
+
+
+@pytest.mark.parametrize("alias", ["--print", "--prompt", "-print", "--print=x"])
+def test_the_unprobed_prompt_aliases_are_refused(alias):
+    """design review r2 fable F1: only `-p` was probed as a string flag. Were
+    `--print` a boolean, `--print --dangerously-skip-permissions` would read
+    here as a prompt and reach the CLI as a bypass."""
+    argv = _recipe_argv()
+    i = argv.index("-p")
+    argv[i:i + 2] = [alias] if "=" in alias else [alias, "--dangerously-skip-permissions"]
+    flags, why = dispatch_agent._agy_flag_view(argv)
+    assert flags is None and "allow-list" in why
+
+
+def test_a_prompt_that_looks_like_flags_is_a_value():
+    log = Path("/abs/agy.log")
+    argv = _recipe_argv(log=str(log), prompt="--mode plan --dangerously-skip-permissions")
+    assert dispatch_agent._agy_argv_problem(argv, log, GEMINI) is None
+
+
+def test_the_log_must_be_the_reserved_absolute_path(tmp_path):
+    log = tmp_path / "agy.log"
+    argv = _argv(_fake_agy(tmp_path), log, **{"--log-file": "agy.log"})
+    _refused(tmp_path, argv, log=log)
+    argv = _argv(_fake_agy(tmp_path), log, **{"--log-file": str(tmp_path / "other.log")})
+    _refused(tmp_path, argv, log=log)
+
+
+def test_an_existing_log_or_one_in_the_receipt_store_is_refused(tmp_path):
+    log = tmp_path / "agy.log"
+    log.write_text("stale")
+    _refused(tmp_path, log=log)
+    store_log = tmp_path / "receipts" / "agy.log"
+    (tmp_path / "receipts").mkdir(exist_ok=True)
+    _refused(tmp_path, log=store_log)
+    assert not store_log.exists()
+    # Neither refusal left a claim behind: the reservation is the last refusal
+    # before the STARTING receipt, and it gives the claim back.
+    assert not list((tmp_path / "receipts").glob("*.claim"))
+
+
+@pytest.mark.parametrize("project", [
+    False,
+    {**dispatch_agent.AGY_REVIEWER_PROJECT_DOC, "settings": {"fileAccessPolicy": "ALLOW"}},
+    {**dispatch_agent.AGY_REVIEWER_PROJECT_DOC, "name": "other"},
+    {**dispatch_agent.AGY_REVIEWER_PROJECT_DOC,
+     "permissionGrants": {"permissionGrants": {"deny": list(dispatch_agent.AGY_REVIEWER_DENY[:-1])}}},
+    {**dispatch_agent.AGY_REVIEWER_PROJECT_DOC,
+     "permissionGrants": {"permissionGrants": {"deny": list(dispatch_agent.AGY_REVIEWER_DENY)
+                                               + ["command(*)"]}}},
+    {**dispatch_agent.AGY_REVIEWER_PROJECT_DOC,
+     "permissionGrants": {"permissionGrants": {"deny": list(dispatch_agent.AGY_REVIEWER_DENY),
+                                               "allow": ["command(*)"]}}},
+    {**dispatch_agent.AGY_REVIEWER_PROJECT_DOC, "projectResources": {"resources": []}},
+], ids=["missing", "settings", "name", "deny-short", "deny-dup", "allow", "resources"])
+def test_a_project_file_that_is_not_the_canonical_document_is_refused(tmp_path, project):
+    _refused(tmp_path, home=_home(tmp_path, project=project))
+
+
+def test_the_deny_rules_may_come_in_any_order(tmp_path):
+    doc = copy.deepcopy(dispatch_agent.AGY_REVIEWER_PROJECT_DOC)
+    doc["permissionGrants"]["permissionGrants"]["deny"].reverse()
+    assert dispatch_agent._is_reviewer_project(doc)
+
+
+def test_a_symlinked_project_file_is_refused(tmp_path):
+    home = _home(tmp_path)
+    path = home.joinpath(*dispatch_agent.AGY_PROJECT_RELPATH)
+    real = tmp_path / "real.json"
+    real.write_text(path.read_text())
+    path.unlink()
+    path.symlink_to(real)
+    _refused(tmp_path, home=home)
+
+
+@pytest.mark.parametrize("settings", [
+    False, {}, {"telemetryEnabled": True}, {"telemetryEnabled": "false"}, {"telemetryEnabled": 0},
+    [], {"enableTelemetry": False},
+    {"telemetryEnabled": False, "enableTelemetry": True},
+], ids=["missing", "absent-key", "true", "string", "zero", "array", "documented-spelling-only",
+        "contradiction"])
+def test_telemetry_must_be_off_in_the_cli_settings(tmp_path, settings):
+    """The key is the one the CLI keeps (it drops the documented
+    `enableTelemetry` on every run, measured); the documented spelling alone is
+    not the setting, and a `true` under it contradicts the one that is."""
+    err = _refused(tmp_path, home=_home(tmp_path, settings=settings))
+    assert "telemetryEnabled" in err or "settings.json" in err
+
+
+# --- design v2: the agent layer, the workspace, the model, the log ---------
+
+@pytest.mark.parametrize("agent", [
+    False,
+    dispatch_agent.AGY_REVIEWER_AGENT_TEXT.replace("  - view_file\n",
+                                                   "  - view_file\n  - run_command\n"),
+    dispatch_agent.AGY_REVIEWER_AGENT_TEXT + "\n",
+], ids=["missing", "widened-tools", "trailing-byte"])
+def test_an_agent_file_that_is_not_the_canonical_text_is_refused(tmp_path, agent):
+    _refused(tmp_path, home=_home(tmp_path, agent=agent))
+
+
+def test_the_agent_allows_one_reading_tool_and_is_never_a_subagent():
+    text = dispatch_agent.AGY_REVIEWER_AGENT_TEXT
+    front = text.split("---")[1]
+    assert re.search(r"^tools:\n  - view_file\n(?!  -)", front, re.M), front
+    assert "subagent: false" in front and "mainAgent: true" in front
+
+
+@pytest.mark.parametrize("layout", ["cwd", "repo-root", "between"])
+@pytest.mark.parametrize("name", [".agents", ".gemini"])
+def test_a_workspace_carrying_agy_customizations_is_refused(tmp_path, layout, name):
+    """Measured: the CLI runs `.agents/hooks.json` from the workspace root — the
+    cwd, or the repository root enclosing it — as host commands, and its
+    `.agents/agents/` shadow the reviewer agent."""
+    repo = tmp_path / "repo"
+    cwd = repo / "a" / "b"
+    cwd.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    where = {"cwd": cwd, "repo-root": repo, "between": repo / "a"}[layout]
+    (where / name).mkdir()
+    err = _refused(tmp_path, cwd=cwd)
+    assert name in err
+
+
+def test_a_planted_marker_does_not_shorten_the_audit(tmp_path):
+    """design review r2 sol F1 / fable F2: a reviewed tree can add a `.jj`,
+    `.hg` or a fake `.git` below the real root; the audit walks every ancestor
+    regardless, so the root's `.agents` is still seen."""
+    repo = tmp_path / "repo"
+    cwd = repo / "a" / "b"
+    cwd.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (repo / ".agents").mkdir()
+    for marker in (".jj", ".hg", ".git"):
+        planted = repo / "a" / marker
+        planted.write_text("planted")
+        assert dispatch_agent._agy_workspace_problem(cwd, None), marker
+        planted.unlink()
+
+
+def test_a_nested_customization_below_the_cwd_is_not_refused(tmp_path):
+    """Measured: a `.agents` deeper in the tree was not loaded."""
+    cwd = tmp_path / "ws"
+    (cwd / "nested" / ".agents").mkdir(parents=True)
+    assert dispatch_agent._agy_workspace_problem(cwd, None) is None
+
+
+def test_home_is_admitted_only_where_the_cli_cannot_adopt_it(tmp_path):
+    """r2 sol F3 / fable F4: HOME's `.gemini` is the CLI's own configuration
+    home and is always admitted; its `.agents` only when HOME is a strict
+    ancestor of the cwd and not a repository root."""
+    home = tmp_path / "home"
+    cwd = home / "work" / "repo"
+    (cwd / ".git").mkdir(parents=True)
+    (home / ".gemini").mkdir()
+    (home / ".agents").mkdir()
+    assert dispatch_agent._agy_workspace_problem(cwd, home) is None
+    assert dispatch_agent._agy_workspace_problem(cwd, None)            # HOME unknown: refused
+    assert dispatch_agent._agy_workspace_problem(home, home)           # cwd == HOME: .agents refused
+    (home / ".git").mkdir()
+    assert dispatch_agent._agy_workspace_problem(cwd, home)            # HOME a repository root
+    (home / ".agents").rmdir()
+    assert dispatch_agent._agy_workspace_problem(cwd, home) is None    # .gemini alone is fine
+    assert dispatch_agent._agy_workspace_problem(home, home) is None
+
+
+def test_a_symlinked_cwd_is_audited_under_both_spellings(tmp_path):
+    """r2 fable F3: a Go child may take its cwd from $PWD, the literal path,
+    whose ancestors can differ from the real path's."""
+    real = tmp_path / "clean" / "ws"
+    real.mkdir(parents=True)
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".agents").mkdir()
+    link = repo / "ws"
+    link.symlink_to(real)
+    err = _refused(tmp_path, cwd=link)
+    assert ".agents" in err
+
+
+def test_the_profile_requires_a_child_cwd(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    argv = _argv(_fake_agy(tmp_path), log)
+    env = {**os.environ, "HOME": str(home)}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "run", "--attempt-id", "g1",
+         "--receipt-dir", str(tmp_path / "receipts"), "--deadline-seconds", "60",
+         "--seat", "reviewer-1", "--output-schema", "review", "--model-id", GEMINI,
+         "--output-envelope", "agy-print-json-v1", "--seat-profile", "agy-reviewer-v1",
+         "--agy-log", str(log), "--transport-id", "claude_code.to_gemini", "--", *argv],
+        capture_output=True, text=True, timeout=60, env=env)
+    assert proc.returncode == 2 and "--child-cwd" in proc.stderr
+
+
+@pytest.mark.parametrize("model,model_id", [
+    (ID("claude_worker_balanced"), ID("claude_worker_balanced")),
+    (GEMINI, None),
+    (GEMINI, GEMINI + "-high"),
+    ("gpt-oss-120b-medium", "gpt-oss-120b-medium"),
+], ids=["other-family", "undeclared", "mismatch", "foreign-catalogue-id"])
+def test_the_model_is_pinned_to_the_declared_gemini_id(tmp_path, model, model_id):
+    """design review r1 fable F1: the CLI's catalogue serves other vendors'
+    models through the same account."""
+    log = tmp_path / "agy.log"
+    argv = _argv(_fake_agy(tmp_path), log, **{"--model": model})
+    home = _home(tmp_path)
+    proc, receipt = _run(tmp_path, argv, home=home, log=log, model_id=model_id,
+                         attempt="gm")
+    assert proc.returncode == 2 and receipt is None
+
+
+def test_a_resolution_to_another_model_fails_the_gate(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path, resolved="claude-sonnet-4-6")
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert "agy_resolved_model:claude-sonnet-4-6" in receipt["result"]["invalid_reasons"]
+
+
+@pytest.mark.parametrize("line", [
+    'W1014 11:50:56.313661       1 permissions.go:216] Invalid "command" permission rules '
+    'found; they are ignored and grant nothing:',
+    'W1014 11:52:43.197302     508 permission_grant_store.go:415] ignoring invalid deny entry '
+    '"command(*)": unknown action "command" in grant string: "command(*)"',
+], ids=["invalid-rules", "invalid-entry"])
+def test_a_rule_the_cli_reports_invalid_fails_the_gate(tmp_path, line):
+    """The way a deny rule silently stops denying (measured on `unsandboxed`
+    and on unknown actions): the CLI says so in this log and nowhere else."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path, extra_lines=(line,))
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert any(r.startswith("agy_project_grants:invalid_rule:")
+               for r in receipt["result"]["invalid_reasons"])
+
+
+def test_a_marker_outside_a_settings_manager_record_is_not_a_record(tmp_path):
+    """Only a whole glog line from the CLI's settings manager is a grants
+    record; the marker echoed anywhere else fails rather than counts."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    echoed = (f'I1014 11:00:02.000000       1 printmode.go:202] Print mode: starting '
+              f'(model="x ApplyProjectPermissionGrants: {LOADED}")')
+    fake = _fake_agy(tmp_path, grants=(), extra_lines=(echoed,))
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    reasons = receipt["result"]["invalid_reasons"]
+    assert any(r.startswith("agy_project_grants:not_a_record:") for r in reasons), reasons
+    assert "agy_project_grants:none" in reasons
+
+
+@pytest.mark.parametrize("flag,value", [("--model", GEMINI + "\nI1014"),
+                                        ("--effort", "low\r"), ("--log-file", "/abs/a\x00b")])
+def test_a_control_character_in_a_value_is_refused(flag, value):
+    argv = _recipe_argv()
+    argv[argv.index(flag) + 1] = value
+    flags, why = dispatch_agent._agy_flag_view(argv)
+    assert flags is None and "control character" in why
+
+
+def test_a_newline_in_the_prompt_is_the_prompt():
+    argv = _recipe_argv(prompt="line one\nline two")
+    flags, why = dispatch_agent._agy_flag_view(argv)
+    assert why is None and flags["prompt"] == "line one\nline two"
+
+
+def test_a_refusal_before_the_reservation_leaves_no_log(tmp_path):
+    """design review r1 fable F4: a pre-spawn refusal leaves no reserved log,
+    so the same path is usable on the retry."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    argv = _argv(_fake_agy(tmp_path), log)
+    proc, _ = _run(tmp_path, argv, home=home, log=log,
+                   extra=["--output-envelope", "agy-print-json-v1", "--seat-profile",
+                          "agy-reviewer-v1", "--agy-log", str(log), "--transport-id",
+                          "claude_code.to_gemini", "--child-cwd", str(_workspace(tmp_path)),
+                          "--model-id", GEMINI, "--require-artifact-sha256", "x=" + "0" * 64])
+    assert proc.returncode == 2 and not log.exists()
+    proc, receipt = _run(tmp_path, argv, home=home, log=log)
+    assert receipt["result"]["state"] == "SUCCEEDED", receipt["result"]
+
+
+def _excerpt_lines(name):
+    return (FIXTURES / name).read_text().splitlines()
+
+
+def test_the_real_log_excerpts_grade_as_captured(tmp_path):
+    """r2 fable F5: the gate against the CLI's own lines, not author-written
+    ones. A clean v2 run passes; the v1 run whose project held `unsandboxed(*)`
+    fails on the CLI's invalid-rule report and on the six-rule record."""
+    clean = tmp_path / "clean.log"
+    clean.write_text((FIXTURES / "agy-1.3.4-reviewer.log").read_text())
+    view, reasons = dispatch_agent._grade_agy_log(clean, {}, GEMINI)
+    assert reasons == [] and view["lines"] == [LOADED]
+    assert view["resolved_model"] == f"{GEMINI}-low"
+    v1 = tmp_path / "v1.log"
+    v1.write_text((FIXTURES / "agy-1.3.4-invalid-rule.log").read_text())
+    _, reasons = dispatch_agent._grade_agy_log(v1, {}, GEMINI)
+    assert any(r.startswith("agy_project_grants:invalid_rule:") for r in reasons), reasons
+    assert any("6 deny grants" in r for r in reasons), reasons
+
+
+def test_a_cleared_record_before_the_loaded_one_fails(tmp_path):
+    lines = _excerpt_lines("agy-1.3.4-reviewer.log")
+    cleared = ('I1014 12:01:27.300000       1 cli_setting_manager.go:218] '
+               'ApplyProjectPermissionGrants: no grants for project "CLI Project", '
+               'cleared project permissions')
+    log = tmp_path / "a.log"
+    log.write_text("\n".join([cleared, *lines]) + "\n")
+    _, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
+    assert any("cleared project permissions" in r for r in reasons), reasons
+
+
+def test_crlf_records_are_records(tmp_path):
+    log = tmp_path / "a.log"
+    log.write_text("\r\n".join(_excerpt_lines("agy-1.3.4-reviewer.log")) + "\r\n")
+    _, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
+    assert reasons == []
+
+
+def test_a_bad_record_after_the_twentieth_still_fails(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    bad = 'no grants for project "CLI Project", cleared project permissions'
+    fake = _fake_agy(tmp_path, grants=(LOADED,) * 25 + (bad,))
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT"
+    assert len(receipt["result"]["agy_project_grants"]["lines"]) == 20
+
+
+@pytest.mark.parametrize("extra_line,why", [
+    (f'I1014 11:00:00.500000       1 model_resolver.go:155] model alias "other-model" '
+     f'resolved to "other-model-high"', "another-alias"),
+    (f'I1014 11:00:00.500000       1 model_resolver.go:155] model alias "{GEMINI}" '
+     f'resolved to "claude-sonnet-4-6"', "foreign-target"),
+    # A resolution TO this model's spelling, but of another alias: the record
+    # is not about `--model` at all, so it vouches for nothing.
+    (f'I1014 11:00:00.500000       1 model_resolver.go:155] model alias "auto" '
+     f'resolved to "{GEMINI}-high"', "unbound-alias"),
+], ids=lambda v: v if v in ("another-alias", "foreign-target", "unbound-alias") else None)
+def test_every_resolution_must_be_of_the_pinned_model(tmp_path, extra_line, why):
+    """r2 sol: not only the last resolution, and bound to its alias."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path, extra_lines=(extra_line,))
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT", why
+    assert any(r.startswith("agy_resolved_model:") for r in receipt["result"]["invalid_reasons"])
+
+
+def test_more_than_twenty_records_still_pass_and_are_capped_in_the_receipt(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path, grants=(LOADED,) * 25)
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    assert len(receipt["result"]["agy_project_grants"]["lines"]) == 20
+
+
+# --- the evidence readers -------------------------------------------------
+
+def _verify(tmp_path, ids):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "verify-evidence", "--receipt-dir",
+         str(tmp_path / "receipts"), "--ids", ",".join(ids), "--expect-count", str(len(ids))],
+        capture_output=True, text=True, timeout=60)
+
+
+def test_verify_evidence_accepts_a_contained_gemini_receipt(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    _run(tmp_path, _argv(_fake_agy(tmp_path), log), home=home, log=log)
+    proc = _verify(tmp_path, ["g1"])
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("edit", [
+    lambda r: r.update(seat_profile=None),
+    lambda r: r.update(output_envelope="claude-print-json-v1"),
+    lambda r: r["result"].update(agy_project_grants=None),
+    lambda r: r["result"]["agy_project_grants"].update(lines=[]),
+    lambda r: r["result"]["agy_project_grants"].update(
+        lines=['no grants for project "CLI Project", cleared project permissions']),
+    lambda r: r["result"]["agy_project_grants"].update(resolved_model=None),
+    lambda r: r["result"]["agy_project_grants"].update(resolved_model="claude-sonnet-4-6"),
+    lambda r: r.update(model_id=None),
+    lambda r: r.update(model_id="claude-sonnet-4-6"),
+], ids=["no-profile", "other-envelope", "no-grants", "empty-grants", "cleared",
+        "no-resolution", "foreign-resolution", "no-model-id", "foreign-model-id"])
+def test_verify_evidence_refuses_a_gemini_receipt_without_contained_evidence(tmp_path, edit):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    _run(tmp_path, _argv(_fake_agy(tmp_path), log), home=home, log=log)
+    path = tmp_path / "receipts" / "g1.json"
+    receipt = json.loads(path.read_text())
+    edit(receipt)
+    path.write_text(json.dumps(receipt))
+    proc = _verify(tmp_path, ["g1"])
+    assert proc.returncode == 1
+    assert "dispatches into agy" in proc.stderr
+
+
+# --- RouteObservationV1 receipts (design DD-6b) ---------------------------
+
+def _obs_receipt(stop_reason="SUCCESS", error_type=None):
+    from test_receipt_semantics import receipt
+    rec = receipt()
+    rec["output_envelope"] = "agy-print-json-v1"
+    rec["result"]["envelope"] = dict(parse_ok=True, stop_reason=stop_reason, session_id="s",
+                                     served_models=None, error_type=error_type,
+                                     usage={"input_tokens": 1}, error_reason=None)
+    return rec
+
+
+def test_an_observation_accepts_a_successful_agy_receipt(tmp_path):
+    from test_receipt_semantics import check, materialize
+    path, root = materialize(tmp_path, _obs_receipt())
+    check(path, root)
+
+
+@pytest.mark.parametrize("over", [dict(stop_reason="CANCELED"), dict(stop_reason="end_turn"),
+                                  dict(error_type="error")])
+def test_an_observation_refuses_an_agy_success_its_envelope_contradicts(tmp_path, over):
+    import validate_observation as obs
+    from test_receipt_semantics import check, materialize
+    path, root = materialize(tmp_path, _obs_receipt(**over))
+    with pytest.raises(obs.ValidateError, match="contradicts its envelope"):
+        check(path, root)
+
+
+def test_an_agy_receipt_never_attests_a_served_model(tmp_path):
+    import validate_observation as obs
+    from test_receipt_semantics import check, materialize, observed
+    path, root = materialize(tmp_path, _obs_receipt(), observed)
+    with pytest.raises(obs.ValidateError, match="I-OBS-MODEL"):
+        check(path, root)
+
+
+# ---------------------------------------------------------------------------
+# model_sync with the row (design DD-9)
+# ---------------------------------------------------------------------------
+
+def test_model_sync_reports_the_gemini_line_without_a_catalog():
+    """No agy catalog reader yet: the row is discovery_unavailable, never a
+    candidate, and nothing keyed by family is consulted for it."""
+    rows = {k: m for k, m in CFG["models"].items()}
+    found = model_sync.find_candidates(rows, {})
+    assert found[SEAT_KEY]["status"] == "discovery_unavailable"
+    assert "gemini" not in model_sync.FAMILY_CLI and "gemini" not in model_sync.MAX_INFERENCES
+    assert model_sync.retirement_notices(rows, {}) == []
+
+
+def test_model_sync_tick_and_status_run_with_the_gemini_row(tmp_path):
+    from test_model_sync import NOW, cli_sync, fake_bin, fake_home, new_root, sync_env
+    bindir, _ = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    spawned = []
+    model_sync.tick(env=env, home=home, now=NOW, spawn=spawned.append)
+    assert all(SEAT_KEY not in keys for keys in spawned)
+    status = cli_sync(env, "status")
+    assert status.returncode == 0, status.stderr + status.stdout
+    json.loads(status.stdout)
+
+
+def test_a_model_sync_run_on_the_gemini_key_probes_nothing(tmp_path):
+    from test_model_sync import calls_of, cli_sync, fake_bin, fake_home, new_root, sync_env
+    bindir, fakedir = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    proc = cli_sync(env, "run", "--key", SEAT_KEY)
+    assert proc.returncode == 0, proc.stderr + proc.stdout
+    for name in ("codex", "claude", "grok"):
+        assert calls_of(fakedir, name) == [], name
+    assert SEAT_KEY in proc.stdout
