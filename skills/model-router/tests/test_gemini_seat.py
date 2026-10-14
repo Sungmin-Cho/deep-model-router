@@ -869,6 +869,21 @@ def test_home_is_admitted_only_where_the_cli_cannot_adopt_it(tmp_path):
     assert dispatch_agent._agy_workspace_problem(home, home) is None
 
 
+def test_a_case_aliased_home_is_still_home(tmp_path):
+    """i3 fable F1: on a case-insensitive volume `/Users/U/...` is HOME too;
+    a spelling comparison missed it and refused HOME's own `.gemini`."""
+    home = tmp_path / "home"
+    (home / "work" / "repo" / ".git").mkdir(parents=True)
+    (home / ".gemini").mkdir()
+    alias = tmp_path / "HOME"
+    if not alias.exists():
+        pytest.skip("case-sensitive volume")
+    assert dispatch_agent._agy_workspace_problem(alias / "work" / "repo", home) is None
+    assert dispatch_agent._agy_workspace_problem(home / "work" / "repo", alias) is None
+    (home / ".agents").mkdir()
+    assert dispatch_agent._agy_workspace_problem(alias, home)          # cwd == HOME: .agents refused
+
+
 def test_a_symlinked_cwd_is_audited_under_both_spellings(tmp_path):
     """r2 fable F3: a Go child may take its cwd from $PWD, the literal path,
     whose ancestors can differ from the real path's."""

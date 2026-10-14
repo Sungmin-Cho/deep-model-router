@@ -1039,10 +1039,13 @@ def _agy_workspace_problem(cwd: Path, home: Path | None) -> str | None:
     root. A reviewed change that adds a customization anywhere else on the
     chain is refused rather than run: the CLI would execute its hooks on this
     host and let its agents shadow the reviewer agent, and no deny rule reaches
-    either. The caller audits both spellings of the cwd (see the preflight)."""
-    home_real = Path(os.path.realpath(home)) if home is not None else None
+    either. The caller audits both spellings of the cwd (see the preflight).
+    HOME is recognised by filesystem identity, not by spelling, so a
+    case-aliased HOME on a case-insensitive volume is still HOME
+    (implementation review i3 fable F1)."""
+    home_id = _identity(home) if home is not None else None
     for d in (cwd, *cwd.parents):
-        is_home = home_real is not None and Path(os.path.realpath(d)) == home_real
+        is_home = home_id is not None and _identity(d) == home_id
         for name in AGY_WORKSPACE_CUSTOMIZATIONS:
             if is_home and name == ".gemini":
                 continue
