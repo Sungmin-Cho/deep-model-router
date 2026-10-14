@@ -798,7 +798,7 @@ def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
     package's): a value joined by `=` or taken from the next token, a boolean
     flag never consuming the next token, and parsing over at the first argument
     that is not a flag. Only the probed spellings are admitted: two dashes for
-    every name, and `-p` for the prompt. Go's `flag` would also read
+    every name, and `-p` followed by the prompt as its own token. Go's `flag` would also read
     `-agent=…`, but a parser that read single-dash letters as a cluster would
     not, and the agent layer would drop silently (implementation review i1).
     Only the agy-reviewer-v1 names are admitted, each once; a positional
@@ -817,8 +817,8 @@ def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
             return None, f"{tok!r} is a positional argument; the seat takes none"
         if tok.startswith("--") and not (tok == "--p" or tok.startswith("--p=")):
             name = tok[2:]
-        elif tok == "-p" or tok.startswith("-p="):
-            name = tok[1:]
+        elif tok == "-p":
+            name = "p"
         else:
             return None, f"{tok!r}: only `--name` spellings (and `-p`) are admitted"
         value = None

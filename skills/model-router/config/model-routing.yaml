@@ -2912,21 +2912,22 @@ verification_ledger:
         command, fetch a URL, search the web and start a subagent, it had no
         tool for any of them and the turn completed; its tool list was
         view_file and manage_task; the workspace held only the unchanged
-        note.txt afterwards. Boot input 6,618 tokens. A real review
-        (greview-rel, receipt sha256
+        note.txt afterwards (a listing is archived beside the refusals). Boot
+        input 6,618 tokens. A real review (greview-rel, receipt sha256
         a7789af04ce50f6b3b5e90ace001d2a94748636d0e499347cbe95e955576c5af): 197 s
-        at medium effort on a small diff, verdict PASS from `response`, 156,638
-        input and 985,281 cached-read tokens; the same request on the earlier
-        supervisor (greview-final) took 441 s and 3,530,909 cached-read tokens
-        — the seat reads widely, and how widely varies run to run. A review at
-        high effort on a 36 KB diff (g2review-1, the same recipe on agy 1.3.4
-        before the final gate changes) took 1,026 s and 6,214,263 cached-read
-        tokens: give this seat a generous deadline. Refused before spawn on the
-        released supervisor, leaving no receipt and no log (the supervisor's
-        messages are archived under acceptance/refusals/): a workspace whose
-        repository root holds `.agents` (gplant-rel), a non-gemini --model
-        (gnongemini-rel), and a missing project file (gnoproj-rel) or agent
-        file (gnoagent-rel).
+        by the receipt's clock at medium effort on a small diff, verdict PASS
+        from `response`, 156,638 input and 985,281 cached-read tokens; the same
+        request on the earlier supervisor (greview-final) took 446 s and
+        3,530,909 cached-read tokens — the seat reads widely, and how widely
+        varies run to run. A review at high effort on a 36 KB diff (g2review-1,
+        the same recipe on agy 1.3.4 before the final gate changes) took
+        1,026 s and 6,214,263 cached-read tokens: give this seat a generous
+        deadline. Refused before spawn on the released supervisor, leaving no
+        receipt and no log (the supervisor's messages, and the planted layout,
+        are archived under acceptance/refusals/): a cwd holding `.agents`
+        (gplant-rel), a git root two levels above the cwd holding `.agents`
+        (gplantroot-rel), a non-gemini --model (gnongemini-rel), and a missing
+        project file (gnoproj-rel) or agent file (gnoagent-rel).
 
     - item: "agy-print-json-v1 envelope shape (dispatch_agent --output-envelope)"
       status: verified
@@ -2949,9 +2950,10 @@ verification_ledger:
     - item: "agy reviewer containment: agent allow-list and deny rules"
       status: verified
       probed_on: "2026-10-14"
-      cli_version: "agy 1.3.4"
+      cli_version: "agy 1.3.4 (observations), agy 1.3.5 (gcontain-rel)"
       evidence: >
-        Observed directly and through the supervisor before the final recipe.
+        Observed directly and through the supervisor before the final recipe
+        on agy 1.3.4, and confirmed on the shipped recipe on 1.3.5.
         The mode is not containment: with the host's CLI settings at
         `toolPermission: always-proceed`, a `--mode plan` run wrote a file and
         ran a shell command when asked. The project's deny rules are: with
@@ -2984,7 +2986,9 @@ verification_ledger:
         repository root, did not load. No deny rule reaches a hook or an agent
         definition, so the seat profile refuses any `.agents` or `.gemini` on
         the cwd's ancestor chain (HOME excepted as adapters.md states);
-        gplant-rel shows the refusal on the released supervisor.
+        gplantroot-rel shows the refusal of a repository root's `.agents` on
+        the released supervisor (agy 1.3.5 installed; the CLI is never
+        started).
 
     - item: "agy telemetry setting"
       status: verified

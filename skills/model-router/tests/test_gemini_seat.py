@@ -662,16 +662,18 @@ def test_unprobed_spellings_are_refused(respell):
     assert flags is None and "spellings" in why, why
 
 
-@pytest.mark.parametrize("alias", ["--print", "--prompt", "-print", "--print=x"])
-def test_the_unprobed_prompt_aliases_are_refused(alias):
+@pytest.mark.parametrize("alias,why", [("--print", "allow-list"), ("--prompt", "allow-list"),
+                                       ("-print", "spellings"), ("--print=x", "allow-list"),
+                                       ("-p=x", "spellings")])
+def test_the_unprobed_prompt_aliases_are_refused(alias, why):
     """design review r2 fable F1: only `-p` was probed as a string flag. Were
     `--print` a boolean, `--print --dangerously-skip-permissions` would read
     here as a prompt and reach the CLI as a bypass."""
     argv = _recipe_argv()
     i = argv.index("-p")
     argv[i:i + 2] = [alias] if "=" in alias else [alias, "--dangerously-skip-permissions"]
-    flags, why = dispatch_agent._agy_flag_view(argv)
-    assert flags is None and ("allow-list" in why or "spellings" in why)
+    flags, reason = dispatch_agent._agy_flag_view(argv)
+    assert flags is None and why in reason, reason
 
 
 def test_a_prompt_that_looks_like_flags_is_a_value():
@@ -951,6 +953,29 @@ def test_the_child_sees_the_audited_cwd_in_pwd(tmp_path):
     assert seen.read_text() == os.path.realpath(real)
 
 
+def test_the_pwd_pin_composes_with_a_grok_home(tmp_path):
+    """i2: the agy profile's PWD pin and an attempt-private GROK_HOME share
+    one child environment; neither replaces the other."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path)
+    seen = tmp_path / "env.json"
+    fake.write_text(fake.read_text().replace(
+        "import json, os, sys\n",
+        "import json, os, sys\n"
+        f"json.dump({{'PWD': os.environ.get('PWD'), 'GROK_HOME': os.environ.get('GROK_HOME')}}, "
+        f"open({str(seen)!r}, 'w'))\n", 1))
+    cwd = _workspace(tmp_path)
+    gh = tmp_path / "gh"
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log, cwd=cwd,
+                         extra=["--output-envelope", "agy-print-json-v1", "--seat-profile",
+                                "agy-reviewer-v1", "--agy-log", str(log), "--transport-id",
+                                "claude_code.to_gemini", "--child-cwd", str(cwd),
+                                "--model-id", GEMINI, "--grok-home", str(gh)])
+    assert receipt["result"]["state"] == "SUCCEEDED", (proc.stderr, receipt["result"])
+    got = json.loads(seen.read_text())
+    assert got == {"PWD": os.path.realpath(cwd), "GROK_HOME": os.path.realpath(gh)}
+
+
 def test_a_newline_in_the_prompt_is_the_prompt():
     argv = _recipe_argv(prompt="line one\nline two")
     flags, why = dispatch_agent._agy_flag_view(argv)
@@ -1066,10 +1091,13 @@ def test_a_log_under_a_symlinked_directory_is_refused(tmp_path):
     assert not (real / "agy.log").exists()
 
 
-def test_an_unset_home_is_refused(tmp_path):
+@pytest.mark.parametrize("home_value", [None, "relative/home"], ids=["unset", "relative"])
+def test_an_unset_or_relative_home_is_refused(tmp_path, home_value):
     log = tmp_path / "agy.log"
     argv = _argv(_fake_agy(tmp_path), log)
     env = {k: v for k, v in os.environ.items() if k != "HOME"}
+    if home_value is not None:
+        env["HOME"] = home_value
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "run", "--attempt-id", "g1",
          "--receipt-dir", str(tmp_path / "receipts"), "--deadline-seconds", "60",

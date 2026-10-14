@@ -795,16 +795,16 @@ You review code and documents. Read files when the request needs them, and answe
   drift an update brings. It is not proof against a model that had already
   escaped containment and rewrote the file; that is why containment is the two
   layers checked before spawn.
-- **The argv is an allow-list.** Parsed as Go's `flag` package parses it (one
-  or two dashes, `=` or a separate value), the seat admits `--agent`,
+- **The argv is an allow-list.** Parsed as Go's `flag` package parses it (a
+  value joined by `=` or given as the next token), the seat admits `--agent`,
   `--model`, `--effort`, `--project`, `--disable-slash-commands`,
   `--output-format json`, `--print-timeout 0s`, `--log-file` and one prompt,
   each once, and no positional argument; anything else, `--mode`, `--add-dir`
   and `--dangerously-skip-permissions` among it, is refused unread. Only the
   probed spellings pass: two dashes for every name (Go's `flag` would also
   read `-agent=…`, a parser that clusters single-dash letters would not), and
-  `-p` for the prompt (the CLI documents `--print` and `--prompt` as aliases,
-  but only `-p` was probed as a flag that takes a value). The profile also
+  `-p` followed by the prompt as its own token (the CLI documents `--print`
+  and `--prompt` as aliases, but only that form was probed). The profile also
   requires `--output-schema review`.
 - **Telemetry must be off.** On a personal Google account the provider's
   terms let it keep and use the conversations ("Interactions") unless the user
