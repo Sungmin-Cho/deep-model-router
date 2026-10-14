@@ -2804,27 +2804,30 @@ verification_ledger:
         are the local research note docs/research/2026-10-13-meta-seat-counterfactuals/.
 
     # --- The gemini reviewer seat (design 2026-10-14, 1.20.0) -----------------
-    # Every probe below ran on darwin arm64 from a Claude Code host through
-    # dispatch_agent.py with the shipped reviewer argv and --receipt-guard
-    # darwin-sandbox-v1, on the released supervisor (attempts named *-final).
-    # The CLI updated itself from 1.3.4 to 1.3.5 between the first and second
-    # of them; each row names the version its attempts ran on. Receipts and the
-    # CLI logs are in the local archive
-    # docs/design/reviews/2026-10-14-gemini-flash-seat/acceptance/.
+    # Probes ran on darwin arm64 from a Claude Code host through
+    # dispatch_agent.py with --receipt-guard darwin-sandbox-v1. Attempts named
+    # *-rel ran the shipped reviewer argv on the released supervisor; attempts
+    # without that suffix ran an earlier recipe (no --agent, a six-rule
+    # project) or an earlier supervisor, and are cited only for what they
+    # observed, never as the shipped seat. The CLI updated itself from 1.3.4 to
+    # 1.3.5 during the probes; each row names its version. In `argv`, the log
+    # path and the prompt are shown as their slots (`<agy-log>`, `"<prompt>"`).
+    # Receipts, CLI logs and the supervisor's refusal messages are in the local
+    # archive docs/design/reviews/2026-10-14-gemini-flash-seat/acceptance/.
 
     - item: "gemini-3.8-flash model id"
       status: verified
       probed_on: "2026-10-14"
-      attempt_id: "grt-final"
-      cli_version: "agy 1.3.4"
-      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/grt-final.agy.log -p \"<prompt>\""
+      attempt_id: "grt-rel"
+      cli_version: "agy 1.3.5"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       evidence: >
-        Attempt grt-final (transport claude_code.to_gemini, --seat-profile
+        Attempt grt-rel (transport claude_code.to_gemini, --seat-profile
         agy-reviewer-v1, --output-envelope agy-print-json-v1, --output-schema
         review, the receipt guard) graded SUCCEEDED: exit 0, status SUCCESS,
         verdict PASS, the deny-rule record loaded, and the CLI's log resolved
         the base id to gemini-3.8-flash-low. Receipt sha256
-        24a1bfb2fc63c317c46e483216aa279a60a8ad8f2bf6baf76cd98ae85813469e. The
+        f347a3a3a679501231002735cee52cc7aaa8bd64ac59010dd30505925707409a. The
         CLI's catalogue (`agy models`) lists the id only in effort-suffixed
         spellings (gemini-3.8-flash-low, -medium, -high); the base id with
         --effort is accepted since 1.3.4, and a suffixed id paired with a
@@ -2836,13 +2839,13 @@ verification_ledger:
     - item: "gemini-3.8-flash effort values"
       status: verified
       probed_on: "2026-10-14"
-      cli_version: "agy 1.3.4 (low), agy 1.3.5 (medium, high)"
+      cli_version: "agy 1.3.5"
       evidence: >
         Three supervisor round trips on the shipped argv, one per native token,
         each SUCCEEDED with verdict PASS and a log resolution to the matching
-        spelling: grt-final (low), geff-final-medium (receipt sha256
-        a7522bec66c6195da74102a775ee96b27b8fd1bbb33c2e0120f8e7bd80fa4118),
-        geff-final-high (a24ab666d6d087c61a1574d1ed0e305ecbddee3e8d95d093986b870369f7c408).
+        spelling: grt-rel (low), geff-rel-medium (receipt sha256
+        f6f6f6fe4fd74bbe2d4e8a0476716f96caa50520740dd6d1e7b78b94f50923fb),
+        geff-rel-high (4fce28db0599f4ab11e5a5b721031e9701a59023afcbf8cacfdd6d943239284b).
         The CLI refuses `xhigh` and `max` before any request ("gemini-3.8-flash
         has no \"xhigh\" effort (available: low, medium, high)"), and the
         provider's model page says `minimal` returns an error. Hence the family
@@ -2874,10 +2877,10 @@ verification_ledger:
         capability_tier 1 is a provisional reading of these numbers: no eval in
         this repository has graded the seat, which is why it is bound to no
         role. One observation, not a measurement: on attempts g2review-1 (high
-        effort, a 36 KB supervisor diff) and greview-final (medium, a small
-        one) the seat returned PASS with no findings at confidence 1.0, on the
-        same code in which two other reviewers had found defects across two
-        design rounds.
+        effort, a 36 KB supervisor diff, before the final gate changes),
+        greview-final and greview-rel (medium, a small one) the seat returned
+        PASS with no findings at confidence 1.0, on code in which two other
+        reviewers had found defects across two design rounds.
 
     - item: "Claude Code -> Gemini transport (agy print mode)"
       status: verified
@@ -2895,48 +2898,50 @@ verification_ledger:
     - item: "Gemini reviewer seat recipe (transports.claude_code.to_gemini.mechanism_reviewer)"
       status: verified
       probed_on: "2026-10-14"
-      attempt_id: "gcontain-final"
+      attempt_id: "gcontain-rel"
       cli_version: "agy 1.3.5"
-      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/gcontain-final.agy.log -p \"<prompt>\""
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       probes:
-        - { attempt_id: "grt-final", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/grt-final.agy.log -p \"<prompt>\"" }
-        - { attempt_id: "gcontain-final", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/gcontain-final.agy.log -p \"<prompt>\"" }
-        - { attempt_id: "greview-final", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file acceptance/logs/greview-final.agy.log -p \"<prompt>\"" }
+        - { attempt_id: "grt-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "gcontain-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "greview-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
       evidence: >
-        Containment (gcontain-final, receipt sha256
-        7ec6473a446cbcbdf35f0ec5abb7723e25b7dacb15ca04d55efa4bee9d00f37f): the
+        Containment (gcontain-rel, receipt sha256
+        eb34cdaa33eebb1e1a97374c16cc0424c41edaab27bc13b9d15f42ea351b220e): the
         seat read note.txt; asked to create a file, edit one, run a shell
         command, fetch a URL, search the web and start a subagent, it had no
         tool for any of them and the turn completed; its tool list was
         view_file and manage_task; the workspace held only the unchanged
-        note.txt afterwards. Boot input 6,453 tokens. A real review
-        (greview-final, receipt sha256
-        e47f1bf7bed4b78206b59d4b73151c3aafe95d7e3e338b15c095fc785a3ef390): 441 s
-        at medium effort on a small diff, verdict PASS from `response`, 269,635
-        input and 3,530,909 cached-read tokens — the seat reads widely before
-        answering. An earlier review at high effort on a 36 KB diff
-        (g2review-1, on the same recipe and agy 1.3.4 before the final gate
-        changes) took 1,026 s and 316,388 input and 6,214,263 cached-read
+        note.txt afterwards. Boot input 6,618 tokens. A real review
+        (greview-rel, receipt sha256
+        a7789af04ce50f6b3b5e90ace001d2a94748636d0e499347cbe95e955576c5af): 197 s
+        at medium effort on a small diff, verdict PASS from `response`, 156,638
+        input and 985,281 cached-read tokens; the same request on the earlier
+        supervisor (greview-final) took 441 s and 3,530,909 cached-read tokens
+        — the seat reads widely, and how widely varies run to run. A review at
+        high effort on a 36 KB diff (g2review-1, the same recipe on agy 1.3.4
+        before the final gate changes) took 1,026 s and 6,214,263 cached-read
         tokens: give this seat a generous deadline. Refused before spawn on the
-        released supervisor, leaving no receipt and no log: a workspace whose
-        repository root holds `.agents` (gplant-final), a non-gemini --model
-        (gnongemini-final), and a missing project file (gnoproj-final) or
-        agent file (gnoagent-final).
+        released supervisor, leaving no receipt and no log (the supervisor's
+        messages are archived under acceptance/refusals/): a workspace whose
+        repository root holds `.agents` (gplant-rel), a non-gemini --model
+        (gnongemini-rel), and a missing project file (gnoproj-rel) or agent
+        file (gnoagent-rel).
 
     - item: "agy-print-json-v1 envelope shape (dispatch_agent --output-envelope)"
       status: verified
       probed_on: "2026-10-14"
-      cli_version: "agy 1.3.4, agy 1.3.5"
+      cli_version: "agy 1.3.5"
       evidence: >
         `agy -p --output-format json` prints one JSON document when the run
         ends: conversation_id, status, response (the final answer only),
         duration_seconds, num_turns, usage (input, output, thinking,
         cache_read and total tokens), and on a failure an `error` string, absent
-        on success. grt-final graded SUCCEEDED on status SUCCESS; gfail-final
+        on success. grt-rel graded SUCCEEDED on status SUCCESS; gfail-rel
         (an id the CLI does not know) exited 1 and graded FAILED with
         error_type error and an error_reason holding the CLI's own text
         (receipt sha256
-        825e518a410d7d269ced3170bb1857fd2808271bd5162a56ad3e23d906b2032c). The
+        2fa73a4857b653595117a93632329c3327e0c8bf78328f7198b1cda9cac32022). The
         test fixtures under tests/fixtures/agy/ are two of these documents and
         two excerpts of the CLI's --log-file, with local paths and the account
         scrubbed.
@@ -2961,7 +2966,7 @@ verification_ledger:
         in its default project ("no grants for project \"CLI Project\",
         cleared project permissions", exit 0). The agent's `tools` allow-list
         removed every tool but view_file and manage_task (agy-ag1, then
-        gcontain-final); an unknown agent name exits 1. The CLI does not
+        gcontain-rel); an unknown agent name exits 1. The CLI does not
         rewrite the project or agent file (same bytes and inode after a run).
 
     - item: "agy workspace customizations run from the reviewed tree"
@@ -2979,7 +2984,7 @@ verification_ledger:
         repository root, did not load. No deny rule reaches a hook or an agent
         definition, so the seat profile refuses any `.agents` or `.gemini` on
         the cwd's ancestor chain (HOME excepted as adapters.md states);
-        gplant-final shows the refusal on the released supervisor.
+        gplant-rel shows the refusal on the released supervisor.
 
     - item: "agy telemetry setting"
       status: verified

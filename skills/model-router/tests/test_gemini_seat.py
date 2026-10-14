@@ -484,14 +484,19 @@ def test_an_error_reason_is_capped():
     assert len(env["error_reason"]) == dispatch_agent.AGY_ERROR_REASON_MAX_CHARS
 
 
-@pytest.mark.parametrize("data", [b"[]", b"PONG", b'{"status": "SUCCESS", "response": 1e999999}',
-                                  b'{"status": "SUCCESS", "n": ' + b"9" * 5000 + b"}"],
-                         ids=["array", "text", "huge-float", "long-int"])
+@pytest.mark.parametrize("data", [b"[]", b"PONG", b'{"status": "SUCCESS", "n": ' + b"9" * 5000 + b"}"],
+                         ids=["array", "text", "long-int"])
 def test_a_document_that_is_not_one_object_is_unparseable(data):
     env = dispatch_agent._decode_envelope(data, dispatch_agent.AGY_JSON_FORMAT)
-    # A non-string `response` (Python reads 1e999999 as inf) parses but
-    # carries no answer, so no verdict can be read from it.
-    assert dispatch_agent._grade_envelope(env) == ["envelope_unparseable"] or env["text"] is None
+    assert dispatch_agent._grade_envelope(env) == ["envelope_unparseable"]
+
+
+def test_a_non_string_response_parses_but_carries_no_answer():
+    """Python reads 1e999999 as inf: the document is one object, so it is not
+    unparseable, but it has no answer, and the review schema then fails it."""
+    env = dispatch_agent._decode_envelope(b'{"status": "SUCCESS", "response": 1e999999}',
+                                          dispatch_agent.AGY_JSON_FORMAT)
+    assert env["parse_ok"] is True and env["text"] is None
 
 
 def test_the_document_keeps_the_shared_four_mib_budget():
@@ -580,7 +585,15 @@ def test_a_log_without_the_profile_and_a_profile_without_a_log_are_refused(tmp_p
     (lambda a: [("--disable-slash-commands=false" if x == "--disable-slash-commands" else x)
                 for x in a], "slash-false"),
     (lambda a: [x.replace("json", "text") if x == "json" else x for x in a], "text"),
-    (lambda a: a[:1] + a[3:], "no-model"),
+    (lambda a: [x for i, x in enumerate(a)
+                if x != "--model" and (i == 0 or a[i - 1] != "--model")], "no-model"),
+    (lambda a: [x for i, x in enumerate(a)
+                if x != "--agent" and (i == 0 or a[i - 1] != "--agent")], "no-agent"),
+    (lambda a: [x for i, x in enumerate(a)
+                if x != "--print-timeout" and (i == 0 or a[i - 1] != "--print-timeout")],
+     "no-print-timeout"),
+    (lambda a: [("30s" if i and a[i - 1] == "--print-timeout" else x) for i, x in enumerate(a)],
+     "short-print-timeout"),
 ], ids=lambda v: v if isinstance(v, str) else None)
 def test_an_argv_outside_the_recipe_is_refused_before_spawn(tmp_path, mutate, why):
     log = tmp_path / "agy.log"
@@ -622,14 +635,31 @@ def test_settings_with_a_duplicate_telemetry_key_are_refused(tmp_path):
     _refused(tmp_path, home=home)
 
 
-def test_go_flag_spellings_are_one_flag():
+def test_equals_and_separate_values_are_one_flag():
     log = Path("/abs/agy.log")
-    argv = ["agy", "-agent=dmr-reviewer-v1", f"-model={GEMINI}", "-effort", "low",
-            "-project=dmr-reviewer-v1", "-disable-slash-commands", "--output-format=json",
-            f"-log-file={log}", "--p", "x"]
+    argv = ["agy", "--agent=dmr-reviewer-v1", f"--model={GEMINI}", "--effort", "low",
+            "--project=dmr-reviewer-v1", "--disable-slash-commands", "--output-format=json",
+            "--print-timeout=0s", f"--log-file={log}", "-p", "x"]
     assert dispatch_agent._agy_argv_problem(argv, log, GEMINI) is None
     assert "repeats" in dispatch_agent._agy_argv_problem(argv + ["-p", "y"], log, GEMINI)
-    assert "repeats" in dispatch_agent._agy_argv_problem(argv + ["-project", "x"], log, GEMINI)
+    assert "repeats" in dispatch_agent._agy_argv_problem(argv + ["--project", "x"], log, GEMINI)
+
+
+@pytest.mark.parametrize("respell", [
+    lambda a: [("-agent" if x == "--agent" else x) for x in a],
+    lambda a: [("-project" if x == "--project" else x) for x in a],
+    lambda a: [("--p" if x == "-p" else x) for x in a],
+    lambda a: [("-model=" + a[i + 1] if x == "--model" else x) for i, x in enumerate(a)
+               if not (i and a[i - 1] == "--model")],
+], ids=["single-dash-agent", "single-dash-project", "double-dash-p", "single-dash-model-eq"])
+def test_unprobed_spellings_are_refused(respell):
+    """i1 fable: only `--name` and `-p` were probed. Go's `flag` reads
+    `-agent=…` the same, but a parser reading single-dash letters as a cluster
+    would not, and the agent layer would drop without a word. Each case
+    respells one shipped flag, so nothing else about the argv is wrong."""
+    argv = respell(_recipe_argv())
+    flags, why = dispatch_agent._agy_flag_view(argv)
+    assert flags is None and "spellings" in why, why
 
 
 @pytest.mark.parametrize("alias", ["--print", "--prompt", "-print", "--print=x"])
@@ -641,7 +671,7 @@ def test_the_unprobed_prompt_aliases_are_refused(alias):
     i = argv.index("-p")
     argv[i:i + 2] = [alias] if "=" in alias else [alias, "--dangerously-skip-permissions"]
     flags, why = dispatch_agent._agy_flag_view(argv)
-    assert flags is None and "allow-list" in why
+    assert flags is None and ("allow-list" in why or "spellings" in why)
 
 
 def test_a_prompt_that_looks_like_flags_is_a_value():
@@ -888,6 +918,39 @@ def test_a_control_character_in_a_value_is_refused(flag, value):
     assert flags is None and "control character" in why
 
 
+def test_the_child_sees_the_audited_cwd_in_pwd(tmp_path):
+    """i1 sol F1: the supervisor's own $PWD is not the child's. A Go child
+    would use an inherited $PWD naming the same directory through another
+    path, whose ancestors the audit never walked."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    fake = _fake_agy(tmp_path)
+    seen = tmp_path / "pwd.txt"
+    body = fake.read_text().replace(
+        "import json, os, sys\n",
+        f"import json, os, sys\nopen({str(seen)!r}, 'w').write(os.environ.get('PWD', ''))\n", 1)
+    fake.write_text(body)
+    real = tmp_path / "clean" / "ws"
+    real.mkdir(parents=True)
+    alias_root = tmp_path / "review" / "repo"
+    (alias_root / ".git").mkdir(parents=True)
+    (alias_root / ".agents").mkdir()
+    (alias_root / "link").symlink_to(real)
+    env_pwd = str(alias_root / "link")
+    argv = _argv(fake, log)
+    base = ["--output-envelope", "agy-print-json-v1", "--seat-profile", "agy-reviewer-v1",
+            "--agy-log", str(log), "--transport-id", "claude_code.to_gemini",
+            "--child-cwd", str(real), "--model-id", GEMINI]
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "run", "--attempt-id", "g1",
+         "--receipt-dir", str(tmp_path / "receipts"), "--deadline-seconds", "60",
+         "--grace-seconds", "1", "--seat", "reviewer-1", "--output-schema", "review",
+         *base, "--", *argv],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "HOME": str(home), "PWD": env_pwd})
+    assert proc.returncode == 0, proc.stderr
+    assert seen.read_text() == os.path.realpath(real)
+
+
 def test_a_newline_in_the_prompt_is_the_prompt():
     argv = _recipe_argv(prompt="line one\nline two")
     flags, why = dispatch_agent._agy_flag_view(argv)
@@ -973,6 +1036,60 @@ def test_every_resolution_must_be_of_the_pinned_model(tmp_path, extra_line, why)
     proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
     assert receipt["result"]["state"] == "INVALID_OUTPUT", why
     assert any(r.startswith("agy_resolved_model:") for r in receipt["result"]["invalid_reasons"])
+
+
+def test_the_host_layout_runs_end_to_end(tmp_path):
+    """i1 fable: the real layout — the cwd under HOME, HOME holding the CLI's
+    `.gemini` (and another tool's `.agents`) — is admitted by a full run."""
+    home = _home(tmp_path)
+    (home / ".agents").mkdir()
+    cwd = home / "dev" / "repo"
+    (cwd / ".git").mkdir(parents=True)
+    log = tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path), log), home=home, log=log, cwd=cwd)
+    assert receipt["result"]["state"] == "SUCCEEDED", (proc.stderr, receipt["result"])
+
+
+def test_an_empty_log_fails_on_both_counts(tmp_path):
+    log = tmp_path / "a.log"
+    log.write_text("")
+    _, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
+    assert "agy_project_grants:none" in reasons
+    assert "agy_resolved_model:<absent>" in reasons
+
+
+def test_a_log_under_a_symlinked_directory_is_refused(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "linked").symlink_to(real)
+    _refused(tmp_path, log=tmp_path / "linked" / "agy.log")
+    assert not (real / "agy.log").exists()
+
+
+def test_an_unset_home_is_refused(tmp_path):
+    log = tmp_path / "agy.log"
+    argv = _argv(_fake_agy(tmp_path), log)
+    env = {k: v for k, v in os.environ.items() if k != "HOME"}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "run", "--attempt-id", "g1",
+         "--receipt-dir", str(tmp_path / "receipts"), "--deadline-seconds", "60",
+         "--seat", "reviewer-1", "--output-schema", "review", "--model-id", GEMINI,
+         "--output-envelope", "agy-print-json-v1", "--seat-profile", "agy-reviewer-v1",
+         "--agy-log", str(log), "--transport-id", "claude_code.to_gemini",
+         "--child-cwd", str(_workspace(tmp_path)), "--", *argv],
+        capture_output=True, text=True, timeout=60, env=env)
+    assert proc.returncode == 2 and "HOME" in proc.stderr and not log.exists()
+
+
+def test_a_refusal_after_the_claim_leaves_no_log_and_no_claim(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path), log), home=home, log=log)
+    assert receipt["result"]["state"] == "SUCCEEDED"
+    log2 = tmp_path / "agy2.log"
+    proc, _ = _run(tmp_path, _argv(_fake_agy(tmp_path), log2), home=home, log=log2)
+    assert proc.returncode == 2 and "already has a receipt" in proc.stderr
+    assert not log2.exists()
+    assert not list((tmp_path / "receipts").glob("*.claim"))
 
 
 def test_more_than_twenty_records_still_pass_and_are_capped_in_the_receipt(tmp_path):

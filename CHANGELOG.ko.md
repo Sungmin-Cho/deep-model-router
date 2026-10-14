@@ -23,7 +23,7 @@
 
 ### Security
 
-- 작업 공간 루트에 `.agents`나 `.gemini`가 있는 트리에서는 Gemini 좌석을 거부합니다. Antigravity CLI는 작업 공간의 훅을 호스트 명령으로 실행하고 그 agent가 리뷰어 agent를 대신하게 두는데, 어떤 권한 규칙으로도 막히지 않습니다.
+- 작업 디렉터리나 그 위의 어느 디렉터리에든 `.agents`나 `.gemini`가 있으면 Gemini 좌석을 거부합니다(사용자 홈은 일부 예외). Antigravity CLI는 작업 공간의 훅을 호스트 명령으로 실행하고 그 agent가 리뷰어 agent를 대신하게 두는데, 어떤 권한 규칙으로도 막히지 않습니다.
 
 ## [1.19.0] — 2026-10-13 (Muse Spark 리뷰어 좌석)
 

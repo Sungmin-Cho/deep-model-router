@@ -795,12 +795,14 @@ def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
     """`({name: value}, None)` for an agy argv, or `(None, why)`.
 
     Parsed the way Go's `flag` package parses it (the CLI's usage text is that
-    package's): one or two leading dashes, a value joined by `=` or taken from
-    the next token, a boolean flag never consuming the next token, and parsing
-    over at the first argument that is not a flag. Only the agy-reviewer-v1
-    names are admitted, each once, and the prompt as `-p` (or `--p`) only; a
-    positional argument or any other flag refuses the argv rather
-    than being interpreted, so a mode, an added workspace, a resumed
+    package's): a value joined by `=` or taken from the next token, a boolean
+    flag never consuming the next token, and parsing over at the first argument
+    that is not a flag. Only the probed spellings are admitted: two dashes for
+    every name, and `-p` for the prompt. Go's `flag` would also read
+    `-agent=…`, but a parser that read single-dash letters as a cluster would
+    not, and the agent layer would drop silently (implementation review i1).
+    Only the agy-reviewer-v1 names are admitted, each once; a positional
+    argument or any other flag refuses the argv rather than being interpreted, so a mode, an added workspace, a resumed
     conversation or a permission bypass cannot ride along. A value other than
     the prompt may not hold a control character: the CLI echoes values into
     the log the post-run gate reads, and a newline in one would start a line
@@ -813,7 +815,12 @@ def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
         tok = argv[i]
         if tok in ("-", "--") or not tok.startswith("-"):
             return None, f"{tok!r} is a positional argument; the seat takes none"
-        name = tok[2:] if tok.startswith("--") else tok[1:]
+        if tok.startswith("--") and not (tok == "--p" or tok.startswith("--p=")):
+            name = tok[2:]
+        elif tok == "-p" or tok.startswith("-p="):
+            name = tok[1:]
+        else:
+            return None, f"{tok!r}: only `--name` spellings (and `-p`) are admitted"
         value = None
         if "=" in name:
             name, value = name.split("=", 1)
@@ -853,8 +860,12 @@ def _agy_argv_problem(argv: list[str], agy_log: Path, model_id: str | None) -> s
     flags, why = _agy_flag_view(argv)
     if why is not None:
         return why
+    # `print-timeout` is fixed too: the supervisor's deadline is the one clock,
+    # and an omitted value leaves the CLI's own default, which its help text
+    # and its documentation disagree on (implementation review i1 sol F2).
     fixed = {"agent": AGY_REVIEWER_AGENT, "project": AGY_REVIEWER_PROJECT,
-             "output-format": "json", "disable-slash-commands": "true"}
+             "output-format": "json", "disable-slash-commands": "true",
+             "print-timeout": "0s"}
     for name, value in fixed.items():
         if flags.get(name) != value:
             return f"--{name} must be {value!r}, not {flags.get(name)!r}"
@@ -3233,9 +3244,18 @@ def _run_attempt(args, pins: list[dict]) -> int:
                     start_new_session=True, close_fds=True)  # only declared stdio is inherited
                 if args.child_cwd is not None:
                     popen_kw["cwd"] = args.child_cwd
+                child_env = None
                 if args.grok_home is not None:
                     child_env = os.environ.copy()
                     child_env["GROK_HOME"] = args.grok_home
+                if args.seat_profile == AGY_SEAT_PROFILE:
+                    # A Go child takes its cwd from $PWD whenever $PWD names the
+                    # same directory, and an inherited one can be a third
+                    # spelling the workspace audit never walked (implementation
+                    # review i1 sol F1). Pin it to the audited real path.
+                    child_env = child_env or os.environ.copy()
+                    child_env["PWD"] = args.child_cwd
+                if child_env is not None:
                     popen_kw["env"] = child_env
                 if time.monotonic() >= deadline_monotonic:
                     receipt["result"]["invalid_reasons"] = ["deadline_expired_before_launch"]

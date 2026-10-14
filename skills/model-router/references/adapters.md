@@ -765,7 +765,9 @@ You review code and documents. Read files when the request needs them, and answe
   depends on markers a reviewed tree can plant itself, so the profile relies on
   none: it requires `--child-cwd` and refuses when that directory or any
   ancestor up to `/` holds `.agents` or `.gemini`, under both the literal and
-  the resolved spelling of the path (the CLI may take its cwd from `$PWD`).
+  the resolved spelling of the path, and it sets the child's `PWD` to the
+  resolved one (the CLI may take its cwd from `$PWD`, which could otherwise
+  name the same directory through a third, unaudited path).
   The user's HOME is the one exception: its `.gemini` is the CLI's own
   configuration home, and its `.agents` is admitted only while HOME is a
   strict ancestor of the cwd and not itself a repository root. A change that
@@ -796,12 +798,14 @@ You review code and documents. Read files when the request needs them, and answe
 - **The argv is an allow-list.** Parsed as Go's `flag` package parses it (one
   or two dashes, `=` or a separate value), the seat admits `--agent`,
   `--model`, `--effort`, `--project`, `--disable-slash-commands`,
-  `--output-format json`, `--print-timeout`, `--log-file` and one prompt, each
-  once, and no positional argument; anything else, `--mode`, `--add-dir` and
-  `--dangerously-skip-permissions` among it, is refused unread. The prompt is
-  admitted as `-p` only: the CLI documents `--print` and `--prompt` as
-  aliases, but only `-p` was probed as a flag that takes a value. The profile
-  also requires `--output-schema review`.
+  `--output-format json`, `--print-timeout 0s`, `--log-file` and one prompt,
+  each once, and no positional argument; anything else, `--mode`, `--add-dir`
+  and `--dangerously-skip-permissions` among it, is refused unread. Only the
+  probed spellings pass: two dashes for every name (Go's `flag` would also
+  read `-agent=…`, a parser that clusters single-dash letters would not), and
+  `-p` for the prompt (the CLI documents `--print` and `--prompt` as aliases,
+  but only `-p` was probed as a flag that takes a value). The profile also
+  requires `--output-schema review`.
 - **Telemetry must be off.** On a personal Google account the provider's
   terms let it keep and use the conversations ("Interactions") unless the user
   turns that off in settings. The supervisor refuses the seat unless

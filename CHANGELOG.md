@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Refuse the Gemini seat on a tree whose workspace root holds `.agents` or `.gemini`: the Antigravity CLI runs a workspace's hooks as host commands and lets its agents replace the reviewer's, which no permission rule stops.
+- Refuse the Gemini seat when its working directory or any directory above it holds `.agents` or `.gemini` (the user's home partly excepted): the Antigravity CLI runs a workspace's hooks as host commands and lets its agents replace the reviewer's, which no permission rule stops.
 
 ## [1.19.0] — 2026-10-13 (Muse Spark reviewer seat)
 
