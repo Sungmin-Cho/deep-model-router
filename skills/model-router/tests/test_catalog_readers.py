@@ -353,7 +353,7 @@ def _preflight(tmp_path, *, runtime, seat, transport, schema="none"):
     ws = tmp_path / "ws"
     ws.mkdir(exist_ok=True)
     log = tmp_path / f"{runtime}-{seat}.agy.log"
-    child = ["agy", "--agent", "dmr-reviewer-v1", "--model", "gemini-3.8-flash", "--effort", "low",
+    child = ["agy", "--agent", "dmr-reviewer-v1", "--model", GEMINI, "--effort", "low",
              "--project", "dmr-reviewer-v1", "--disable-slash-commands", "--output-format", "json",
              "--print-timeout", "0s", "--log-file", str(log), "-p", "Reply with exactly: pong"]
     env = {**os.environ, "HOME": str(home), "PATH": "/usr/bin:/bin"}
@@ -361,7 +361,7 @@ def _preflight(tmp_path, *, runtime, seat, transport, schema="none"):
         [sys.executable, str(SKILL / "scripts" / "dispatch_agent.py"), "run",
          "--attempt-id", f"x-{runtime}-{seat}", "--receipt-dir", str(tmp_path / "r"),
          "--deadline-seconds", "30", "--seat", seat, "--runtime", runtime,
-         "--model-id", "gemini-3.8-flash", "--effort-native", "low",
+         "--model-id", GEMINI, "--effort-native", "low",
          "--transport-id", transport, "--output-schema", schema,
          "--output-envelope", "agy-print-json-v1", "--seat-profile", "agy-reviewer-v1",
          "--agy-log", str(log), "--child-cwd", str(ws), "--", *child],
@@ -401,10 +401,11 @@ def muse_dir(tmp_path, doc=MUSE_DOC, name="6d657461__p746268.json"):
 def test_the_captured_muse_catalog_keeps_visible_rows_only(tmp_path):
     cat = model_sync.read_muse_catalog(muse_dir(tmp_path))
     assert cat.status == "ok"
-    assert sorted(cat.models) == ["muse-spark-1.2", "muse-spark-1.3"]
-    assert cat.models["muse-spark-1.3"]["efforts"] == ["minimal", "low", "medium", "high",
-                                                        "xhigh", "max"]
-    assert cat.excluded["muse-spark-1.3-contributor"] == "hidden"
+    # the capture's ids are the catalogue's, not the registry's: META names the
+    # one the registry seats today
+    assert META in cat.models and len(cat.models) == 2
+    assert cat.models[META]["efforts"] == ["minimal", "low", "medium", "high", "xhigh", "max"]
+    assert cat.excluded[f"{META}-contributor"] == "hidden"
     found = model_sync.find_candidates({META_KEY: CFG["models"][META_KEY]}, {"meta": cat})
     assert found[META_KEY]["status"] == "none"
 

@@ -3364,8 +3364,13 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         fence = {"cwd": args.child_cwd, "tmpdir": agy_tmp,
                                  "agy_log": args.agy_log,
                                  "home_gemini": args.agy_home_gemini}
-                    prefix, metadata = receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(),
-                                                             remaining, fence=fence)
+                    # A fence is passed only for the maker profile, so every
+                    # other guarded run calls the guard exactly as before.
+                    prefix, metadata = (
+                        receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(),
+                                              remaining, fence=fence) if fence is not None
+                        else receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(),
+                                                   remaining))
                     if time.monotonic() >= deadline_monotonic:
                         raise receipt_guard.GuardError("deadline expired during guard preparation")
                 except (OSError, receipt_guard.GuardError) as exc:

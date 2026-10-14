@@ -316,7 +316,11 @@ No mode flag in this string contains the seat; the `dmr-reviewer-v1` agent and
 project do, and the supervisor checks both. Declare `--output-envelope
 agy-print-json-v1`, `--seat-profile agy-reviewer-v1`, `--agy-log <agy-log>` (the
 same path as `--log-file`), `--model-id <id>` and `--child-cwd`; a `.to_gemini`
-dispatch without them is refused before spawn. There is no maker string. The
+dispatch without them is refused before spawn. The maker string
+(`mechanism_maker`) runs only under `--seat-profile agy-maker-v1` — see "The
+maker profile" below — and its direction's `write_verified` is false, so the
+router never seats it; it is there for an explicit dispatch and for the attended
+probe once write authority is granted. The
 prompt rides in argv — print mode reads no prompt from stdin — so the
 platform's argument limits bound the payload: 1 MiB for argv and environment
 together on macOS, where the seat was probed, and 128 KiB for any one argument
@@ -392,6 +396,14 @@ the keychain, so a subscription login reads as `Not logged in` (Claude Code
 the host. Verification does: the seat probes ran from a Claude Code host, so
 the Codex-hosted direction stays assumed and the YAML keeps `verified: false`
 for it.
+
+**To gemini models:** the reviewer string and `--seat-profile agy-reviewer-v1`
+exactly as on Claude Code, probed FROM a Codex host (1.21.0): a `codex exec -s
+workspace-write` turn with network access ran the supervisor, which ran a
+round trip, the three effort tokens, a containment request and a refused
+workspace. Codex's own sandbox denies agy's state writes under `~/.gemini`;
+the CLI logs that and completes, and its keychain login works. Run it without
+`--receipt-guard`: Seatbelt does not nest. No maker on this host.
 
 ### Grok seat profiles
 
@@ -1386,7 +1398,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `meta_worker_balanced` (seats that read), then `gemini_worker_balanced` (seats that read), then `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read), then `gemini_worker_balanced` (seats that read), then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1397,7 +1409,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `openai_worker_balanced`, then `claude_worker_fast` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `openai_worker_balanced`, then `openai_reasoning` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_worker_balanced` (seats that read), then `openai_worker_balanced`, then `openai_reasoning` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
 | `principal_architect` (claude) | `openai_frontier`, then `openai_reasoning`, then `claude_architect` |
@@ -1422,30 +1434,34 @@ the worker. No `--unavailable-models` route-around is needed for this, and
 none should be used for it: it withholds the model from the review seats too.
 
 **The meta seat reads, on Claude Code only.** `meta_worker_balanced` is bound
-to no role. It is the first fallback of `worker_balanced` on a Claude Code host,
-so it is seated wherever the xai seat does not resolve for the route: the
-caller withholds it, it failed, its family is exhausted or excluded by
-`allowed_families`, a `review_context` names xai as the author, or a `low` xai
-quota moves a read-only worker seat to the first same-tier model of another
-family. It never fills a seat that writes. Because the write requirement binds
-the whole role (above), a route whose worker writes from `worker_balanced`
-seats the next write-capable model there — the claude one, or the openai one
-when Claude is withheld too — and the meta model nowhere; that route gains the
-note `worker_balanced: no write-capable meta seat on claude_code; seated the
-<family> one`. Where it does seat, it is a tier-1 seat of a fourth family:
-`model-profiles.md` ("The meta reviewer seat") lists what that changes.
+to no role. It is the second fallback of `worker_balanced` on a Claude Code
+host, after the Claude balanced model (since 1.21.0; 1.19.0 and 1.20.0 put it
+first), so it is seated only where neither the xai seat nor the Claude model
+resolves for the route: the caller withholds both, the families are exhausted
+or excluded by `allowed_families`, or a `review_context` names both families
+as authors. It never fills a seat that writes. Because the write requirement
+binds the whole role (above), a route whose worker writes from
+`worker_balanced` seats the next write-capable model there — the Claude one,
+or the OpenAI one when Claude is withheld too — and the meta model nowhere;
+where the meta seat was skipped to get there, the route gains the note
+`worker_balanced: no write-capable meta seat on claude_code; seated the
+<family> one`. `model-profiles.md` ("The meta reviewer seat") lists what that
+changes, and why the Claude model leads again (a measured gap in review
+recall).
 
-**The gemini seat reads, on Claude Code only, after the meta seat.**
-`gemini_worker_balanced` is bound to no role and is the second fallback of
-`worker_balanced` on a Claude Code host. A role resolves to the first usable
-model in its list, so this seat is reached only where neither the xai seat
-nor the meta seat resolves for the route — each for any of the reasons above
-(withheld, failed, exhausted, excluded, the declared author, a `low` quota
-moving a read-only worker). While the meta seat resolves, no route changes. It
-never fills a seat that writes, and on a route whose worker writes from
-`worker_balanced` the note reads `worker_balanced: no write-capable gemini
-seat on claude_code; seated the <family> one`. `model-profiles.md` ("The
-gemini reviewer seat") lists what seating it changes.
+**The gemini seat reads, after the Claude model.** `gemini_worker_balanced` is
+bound to no role. On a Claude Code host it is the third fallback of
+`worker_balanced`, after the Claude balanced model and the meta seat; on a
+Codex host it is the second, right after the Claude balanced model. A role
+resolves to the first usable model in its list, so this seat is reached only
+where everything ahead of it does not resolve for the route. It never fills a
+seat that writes: the Claude Code direction ships a maker recipe
+(`mechanism_maker`, the `agy-maker-v1` profile below) with `write_verified:
+false` by decision, and the Codex direction has a reviewer recipe only. Where it
+was skipped on a write route, the note reads `worker_balanced: no
+write-capable gemini seat on <runtime>; seated the <family> one`. Grok hosts do
+not offer the family. `model-profiles.md` ("The gemini reviewer seat") lists
+what seating it changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The

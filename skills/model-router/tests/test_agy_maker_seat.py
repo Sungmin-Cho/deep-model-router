@@ -436,3 +436,33 @@ def test_the_cli_home_stays_unwritable_even_inside_an_overlapping_workspace(box)
     assert ok.returncode == 0
     out.close()
     err.close()
+
+
+# ---------------------------------------------------------------------------
+# The registry: the recipe, its ledger row, and withheld write authority
+# ---------------------------------------------------------------------------
+
+def _maker_recipe_argv(log="/abs/m.agy.log", prompt="make it"):
+    recipe = load_config()["transports"]["claude_code"]["to_gemini"]["mechanism_maker"]
+    subs = {"<id>": GEMINI, "<native-effort>": "low", "<agy-log>": log, "<prompt>": prompt}
+    return [subs.get(t, t) for t in recipe.replace('"<prompt>"', "<prompt>").split()]
+
+
+def test_the_shipped_maker_recipe_is_the_profile_argv():
+    argv = _maker_recipe_argv()
+    assert dispatch_agent._agy_argv_problem(argv, Path("/abs/m.agy.log"), GEMINI, MAKER) is None
+    assert dispatch_agent._agy_argv_problem(argv, Path("/abs/m.agy.log"), GEMINI) is not None
+
+
+def test_the_maker_row_binds_the_recipe_and_write_authority_stays_withheld():
+    from test_docs import _assert_direction_row_binds, _whole_token
+    cfg = load_config()
+    entry = cfg["transports"]["claude_code"]["to_gemini"]
+    needle = "transports.claude_code.to_gemini.mechanism_maker"
+    rows = [e for e in cfg["verification_ledger"]["entries"]
+            if _whole_token(needle, str(e.get("item", "")))]
+    assert len(rows) == 1 and rows[0]["status"] == "verified"
+    _assert_direction_row_binds(entry["mechanism_maker"], rows[0], rows[0]["item"])
+    # U-5: probed and recorded, but not authorized to seat write work
+    assert entry["write_verified"] is False
+    assert route_task.Policy.of(cfg).write_capable("claude_code", "gemini") is False
