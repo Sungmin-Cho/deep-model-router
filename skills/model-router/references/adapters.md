@@ -348,6 +348,24 @@ a note. Per-id maker re-verification is the attended `model_sync.py
 probe-maker`, run before `model_sync.py promote` — the only way an overlay id
 enters the registry.
 
+Two lines read their catalogue differently. **gemini:** agy keeps no catalogue
+on disk; `agy models` asks the server (about 3 s, no inference). The tick
+stays offline: it marks the row `catalog_fetch` only when `agy` is on PATH and
+the reviewer seat's host files pass the profile check (otherwise
+`discovery_unavailable`, with `no_cli` or `seat_setup`), and `run` fetches the
+list once, strips the effort suffix the catalogue appends (`-low`, `-medium`,
+`-high`), re-applies revocations and deferrals to a discovered id, and probes it
+through `--seat-profile agy-reviewer-v1`. Every fetch stamps the 24-hour lineage
+interval, which is also a failed fetch's retry; `run --key` checks at once.
+P2 admits only the row's declared `served_forms` of the id the CLI log says it
+resolved, a resolution record rather than served-model attestation. Because
+the tick cannot see the server's list, a new generation is noticed when the
+tick next re-plans (an agy self-update is enough) and the interval has passed.
+**meta:** the muse account catalogue is on disk and read offline, but the muse
+stream reports no token usage, so P3 (boot overhead) cannot run: a newer
+`muse-spark` id is reported in `status` as deferred `overhead_unmeasurable` and
+never published — a person bumps it.
+
 ### Codex
 
 **Native:** the `multi_agent` feature (stable, enabled). Its context-isolation
@@ -836,6 +854,74 @@ You review code and documents. Read files when the request needs them, and answe
 Declare the whole profile. An `agy` dispatch that names neither the
 `.to_gemini` transport nor the profile is invisible to the supervisor as agy —
 it is then an ordinary plain-text child with no containment check at all.
+
+#### The maker profile (`agy-maker-v1`)
+
+agy's write tools have **no path containment of their own** (agy 1.3.5,
+measured with a write-capable agent and `--mode accept-edits`): an absolute
+path outside the workspace, a `../` path, a symlink's target, the outside inode
+behind a pre-existing hard link, a file under HOME and an outside edit were all
+written. So the maker seat is contained by four layers, all checked before
+spawn:
+
+- **The agent** `~/.gemini/config/agents/dmr-maker-v1.md`, byte for byte:
+
+```markdown
+---
+name: dmr-maker-v1
+description: Write seat for deep-model-router. It reads and edits files in its working directory and never runs commands, searches the web or delegates.
+tools:
+  - view_file
+  - write_to_file
+  - replace_file_content
+mainAgent: true
+subagent: false
+---
+# System Prompt
+You make the file changes the request asks for, inside the current working directory, using your file tools, and then report what you changed.
+```
+
+  The model sees those three tools and the CLI's task list: no command, URL,
+  web search or subagent. It cannot run tests.
+- **The project** `~/.gemini/config/projects/dmr-maker-v1.json`: the reviewer
+  document's shape with the deny list `command(*)`, `mcp(*)`, `read_url(*)`,
+  `execute_url(*)` — writing is not denied there, because deny outranks allow
+  and "everything but the workspace" cannot be written as rules.
+- **A kernel write fence.** The profile requires `--receipt-guard
+  darwin-sandbox-v1`, and adds to that Seatbelt profile, right after `(allow
+  default)` so the guard's own stdout/stderr rule still wins: every write
+  outside the workspace, the attempt's own TMPDIR (created by the supervisor,
+  passed to the child, removed when it exits) and the CLI log is denied;
+  nothing under `~/.gemini` is writable even where a path overlaps it; and no
+  `.git`, `.hg`, `.jj`, `.agents` or `.gemini` path anywhere under the
+  workspace is writable — the place by a `subpath` parameter, the name by a
+  fixed expression, so no path is ever spliced into a regex. agy itself runs
+  with no write under `~/.gemini` (measured: conversation persistence fails
+  and is logged, the turn completes; a large tool output then stays truncated
+  because its overflow file cannot be written). The fence paths are recorded
+  in the receipt's `receipt_guard.write_fence`, and the guard check rebuilds the
+  profile from those recorded values. Seatbelt does not nest, so the
+  supervisor itself must run outside any sandbox, and the seat exists on macOS
+  only.
+- **The workspace.** `--child-cwd` with `--require-single-linked-cwd` (a hard
+  link would carry a write past a path fence; a symlink in the tree is refused
+  too), the same ancestor audit for `.agents`/`.gemini` as the reviewer, the
+  child's `PWD` pinned. The workspace and the log must be their own canonical
+  paths (refused, not normalized), neither may overlap `~/.gemini`, and the
+  log may not sit inside the workspace.
+
+The argv is the reviewer allow-list with the maker agent and project and one
+more flag, `--mode accept-edits`, fixed (it approves edits whatever the host's
+`toolPermission` preset says). After the run the same log gate reads `stored 0
+allow, 4 deny grants from project "dmr-maker-v1"` and the model resolution —
+but here it is **drift detection only**: the log is inside the fence and the
+model has write tools, so it can rewrite the record in place. No containment
+claim rests on it.
+
+What stays writable is the workspace itself, including other tools'
+configuration in it (`.claude/`, `.vscode/`, `.envrc`, a virtualenv's
+`sitecustomize.py`, gitignored files) — as for every maker seat. Run it in a
+clean, disposable worktree and read `git status --ignored` afterwards.
 
 ### Confirming a transport
 

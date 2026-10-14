@@ -1221,6 +1221,18 @@ transports:
       # diff from expanding into a command. The supervisor grades stdout with
       # --output-envelope agy-print-json-v1, which this direction requires.
       mechanism_reviewer: "agy --agent dmr-reviewer-v1 --model <id> --effort <native-effort> --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      # The maker seat (design 2026-10-14 DD-59, issue #59). agy's write tools
+      # have no path containment of their own (measured: an absolute path,
+      # `..`, a symlink, a hard link and HOME were all written), so argv is
+      # not containment here either: dispatch MUST use `--seat-profile
+      # agy-maker-v1`, which checks the `dmr-maker-v1` agent (view, write and
+      # replace only) and deny-rule project, telemetry and a single-linked
+      # disposable workspace before spawn, and requires the receipt guard,
+      # whose Seatbelt profile then carries a write fence: the workspace, the
+      # attempt's TMPDIR and the CLI log only, never `~/.gemini`, never a
+      # `.git`/`.hg`/`.jj`/`.agents`/`.gemini` path. See references/adapters.md,
+      # "Antigravity seat profile".
+      mechanism_maker: "agy --agent dmr-maker-v1 --model <id> --effort <native-effort> --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       isolation: separate_process
       verified: true
       write_verified: false

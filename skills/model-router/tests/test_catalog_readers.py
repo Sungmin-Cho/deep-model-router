@@ -192,22 +192,36 @@ def test_cli_versions_reads_agy_and_muse_without_letting_muse_update(tmp_path):
 # run: one fetch, then the key is asked again; every outcome stamps the interval
 # ---------------------------------------------------------------------------
 
-def test_a_failed_fetch_is_a_deferral_with_no_id_and_stamps_the_interval(tmp_path):
+def test_a_failed_fetch_stamps_the_interval_and_writes_no_deferral(tmp_path):
     _, fakedir, home, root, env = with_agy(tmp_path, listing=None)
     rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
     assert rep["failed"] == [GEMINI_KEY] and rep["catalog_fetch"]["status"] == "discovery_unavailable"
     st = work_state(root)
-    neg = st["negatives"][GEMINI_KEY]
-    assert neg["id"] is None and neg["reason"] == "catalog_fetch"
-    assert neg["retry_after"]["kind"] == "time"
+    assert GEMINI_KEY not in st["negatives"]
+    assert st["recent"][0]["outcome"] == "fetch_failed"
     assert st["last_probe"][GEMINI_KEY] == NOW.isoformat()
     assert [a for a in agy_calls(fakedir) if a != ["--version"]] == [["models"]]
-    # and the next plan holds it back until the deferral expires
+    # the stamped interval is the retry for an unattended plan
     view = model_sync.committed_view(root, CFG)
     cats = model_sync.load_catalogs(home, {}, env=env)
-    _, skipped = model_sync.plan(view=view, catalogs=cats, versions={}, work=st, now=NOW,
-                                 keys=[GEMINI_KEY], interval=False)
-    assert skipped[GEMINI_KEY] == "deferred:catalog_fetch"
+    _, skipped = model_sync.plan(view=view, catalogs=cats, versions={}, work=st, now=NOW)
+    assert skipped[GEMINI_KEY] == "interval"
+
+
+def test_a_failed_fetch_keeps_an_earlier_deferral_of_a_discovered_id(tmp_path):
+    """r2 sol F2: one negative slot per key — a fetch failure must not erase
+    the deferral an earlier probe of an id left there."""
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=None)
+    neg = {"id": NEWER, "family": "gemini", "outcome": "deferred", "reason": "overhead",
+           "retry_after": {"kind": "cli_version_change", "cli_version": "1.3.5"},
+           "summary_sha256": None, "at": NOW.isoformat()}
+    model_sync.update_work_state(root, lambda st: st["negatives"].__setitem__(GEMINI_KEY, neg))
+    model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
+    assert work_state(root)["negatives"][GEMINI_KEY] == neg
+    (fakedir / "agy.list").write_text(newer_list())
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY],
+                         versions={"agy": "1.3.5"})
+    assert rep["skipped"][GEMINI_KEY] == "held" and rep["inferences"] == 0
 
 
 def test_a_list_with_nothing_newer_records_none_and_probes_nothing(tmp_path):

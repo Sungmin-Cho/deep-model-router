@@ -31,6 +31,32 @@ BASE_POLICY = """(version 1)
 (deny appleevent-send)
 (deny job-creation)
 """
+# The agy maker seat's write fence (design 2026-10-14 DD-59a). Inserted right
+# after `(allow default)`, before the receipt-store rules, so the later
+# stdout/stderr allow still wins (Seatbelt: the last matching rule decides).
+#  1. every write outside the workspace, the attempt's TMPDIR and the CLI log
+#     is denied (agy's own write tools have no path containment);
+#  2. nothing under the CLI's configuration home is writable, even where a
+#     path above overlaps it (r1 sol F3);
+#  3. no VCS metadata or agy customization directory under the workspace, at
+#     any depth, is writable. The name is matched by a fixed expression and the
+#     place by a `subpath` parameter, so no path is ever spliced into a regex
+#     (r2 sol F1 / fable F1).
+FENCE_POLICY = """(deny file-write*
+  (require-all
+    (require-not (subpath (param "FENCE_CWD")))
+    (require-not (subpath (param "FENCE_TMP")))
+    (require-not (literal (param "FENCE_LOG")))
+    (require-not (literal "/dev/null"))
+    (require-not (literal "/dev/tty"))
+    (require-not (literal "/dev/dtracehelper"))))
+(deny file-write* (subpath (param "FENCE_HOME_GEMINI")))
+(deny file-write* (require-all (subpath (param "FENCE_CWD"))
+                               (regex #"/\\.(git|hg|jj|agents|gemini)(/|$)")))
+"""
+FENCE_KEYS = ("cwd", "tmpdir", "agy_log", "home_gemini")
+_FENCE_PARAMS = {"cwd": "FENCE_CWD", "tmpdir": "FENCE_TMP", "agy_log": "FENCE_LOG",
+                 "home_gemini": "FENCE_HOME_GEMINI"}
 PROBE = """import errno,os,sys
 try:
     fd=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
@@ -81,7 +107,20 @@ def _check_store(root: Path) -> None:
                     raise GuardError("receipt store contains a symlink, special file, or pre-existing hard link")
 
 
-def _recipe(root: Path, stdout_fd: int, stderr_fd: int):
+def check_fence(fence) -> dict:
+    """A write fence names four absolute, canonical paths (symlinks resolved,
+    as Seatbelt compares them). Anything else is refused, never normalized."""
+    if not isinstance(fence, dict) or set(fence) != set(FENCE_KEYS):
+        raise GuardError(f"write fence must name exactly {', '.join(FENCE_KEYS)}")
+    for key in FENCE_KEYS:
+        value = fence[key]
+        if not isinstance(value, str) or not os.path.isabs(value) \
+                or os.path.realpath(value) != value or "\0" in value:
+            raise GuardError(f"write fence {key} {value!r} is not an absolute canonical path")
+    return dict(fence)
+
+
+def _recipe(root: Path, stdout_fd: int, stderr_fd: int, fence: dict | None = None):
     if sys.platform != "darwin" or not os.path.isfile(SANDBOX_EXEC):
         raise GuardError("Darwin receipt guard is unavailable on this platform")
     canonical = canonical_directory(root)
@@ -94,6 +133,13 @@ def _recipe(root: Path, stdout_fd: int, stderr_fd: int):
             raise GuardError("output descriptor is not a single-linked regular file")
     parameters = {"ROOT": str(canonical), "STDOUT": outputs[0], "STDERR": outputs[1]}
     policy = BASE_POLICY
+    if fence is not None:
+        fence = check_fence(fence)
+        head = "(version 1)\n(allow default)\n"
+        assert policy.startswith(head)
+        policy = head + FENCE_POLICY + policy[len(head):]
+        for key, name in _FENCE_PARAMS.items():
+            parameters[name] = fence[key]
     # Protect exact ancestor nodes, without denying ordinary workspace children.
     for index, ancestor in enumerate(canonical.parents):
         name = f"ANCESTOR_{index}"
@@ -107,6 +153,8 @@ def _recipe(root: Path, stdout_fd: int, stderr_fd: int):
     prefix.extend(["-p", policy, "--"])
     metadata = dict(mechanism=GUARD_NAME, profile_sha256=digest,
                     protected_root=str(canonical), phase="prepared")
+    if fence is not None:
+        metadata["write_fence"] = dict(fence)
     return prefix, metadata
 
 
@@ -117,8 +165,9 @@ def reject_protected_input(root: Path, fd: int) -> None:
         raise GuardError("prompt input descriptor belongs to the protected receipt store")
 
 
-def prepare(root: Path, stdout_fd: int, stderr_fd: int, timeout: float):
-    prefix, metadata = _recipe(root, stdout_fd, stderr_fd)
+def prepare(root: Path, stdout_fd: int, stderr_fd: int, timeout: float,
+            fence: dict | None = None):
+    prefix, metadata = _recipe(root, stdout_fd, stderr_fd, fence)
     canonical = Path(metadata["protected_root"])
     _check_store(canonical)
     probe = canonical / (".receipt-guard-probe-" + uuid.uuid4().hex)
@@ -143,7 +192,9 @@ def verified_metadata(metadata, root: Path, attempt_id: str) -> bool:
         for suffix in ("stdout", "stderr"):
             fds.append(os.open(root / f"{attempt_id}.{suffix}",
                                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK))
-        _prefix, expected = _recipe(root, *fds)
+        # A fenced recipe is rebuilt from the paths it recorded: the
+        # workspace and TMPDIR may be gone by now (design r1 fable F1).
+        _prefix, expected = _recipe(root, *fds, metadata.get("write_fence"))
         expected["phase"] = "launched"
         return metadata == expected
     except (OSError, ValueError, TypeError):

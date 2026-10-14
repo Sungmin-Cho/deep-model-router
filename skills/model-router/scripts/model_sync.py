@@ -595,7 +595,7 @@ def retry_after_for(reason: str, ctx: ProbeContext) -> dict:
     quota -> the limit's reset time (24 h when unknown); cli_metadata /
     served_unproven / overhead -> when the CLI version changes;
     served_mismatch / overhead_unmeasurable -> when the catalog changes;
-    anything else (smoke, transport, effort, catalog_fetch) -> 6 hours.
+    anything else (smoke, transport, effort) -> 6 hours.
     """
     if reason == "quota":
         if ctx.quota_resets_at is not None:
@@ -1921,14 +1921,10 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
                 skipped[key] = f"deferred:{neg.get('reason')}"
                 continue
         elif c["status"] == "catalog_fetch":
-            # The gemini list is fetched by `run` (DD-61a); a failed fetch
-            # is a deferral with no id, and holds the next one back.
+            # The gemini list is fetched by `run` (DD-61a). Every fetch stamps
+            # the lineage interval, which is also a failed fetch's retry; an
+            # id's own deferral is re-applied by `run` once the list names it.
             c = {**c, "id": None}
-            neg = (work.get("negatives") or {}).get(key)
-            if neg and neg.get("id") is None and neg.get("reason") == "catalog_fetch" \
-                    and not _negative_expired(neg, versions, catalogs, now, quota):
-                skipped[key] = "deferred:catalog_fetch"
-                continue
         elif c["status"] != "candidate":
             skipped[key] = c["status"]
             continue
@@ -2071,7 +2067,7 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
         st["recent"] = ([entry] + list(st["recent"]))[:RECENT_KEEP]
         if outcome in ("pass", "none"):
             st["negatives"].pop(key, None)
-        elif outcome == "held":
+        elif outcome in ("held", "fetch_failed"):
             pass
         else:
             st["negatives"][key] = {"id": cand["id"], "family": cand["family"],
@@ -2194,10 +2190,12 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
                     rep["catalog_fetch"] = {"status": fetched.status, "reason": fetched.reason,
                                             "sha256": fetched.sha256}
                 if fetched.status != "ok":
-                    ctx0 = ProbeContext(now=now)
-                    _record(state_path, key, cand, outcome="failed", reason="catalog_fetch",
-                            retry_after=retry_after_for("catalog_fetch", ctx0),
-                            summary_sha=None, inferences=0, now=now, checked=True)
+                    # No negative: one slot per key holds an id's deferral,
+                    # and a fetch failure must not erase it (r2 sol F2). The
+                    # stamped interval is the retry; `run --key` bypasses it.
+                    _record(state_path, key, cand, outcome="fetch_failed", reason=fetched.reason,
+                            retry_after=None, summary_sha=None, inferences=0, now=now,
+                            checked=True)
                     rep["failed"].append(key)
                     continue
                 found = find_candidates({key: view.config["models"][key]}, catalogs)[key]
