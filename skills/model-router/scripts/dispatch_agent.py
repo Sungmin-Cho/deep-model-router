@@ -304,6 +304,8 @@ GEMINI_TRANSPORT_SUFFIX = ".to_gemini"
 # deny rules refuse writes, commands, MCP and URL access underneath it, so a
 # CLI that ever ignored the agent's list would still not write.
 AGY_SEAT_PROFILE = "agy-reviewer-v1"
+# model_sync's runtime label: its gemini probe is the one schema-less reviewer-profile run.
+AGY_PROBE_RUNTIME = "model_sync"
 AGY_REVIEWER_PROJECT = "dmr-reviewer-v1"
 AGY_REVIEWER_AGENT = "dmr-reviewer-v1"
 # The CLI actions a deny rule can name, except reading. `unsandboxed` is not
@@ -2912,9 +2914,19 @@ def _run_attempt(args, pins: list[dict]) -> int:
     if args.seat_profile == AGY_SEAT_PROFILE:
         # A reviewer profile: the review schema is what makes an answer that
         # is missing, or not a string, a failure rather than an empty success.
-        if args.output_envelope != AGY_JSON_FORMAT or args.output_schema != "review":
+        # The one exception is model_sync's own probe (design 2026-10-14
+        # DD-61a), whose `pong` smoke has no verdict: its caller requires the
+        # answer to be exactly `pong`, and a schema-less receipt is never
+        # review evidence (`verify-evidence` requires the review schema).
+        model_sync_probe = (args.runtime == AGY_PROBE_RUNTIME and args.seat == "probe"
+                            and args.transport_id == f"{AGY_PROBE_RUNTIME}{GEMINI_TRANSPORT_SUFFIX}")
+        if args.output_envelope != AGY_JSON_FORMAT or (
+                args.output_schema != "review"
+                and not (model_sync_probe and args.output_schema == "none")):
             print(f"--seat-profile {AGY_SEAT_PROFILE} requires --output-envelope "
-                  f"{AGY_JSON_FORMAT} and --output-schema review", file=sys.stderr)
+                  f"{AGY_JSON_FORMAT} and --output-schema review (none only for "
+                  f"--runtime {AGY_PROBE_RUNTIME} --seat probe --transport-id "
+                  f"{AGY_PROBE_RUNTIME}{GEMINI_TRANSPORT_SUFFIX})", file=sys.stderr)
             return 2
         if args.child_cwd is None:
             print(f"--seat-profile {AGY_SEAT_PROFILE} requires --child-cwd: the "

@@ -775,12 +775,16 @@ def test_the_effort_map_pin_refuses_an_undeclared_family_or_a_moved_spelling():
 
 
 def test_model_sync_reports_the_meta_line_without_a_catalog():
-    """No muse catalog reader yet: the row is discovery_unavailable, never a
-    candidate, and nothing keyed by family is consulted for it."""
+    """1.21.0 (design 2026-10-14 DD-61b, issue #61) reads the muse account
+    catalogue; with none on disk the row stays discovery_unavailable. A newer
+    id is discovered and stopped at P0 (no token usage to measure P3 with),
+    so the family's inference budget is zero.
+    tests/test_catalog_readers.py holds the reader's behaviour."""
     rows = {k: m for k, m in CFG["models"].items()}
     found = model_sync.find_candidates(rows, {})
     assert found[META_KEY]["status"] == "discovery_unavailable"
-    assert "meta" not in model_sync.FAMILY_CLI and "meta" not in model_sync.MAX_INFERENCES
+    assert model_sync.FAMILY_CLI["meta"] == "muse" and model_sync.MAX_INFERENCES["meta"] == 0
+    assert "meta" in model_sync.UNMEASURED_OVERHEAD_FAMILIES
     assert model_sync.retirement_notices(rows, {}) == []
 
 
@@ -829,8 +833,8 @@ def test_model_sync_tick_and_status_run_with_the_meta_row(tmp_path):
 
 
 def test_a_model_sync_run_on_the_meta_key_probes_nothing(tmp_path):
-    """No muse catalog reader and no FAMILY_CLI entry: `run --key` reports the
-    row and invokes no CLI at all."""
+    """No muse catalogue on disk (the fake home has none): `run --key` reports
+    the row and invokes no model CLI at all."""
     from test_model_sync import calls_of, cli_sync, fake_bin, fake_home, new_root, sync_env
     bindir, fakedir = fake_bin(tmp_path)
     home = fake_home(tmp_path)

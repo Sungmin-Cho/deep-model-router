@@ -935,7 +935,10 @@ models:
   # row stays a separate row, not this seat's history.
   gemini_worker_balanced:
     id: gemini-3.8-flash
-    lineage: { line: google/flash, template: "gemini-{gen}-flash" }
+    # served_forms: the CLI log resolves the base id to an effort spelling;
+    # model_sync's P2 admits exactly these (design 2026-10-14 DD-61a).
+    lineage: { line: google/flash, template: "gemini-{gen}-flash",
+               served_forms: ["{id}", "{id}-low", "{id}-medium", "{id}-high"] }
     family: gemini
     capability_tier: 1
     effort_ceiling: HIGH   # probed: the CLI rejects `xhigh` and `max`

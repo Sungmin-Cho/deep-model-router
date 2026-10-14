@@ -1210,12 +1210,18 @@ def test_an_agy_receipt_never_attests_a_served_model(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_model_sync_reports_the_gemini_line_without_a_catalog():
-    """No agy catalog reader yet: the row is discovery_unavailable, never a
-    candidate, and nothing keyed by family is consulted for it."""
+    """1.21.0 (design 2026-10-14 DD-61a, issue #61) gave the line a reader:
+    with no catalogue at all the row is still discovery_unavailable, never a
+    candidate; the tick's placeholder makes it a run-time fetch, and the
+    family has a CLI and an inference budget of its own.
+    tests/test_catalog_readers.py holds the reader's behaviour."""
     rows = {k: m for k, m in CFG["models"].items()}
     found = model_sync.find_candidates(rows, {})
     assert found[SEAT_KEY]["status"] == "discovery_unavailable"
-    assert "gemini" not in model_sync.FAMILY_CLI and "gemini" not in model_sync.MAX_INFERENCES
+    placeholder = model_sync.Catalog("gemini", "absent", "fetched at run")
+    assert model_sync.find_candidates(rows, {"gemini": placeholder})[SEAT_KEY]["status"] \
+        == "catalog_fetch"
+    assert model_sync.FAMILY_CLI["gemini"] == "agy" and model_sync.MAX_INFERENCES["gemini"] == 4
     assert model_sync.retirement_notices(rows, {}) == []
 
 
@@ -1233,7 +1239,9 @@ def test_model_sync_tick_and_status_run_with_the_gemini_row(tmp_path):
     json.loads(status.stdout)
 
 
-def test_a_model_sync_run_on_the_gemini_key_probes_nothing(tmp_path):
+def test_a_model_sync_run_on_the_gemini_key_probes_nothing_without_agy(tmp_path):
+    """No `agy` on PATH: the tick's offline gate makes the row
+    discovery_unavailable, so `run --key` fetches nothing and probes nothing."""
     from test_model_sync import calls_of, cli_sync, fake_bin, fake_home, new_root, sync_env
     bindir, fakedir = fake_bin(tmp_path)
     home = fake_home(tmp_path)

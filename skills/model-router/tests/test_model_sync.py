@@ -325,7 +325,8 @@ def test_cli_versions_are_read_from_the_cli_on_path(tmp_path, monkeypatch):
         assert got[cli] == model_sync.parse_cli_version(
             (CATALOGS / fixture / "version.txt").read_text())
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
-    assert model_sync.cli_versions() == {"codex": None, "claude": None, "grok": None}
+    assert model_sync.cli_versions() == {"codex": None, "claude": None, "grok": None,
+                                         "agy": None, "muse": None}
 
 
 # ---------------------------------------------------------------------------
@@ -729,15 +730,37 @@ def test_grok_probe_argv_carries_the_whole_evidence_set():
     assert sup[sup.index("--transport-id") + 1].endswith(".to_xai")
 
 
+# `--seat-profile` itself left this list in 1.21.0: the gemini probe runs under
+# the READ-ONLY reviewer profile (design 2026-10-14 DD-61a). What stays
+# forbidden is every write profile, by literal and by the supervisor constant
+# naming it; test_the_only_seat_profile_model_sync_names_is_the_reviewer_one
+# pins what replaced the blanket marker.
 WRITE_MARKERS = ("workspace-write", "danger-full-access", "acceptEdits",
                  "bypassPermissions", "Write(", "Edit(", "search_replace",
-                 "dmr-maker-v1", "--seat-profile", "--require-artifact")
+                 "dmr-maker-v1", "grok-maker-v1", "agy-maker-v1", "MAKER_SEAT_PROFILE",
+                 "AGY_MAKER", "accept-edits", "--require-artifact")
 
 
 @pytest.mark.parametrize("family,kw", [("claude", {}), ("openai", {"codex_mode": "text"}),
                                        ("openai", {"codex_mode": "json"}), ("xai", {})])
 def test_no_probe_argv_is_a_write_recipe(family, kw):
     argv = _argv(family, **kw)
+    assert not [a for a in argv if any(m in a for m in WRITE_MARKERS)]
+
+
+def test_the_only_seat_profile_model_sync_names_is_the_reviewer_one(tmp_path):
+    """Every `--seat-profile` line in the module names the agy REVIEWER profile
+    constant, and the gemini probe argv carries exactly that profile."""
+    import dispatch_agent
+    src = (SKILL / "scripts" / "model_sync.py").read_text()
+    lines = [l for l in src.splitlines() if "--seat-profile" in l]
+    assert lines and all("AGY_SEAT_PROFILE" in l or "--seat-profile agy-reviewer-v1" in l
+                         for l in lines), lines
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text(model_sync.P1_PROMPT)
+    argv = _argv("gemini", prompt_file=prompt, agy_log=tmp_path / "p.agy.log")
+    profiles = [argv[i + 1] for i, a in enumerate(argv) if a == "--seat-profile"]
+    assert profiles == [dispatch_agent.AGY_SEAT_PROFILE] == ["agy-reviewer-v1"]
     assert not [a for a in argv if any(m in a for m in WRITE_MARKERS)]
 
 
