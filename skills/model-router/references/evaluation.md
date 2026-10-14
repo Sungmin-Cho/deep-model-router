@@ -78,3 +78,53 @@ regraded and requoted without mismatch. The final collector's failure exits and
 protection of all measurement files were separately exercised by a real guarded
 local fixture. Raw files stay local because they contain machine paths and
 session identifiers; the published result contains counts and source hashes.
+
+## How a tier is measured
+
+`capability_tier` is read by every strength comparison the router makes, so a
+tier moves only on a measurement, and the measurement has to compare the
+right things. This section is the method; the results are in
+[model-profiles.md](model-profiles.md) and the verification ledger.
+
+**Anchors are live rows.** A tier is held by the dispatchable rows the
+registry puts there, because those are the models the router seats as peers,
+and a seat's tier claim is that it is as strong as they are. A history row
+(`dispatchable: false`) is a predecessor generation: it may be reported beside
+a result, never used as its anchor. When a tier holds several live rows, the
+anchor is the lowest one measured — a seat level with the weakest model the
+router already treats as that tier is inside the range the scale already
+accepts. A live row that could not be dispatched for the measurement is named
+as unmeasured, not skipped silently.
+
+**Three verdicts, written down before the first dispatch.** *Confirmed*: the
+anchor sits at least 0.10 recall below the tier above it (the suite separates
+the tiers), and the seat comes within 0.05 of the anchor. *Lowered*: the seat
+sits at least 0.10 below the anchor, so the suite separates it from the tier on
+its own. Anything else is *inconclusive*: the tier stays where it was and is
+recorded as provisional. The subjects, margins and verdicts are fixed before
+any dispatch; a rule written after some results were seen says which inputs
+were blind.
+
+**What a measurement can move.** A tier is read on both sides of a route. On
+the review side it sets each band's reviewer floor, which candidate a MEDIUM
+review seats and whether a judge outranks the parties. On the worker side it
+sets the retry ladder (a retry needs a strictly higher tier than what failed),
+whether the execution band may raise the worker, and the same-tier swap a low
+quota makes. A read-only seat — no write recipe on any host, or
+`write_verified: false` — only reviews and leads reading work, so a
+real-review replay measures its whole job and may raise or lower it. For a
+seat that writes, a review replay measures half the job: its tier moves only
+when a review replay and an implementation replay point the same way. A
+review replay alone is recorded as a measurement and moves nothing.
+
+**The two replays.** A *review replay* re-runs a real review from this
+repository's history against its frozen target with the original prompt. The
+ground truth is the findings the author accepted; judges from families that are
+not subjects grade each review blind, after reproducing the original reviews'
+expected sets. Suites of seeded defects reached their ceiling twice and decided
+nothing, which is why the replay uses real reviews. An *implementation replay*
+takes accepted findings whose fix added a test: the subject gets the pre-fix
+tree (no history) and the finding, works through its maker recipe in a
+disposable workspace, and is graded by the fix's tests and the existing suite —
+deterministic, no judge. It carries the same validity gate, because a fix task
+stated precisely can reach the ceiling too.
