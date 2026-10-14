@@ -80,10 +80,24 @@ for name, path in plan.get("writes", {{}}).items():
         results[name] = "written"
     except OSError as e:
         results[name] = "denied:" + str(e.errno)
+for name, (src, dst) in plan.get("renames", {{}}).items():
+    try:
+        os.rename(src, dst)
+        results[name] = "renamed"
+    except OSError as e:
+        results[name] = "denied:" + str(e.errno)
+for name, (link, target) in plan.get("via_new_symlink", {{}}).items():
+    try:
+        os.symlink(target, link)
+        with open(link, "w") as f:
+            f.write("x")
+        results[name] = "written"
+    except OSError as e:
+        results[name] = "denied:" + str(e.errno)
 results["tmpdir"] = os.environ.get("TMPDIR")
 with open(log, "a") as f:
-    f.write('I1014 11:00:00.000000       1 model_resolver.go:155] model alias "%s" resolved to "%s-low"\n'
-            % (model, model))
+    f.write('I1014 11:00:00.000000       1 model_resolver.go:155] model alias "%s" resolved to "%s%s"\n'
+            % (model, model, plan.get("resolved_suffix", "-low")))
     for line in plan.get("grants", [{loaded!r}]):
         f.write("I1014 11:00:01.000000       1 cli_setting_manager.go:211] "
                 "ApplyProjectPermissionGrants: " + line + "\n")
@@ -177,16 +191,19 @@ def _refused(proc, receipt, needle):
     assert needle in proc.stderr, proc.stderr
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_no_receipt_guard_no_fence_no_seat(box):
     proc, receipt = run(box, guard=False)
     _refused(proc, receipt, "--receipt-guard darwin-sandbox-v1")
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_no_single_link_audit_no_seat(box):
     proc, receipt = run(box, single=False)
     _refused(proc, receipt, "--require-single-linked-cwd")
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_a_non_canonical_workspace_is_refused_not_normalized(box):
     link = box / "ws-link"
     link.symlink_to(box / "ws")
@@ -194,15 +211,15 @@ def test_a_non_canonical_workspace_is_refused_not_normalized(box):
     _refused(proc, receipt, "not its own canonical path")
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_a_workspace_inside_the_cli_home_is_refused(box):
     cwd = box / "home" / ".gemini" / "config"
     proc, receipt = run(box, cwd=cwd)
-    assert proc.returncode == 2 and receipt is None
-    assert "overlaps the CLI's configuration home" in proc.stderr \
-        or ".gemini" in proc.stderr, proc.stderr
+    _refused(proc, receipt, "overlaps the CLI's configuration home")
 
 
 @pytest.mark.parametrize("where", ["in_workspace", "in_cli_home"])
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_a_log_inside_the_workspace_or_the_cli_home_is_refused(box, where):
     log = (box / "ws" / "a.agy.log" if where == "in_workspace"
            else box / "home" / ".gemini" / "a.agy.log")
@@ -210,12 +227,14 @@ def test_a_log_inside_the_workspace_or_the_cli_home_is_refused(box, where):
     _refused(proc, receipt, "--agy-log")
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_missing_maker_host_files_refuse_the_seat(box):
     (box / "home" / ".gemini" / "config" / "agents" / "dmr-maker-v1.md").unlink()
     proc, receipt = run(box)
     _refused(proc, receipt, "dmr-maker-v1")
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_a_symlink_in_the_workspace_refuses_the_seat(box):
     """The single-link audit refuses a symlink too: a write through it would be
     checked by the fence against its target, but the tree must not name a file
@@ -225,12 +244,14 @@ def test_a_symlink_in_the_workspace_refuses_the_seat(box):
     _refused(proc, receipt, "symlink")
 
 
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
 def test_a_hard_link_in_the_workspace_refuses_the_seat(box):
     target = box / "outside" / "victim.txt"
     target.write_text("v")
     os.link(target, box / "ws" / "hl.txt")
     proc, receipt = run(box)
-    assert proc.returncode != 0 and target.read_text() == "v"
+    _refused(proc, receipt, "hard link")
+    assert target.read_text() == "v"
 
 
 # ---------------------------------------------------------------------------
@@ -466,3 +487,165 @@ def test_the_maker_row_binds_the_recipe_and_write_authority_stays_withheld():
     # U-5: probed and recorded, but not authorized to seat write work
     assert entry["write_verified"] is False
     assert route_task.Policy.of(cfg).write_capable("claude_code", "gemini") is False
+
+
+@pytest.mark.skipif(DARWIN, reason="checks the refusal on hosts without the guard")
+def test_off_darwin_the_maker_seat_is_refused_before_spawn(box):
+    proc, receipt = run(box)
+    assert proc.returncode == 2 and receipt is None
+
+
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
+@pytest.mark.parametrize("where", ["log_in_other_git", "store_in_agents", "store_in_cli_home"])
+def test_auxiliary_outputs_may_not_sit_in_protected_directories(box, where):
+    """i1 sol F1: the log is inside the fence and the store's stdout/stderr are
+    allowed by the guard's last rule, so neither may land where a later tool
+    loads or runs what is written there."""
+    other = box / "other" / ".git" / "hooks"
+    other.mkdir(parents=True)
+    kw = {"log_in_other_git": dict(log=other / "pre-commit"),
+          "store_in_agents": dict(extra=()),
+          "store_in_cli_home": dict(extra=())}[where]
+    if where == "log_in_other_git":
+        proc, receipt = run(box, **kw)
+        _refused(proc, receipt, "'.git'")
+        return
+    store = (box / "ws2" / ".agents" / "r" if where == "store_in_agents"
+             else box / "home" / ".gemini" / "r")
+    store.parent.mkdir(parents=True, exist_ok=True)
+    log = box / "logs" / f"{where}.agy.log"
+    sup = [sys.executable, str(SCRIPT), "run", "--attempt-id", "s1", "--receipt-dir", str(store),
+           "--deadline-seconds", "30", "--seat", "worker", "--runtime", "claude_code",
+           "--model-id", GEMINI, "--effort-native", "low", "--transport-id",
+           "claude_code.to_gemini", "--output-schema", "none", "--output-envelope",
+           "agy-print-json-v1", "--seat-profile", MAKER, "--agy-log", str(log), "--child-cwd",
+           str(box / "ws"), "--require-single-linked-cwd", "--receipt-guard", "darwin-sandbox-v1"]
+    proc = subprocess.run([*sup, "--", *child(fake(box), log)], capture_output=True, text=True,
+                          env={**os.environ, "HOME": str(box / "home")}, timeout=60)
+    assert proc.returncode == 2 and "--receipt-dir" in proc.stderr, proc.stderr
+    assert not (store / "s1.json").exists()
+
+
+@pytest.mark.skipif(not DARWIN, reason="Darwin receipt guard")
+def test_case_variants_symlinks_and_renames_made_during_the_run_stay_fenced(box):
+    """i1 fable F2 and the missing tests: a `.GIT`/`.AGENTS` the child creates
+    is git's and agy's own name on a case-insensitive volume; a symlink the
+    child creates and writes through, or a rename out of the workspace, leaves
+    the fence the same way a direct write would."""
+    (box / "ws" / "sub").mkdir()
+    (box / "ws" / "keep.txt").write_text("k")
+    writes = {"upper_git": str(box / "ws" / ".GIT"),
+              "nested_upper_agents": str(box / "ws" / "sub" / ".AGENTS")}
+    plan = {"writes": writes,
+            "renames": {"rename_out": [str(box / "ws" / "keep.txt"),
+                                       str(box / "outside" / "moved.txt")]},
+            "via_new_symlink": {"new_link": [str(box / "ws" / "lnk"),
+                                             str(box / "outside" / "via-new-link.txt")]}}
+    proc, receipt = run(box, plan=plan)
+    assert receipt["result"]["state"] == "SUCCEEDED", (proc.stderr, receipt["result"])
+    got = json.loads(json.loads((box / "receipts" / "m1.stdout").read_text())["response"])
+    for name in ("upper_git", "nested_upper_agents", "rename_out", "new_link"):
+        assert got[name].startswith("denied:"), (name, got[name])
+    assert (box / "ws" / "keep.txt").read_text() == "k"
+    assert not (box / "outside" / "moved.txt").exists()
+    assert not (box / "outside" / "via-new-link.txt").exists()
+
+
+@pytest.mark.skipif(not DARWIN, reason="Darwin receipt guard")
+def test_a_maker_receipt_is_bound_to_its_own_fence(box):
+    """i1 fable F1: the fence the guard recorded must name this receipt's
+    workspace and log and rebuild from its recorded values."""
+    proc, receipt = run(box)
+    assert dispatch_agent.maker_fence_problem(receipt, box / "receipts") is None
+    for field, value in (("cwd", str(box / "outside")), ("agy_log", str(box / "logs" / "x"))):
+        forged = json.loads(json.dumps(receipt))
+        forged["receipt_guard"]["write_fence"][field] = value
+        assert dispatch_agent.maker_fence_problem(forged, box / "receipts") is not None, field
+    unguarded = json.loads(json.dumps(receipt))
+    unguarded["receipt_guard"] = None
+    assert dispatch_agent.maker_fence_problem(unguarded, box / "receipts") is not None
+
+
+@pytest.mark.skipif(not DARWIN, reason="Darwin receipt guard")
+def test_a_maker_resolution_outside_the_effort_spellings_fails(box):
+    proc, receipt = run(box, plan={"resolved_suffix": "-lite"})
+    assert receipt["result"]["state"] != "SUCCEEDED"
+    assert any(r.startswith("agy_resolved_model:")
+               for r in receipt["result"]["invalid_reasons"]), receipt["result"]
+
+
+def test_the_reviewer_profile_still_refuses_a_mode_through_the_supervisor(box):
+    """The refactor kept the reviewer allow-list: `--mode` is refused before
+    spawn, not just by the unit check."""
+    log = box / "logs" / "r.agy.log"
+    argv = child(fake(box), log, agent=dispatch_agent.AGY_REVIEWER_AGENT,
+                 project=dispatch_agent.AGY_REVIEWER_PROJECT)
+    sup = [sys.executable, str(SCRIPT), "run", "--attempt-id", "r1", "--receipt-dir",
+           str(box / "receipts"), "--deadline-seconds", "30", "--seat", "reviewer-1",
+           "--runtime", "claude_code", "--model-id", GEMINI, "--effort-native", "low",
+           "--transport-id", "claude_code.to_gemini", "--output-schema", "review",
+           "--output-envelope", "agy-print-json-v1", "--seat-profile", "agy-reviewer-v1",
+           "--agy-log", str(log), "--child-cwd", str(box / "ws")]
+    proc = subprocess.run([*sup, "--", *argv], capture_output=True, text=True,
+                          env={**os.environ, "HOME": str(box / "home")}, timeout=60)
+    assert proc.returncode == 2 and "'--mode' is outside the agy-reviewer-v1 allow-list" \
+        in proc.stderr, proc.stderr
+
+
+@pytest.mark.skipif(not DARWIN, reason="Darwin receipt guard")
+def test_the_attended_gemini_maker_probe_fails_without_a_bound_fence(box, monkeypatch):
+    exe = box / "bin" / "agy"
+    exe.write_text(MAKER_FAKE.format(python=sys.executable, loaded=LOADED))
+    exe.chmod(0o755)
+    monkeypatch.setattr(route_task, "load_config", lambda *a, **k: writable_cfg())
+    monkeypatch.setattr(dispatch_agent, "maker_fence_problem",
+                        lambda receipt, receipt_dir: "forged for the test")
+    root = box / "state"
+    root.mkdir(mode=0o700)
+    env = {**os.environ, "HOME": str(box / "home"),
+           "PATH": f"{box / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin"}
+    got = probe_maker.probe_maker(key=GEMINI_KEY, env=env, home=box / "home", now=None,
+                                  state_path=root, confirm=lambda plan: True)
+    assert got["status"] == "failed" and got["summary"]["reason"] == "fence"
+
+
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
+def test_a_store_inside_a_relocated_cli_home_is_refused(box):
+    """The overlap check, not the name check: with `~/.gemini` a symlink to a
+    directory of another name, a receipt store inside that directory names no
+    `.gemini` component, and only the canonical overlap refuses it."""
+    real = box / "geminiconf"
+    (box / "home" / ".gemini").rename(real)
+    (box / "home" / ".gemini").symlink_to(real)
+    store = real / "r"
+    log = box / "logs" / "reloc.agy.log"
+    sup = [sys.executable, str(SCRIPT), "run", "--attempt-id", "s2", "--receipt-dir", str(store),
+           "--deadline-seconds", "30", "--seat", "worker", "--runtime", "claude_code",
+           "--model-id", GEMINI, "--effort-native", "low", "--transport-id",
+           "claude_code.to_gemini", "--output-schema", "none", "--output-envelope",
+           "agy-print-json-v1", "--seat-profile", MAKER, "--agy-log", str(log), "--child-cwd",
+           str(box / "ws"), "--require-single-linked-cwd", "--receipt-guard", "darwin-sandbox-v1"]
+    proc = subprocess.run([*sup, "--", *child(fake(box), log)], capture_output=True, text=True,
+                          env={**os.environ, "HOME": str(box / "home")}, timeout=60)
+    assert proc.returncode == 2 and "overlaps the CLI's configuration home" in proc.stderr, \
+        proc.stderr
+
+
+@pytest.mark.skipif(not DARWIN, reason="Darwin receipt guard")
+def test_a_fence_forged_with_a_consistent_profile_still_fails_the_binding(box):
+    """A forger who rebuilds the profile hash for a fence naming another
+    workspace passes `verified_metadata`; the binding to the receipt's own
+    child_cwd and agy_log is what still refuses it."""
+    proc, receipt = run(box)
+    forged = json.loads(json.dumps(receipt))
+    fence = dict(forged["receipt_guard"]["write_fence"], cwd=str(box / "outside"))
+    fds = [os.open(box / "receipts" / f"m1.{x}", os.O_RDONLY) for x in ("stdout", "stderr")]
+    try:
+        _, meta = receipt_guard._recipe(box / "receipts", *fds, fence)
+    finally:
+        for fd in fds:
+            os.close(fd)
+    meta["phase"] = "launched"
+    forged["receipt_guard"] = meta
+    assert receipt_guard.verified_metadata(meta, box / "receipts", "m1")
+    assert "another workspace" in dispatch_agent.maker_fence_problem(forged, box / "receipts")

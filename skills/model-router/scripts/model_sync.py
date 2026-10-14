@@ -2052,7 +2052,7 @@ def _clear_in_flight(state_path: Path) -> None:
 
 def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: str | None,
             retry_after: Mapping | None, summary_sha: str | None, inferences: int,
-            now: dt.datetime, checked: bool = False) -> None:
+            now: dt.datetime, checked: bool = False, keep_negative: bool = False) -> None:
     def rec(st):
         # A pass counts toward the lineage interval only once published
         # (`_mark_published`); until then it is `published: False` and due.
@@ -2065,9 +2065,11 @@ def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: 
         if outcome == "pass":
             entry["published"] = False
         st["recent"] = ([entry] + list(st["recent"]))[:RECENT_KEEP]
-        if outcome in ("pass", "none"):
+        if outcome in ("pass", "none") and not keep_negative:
             st["negatives"].pop(key, None)
-        elif outcome in ("held", "fetch_failed"):
+        elif outcome in ("held", "fetch_failed", "none"):
+            # `none` with keep_negative: a fetched list that names no successor
+            # today says nothing about an id deferred earlier (i1 sol F2).
             pass
         else:
             st["negatives"][key] = {"id": cand["id"], "family": cand["family"],
@@ -2203,7 +2205,7 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
                 if found["status"] != "candidate":
                     _record(state_path, key, cand, outcome="none", reason=None,
                             retry_after=None, summary_sha=None, inferences=0, now=now,
-                            checked=True)
+                            checked=True, keep_negative=True)
                     rep["skipped"][key] = found["status"]
                     continue
                 if found["id"] in blocked or (
@@ -2215,7 +2217,7 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
                             checked=True)
                     rep["skipped"][key] = "held"
                     continue
-                cand = {**cand, **found, "key": key}
+                cand = {**cand, **found, "key": key, "fetched": True}
             ctx = ProbeContext(now=now, cli_version=versions.get(FAMILY_CLI[fam]))
             if aliased:
                 found = alias_probe(key=key, candidate=cand, base=base,
@@ -2266,9 +2268,12 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
             s = result["summary"]
             rep["inferences"] += result["inferences"]
             rep["probed"].append(key)
+            # A fetched gemini candidate's catalogue check counts for the
+            # interval even when its probe spent no inference (i1 sol F3).
             _record(state_path, key, cand, outcome=s["outcome"], reason=s.get("reason"),
                     retry_after=s.get("retry_after"), summary_sha=result["summary_sha256"],
-                    inferences=result["inferences"], now=now)
+                    inferences=result["inferences"], now=now,
+                    checked=bool(cand.get("fetched")))
             if s["outcome"] == "pass":
                 passing.append((key, s, result["summary_sha256"]))
                 rep["passed"].append(key)
@@ -2352,7 +2357,13 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
     out["candidates"] = {c["key"]: c["id"] or (f"alias:{c['alias']}" if c.get("alias")
                                                else "catalog_fetch") for c in eligible}
     out["skipped"] = skipped
-    out["deferred"] = {k: {**n, "expired": _negative_expired(n, versions, catalogs, now, quota_now)}
+    # A family whose catalogue is fetched by `run` cannot have a catalogue
+    # deferral judged here: `run` re-applies it to the list (i1 fable F3).
+    out["deferred"] = {k: {**n, "expired": None if (
+        (n.get("retry_after") or {}).get("kind") == "catalog_change"
+        and (catalogs.get(n.get("family")) or Catalog("", "ok")).status == "absent"
+        and n.get("family") == "gemini") else
+        _negative_expired(n, versions, catalogs, now, quota_now)}
                        for k, n in sorted(work["negatives"].items())}
     summaries = Path(state_path) / SUMMARY_PREFIX / "summaries"
     out["recent"] = [{**r, "summary_path": str(summaries / f"{r['summary_sha256']}.json")

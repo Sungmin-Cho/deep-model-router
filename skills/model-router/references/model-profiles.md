@@ -192,10 +192,12 @@ the Claude balanced seat's recall.
 
 **The maker seat is shipped without write authority.** The `agy-maker-v1`
 profile contains a write seat (`adapters.md`, "The maker profile"), and its
-probes are in the ledger. Its `write_verified` stays false by decision: with it
-on, every write route whose worker sits on `worker_balanced` while the xai seat
-is out would move its writer from the Claude balanced model to this one, and
-the replay measured this seat's review recall at a fifth of that model's.
+probes are in the ledger. Its `write_verified` stays false by decision. With
+the Claude-first order turning it on would not touch a route where the Claude
+balanced model resolves; it would make this model the writer where the xai seat
+and the Claude model are both out — today the OpenAI balanced model writes
+there — and the replay measured this seat's review recall at a fifth of the
+Claude model's.
 
 What 1.21.0 changed for this seat, against 1.20.0:
 
@@ -209,8 +211,17 @@ What 1.21.0 changed for this seat, against 1.20.0:
   OpenAI balanced seat to this one. Its HIGH effort ceiling adds
   `effort_below_floor` to 3,424 CRITICAL routes that already asked for a
   human, and 3,556 write routes note that this seat could not write there. With
-  only OpenAI exhausted and the xai seat available, 24 Codex routes gain it as a
-  cross-family reviewer.
+  the Claude family exhausted and the xai seat available, 24 Codex routes gain
+  it as a cross-family reviewer.
+- **With the xai and meta seats out and OpenAI exhausted**, 6,278 routes
+  change: on Claude Code the Claude balanced model takes the review seats this
+  seat held beside the Claude architect or the Claude fast seat (3,123 routes
+  give up a cross-family review for it, and 1,712 lose the
+  `effort_below_floor` cause this seat's ceiling had added); on Codex 2,124
+  routes change, 1,840 of them only by a note that this seat could not write
+  where a Claude model now writes, the rest by moved review seats.
+- **A write override with the xai and meta seats out** changes notes only: on
+  1,523 routes the skipped-gemini note goes, because the Claude model is first.
 - **A lower effort ceiling** still applies wherever it seats: the CLI accepts
   `low`, `medium` and `high` only, so the seat's ceiling is HIGH and a floor
   that wants more records `effort_below_floor` (a human gate) rather than

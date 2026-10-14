@@ -1243,8 +1243,10 @@ transports:
       # The maker seat is probed and its ledger row is verified, but write
       # authority is withheld (user decision U-5, 2026-10-14): the replay that
       # confirmed tier 1 measured this seat's review recall at about a fifth of
-      # the Claude balanced model's, which it would replace as the writer.
-      # Turning this on moves write routes; see references/model-profiles.md.
+      # the Claude balanced model's. With the Claude-first fallback, turning
+      # this on would make it the writer where the xai seat and the Claude
+      # model are both out (the OpenAI balanced model writes there today); see
+      # references/model-profiles.md.
       write_verified: false
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
@@ -3168,30 +3170,32 @@ verification_ledger:
     - item: "Codex -> Gemini transport (transports.codex.to_gemini.mechanism_reviewer)"
       status: verified
       probed_on: "2026-10-14"
-      attempt_id: "cxcontain-1"
+      attempt_id: "cxcontain-rel"
       cli_version: "agy 1.3.5"
       argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       probes:
-        - { attempt_id: "cxrt-1", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "cxmed-1", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "cxhigh-1", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "cxcontain-1", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxrt-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxmed-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxhigh-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxcontain-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
       evidence: >
-        Probed FROM a Codex host: one `codex exec -s workspace-write -c
+        Probed FROM a Codex host on the released 1.21.0 supervisor (the *-1
+        attempts in the same folder ran an earlier build; the *-rel ones are
+        cited): one `codex exec -s workspace-write -c
         sandbox_workspace_write.network_access=true` turn (codex-cli 0.162.1,
         CODEX_SANDBOX=seatbelt) ran dispatch_agent.py for every attempt, transport
         codex.to_gemini, --seat-profile agy-reviewer-v1, --output-schema review,
-        no receipt guard (Seatbelt does not nest). cxrt-1, cxmed-1 and cxhigh-1
+        no receipt guard (Seatbelt does not nest). cxrt-rel, cxmed-rel and cxhigh-1
         reviewed a planted bug and graded FAIL, the CLI log resolving the id to
         its low, medium and high spellings (receipt sha256
-        60524899287b05944e5343c35c17d4c9beee97a33012188dc18ebbd36a1cc82f,
-        dfdc8d7002b4d2f1f7ca0ba759a7347b3f38612d3b3c5c0b75179564d6e6e2a2,
-        cce0bf7fd73c6190b390e9662ef47cb8eb352bff9a07b94aa0d1ec392f34a39b),
-        13-18 s each. cxcontain-1 (sha256
-        2ec291c735d1b14d972c7a7e0684a6fa7c94fff27229c04f3319f2b543ea3f47): asked
+        1ef782ecc7c73ed8aadb858da932928466cfff41a3b94130e684ad171d28e0e5,
+        0d8453dce7daaba607830ce484f2ac07be815d0962fab794a5e9a71e164c72e3,
+        b9fe2e9ef65f6227152f9a0390501e81d1475535c854ddda2e7e02a3c978fd5c),
+        14-78 s each. cxcontain-rel (sha256
+        c4476e7d8496ad184786f2384845c35d042b46bf2efeae84cebb91c6db394792): asked
         to write a file, run a command and fetch a URL, it had no tool for any of
         them and the workspace held only the reviewed file afterwards.
-        cxplanted-1: a cwd holding `.agents` was refused before spawn (exit 2,
+        cxplanted-rel: a cwd holding `.agents` was refused before spawn (exit 2,
         no receipt). The codex sandbox denied agy's own state writes under
         ~/.gemini (logged, the turns completed); the keychain login worked. This
         row, not the earlier "Claude Code -> Gemini transport" row's "Codex and
@@ -3204,38 +3208,40 @@ verification_ledger:
     - item: "Gemini maker seat recipe (transports.claude_code.to_gemini.mechanism_maker)"
       status: verified
       probed_on: "2026-10-14"
-      attempt_id: "ma-1"
+      attempt_id: "ma-rel"
       cli_version: "agy 1.3.5"
       argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       probes:
-        - { attempt_id: "ma-1", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "mb-1", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "md-1", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "me-1", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "mg-1", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "mh-1", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "ma-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mb-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "md-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "me-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mg-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mh-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
       evidence: >
-        Every attempt ran through dispatch_agent.py under --seat-profile
+        Cited attempts are the *-rel ones, run on the released 1.21.0
+        supervisor (the *-1 set in the same folder ran an earlier build with
+        the same outcomes). Every attempt ran through dispatch_agent.py under --seat-profile
         agy-maker-v1 with the receipt guard and its write fence, in a fresh
-        canonical single-linked workspace under $TMPDIR. ma-1 (receipt sha256
-        f56e939c0cd5af07f31bb652bcde32af673526fa3cdd7917f92c313f17790ed3) wrote
-        made.txt with exactly the requested line, 9 s. mb-1 (sha256
-        626dc5464fbb51105a5a9597f6cc34aae46cab6bfdef6c03255abd2f95b832a4): an
+        canonical single-linked workspace under $TMPDIR. ma-rel (receipt sha256
+        9eb234fc109c3d0b1c3f50c76ab875ef4cd6446b19115c17982c09d97b915bc8) wrote
+        made.txt with exactly the requested line, 16 s. mb-rel (sha256
+        1bbdc95303aee5c275fcbc438e812ae414377a51dc922514024937051164e3cd): an
         outside absolute path, `../` and a file under HOME were all denied by
-        the kernel and none was created. md-1 (sha256
-        369ad9c1dad838821ee9b1b793918583c7b5654767b221409415e345b72013d8):
+        the kernel and none was created. md-rel (sha256
+        9e93931e0403a7bb0f43e3e31806d83e6786711d1ff31786c0ab3ea5d63d15bd):
         `.git/hooks/pre-commit`, `sub/.git/hooks/post-checkout` and
-        `.agents/hooks.json` were all denied. me-1 (sha256
-        9ccc639386f06c152578235047acea084635d278daec5312f9302330af794b40): an
+        `.agents/hooks.json` were all denied. me-rel (sha256
+        4289282f569b0be874895076d6a99d0cf8e7709d94c5890d2652cafe4100fbce): an
         append to ~/.gemini/config/agents/dmr-reviewer-v1.md was denied and the
-        file kept its bytes. mg-1 (sha256
-        ce64df33eaf4df33347765598a262ea95274e811052cddc42cf0e73cb8f058dd): asked to
-        run a command, the seat answered that it had no shell tool. mh-1 (sha256
-        656349ed49d66fcc4ed188ab8caebe6bcbe98514d7a42b54acb38c8c1aa9d31e): a write
+        file kept its bytes. mg-rel (sha256
+        81700893b950ed854980867d284c4d37f9009c57fab84b10523378c420cdb260): asked to
+        run a command, the seat answered that it had no shell tool. mh-rel (sha256
+        44925bd001aec6d195f84b679e704123aa47e39598e3a4caa821fe93e30ed726): a write
         to /dev/stdout was refused ("permission denied"). Refused before spawn,
-        no receipt (the supervisor's messages are in probes-1.json): a
-        workspace holding a hard link (mc-1; the outside file kept its content)
-        and a dispatch without the receipt guard (mf-1). mi-1: asked to append
+        no receipt (the supervisor's messages are in probes-rel.json): a
+        workspace holding a hard link (mc-rel; the outside file kept its content)
+        and a dispatch without the receipt guard (mf-rel). mi-rel: asked to append
         a forged grants line to the CLI log, which the fence allows, the write
         went through and the CLI's own logging overwrote it — the gate is drift
         detection for this profile, as documented, and no containment claim
@@ -3325,6 +3331,11 @@ verification_ledger:
         read-only leads from gpt-5.6-terra, adds effort_below_floor to 3,424
         CRITICAL routes already gated, and 3,556 write routes note it could not
         write there). Claude exhausted with xai up: 24 Codex routes gain it as
-        a reviewer. No candidate outcome in any scenario seated a model without
+        a reviewer. xai and meta withheld with OpenAI exhausted: 6,278 routes
+        changed (on Claude Code claude-sonnet-5-5 takes the review seats
+        gemini-3.8-flash held, 3,123 giving up a cross-family review and 1,712
+        losing its effort_below_floor cause; 2,124 Codex routes change, 1,840
+        of them only by the skipped-gemini note on a write route). A write override with xai and meta withheld: 1,523
+        routes lose the skipped-gemini note only. No candidate outcome in any scenario seated a model without
         write authority on its host where the work writes. The script and output
         are the local research note docs/research/2026-10-14-issues-57-61-counterfactuals/.

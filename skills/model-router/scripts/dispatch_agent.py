@@ -1057,6 +1057,35 @@ def _agy_workspace_problem(cwd: Path, home: Path | None) -> str | None:
     return None
 
 
+# Directory names the maker never writes into: VCS metadata, whose hooks and
+# config run later outside any diff, and agy's own customizations. Compared
+# case-folded (APFS is case-insensitive by default).
+AGY_FENCE_PROTECTED = (".git", ".hg", ".jj", ".agents", ".gemini")
+
+
+def maker_fence_problem(receipt: dict, receipt_dir: Path) -> str | None:
+    """Why an agy-maker-v1 receipt does not carry the fence its seat requires,
+    or None (implementation review i1 fable F1): the guard metadata must hold
+    a write fence naming THIS receipt's workspace and log, the single-link
+    audit must have run, and the recorded profile must rebuild from the
+    recorded values (`receipt_guard.verified_metadata`)."""
+    if receipt.get("seat_profile") != AGY_MAKER_PROFILE:
+        return f"seat_profile {receipt.get('seat_profile')!r} is not {AGY_MAKER_PROFILE}"
+    meta = receipt.get("receipt_guard")
+    fence = meta.get("write_fence") if isinstance(meta, dict) else None
+    if not isinstance(fence, dict):
+        return "the receipt carries no write fence"
+    if fence.get("cwd") != receipt.get("child_cwd"):
+        return "the write fence names another workspace than the receipt's child_cwd"
+    if fence.get("agy_log") != receipt.get("agy_log"):
+        return "the write fence names another log than the receipt's agy_log"
+    if receipt.get("require_single_linked_cwd") is not True:
+        return "the single-link audit did not run"
+    if not receipt_guard.verified_metadata(meta, Path(receipt_dir), str(receipt.get("attempt_id"))):
+        return "the recorded guard profile does not rebuild from its recorded values"
+    return None
+
+
 def _canonical(path: str | None) -> bool:
     return isinstance(path, str) and os.path.isabs(path) and os.path.realpath(path) == path
 
@@ -1101,6 +1130,17 @@ def _agy_maker_preflight(args) -> str | None:
                     f"{home_gemini!r}, which the fence keeps unwritable")
     if _within(log, cwd):
         return f"--agy-log {log!r} is inside the workspace {cwd!r}"
+    # The log is inside the fence and the receipt store's stdout/stderr are
+    # allowed by the guard's last rule, so neither may sit where a later tool
+    # would load or run what was written there (implementation review i1 sol F1).
+    store = os.path.realpath(args.receipt_dir)
+    for name, value in (("--agy-log", log), ("--receipt-dir", store)):
+        hit = [c for c in Path(value).parts if c.casefold() in AGY_FENCE_PROTECTED]
+        if hit:
+            return (f"{name} {value!r} passes through {hit[0]!r}: a VCS or agy "
+                    f"customization directory, which the maker must never write")
+        if _within(value, home_gemini) or _within(home_gemini, value):
+            return f"{name} {value!r} overlaps the CLI's configuration home {home_gemini!r}"
     why = _agy_argv_problem(args.argv, Path(log), args.model_id, AGY_MAKER_PROFILE)
     why = why or _agy_host_problem(Path(home), AGY_MAKER_PROFILE)
     for spelling in (cwd, os.path.abspath(cwd)):
@@ -1111,11 +1151,18 @@ def _agy_maker_preflight(args) -> str | None:
     return why
 
 
+# The effort spellings the CLI resolves a base id to (agy 1.3.5 logged `-low`,
+# `-medium` and `-high`; its catalogue offers no others for the seated line).
+AGY_EFFORT_SPELLINGS = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
 def _agy_resolution_ok(model: str | None, resolved: object) -> bool:
     """The CLI's resolution of `--model` is that model or one of its effort
-    spellings (`<model>-low`, …)."""
+    spellings (`<model>-low`, …) — not any id that merely starts with it: a
+    `<model>-lite` is another model (implementation review i1)."""
     return (isinstance(model, str) and isinstance(resolved, str)
-            and (resolved == model or resolved.startswith(model + "-")))
+            and (resolved == model
+                 or resolved in {f"{model}-{e}" for e in AGY_EFFORT_SPELLINGS}))
 
 
 def _reserve_agy_log(path: Path, receipt_dir: Path, pins: dict) -> str | None:
@@ -2907,6 +2954,10 @@ def cmd_run(args) -> int:
         return _run_attempt(args, pins)
     finally:
         _release_artifact_pins(pins)
+        # The agy maker's private TMPDIR goes on every way out of the attempt
+        # (implementation review i1 fable F6); atexit stays as the fallback.
+        if getattr(args, "agy_tmpdir", None):
+            shutil.rmtree(args.agy_tmpdir, ignore_errors=True)
 
 
 def _run_attempt(args, pins: list[dict]) -> int:
@@ -3360,6 +3411,7 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         # The attempt's own TMPDIR, inside the fence and gone
                         # when the supervisor exits.
                         agy_tmp = os.path.realpath(tempfile.mkdtemp(prefix="dmr-agy-tmp-"))
+                        args.agy_tmpdir = agy_tmp
                         atexit.register(shutil.rmtree, agy_tmp, True)
                         fence = {"cwd": args.child_cwd, "tmpdir": agy_tmp,
                                  "agy_log": args.agy_log,

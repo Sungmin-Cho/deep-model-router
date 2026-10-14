@@ -485,3 +485,70 @@ def test_p0_names_why_a_muse_candidate_is_never_probed():
                              ctx=model_sync.ProbeContext(now=NOW))
     assert (got["outcome"], got["reason"]) == ("deferred", "overhead_unmeasurable")
     assert model_sync.MAX_INFERENCES["meta"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Implementation review i1: state the fetch must not lose or skip
+# ---------------------------------------------------------------------------
+
+def _deferral(reason="overhead", kind="cli_version_change"):
+    return {"id": NEWER, "family": "gemini", "outcome": "deferred", "reason": reason,
+            "retry_after": ({"kind": kind, "cli_version": "1.3.5"} if kind == "cli_version_change"
+                            else {"kind": kind, "catalog_sha256": "0" * 64}),
+            "summary_sha256": None, "at": NOW.isoformat()}
+
+
+def test_a_list_without_the_successor_keeps_its_earlier_deferral(tmp_path):
+    """i1 sol F2: a fetched list that names no successor today says nothing
+    about an id deferred earlier; when the id reappears it is still held."""
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=AGY_LIST)
+    neg = _deferral()
+    model_sync.update_work_state(root, lambda st: st["negatives"].__setitem__(GEMINI_KEY, neg))
+    model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY], versions={"agy": "1.3.5"})
+    assert work_state(root)["negatives"][GEMINI_KEY] == neg
+    (fakedir / "agy.list").write_text(newer_list())
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY], versions={"agy": "1.3.5"})
+    assert rep["skipped"][GEMINI_KEY] == "held" and rep["inferences"] == 0
+
+
+def test_a_fetched_candidate_stopped_before_any_inference_still_stamps_the_interval(tmp_path):
+    """i1 sol F3: P0 rejects a newer id the list offers only at `-low` (an
+    effort vocabulary short of HIGH) without spending an inference; the fetch
+    still counts as that interval's check."""
+    only_low = AGY_LIST + f"{NEWER}-low\tGemini 3.9 Flash (Low)\n"
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=only_low)
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
+    assert rep["inferences"] == 0 and rep["failed"] == [GEMINI_KEY], rep
+    assert [a for a in agy_calls(fakedir) if "-p" in a] == []
+    st = work_state(root)
+    assert st["last_probe"][GEMINI_KEY] == NOW.isoformat()
+    assert st["negatives"][GEMINI_KEY]["reason"] == "effort_vocabulary"
+
+
+def test_status_does_not_judge_a_gemini_catalogue_deferral_it_cannot_see(tmp_path):
+    """i1 fable F3: the tick's gemini catalogue is a placeholder, so `status`
+    reports a catalogue-change deferral as checked at run, not expired."""
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=AGY_LIST)
+    neg = _deferral("served_mismatch", "catalog_change")
+    model_sync.update_work_state(root, lambda st: st["negatives"].__setitem__(GEMINI_KEY, neg))
+    got = model_sync.status(env=env, home=home, now=NOW)
+    assert got["deferred"][GEMINI_KEY]["expired"] is None
+
+
+def test_a_fetch_over_budget_is_skipped_before_agy_models_runs(tmp_path):
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=newer_list())
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY],
+                         budget=model_sync.MAX_INFERENCES["gemini"] - 1)
+    assert rep["over_budget"] == [GEMINI_KEY]
+    assert ["models"] not in agy_calls(fakedir)
+
+
+def test_the_probe_spends_exactly_the_planned_effort_tokens(tmp_path):
+    """P1 at LOW, the current id's P3 half at LOW, P4 at the row's ceiling
+    (HIGH) — and nothing above the ceiling the catalogue supports."""
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=newer_list())
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
+    assert rep["passed"] == [GEMINI_KEY], rep
+    calls = [(a[a.index("--model") + 1], a[a.index("--effort") + 1])
+             for a in agy_calls(fakedir) if "-p" in a]
+    assert calls == [(NEWER, "low"), (GEMINI, "low"), (NEWER, "high")], calls

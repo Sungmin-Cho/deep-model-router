@@ -39,9 +39,11 @@ BASE_POLICY = """(version 1)
 #  2. nothing under the CLI's configuration home is writable, even where a
 #     path above overlaps it (r1 sol F3);
 #  3. no VCS metadata or agy customization directory under the workspace, at
-#     any depth, is writable. The name is matched by a fixed expression and the
-#     place by a `subpath` parameter, so no path is ever spliced into a regex
-#     (r2 sol F1 / fable F1).
+#     any depth and in any letter case (APFS is case-insensitive: a `.GIT` the
+#     model creates is git's `.git` — implementation review i1 fable F2), is
+#     writable. The name is matched by a fixed expression and the place by a
+#     `subpath` parameter, so no path is ever spliced into a regex (r2 sol F1 /
+#     fable F1).
 FENCE_POLICY = """(deny file-write*
   (require-all
     (require-not (subpath (param "FENCE_CWD")))
@@ -52,7 +54,7 @@ FENCE_POLICY = """(deny file-write*
     (require-not (literal "/dev/dtracehelper"))))
 (deny file-write* (subpath (param "FENCE_HOME_GEMINI")))
 (deny file-write* (require-all (subpath (param "FENCE_CWD"))
-                               (regex #"/\\.(git|hg|jj|agents|gemini)(/|$)")))
+                               (regex #"/\\.([gG][iI][tT]|[hH][gG]|[jJ][jJ]|[aA][gG][eE][nN][tT][sS]|[gG][eE][mM][iI][nN][iI])(/|$)")))
 """
 FENCE_KEYS = ("cwd", "tmpdir", "agy_log", "home_gemini")
 _FENCE_PARAMS = {"cwd": "FENCE_CWD", "tmpdir": "FENCE_TMP", "agy_log": "FENCE_LOG",

@@ -248,8 +248,13 @@ def probe_maker(*, key: str, env: Mapping[str, str], home: Path | None,
                     "stderr": (stderr or "")[-4000:]}
         result = receipt.get("result") or {}
         artifact = _artifact(child_cwd, token)
+        # gemini: the receipt must also carry the write fence bound to this
+        # attempt's workspace and log (implementation review i1 fable F1).
+        fence_problem = (dispatch_agent.maker_fence_problem(receipt, receipt_dir)
+                         if family == "gemini" else None)
         ok = model_sync._succeeded(receipt) and artifact["present"] \
-            and artifact.get("nlink") == 1 and artifact["sha256"] == artifact["expected_sha256"]
+            and artifact.get("nlink") == 1 and artifact["sha256"] == artifact["expected_sha256"] \
+            and fence_problem is None
         env_rec = result.get("envelope") or {}
         cli = model_sync.FAMILY_CLI[family]
         summary: dict[str, Any] = {
@@ -262,8 +267,10 @@ def probe_maker(*, key: str, env: Mapping[str, str], home: Path | None,
             "header_model": env_rec.get("header_model"),
             "artifact": artifact, "receipt_guard": "--receipt-guard" in argv,
             "outcome": "pass" if ok else "failed",
-            "reason": None if ok else ("artifact" if model_sync._succeeded(receipt)
+            "reason": None if ok else ("fence" if fence_problem is not None
+                                       else "artifact" if model_sync._succeeded(receipt)
                                        else "attempt"),
+            "fence_problem": fence_problem,
             "cli_version": model_sync.cli_versions(env).get(cli),
             "base_policy_sha256": canonical_policy_sha256(base),
             "date": now.date().isoformat()}
