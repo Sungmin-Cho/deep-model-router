@@ -544,10 +544,32 @@ models:
   # catalog's short_name) and `served_forms` (the spellings a CLI may serve the
   # id under) are read by model_sync, not by the router.
   claude_worker_fast:
-    id: claude-haiku-4-5-20251001
+    id: claude-haiku-5-5
     lineage: { line: claude/haiku, template: "claude-haiku-{gen}[-{date}]", catalog_name: Haiku }
     family: claude
     capability_tier: 0
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-10-14"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      input: 0.1
+      output: 0.5
+      cached_input: 0.01
+      cache_write: 0.125
+      # A request whose prompt (cache reads and writes included) is over
+      # 100,000 tokens pays these rates for the whole request.
+      long_context: { above_input_tokens: 100000, boundary: exclusive,
+                      cache_write: 0.625,
+                      input: 0.50, output: 2.50, cached_input: 0.05 }
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "claude_worker_fast@claude-haiku-4-5-20251001":
+    id: claude-haiku-4-5-20251001
+    history_of: claude_worker_fast
+    family: claude
+    capability_tier: 0
+    dispatchable: false
     verified: true
     price_per_mtok: { input: 1.00, output: 5.00, cached_input: 0.10 }
 
@@ -3029,3 +3051,68 @@ verification_ledger:
         candidate outcome in any scenario seated this model where the work
         writes, and no Codex or grok route changed. The script and output are
         the local research note docs/research/2026-10-14-gemini-seat-counterfactuals/.
+
+    - item: "claude-haiku-5-5 model id"
+      status: verified
+      probed_on: "2026-10-08"
+      attempt_id: "p20261008T044900-27c5c74b-1"
+      cli_version: "2.1.293"
+      argv: "claude -p --model claude-haiku-5-5 --effort low --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config --output-format json"
+      evidence: >
+        model_sync contained read-only probe of claude_worker_fast
+        (claude-haiku-4-5-20251001 -> claude-haiku-5-5): P1 smoke answered
+        pong with termination confirmed; P2 served_models
+        ['claude-haiku-5-5'] are served forms of the id; P3 boot input 38484
+        vs 32282 for the current id (paired). Quality is not measured by
+        this row.
+
+    - item: "claude-haiku-5-5 reasoning-effort values"
+      status: verified
+      probed_on: "2026-10-08"
+      evidence: >
+        Live-probed tokens for claude-haiku-5-5: low, max (accepted). Other
+        levels were not live-probed for this id; the ceiling is unchanged
+        from claude-haiku-4-5-20251001 (none).
+
+    - item: "claude-haiku-5-5 pricing and context window"
+      status: documented
+      probed_on: "2026-10-14"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-10-14:
+        input 0.1, output 0.5, cached_input 0.01, cache_write 0.125 (5-minute
+        writes) for prompts up to 100,000 tokens; a prompt over 100,000
+        tokens (cache reads and writes included) pays input 0.50, output
+        2.50, cached_input 0.05, cache_write 0.625 for the whole request,
+        recorded as the row's long_context block. A reference record, not
+        the marginal cost of a subscription dispatch. The model page
+        (https://platform.claude.com/docs/en/models/haiku-5-5/overview, read
+        the same day) gives a 1M-token context window, 128K max output and a
+        2026-10-07 release; no claude row records context_window, so this
+        one does not either.
+
+    - item: "claude_worker_fast quality evidence after the claude-haiku-5-5 id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
+        - "claude-haiku-4-5-20251001 and claude-haiku-4-5 are two identities, not one"
+      evidence: >
+        capability_tier 0 is inherited from the claude_worker_fast lineage;
+        no quality measurement of claude-haiku-5-5 has been run. Earlier
+        quality rows about claude-haiku-4-5-20251001 describe that id, not
+        this one.
+
+    - item: "claude-haiku-5-5 maker seat"
+      status: verified
+      probed_on: "2026-10-14"
+      attempt_id: "m20261014T052947-5c514fa4-1"
+      cli_version: "2.1.299"
+      argv: "claude -p --model claude-haiku-5-5 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
+      evidence: >
+        Attended model_sync probe-maker through codex.to_claude (mechanism):
+        the maker recipe with -m claude-haiku-5-5, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        197b602871bbed6030e0a69556ab6413d7b358275418386ca1784ed79301f573
+        equals the expected token's. Receipt sha256
+        7f91b5c81ca6070b9acc2bc18cc8d100b8677120be42b0f6dce949d261c71bbb.
