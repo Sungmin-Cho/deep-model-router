@@ -1086,8 +1086,14 @@ DOCUMENTED_BUT_UNREAD = {
         "the direction ships no write recipe, so write_capable reads only its flags",
     "transports.claude_code.to_meta.isolation": "see isolation above",
     "transports.claude_code.to_gemini.mechanism_reviewer": "see mechanism above; "
-        "the direction ships no write recipe, so write_capable reads only its flags",
+        "write_capable reads only the direction's flags, and write_verified is false",
     "transports.claude_code.to_gemini.isolation": "see isolation above",
+    "transports.claude_code.to_gemini.mechanism_maker": "see mechanism above; the "
+        "agy-maker-v1 seat profile reads it through probe_maker, and the router "
+        "authorizes nothing from it while write_verified is false",
+    "transports.codex.to_gemini.mechanism_reviewer": "see mechanism above; read by "
+        "the dispatcher on a Codex host",
+    "transports.codex.to_gemini.isolation": "see isolation above",
     "transports.codex.to_claude.mechanism": "see mechanism above",
     "transports.codex.to_claude.isolation": "see isolation above",
     "transports.codex.to_xai.mechanism_reviewer": "see mechanism above",

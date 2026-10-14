@@ -544,10 +544,32 @@ models:
   # catalog's short_name) and `served_forms` (the spellings a CLI may serve the
   # id under) are read by model_sync, not by the router.
   claude_worker_fast:
-    id: claude-haiku-4-5-20251001
+    id: claude-haiku-5-5
     lineage: { line: claude/haiku, template: "claude-haiku-{gen}[-{date}]", catalog_name: Haiku }
     family: claude
     capability_tier: 0
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-10-14"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      input: 0.1
+      output: 0.5
+      cached_input: 0.01
+      cache_write: 0.125
+      # A request whose prompt (cache reads and writes included) is over
+      # 100,000 tokens pays these rates for the whole request.
+      long_context: { above_input_tokens: 100000, boundary: exclusive,
+                      cache_write: 0.625,
+                      input: 0.50, output: 2.50, cached_input: 0.05 }
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "claude_worker_fast@claude-haiku-4-5-20251001":
+    id: claude-haiku-4-5-20251001
+    history_of: claude_worker_fast
+    family: claude
+    capability_tier: 0
+    dispatchable: false
     verified: true
     price_per_mtok: { input: 1.00, output: 5.00, cached_input: 0.10 }
 
@@ -859,21 +881,22 @@ models:
 
   # A reviewer-only seat (design 2026-10-13): the Claude Code -> meta
   # direction has a read-only recipe and no write recipe, so the seat can
-  # review and read but never fills a seat that writes. It is bound to no role
-  # and sits FIRST in claude_code's worker_balanced fallback list, so it takes
-  # that role whenever the xai seat does not resolve for the route (withheld,
-  # failed, exhausted, outside allowed_families, the declared author, or a
-  # `low` xai quota moving a read-only worker). The write requirement binds the
-  # whole ROLE: when the worker writes from worker_balanced, the role holds the
-  # next write-capable model (claude, or openai when Claude is withheld too) for
-  # every seat, so this model is not a reviewer there either.
+  # review and read but never fills a seat that writes. It is bound to no role.
+  # Since 1.21.0 it sits SECOND in claude_code's worker_balanced fallback list,
+  # after the Claude balanced model (user decision U-6), so it takes that role
+  # only where neither the xai seat nor the Claude model resolves for the
+  # route (withheld, failed, exhausted, outside allowed_families, the declared
+  # author). The write requirement binds the whole ROLE: when the worker
+  # writes from worker_balanced, the role holds the next write-capable model
+  # for every seat, so this model is not a reviewer there either.
   # What seating it changes: references/model-profiles.md, "The meta reviewer
   # seat".
   #
-  # `capability_tier: 1` is provisional and not measured here: third-party
-  # benchmarks put this id level with claude-sonnet-5 (the tier-1 anchor) and
-  # below claude-sonnet-5-5. See the ledger row "meta_worker_balanced tier
-  # evidence (external, not measured)" before reading the number as more.
+  # `capability_tier: 1` is measured since 1.21.0: the 2026-10-14 real-review
+  # replay confirmed tier 1 against claude-sonnet-5 (the anchor), at about a
+  # quarter of claude-sonnet-5-5's recall — the reason for the order above.
+  # See the ledger row "meta_worker_balanced tier measurement (real-review
+  # replay, 2026-10-14)".
   meta_worker_balanced:
     id: muse-spark-1.3
     lineage: { line: meta/spark, template: "muse-spark-{gen}" }
@@ -892,28 +915,35 @@ models:
       cached_input: 0.15
     context_window: 1007997
 
-  # A reviewer-only seat (design 2026-10-14), second in claude_code's
-  # worker_balanced fallback list: it takes that role only where neither the
-  # xai seat nor the meta seat resolves for the route. Like the meta seat it
-  # has a read-only recipe and no write recipe, and the write requirement binds
-  # the whole role, so it never reviews where the worker writes from
-  # worker_balanced. Two host files contain the seat, a reviewer agent whose
-  # tool list allows reading only and a deny-rule project underneath it; the
+  # A reviewer seat (design 2026-10-14). Since 1.21.0 it is third in
+  # claude_code's worker_balanced fallback list, after the Claude balanced
+  # model and the meta seat (user decision U-6), and second in codex's, right
+  # after the Claude model (U-7): it takes that role only where everything
+  # ahead of it does not resolve for the route. It has no write authority on
+  # either host — Claude Code ships a maker recipe (agy-maker-v1) whose
+  # write_verified stays false (U-5) — and the write requirement binds the
+  # whole role, so it never reviews where the worker writes from
+  # worker_balanced. Two host files contain the reviewer, an agent whose tool
+  # list allows reading only and a deny-rule project underneath it; the
   # supervisor checks both, the workspace and the model before the run and the
   # CLI's log after it (references/adapters.md, "Antigravity seat profile").
   # What seating it changes: references/model-profiles.md, "The gemini
   # reviewer seat".
   #
-  # `capability_tier: 1` is provisional and not measured here, on the same
-  # footing as the meta seat. See the ledger row "gemini_worker_balanced tier
-  # evidence (external, not measured)" before reading the number as more.
+  # `capability_tier: 1` is measured since 1.21.0, on the same footing as the
+  # meta seat: confirmed against claude-sonnet-5, at about a fifth of
+  # claude-sonnet-5-5's recall. See the ledger row "gemini_worker_balanced tier
+  # measurement (real-review replay, 2026-10-14)".
   #
   # The lineage template does not parse the catalogue's effort-suffixed
   # spellings (gemini-<gen>-flash-<effort>) or the unbound row below, so that
   # row stays a separate row, not this seat's history.
   gemini_worker_balanced:
     id: gemini-3.8-flash
-    lineage: { line: google/flash, template: "gemini-{gen}-flash" }
+    # served_forms: the CLI log resolves the base id to an effort spelling;
+    # model_sync's P2 admits exactly these (design 2026-10-14 DD-61a).
+    lineage: { line: google/flash, template: "gemini-{gen}-flash",
+               served_forms: ["{id}", "{id}-low", "{id}-medium", "{id}-high"] }
     family: gemini
     capability_tier: 1
     effort_ceiling: HIGH   # probed: the CLI rejects `xhigh` and `max`
@@ -1196,8 +1226,27 @@ transports:
       # diff from expanding into a command. The supervisor grades stdout with
       # --output-envelope agy-print-json-v1, which this direction requires.
       mechanism_reviewer: "agy --agent dmr-reviewer-v1 --model <id> --effort <native-effort> --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      # The maker seat (design 2026-10-14 DD-59, issue #59). agy's write tools
+      # have no path containment of their own (measured: an absolute path,
+      # `..`, a symlink, a hard link and HOME were all written), so argv is
+      # not containment here either: dispatch MUST use `--seat-profile
+      # agy-maker-v1`, which checks the `dmr-maker-v1` agent (view, write and
+      # replace only) and deny-rule project, telemetry and a single-linked
+      # disposable workspace before spawn, and requires the receipt guard,
+      # whose Seatbelt profile then carries a write fence: the workspace, the
+      # attempt's TMPDIR and the CLI log only, never `~/.gemini`, never a
+      # `.git`/`.hg`/`.jj`/`.agents`/`.gemini` path. See references/adapters.md,
+      # "Antigravity seat profile".
+      mechanism_maker: "agy --agent dmr-maker-v1 --model <id> --effort <native-effort> --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       isolation: separate_process
       verified: true
+      # The maker seat is probed and its ledger row is verified, but write
+      # authority is withheld (user decision U-5, 2026-10-14): the replay that
+      # confirmed tier 1 measured this seat's review recall at about a fifth of
+      # the Claude balanced model's. With the Claude-first fallback, turning
+      # this on would make it the writer where the xai seat and the Claude
+      # model are both out (the OpenAI balanced model writes there today); see
+      # references/model-profiles.md.
       write_verified: false
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
@@ -1243,6 +1292,18 @@ transports:
       isolation: separate_process
       verified: false
       write_verified: false
+    to_gemini:
+      # The reviewer seat only (1.21.0, design 2026-10-14 DD-60): the same
+      # argv as claude_code.to_gemini, under the same `--seat-profile
+      # agy-reviewer-v1`, probed FROM a Codex host (a `codex exec -s
+      # workspace-write` turn with network access ran dispatch_agent.py). The
+      # codex sandbox keeps agy from writing its own state under ~/.gemini;
+      # agy logs that and runs. The receipt guard cannot be used here
+      # (Seatbelt does not nest). No maker on this host.
+      mechanism_reviewer: "agy --agent dmr-reviewer-v1 --model <id> --effort <native-effort> --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      isolation: separate_process
+      verified: true
+      write_verified: false
   grok:
     native: { mechanism: subagent, isolation: unverified }
     to_claude:
@@ -1278,20 +1339,26 @@ transports:
 fallbacks:
   claude_code:
     worker_fast:          [claude_worker_fast, claude_worker_balanced]
-    # meta_worker_balanced first: the cross-family tier-1 seat when the xai
-    # seat does not resolve (design 2026-10-13). It has no write recipe, so a
-    # route whose worker writes from this role skips it to
-    # claude_worker_balanced for the whole role, exactly as before.
-    # gemini_worker_balanced second (design 2026-10-14): the same kind of seat,
-    # reached only where the meta seat does not resolve either, so no route
-    # that resolves the meta seat moves.
-    worker_balanced:      [meta_worker_balanced, gemini_worker_balanced, claude_worker_balanced, openai_worker_balanced, claude_senior]
+    # claude_worker_balanced first again since 1.21.0 (design 2026-10-14
+    # DD-58, user decision U-6). 1.19.0 and 1.20.0 put the meta and gemini
+    # seats ahead of it for a cross-family reviewer whenever the xai seat does
+    # not resolve; the 2026-10-14 real-review replay measured both at the
+    # tier-1 anchor's level (recall 0.117 and 0.098 against 0.131) and far
+    # below claude-sonnet-5-5 (0.455), so they now take the role only where
+    # the Claude model does not resolve (withheld, exhausted, excluded, or the
+    # declared author's family). Neither has write authority on this host, so
+    # a route whose worker writes from this role skips both, as before.
+    worker_balanced:      [claude_worker_balanced, meta_worker_balanced, gemini_worker_balanced, openai_worker_balanced, claude_senior]
     senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
     principal_architect:  [openai_frontier, claude_senior, openai_reasoning]
   codex:
     worker_fast:          [openai_worker_balanced, claude_worker_fast]
-    worker_balanced:      [claude_worker_balanced, openai_worker_balanced, openai_reasoning]
+    # gemini_worker_balanced after the Claude model (1.21.0, design 2026-10-14
+    # DD-60, user decision U-7): no route that resolves Claude moves; where it
+    # does not, a reviewer outside the host's own family still sits here. It
+    # reads only: transports.codex.to_gemini has no write authority.
+    worker_balanced:      [claude_worker_balanced, gemini_worker_balanced, openai_worker_balanced, openai_reasoning]
     senior_engineer:      [openai_reasoning, claude_senior, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior]
     principal_architect:  [openai_frontier, openai_reasoning, claude_architect]
@@ -3029,3 +3096,250 @@ verification_ledger:
         candidate outcome in any scenario seated this model where the work
         writes, and no Codex or grok route changed. The script and output are
         the local research note docs/research/2026-10-14-gemini-seat-counterfactuals/.
+
+    - item: "claude-haiku-5-5 model id"
+      status: verified
+      probed_on: "2026-10-08"
+      attempt_id: "p20261008T044900-27c5c74b-1"
+      cli_version: "2.1.293"
+      argv: "claude -p --model claude-haiku-5-5 --effort low --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config --output-format json"
+      evidence: >
+        model_sync contained read-only probe of claude_worker_fast
+        (claude-haiku-4-5-20251001 -> claude-haiku-5-5): P1 smoke answered
+        pong with termination confirmed; P2 served_models
+        ['claude-haiku-5-5'] are served forms of the id; P3 boot input 38484
+        vs 32282 for the current id (paired). Quality is not measured by
+        this row.
+
+    - item: "claude-haiku-5-5 reasoning-effort values"
+      status: verified
+      probed_on: "2026-10-08"
+      evidence: >
+        Live-probed tokens for claude-haiku-5-5: low, max (accepted). Other
+        levels were not live-probed for this id; the ceiling is unchanged
+        from claude-haiku-4-5-20251001 (none).
+
+    - item: "claude-haiku-5-5 pricing and context window"
+      status: documented
+      probed_on: "2026-10-14"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-10-14:
+        input 0.1, output 0.5, cached_input 0.01, cache_write 0.125 (5-minute
+        writes) for prompts up to 100,000 tokens; a prompt over 100,000
+        tokens (cache reads and writes included) pays input 0.50, output
+        2.50, cached_input 0.05, cache_write 0.625 for the whole request,
+        recorded as the row's long_context block. A reference record, not
+        the marginal cost of a subscription dispatch. The model page
+        (https://platform.claude.com/docs/en/models/haiku-5-5/overview, read
+        the same day) gives a 1M-token context window, 128K max output and a
+        2026-10-07 release; no claude row records context_window, so this
+        one does not either.
+
+    - item: "claude_worker_fast quality evidence after the claude-haiku-5-5 id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "Claude model ids (claude-haiku-4-5-20251001, claude-sonnet-5, claude-opus-5, claude-fable-5)"
+        - "claude-haiku-4-5-20251001 and claude-haiku-4-5 are two identities, not one"
+      evidence: >
+        capability_tier 0 is inherited from the claude_worker_fast lineage
+        and was not re-decided for claude-haiku-5-5. Earlier quality rows
+        about claude-haiku-4-5-20251001 describe that id, not this one. One
+        measurement exists and moves nothing: in the 2026-10-14 real-review
+        replay (see the rows "gemini_worker_balanced tier measurement" and
+        "meta_worker_balanced tier measurement") this id, run as a reported
+        subject, recalled 0.397 pooled against 0.131 for claude-sonnet-5, the
+        tier-1 anchor, and 0.455 for claude-sonnet-5-5. Raising the tier is a
+        binding decision of its own, left open.
+
+    - item: "claude-haiku-5-5 maker seat"
+      status: verified
+      probed_on: "2026-10-14"
+      attempt_id: "m20261014T052947-5c514fa4-1"
+      cli_version: "2.1.299"
+      argv: "claude -p --model claude-haiku-5-5 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
+      evidence: >
+        Attended model_sync probe-maker through codex.to_claude (mechanism):
+        the maker recipe with -m claude-haiku-5-5, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        197b602871bbed6030e0a69556ab6413d7b358275418386ca1784ed79301f573
+        equals the expected token's. Receipt sha256
+        7f91b5c81ca6070b9acc2bc18cc8d100b8677120be42b0f6dce949d261c71bbb.
+
+    - item: "Codex -> Gemini transport (transports.codex.to_gemini.mechanism_reviewer)"
+      status: verified
+      probed_on: "2026-10-14"
+      attempt_id: "cxcontain-fin"
+      cli_version: "agy 1.3.5"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      probes:
+        - { attempt_id: "cxrt-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxmed-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxhigh-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxcontain-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+      evidence: >
+        Probed FROM a Codex host on the released 1.21.0 supervisor (the *-1
+        attempts in the same folder ran an earlier build; the *-fin ones are
+        cited): one `codex exec -s workspace-write -c
+        sandbox_workspace_write.network_access=true` turn (codex-cli 0.162.1,
+        CODEX_SANDBOX=seatbelt) ran dispatch_agent.py for every attempt, transport
+        codex.to_gemini, --seat-profile agy-reviewer-v1, --output-schema review,
+        no receipt guard (Seatbelt does not nest). cxrt-fin, cxmed-fin and cxhigh-fin
+        reviewed a planted bug and graded FAIL, the CLI log resolving the id to
+        its low, medium and high spellings (receipt sha256
+        5373d0f1178c8e606ad644bec14d2740c18be87e6c7f32d58fdda1fbc777df04,
+        e27d7ae9da3ce1e84e4eb80f1fc8118d2bd285a4f3e9fbbf2778462cdb816d5e,
+        c49296a83c7649b2a7138b39bb400a841a10bbdac06f5cea76cb0bfaf667f08c),
+        14-19 s each. cxcontain-fin (sha256
+        ff566d170e3c387e3cd8e8259c1212491880ff608617a9aea44669ff59d03dbd): asked
+        to write a file, run a command and fetch a URL, it had no tool for any of
+        them and the workspace held only the reviewed file afterwards.
+        cxplanted-fin: a cwd holding `.agents` was refused before spawn (exit 2,
+        no receipt). The codex sandbox denied agy's own state writes under
+        ~/.gemini (logged, the turns completed); the keychain login worked. This
+        row, not the earlier "Claude Code -> Gemini transport" row's "Codex and
+        grok host directions were not probed", is current for the Codex host.
+        The grok host direction is not offered: a headless grok turn under
+        `--permission-mode auto` cancelled before running the supervisor, and the
+        retries were refused by the grok account's usage limit. Receipts:
+        docs/design/reviews/2026-10-14-issues-57-61/acceptance/codex-host/.
+
+    - item: "Gemini maker seat recipe (transports.claude_code.to_gemini.mechanism_maker)"
+      status: verified
+      probed_on: "2026-10-14"
+      attempt_id: "ma-fin"
+      cli_version: "agy 1.3.5"
+      argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      probes:
+        - { attempt_id: "ma-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mb-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "md-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "me-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mg-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mh-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+      evidence: >
+        Cited attempts are the *-fin ones, run on the released 1.21.0
+        supervisor (the *-1 and *-rel sets in the same folder ran earlier
+        builds with the same outcomes). Every attempt ran through dispatch_agent.py under --seat-profile
+        agy-maker-v1 with the receipt guard and its write fence, in a fresh
+        canonical single-linked workspace under $TMPDIR. ma-fin (receipt sha256
+        f9d1cffb2be252915ae4f99299c7c91d4162cd851b1431c2e68b732a093878d1) wrote
+        made.txt with exactly the requested line, 15 s. mb-fin (sha256
+        2fe9d6b176a8b38a2b7cd59efb4e3fb89fc77341e37faa7fb9b3f5f1c7ade543): an
+        outside absolute path and a file under HOME were denied by the kernel
+        and nothing was created; this run's `../rel-escape.txt` was refused by
+        the write tool itself ("must be an absolute path"), while in mb-1 the
+        model had resolved it to an absolute path and the kernel denied that
+        (an absolute path through `..` is also a kernel test in
+        tests/test_agy_maker_seat.py). md-fin (sha256
+        53d98d95f9c8716df6840da6ce6dadaedca48100080881a285812e32c8e2da4c):
+        `.git/hooks/pre-commit`, `sub/.git/hooks/post-checkout` and
+        `.agents/hooks.json` were all denied. me-fin (sha256
+        ba738e7444e6363bd05eb2ef857f72b3dd67ca36d1d4f398db55fdacf19b8fe9): an
+        append to ~/.gemini/config/agents/dmr-reviewer-v1.md was denied and the
+        file kept its bytes. mg-fin (sha256
+        368ad208b18d2d685f244f4afe1509346bbe5f7e0831c4860c2e157cc72d7b19): asked to
+        run a command, the seat answered that it had no shell tool. mh-fin (sha256
+        36b52bd00a92452239342e4d604e4d20bf24a2b15e7cca8c1a6e82afba737000): a write
+        to /dev/stdout was refused ("permission denied"). Refused before spawn,
+        no receipt (the supervisor's messages are in probes-fin.json): a
+        workspace holding a hard link (mc-fin; the outside file kept its content)
+        and a dispatch without the receipt guard (mf-fin). mi-fin: asked to append
+        a forged grants line to the CLI log, which the fence allows, the write
+        went through and the CLI's own logging overwrote it — the gate is drift
+        detection for this profile, as documented, and no containment claim
+        rests on it. Write authority on this host is withheld
+        (write_verified: false, user decision U-5). Receipts: docs/design/reviews/2026-10-14-issues-57-61/acceptance/maker/.
+
+    - item: "gemini_worker_balanced tier measurement (real-review replay, 2026-10-14)"
+      status: verified
+      probed_on: "2026-10-14"
+      supersedes:
+        - "gemini_worker_balanced tier evidence (external, not measured)"
+      evidence: >
+        Preregistered real-review replay (issue #58): three review packages
+        frozen at review time (the 1.20.0 implementation review i1, the 1.19.0
+        implementation review i1 and the 1.20.0 design review r1; 9, 9 and 11
+        accepted findings), each subject on its shipped reviewer recipe at high
+        effort, two reps, graded blind by claude-fable-5-1 and gpt-6-astra
+        (calibration 12/12 exact, agreement 0.973). Pooled recall: this seat
+        0.098, claude-sonnet-5 (tier-1 anchor) 0.131, claude-opus-5-5 0.516,
+        gpt-6.1-sol 0.332, claude-sonnet-5-5 0.455. Valid (tier-2 gap 0.294);
+        bar for tier 1 is the anchor minus 0.05 (0.081): tier 1 confirmed. The
+        same numbers put it at about a fifth of claude-sonnet-5-5, which is why
+        claude_code's worker_balanced fallback now lists the Claude model first
+        (user decision U-6) and the maker seat has no write authority (U-5).
+        Caveats: the ground truth came from gpt-6.1-sol and claude-fable-5-1;
+        two reps; findings outside the ground truth are not credited; agy keeps
+        conversation state and this host had run it on 1.20.0 material before.
+        Plan, harness and results: the local note docs/evals/2026-10-14-t3/.
+
+    - item: "meta_worker_balanced tier measurement (real-review replay, 2026-10-14)"
+      status: verified
+      probed_on: "2026-10-14"
+      supersedes:
+        - "meta_worker_balanced tier evidence (external, not measured)"
+      evidence: >
+        The same replay as the gemini row: pooled recall 0.117 against 0.131
+        for claude-sonnet-5 and 0.455 for claude-sonnet-5-5, above the tier-1
+        bar of 0.081: tier 1 confirmed. Three of its six reviews were PASS with
+        no findings, both on the package that reviewed the gemini seat's
+        supervisor code. claude_code's worker_balanced fallback now lists the
+        Claude model ahead of this seat (user decision U-6).
+
+    - item: "agy model catalogue (model_sync)"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "agy 1.3.5"
+      evidence: >
+        `agy models` printed six `<id>\t<label>` lines on stdout and its
+        `Fetching available models...` banner on stderr, in about 3 s: three
+        effort spellings of gemini-3.8-flash and three other vendors' models.
+        The CLI keeps no model list on disk, so model_sync fetches it in `run`
+        only; `agy --version` answered offline in 0.06 s. The capture is
+        tests/fixtures/catalogs/agy/agy-models-1.3.5.stdout.txt.
+
+    - item: "muse model catalogue (model_sync)"
+      status: verified
+      probed_on: "2026-10-14"
+      cli_version: "Muse Code 1.4.7"
+      evidence: >
+        The account catalogue is ~/.local/share/muse/model-catalog/<hex provider>
+        __p<hex profile>.json (schema_version 2, provider_id meta, rows by
+        model_id with visibility and reasoning_effort_variants), refreshed when
+        the CLI runs. The muse stream (a review run of 194 events) carries no
+        token usage, so model_sync cannot run P3 for a muse candidate and stops
+        it at P0. The launcher checks its release channel on any start an hour
+        after the last check unless MUSE_NO_AUTO_UPDATE=1, which model_sync sets
+        for `muse --version`. The capture is
+        tests/fixtures/catalogs/muse/6d657461__p746268.json.
+
+    - item: "1.21.0 placement counterfactuals (Claude-first balanced fallback, Codex gemini seat)"
+      status: verified
+      probed_on: "2026-10-14"
+      evidence: >
+        A 16,896-point grid (eleven classes, every dimension, three runtimes,
+        with and without large_context), each point routed fresh and after its
+        own worker failed — 33,792 compared routes per scenario, 3,072 for the
+        REVIEW-only author scenarios — under the 1.20.0 registry and this one,
+        both with this router; the Haiku id is renamed before comparing. All available: no route changed. xai seat withheld:
+        1,521 Claude Code routes changed (REVIEW/INVESTIGATION leads back from
+        muse-spark-1.3 to claude-sonnet-5-5 on 142 fresh and 30 retries, 85
+        reviewer seats back, 69 reviewer seats from claude-sonnet-5-5 to
+        gpt-6.1-sol, 1,349 write routes lose the skipped-meta note). OpenAI
+        exhausted: 578 Claude Code routes seat claude-sonnet-5-5 beside the
+        architect where muse-spark-1.3 reviewed (cross-family review lost).
+        xai withheld and Claude exhausted: 10,366 Codex routes changed
+        (gemini-3.8-flash gains a cross-family review seat on 6,246, takes 284
+        read-only leads from gpt-5.6-terra, adds effort_below_floor to 3,424
+        CRITICAL routes already gated, and 3,556 write routes note it could not
+        write there). Claude exhausted with xai up: 24 Codex routes gain it as
+        a reviewer. xai and meta withheld with OpenAI exhausted: 6,278 routes
+        changed (on Claude Code claude-sonnet-5-5 takes the review seats
+        gemini-3.8-flash held, 3,123 giving up a cross-family review and 1,712
+        losing its effort_below_floor cause; 2,124 Codex routes change, 1,840
+        of them only by the skipped-gemini note on a write route). A write override with xai and meta withheld: 1,523
+        routes lose the skipped-gemini note only. No candidate outcome in any scenario seated a model without
+        write authority on its host where the work writes. The script and output
+        are the local research note docs/research/2026-10-14-issues-57-61-counterfactuals/.

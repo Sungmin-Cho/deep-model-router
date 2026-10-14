@@ -19,6 +19,10 @@ a person before `promote`:
 * claude is certified by the content hash of the file it wrote, never by
   `--require-artifact` (its file tools install a new inode, which that
   contract grades `artifact_identity_replaced`);
+* gemini gets the WHOLE `agy-maker-v1` set — the reserved `--agy-log`
+  (substituted for `<agy-log>`), `--require-single-linked-cwd` and the receipt
+  guard that carries the write fence — and its prompt in argv (agy's print
+  mode reads no stdin), so no `--prompt-file` (design 2026-10-14 DD-59d);
 * every attempt runs in a disposable, single-linked, empty child cwd.
 
 The summary (argv included) is content-addressed under
@@ -93,7 +97,8 @@ def maker_argv(*, cfg: Mapping, family: str, model_id: str, effort_native: str,
                attempt_id: str, receipt_dir: Path, child_cwd: Path, prompt_file: Path,
                deadline_seconds: float, grok_home: Path | None = None,
                auth_seed: Path | None = None, session_id: str | None = None,
-               receipt_guard: bool | None = None, runtime: str | None = None) -> list[str]:
+               receipt_guard: bool | None = None, runtime: str | None = None,
+               agy_log: Path | None = None) -> list[str]:
     """`dispatch_agent.py run … -- <the registry's maker recipe>`."""
     rt, name, _, recipe = maker_transport(cfg, family, runtime)
     subs = {"<id>": model_id, "<effort>": effort_native, "<native-effort>": effort_native}
@@ -104,11 +109,15 @@ def maker_argv(*, cfg: Mapping, family: str, model_id: str, effort_native: str,
     if family == "xai":
         subs["<fresh-uuid>"] = str(session_id)
         subs["<grok-home>"] = str(grok_home)
+    if family == "gemini":
+        subs["<agy-log>"] = str(agy_log)
     child: list[str] = []
     for tok in shlex.split(recipe):
         if tok == "<prompt>":
             if family == "openai":
                 child.append("-")           # the prompt file arrives on stdin
+            elif family == "gemini":
+                child.append(Path(prompt_file).read_text())     # agy: argv only
             continue                        # claude -p reads stdin
         for k, v in subs.items():
             tok = tok.replace(k, v)
@@ -122,7 +131,8 @@ def maker_argv(*, cfg: Mapping, family: str, model_id: str, effort_native: str,
            "--seat", "worker", "--runtime", model_sync.PROBE_RUNTIME,
            "--model-id", model_id, "--effort-native", effort_native,
            "--transport-id", f"{rt}.{name}",
-           "--child-cwd", str(child_cwd), "--prompt-file", str(prompt_file),
+           "--child-cwd", str(child_cwd),
+           *(["--prompt-file", str(prompt_file)] if family != "gemini" else []),
            "--output-schema", "none"]
     if family == "claude":
         sup += ["--output-envelope", model_sync.CLAUDE_ENVELOPE,
@@ -141,6 +151,11 @@ def maker_argv(*, cfg: Mapping, family: str, model_id: str, effort_native: str,
                 "--session-id", str(session_id),
                 "--expect-effective-agent", _flag_value(child, "--agent") or "",
                 "--expect-sandbox-profile", dispatch_agent.MAKER_SANDBOX_PROFILE]
+    elif family == "gemini":
+        sup += ["--seat-profile", dispatch_agent.AGY_MAKER_PROFILE, "--agy-log", str(agy_log),
+                "--require-single-linked-cwd",
+                "--output-envelope", dispatch_agent.AGY_JSON_FORMAT]
+        guard = True                        # the fence is the containment: never optional
     if guard:
         sup += ["--receipt-guard", model_sync.GUARD]
     return [*sup, "--", *child]
@@ -209,13 +224,17 @@ def probe_maker(*, key: str, env: Mapping[str, str], home: Path | None,
         prompt = prompt_dir / "prompt.txt"
         prompt.write_text(PROMPT.format(token=token))
         grok_home = scratch / "grok-home" if family == "xai" else None
+        # Outside the workspace and the receipt store, canonical (the fence
+        # compares canonical paths).
+        agy_log = (Path(os.path.realpath(scratch)) / f"{run_id}.agy.log"
+                   if family == "gemini" else None)
         session_id = str(uuid.uuid4())
         attempt = f"{run_id}-1"
         argv = maker_argv(cfg=base, family=family, model_id=model_id, effort_native=effort,
                           attempt_id=attempt, receipt_dir=receipt_dir, child_cwd=child_cwd,
                           prompt_file=prompt, deadline_seconds=MAKER_DEADLINE_SECONDS,
                           grok_home=grok_home, auth_seed=auth_seed, session_id=session_id,
-                          receipt_guard=receipt_guard, runtime=runtime)
+                          receipt_guard=receipt_guard, runtime=runtime, agy_log=agy_log)
         try:
             proc = subprocess.run(argv, env=dict(env), stdin=subprocess.DEVNULL,
                                   capture_output=True, text=True,
@@ -229,8 +248,13 @@ def probe_maker(*, key: str, env: Mapping[str, str], home: Path | None,
                     "stderr": (stderr or "")[-4000:]}
         result = receipt.get("result") or {}
         artifact = _artifact(child_cwd, token)
+        # gemini: the receipt must also carry the write fence bound to this
+        # attempt's workspace and log (implementation review i1 fable F1).
+        fence_problem = (dispatch_agent.maker_fence_problem(receipt, receipt_dir)
+                         if family == "gemini" else None)
         ok = model_sync._succeeded(receipt) and artifact["present"] \
-            and artifact.get("nlink") == 1 and artifact["sha256"] == artifact["expected_sha256"]
+            and artifact.get("nlink") == 1 and artifact["sha256"] == artifact["expected_sha256"] \
+            and fence_problem is None
         env_rec = result.get("envelope") or {}
         cli = model_sync.FAMILY_CLI[family]
         summary: dict[str, Any] = {
@@ -243,8 +267,10 @@ def probe_maker(*, key: str, env: Mapping[str, str], home: Path | None,
             "header_model": env_rec.get("header_model"),
             "artifact": artifact, "receipt_guard": "--receipt-guard" in argv,
             "outcome": "pass" if ok else "failed",
-            "reason": None if ok else ("artifact" if model_sync._succeeded(receipt)
+            "reason": None if ok else ("fence" if fence_problem is not None
+                                       else "artifact" if model_sync._succeeded(receipt)
                                        else "attempt"),
+            "fence_problem": fence_problem,
             "cli_version": model_sync.cli_versions(env).get(cli),
             "base_policy_sha256": canonical_policy_sha256(base),
             "date": now.date().isoformat()}

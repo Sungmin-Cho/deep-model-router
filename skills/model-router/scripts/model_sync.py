@@ -9,7 +9,9 @@ never imports this module; it only reads what this module commits.
 This file so far holds:
 
 * catalog adapters (DD-A4) — `read_codex_catalog`, `read_grok_catalog`,
-  `read_claude_catalog`, `parse_grok_models_text`, `parse_cli_version`,
+  `read_claude_catalog`, `read_muse_catalog`, `parse_agy_models_text`
+  (the agy list is fetched by `run` only; the tick stays offline — design
+  2026-10-14 DD-61a), `parse_grok_models_text`, `parse_cli_version`,
   `cli_versions`; candidates and notices — `find_candidates`,
   `retirement_notices`, `alias_probe_plan` (executed by `probe_alias` when
   no Claude catalog exists).
@@ -66,7 +68,8 @@ from secure_io import StateRoot, open_regular  # noqa: E402
 
 CATALOG_MAX_BYTES = 8 * 1024 * 1024
 CLI_VERSION_TIMEOUT = 5.0
-FAMILY_CLI = {"openai": "codex", "claude": "claude", "xai": "grok"}
+FAMILY_CLI = {"openai": "codex", "claude": "claude", "xai": "grok", "gemini": "agy",
+              "meta": "muse"}
 
 
 def default_catalog_paths(home: Path | None = None) -> dict[str, Path]:
@@ -74,7 +77,8 @@ def default_catalog_paths(home: Path | None = None) -> dict[str, Path]:
     home = Path(home) if home is not None else Path.home()
     return {"openai": home / ".codex" / "models_cache.json",
             "xai": home / ".grok" / "models_cache.json",
-            "claude": home / ".claude" / "cache" / "model-catalog"}
+            "claude": home / ".claude" / "cache" / "model-catalog",
+            "meta": home / ".local" / "share" / "muse" / "model-catalog"}
 
 
 # --------------------------------------------------------------------------
@@ -294,6 +298,101 @@ def read_claude_catalog(directory: Path, cli_version: str | None) -> Catalog:
     return cat
 
 
+# The effort spellings the agy catalogue appends to a model id (agy 1.3.5:
+# `gemini-3.8-flash-high`). Only a trailing one is taken off.
+AGY_EFFORT_SUFFIXES = ("minimal", "low", "medium", "high", "xhigh", "max")
+_AGY_MODEL_LINE = re.compile(r"([a-z0-9][a-z0-9._-]*)\t(\S.*)")
+
+
+def parse_agy_models_text(text: str | None) -> Catalog:
+    """`agy models` stdout (agy 1.3.5): one `<id>\t<label>` line per entry of
+    the account's catalogue, fetched from the server on every call; the
+    `Fetching available models...` banner goes to stderr.
+
+    The catalogue spells every model with an effort suffix
+    (`gemini-3.8-flash-high`), while the registry names the base id and passes
+    `--effort`, so the suffix is taken off and kept as that id's efforts; an
+    id without one is kept as listed. Other vendors served through the same
+    account (`claude-sonnet-4-6`, `gpt-oss-120b-medium`) are listed too: only
+    an id the row's template parses is ever a candidate (`find_candidates`).
+    A line that is neither blank nor `<id>\t<label>` makes the whole family
+    discovery_unavailable — never a candidate from half-understood output."""
+    family = "gemini"
+    if not isinstance(text, str):
+        return _unavailable(family, "no catalog output")
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    cat = Catalog(family, "ok", sha256=sha,
+                  source={"fetched_at": None, "etag": None, "client_version": None})
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        m = _AGY_MODEL_LINE.fullmatch(line)
+        if not m:
+            return _unavailable(family, "shape", sha)
+        listed = m.group(1)
+        cat.listed_ids.append(listed)
+        mid, effort = listed, None
+        for suffix in AGY_EFFORT_SUFFIXES:
+            if listed.endswith(f"-{suffix}"):
+                mid, effort = listed[:-len(suffix) - 1], suffix
+                break
+        efforts = cat.models.setdefault(mid, {"efforts": []})["efforts"]
+        if effort is not None and effort not in efforts:
+            efforts.append(effort)
+    if not cat.listed_ids:
+        return _unavailable(family, "empty", sha)
+    return cat
+
+
+def read_muse_catalog(directory: Path) -> Catalog:
+    """`~/.local/share/muse/model-catalog/*.json` (Muse Code 1.4.7): the
+    account catalogue the CLI refreshes when it runs, one file per provider
+    profile — `schema_version: 2`, `provider_id`, `rows[]` by `model_id`.
+
+    Only a document whose `provider_id` is `meta` is read; two of them make the
+    family discovery_unavailable (which profile the CLI dispatches with is not
+    on disk). Eligible: `visibility == "visible"`. Efforts are
+    `reasoning_effort_variants[].tier` (null for a model without effort). The
+    template `muse-spark-{gen}` keeps `-contributor` and image rows out of
+    candidacy. No file at all is `absent`."""
+    family = "meta"
+    files = sorted(glob.glob(os.path.join(glob.escape(str(directory)), "*.json")))
+    docs = []
+    for name in files:
+        try:
+            doc, sha = _read_catalog_file(Path(name))
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            return _unavailable(family, f"unreadable: {exc.__class__.__name__}")
+        if isinstance(doc, dict) and doc.get("provider_id") == "meta":
+            docs.append((sha, doc))
+    if not docs:
+        return Catalog(family, "absent", "no catalog")
+    if len(docs) > 1:
+        return _unavailable(family, "ambiguous")
+    sha, doc = docs[0]
+    if doc.get("schema_version") != 2 or not isinstance(doc.get("rows"), list):
+        return _unavailable(family, "shape", sha)
+    cat = Catalog(family, "ok", sha256=sha,
+                  source={"fetched_at": None, "etag": None, "client_version": None,
+                          "profile_id": doc.get("profile_id")})
+    for row in doc["rows"]:
+        if not isinstance(row, dict) or not isinstance(row.get("model_id"), str):
+            return _unavailable(family, "shape", sha)
+        if "visibility" not in row or "reasoning_effort_variants" not in row:
+            return _unavailable(family, "missing_discriminator", sha)
+        mid = row["model_id"]
+        cat.listed_ids.append(mid)
+        variants = row["reasoning_effort_variants"]
+        efforts = [] if variants is None else _str_list(variants, "tier")
+        if efforts is None:
+            return _unavailable(family, "shape", sha)
+        if row["visibility"] != "visible":
+            cat.excluded[mid] = "hidden"
+        else:
+            cat.models[mid] = {"efforts": efforts}
+    return cat
+
+
 def parse_cli_version(banner: str | None) -> str | None:
     """The first dotted x.y.z in a `--version` banner (`codex-cli 0.157.0`,
     `2.1.282 (Claude Code)`, `grok 1.0.40 (…) [stable]`)."""
@@ -307,15 +406,21 @@ def parse_cli_version(banner: str | None) -> str | None:
 # global flag applies to `--version` and `models` too (grok 1.0.40, measured
 # 2026-09-25). The tick and run stay offline.
 OFFLINE_FLAGS = {"grok": ("--no-auto-update",)}
+# The muse launcher checks its release channel, and may download a new binary,
+# whenever it starts and an hour has passed — `--version` included — unless
+# this is set (launcher source, Muse Code 1.4.7). `agy --version` answers
+# offline (0.06 s, agy 1.3.5).
+OFFLINE_ENV = {"muse": {"MUSE_NO_AUTO_UPDATE": "1"}}
+VERSION_CLIS = ("codex", "claude", "grok", "agy", "muse")
 
 
 def cli_versions(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
-    """`<cli> --version` for the three CLIs on PATH. Offline and inference-
+    """`<cli> --version` for the model CLIs on PATH. Offline and inference-
     free; a missing or failing CLI is None (the tick hash still changes when
     it reappears)."""
     env = dict(os.environ if env is None else env)
     out: dict[str, str | None] = {}
-    for cli in ("codex", "claude", "grok"):
+    for cli in VERSION_CLIS:
         exe = shutil.which(cli, path=env.get("PATH"))
         if exe is None:
             out[cli] = None
@@ -323,7 +428,8 @@ def cli_versions(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
         try:
             proc = subprocess.run([exe, *OFFLINE_FLAGS.get(cli, ()), "--version"],
                                   capture_output=True, text=True,
-                                  timeout=CLI_VERSION_TIMEOUT, env=env,
+                                  timeout=CLI_VERSION_TIMEOUT,
+                                  env={**env, **OFFLINE_ENV.get(cli, {})},
                                   stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):
             out[cli] = None
@@ -351,7 +457,9 @@ def find_candidates(rows: Mapping[str, dict],
 
     Result per key: `{"status": "candidate", "id", "from_id", "line",
     "family", "efforts", "catalog_sha256"}` or `{"status": "none" |
-    "discovery_unavailable" | "alias_probe", "from_id", …}`.
+    "discovery_unavailable" | "alias_probe" | "catalog_fetch", "from_id", …}`.
+    `catalog_fetch` is the gemini row while its catalogue is the tick's
+    offline placeholder: `run` fetches the list and asks again.
     """
     out: dict[str, dict] = {}
     for key, row, lin in _lineage_rows(rows):
@@ -363,7 +471,8 @@ def find_candidates(rows: Mapping[str, dict],
             continue
         if cat.status == "absent":
             out[key] = {"status": "alias_probe" if family == "claude"
-                        and lin.get("catalog_name") else "discovery_unavailable", **base}
+                        and lin.get("catalog_name") else "catalog_fetch"
+                        if family == "gemini" else "discovery_unavailable", **base}
             continue
         template = lin["template"]
         current = lineage.parse(template, row["id"])
@@ -485,8 +594,8 @@ def retry_after_for(reason: str, ctx: ProbeContext) -> dict:
 
     quota -> the limit's reset time (24 h when unknown); cli_metadata /
     served_unproven / overhead -> when the CLI version changes;
-    served_mismatch -> when the catalog changes; anything else (smoke,
-    transport, effort) -> 6 hours.
+    served_mismatch / overhead_unmeasurable -> when the catalog changes;
+    anything else (smoke, transport, effort) -> 6 hours.
     """
     if reason == "quota":
         if ctx.quota_resets_at is not None:
@@ -496,7 +605,7 @@ def retry_after_for(reason: str, ctx: ProbeContext) -> dict:
         return {"kind": "time", "at": at.isoformat()}
     if reason in ("cli_metadata", "served_unproven", "overhead"):
         return {"kind": "cli_version_change", "cli_version": ctx.cli_version}
-    if reason == "served_mismatch":
+    if reason in ("served_mismatch", "overhead_unmeasurable"):
         return {"kind": "catalog_change", "catalog_sha256": ctx.catalog_sha256}
     return {"kind": "time", "at": (ctx.now + TRANSIENT_RETRY).isoformat()}
 
@@ -523,6 +632,11 @@ def _min_level(*levels: str | None) -> str | None:
     return min(present, key=EFFORT_LEVELS.index) if present else None
 
 
+# Families whose seat reports no token counts, so P3 (boot overhead) cannot be
+# measured for a candidate: discovered and reported, never published.
+UNMEASURED_OVERHEAD_FAMILIES = ("meta",)
+
+
 def gate_p0(*, family: str, candidate_id: str, row: dict, base: dict,
             catalog_efforts: list[str], cli_metadata_ids: list[str] | None,
             ctx: ProbeContext) -> dict:
@@ -536,6 +650,11 @@ def gate_p0(*, family: str, candidate_id: str, row: dict, base: dict,
     if family == "openai" and (cli_metadata_ids is None
                                or candidate_id not in cli_metadata_ids):
         return _verdict("P0", "deferred", "cli_metadata", ctx, effort_ceiling=None)
+    if family in UNMEASURED_OVERHEAD_FAMILIES:
+        # The muse stream carries no token usage (DD-61b), so P3 could not
+        # run: stop before any inference and report the id instead. A person
+        # bumps it; nothing is published from here.
+        return _verdict("P0", "deferred", "overhead_unmeasurable", ctx, effort_ceiling=None)
     ceiling = None
     if catalog_efforts:
         levels = reachable_levels(row)
@@ -580,6 +699,8 @@ def gate_p2(receipt: dict, lin: Mapping, ctx: ProbeContext) -> dict:
     session summary's `current_model_id` and every `served_models` entry are.
     codex: the plain-mode banner's header model equals the requested id and no
     metadata warning was printed — recorded as "id accepted", not served.
+    agy: the CLI log's resolution of the id is one of its served forms —
+    recorded as "resolved", not served.
     """
     fmt = receipt.get("output_envelope")
     mid = receipt.get("model_id")
@@ -593,6 +714,20 @@ def gate_p2(receipt: dict, lin: Mapping, ctx: ProbeContext) -> dict:
         if env.get("metadata_warning") is not False:
             return _verdict("P2", "deferred", "cli_metadata", ctx, basis=None, observed=[header])
         return _verdict("P2", "pass", None, ctx, basis="id_accepted", observed=[header])
+    if fmt == AGY_ENVELOPE:
+        # agy names no served model; its log records how the requested id was
+        # resolved, and the supervisor already refuses a resolution to another
+        # id. P2 is narrower still: only the row's declared `served_forms`
+        # (the id and its three effort spellings) pass — a resolution record,
+        # not served-model attestation (design 2026-10-14 DD-61a).
+        grants = (receipt.get("result") or {}).get("agy_project_grants") or {}
+        resolved = grants.get("resolved_model")
+        if not isinstance(resolved, str):
+            return _verdict("P2", "deferred", "served_unproven", ctx, basis=None, observed=[])
+        if resolved not in _served_forms(lin, mid):
+            return _verdict("P2", "failed", "served_mismatch", ctx, basis=None,
+                            observed=[resolved])
+        return _verdict("P2", "pass", None, ctx, basis="resolved", observed=[resolved])
     observed: list[str] = []
     if fmt in ("claude-print-json-v1", "grok-headless-json-v1"):
         observed = list(env.get("served_models") or [])
@@ -620,6 +755,9 @@ def boot_input_tokens(receipt: dict | None) -> int | None:
         return None
     if (receipt or {}).get("output_envelope") == "codex-exec-json-v1":
         return int(usage["input_tokens"])
+    if (receipt or {}).get("output_envelope") == AGY_ENVELOPE:
+        # agy splits cache reads out under its own key (agy 1.3.5).
+        return int(usage["input_tokens"] + (usage.get("cache_read_tokens") or 0))
     return int(sum(usage.get(k, 0) or 0 for k in
                    ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")))
 
@@ -694,13 +832,16 @@ DISPATCH = HERE / "dispatch_agent.py"
 GUARD = "darwin-sandbox-v1"
 GROK_ENVELOPE = "grok-headless-json-v1"
 CLAUDE_ENVELOPE = "claude-print-json-v1"
+AGY_ENVELOPE = "agy-print-json-v1"
 CODEX_ENVELOPES = {"text": "codex-exec-text-v1", "json": "codex-exec-json-v1"}
 PROBE_RUNTIME = "model_sync"
 
 
 def _child_argv(family: str, model_id: str, effort_native: str, *,
-                codex_mode: str, session_id: str) -> list[str]:
-    """The READ-ONLY reviewer recipe of each direction, prompt on stdin."""
+                codex_mode: str, session_id: str, agy_log: Path | None = None,
+                prompt_text: str | None = None) -> list[str]:
+    """The READ-ONLY reviewer recipe of each direction, prompt on stdin —
+    except agy, whose print mode takes the prompt in argv only."""
     if family == "claude":
         return ["claude", "-p", "--model", model_id, "--effort", effort_native,
                 "--permission-mode", "plan", "--allowedTools", "Read,Glob,Grep,LS",
@@ -715,6 +856,12 @@ def _child_argv(family: str, model_id: str, effort_native: str, *,
                 "--tools", "read_file,list_dir,grep", "--deny", "MCPTool",
                 "--disable-web-search", "--sandbox", "read-only",
                 "--prompt-file", "/dev/stdin"]
+    if family == "gemini":
+        import dispatch_agent
+        return ["agy", "--agent", dispatch_agent.AGY_REVIEWER_AGENT, "--model", model_id,
+                "--effort", effort_native, "--project", dispatch_agent.AGY_REVIEWER_PROJECT,
+                "--disable-slash-commands", "--output-format", "json",
+                "--print-timeout", "0s", "--log-file", str(agy_log), "-p", str(prompt_text)]
     raise ValueError(f"no probe recipe for family {family!r}")
 
 
@@ -728,15 +875,19 @@ def probe_argv(*, family: str, model_id: str, effort_native: str, attempt_id: st
                receipt_dir: Path, child_cwd: Path, prompt_file: Path,
                deadline_seconds: float, codex_mode: str = "text",
                grok_home: Path | None = None, session_id: str | None = None,
-               receipt_guard: bool | None = None) -> list[str]:
+               receipt_guard: bool | None = None, agy_log: Path | None = None) -> list[str]:
     """`dispatch_agent.py run … -- <read-only reviewer recipe>`.
 
     claude: `--strict-mcp-config`, plan mode, `claude-print-json-v1`. codex:
     `-s read-only`, `codex-exec-text-v1` (P1/P2/P4) or `--json` +
     `codex-exec-json-v1` (P3), and NO receipt guard — a guarded codex sandbox
     cannot read and is refused (DD-B9). grok: the envelope, the session
-    evidence bound by one uuid, `--expect-sandbox-profile read-only`. The
-    receipt guard is on for claude and grok where it exists (macOS).
+    evidence bound by one uuid, `--expect-sandbox-profile read-only`. gemini:
+    the shipped reviewer argv under `--seat-profile agy-reviewer-v1` with the
+    reserved `--agy-log`, the prompt in argv and no `--prompt-file`, and
+    `--output-schema none` — admitted for exactly this runtime, seat and
+    transport (DD-61a). The receipt guard is on for claude, grok and gemini
+    where it exists (macOS).
     """
     session_id = session_id or str(uuid.uuid4())
     guard = (sys.platform == "darwin") if receipt_guard is None else receipt_guard
@@ -746,7 +897,8 @@ def probe_argv(*, family: str, model_id: str, effort_native: str, attempt_id: st
            "--seat", "probe", "--runtime", PROBE_RUNTIME,
            "--model-id", model_id, "--effort-native", effort_native,
            "--transport-id", f"{PROBE_RUNTIME}.to_{family}",
-           "--child-cwd", str(child_cwd), "--prompt-file", str(prompt_file),
+           "--child-cwd", str(child_cwd),
+           *(["--prompt-file", str(prompt_file)] if family != "gemini" else []),
            "--output-schema", "none"]
     if family == "claude":
         sup += ["--output-envelope", CLAUDE_ENVELOPE]
@@ -759,10 +911,16 @@ def probe_argv(*, family: str, model_id: str, effort_native: str, attempt_id: st
                 "--session-evidence",
                 f"grok-session-v1:{grok_session_dir(home, child_cwd, session_id)}",
                 "--session-id", session_id, "--expect-sandbox-profile", "read-only"]
+    elif family == "gemini":
+        import dispatch_agent
+        sup += ["--output-envelope", AGY_ENVELOPE,
+                "--seat-profile", dispatch_agent.AGY_SEAT_PROFILE, "--agy-log", str(agy_log)]
     if guard:
         sup += ["--receipt-guard", GUARD]
+    prompt_text = Path(prompt_file).read_text() if family == "gemini" else None
     return [*sup, "--", *_child_argv(family, model_id, effort_native,
-                                     codex_mode=codex_mode, session_id=session_id)]
+                                     codex_mode=codex_mode, session_id=session_id,
+                                     agy_log=agy_log, prompt_text=prompt_text)]
 
 
 def new_child_cwd(parent: Path) -> Path:
@@ -793,6 +951,7 @@ class _Run:
             root.mkdir(f"{RECEIPTS_RELPATH}/{run_id}")
         self.receipt_dir = Path(state_root) / RECEIPTS_RELPATH / run_id
         scratch = Path(scratch)
+        self.scratch = scratch
         self.child_cwd = new_child_cwd(scratch)
         prompt_dir = Path(tempfile.mkdtemp(prefix="prompt-", dir=scratch))
         self.prompt = prompt_dir / "prompt.txt"
@@ -807,7 +966,9 @@ class _Run:
                           effort_native=effort_native, attempt_id=attempt,
                           receipt_dir=self.receipt_dir, child_cwd=self.child_cwd,
                           prompt_file=self.prompt, deadline_seconds=self.deadline,
-                          codex_mode=codex_mode)
+                          codex_mode=codex_mode,
+                          agy_log=self.scratch / f"{attempt}.agy.log"
+                          if self.family == "gemini" else None)
         if self.on_attempt is not None:
             # Recorded BEFORE spawn so `disable` can cancel it by attempt id;
             # the callback raises to stop the run instead.
@@ -828,7 +989,8 @@ class _Run:
                            "effort_native": effort_native, "argv": argv,
                            "receipt_sha256": receipt_sha, "state": state})
         text = stdout
-        if receipt is not None and receipt.get("output_envelope") in (CLAUDE_ENVELOPE, GROK_ENVELOPE):
+        if receipt is not None and receipt.get("output_envelope") in (
+                CLAUDE_ENVELOPE, GROK_ENVELOPE, AGY_ENVELOPE):
             text = _envelope_text(stdout, receipt["output_envelope"])
         return receipt, text, "\n".join(x for x in (stderr, stdout) if x)
 
@@ -854,12 +1016,12 @@ def _read_evidence_text(path: Path) -> str | None:
 
 
 def _envelope_text(stdout: str | None, fmt: str) -> str | None:
-    """The answer field of a claude/grok JSON document (never the raw JSON)."""
+    """The answer field of a claude/grok/agy JSON document (never the raw JSON)."""
     try:
         doc = json.loads(stdout or "")
     except json.JSONDecodeError:
         return None
-    key = "result" if fmt == CLAUDE_ENVELOPE else "text"
+    key = {CLAUDE_ENVELOPE: "result", AGY_ENVELOPE: "response"}.get(fmt, "text")
     return doc.get(key) if isinstance(doc, dict) and isinstance(doc.get(key), str) else None
 
 
@@ -1087,7 +1249,9 @@ INFERENCE_BUDGET = 12
 # Upper bound per candidate, checked BEFORE it is probed: P1 + the P3 pair
 # (codex measures both ids in --json mode; claude/grok reuse the P1 call as
 # the candidate half) + P4 top token and one step down.
-MAX_INFERENCES = {"openai": 5, "claude": 4, "xai": 4}
+# gemini: P1 + the current id's P3 half + up to two P4 calls (the candidate's
+# P3 half is P1). meta: none — P0 stops a muse candidate (DD-61b).
+MAX_INFERENCES = {"openai": 5, "claude": 4, "xai": 4, "gemini": 4, "meta": 0}
 LINEAGE_INTERVAL = dt.timedelta(hours=24)
 QUOTA_DEFER_PERCENT = 90
 QUOTA_STALE_AFTER = dt.timedelta(hours=6)
@@ -1643,12 +1807,48 @@ def grok_models_text(env: Mapping[str, str]) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+AGY_MODELS_TIMEOUT = 20.0
+
+
+def agy_models_text(env: Mapping[str, str]) -> str | None:
+    """`agy models` stdout, or None. A network call (~3 s on agy 1.3.5) and no
+    inference: `run` makes it, never the tick (design 2026-10-14 DD-61a)."""
+    exe = shutil.which("agy", path=env.get("PATH"))
+    if exe is None:
+        return None
+    try:
+        proc = subprocess.run([exe, "models"], capture_output=True, text=True,
+                              timeout=AGY_MODELS_TIMEOUT, env=dict(env),
+                              stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def gemini_placeholder(env: Mapping[str, str], home: Path) -> Catalog:
+    """The tick's gemini catalogue, decided from offline facts only (design
+    2026-10-14 r1 fable F3): no `agy` on PATH, or a host whose reviewer seat
+    files would refuse the probe, is discovery_unavailable — no network call
+    is ever planned for it; otherwise the list is fetched by `run`."""
+    if shutil.which("agy", path=env.get("PATH")) is None:
+        return _unavailable("gemini", "no_cli")
+    import dispatch_agent
+    if dispatch_agent._agy_host_problem(Path(home)) is not None:
+        return _unavailable("gemini", "seat_setup")
+    return Catalog("gemini", "absent", "fetched at run")
+
+
 def load_catalogs(home: Path, versions: Mapping[str, str | None], *,
-                  grok_text: str | None = None) -> dict[str, Catalog]:
+                  grok_text: str | None = None, agy_text: str | None = None,
+                  env: Mapping[str, str] | None = None) -> dict[str, Catalog]:
     paths = default_catalog_paths(home)
+    env = os.environ if env is None else env
     return {"openai": read_codex_catalog(paths["openai"]),
             "xai": read_grok_catalog(paths["xai"], grok_text),
-            "claude": read_claude_catalog(paths["claude"], versions.get("claude"))}
+            "claude": read_claude_catalog(paths["claude"], versions.get("claude")),
+            "gemini": parse_agy_models_text(agy_text) if agy_text is not None
+            else gemini_placeholder(env, home),
+            "meta": read_muse_catalog(paths["meta"])}
 
 
 def tick_hash(base_sha: str, generation_sha: str | None, catalogs: Mapping[str, Catalog],
@@ -1720,6 +1920,11 @@ def plan(*, view: CommittedView, catalogs: Mapping[str, Catalog], versions: Mapp
                     and not _negative_expired(neg, versions, catalogs, now, quota):
                 skipped[key] = f"deferred:{neg.get('reason')}"
                 continue
+        elif c["status"] == "catalog_fetch":
+            # The gemini list is fetched by `run` (DD-61a). Every fetch stamps
+            # the lineage interval, which is also a failed fetch's retry; an
+            # id's own deferral is re-applied by `run` once the list names it.
+            c = {**c, "id": None}
         elif c["status"] != "candidate":
             skipped[key] = c["status"]
             continue
@@ -1788,7 +1993,7 @@ def tick(*, env: Mapping[str, str], home: Path | None = None, now: dt.datetime |
     with StateRoot.open(state_path, create=True) as root:
         work = read_work_state(root)
     versions = versions if versions is not None else cli_versions(env)
-    catalogs = load_catalogs(home, versions)
+    catalogs = load_catalogs(home, versions, env=env)
     digest = tick_hash(base_sha, view.generation_sha256, catalogs, versions)
     quota = read_quota(codex_sessions_dir(home, env), now)
     if digest == work["tick_hash"] and not _expired_time_deferrals(work, now, quota):
@@ -1847,20 +2052,24 @@ def _clear_in_flight(state_path: Path) -> None:
 
 def _record(state_path: Path, key: str, cand: Mapping, *, outcome: str, reason: str | None,
             retry_after: Mapping | None, summary_sha: str | None, inferences: int,
-            now: dt.datetime) -> None:
+            now: dt.datetime, checked: bool = False, keep_negative: bool = False) -> None:
     def rec(st):
         # A pass counts toward the lineage interval only once published
         # (`_mark_published`); until then it is `published: False` and due.
-        if inferences and outcome != "pass":
+        # `checked`: a catalogue fetch is that interval's check even though it
+        # spends no inference (DD-61a, r1 sol F4 / fable F3).
+        if (inferences or checked) and outcome != "pass":
             st["last_probe"][key] = now.isoformat()
         entry = {"key": key, "id": cand["id"], "outcome": outcome, "reason": reason,
                  "summary_sha256": summary_sha, "at": now.isoformat()}
         if outcome == "pass":
             entry["published"] = False
         st["recent"] = ([entry] + list(st["recent"]))[:RECENT_KEEP]
-        if outcome in ("pass", "none"):
+        if outcome in ("pass", "none") and not keep_negative:
             st["negatives"].pop(key, None)
-        elif outcome == "held":
+        elif outcome in ("held", "fetch_failed", "none"):
+            # `none` with keep_negative: a fetched list that names no successor
+            # today says nothing about an id deferred earlier (i1 sol F2).
             pass
         else:
             st["negatives"][key] = {"id": cand["id"], "family": cand["family"],
@@ -1941,7 +2150,7 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
     view = committed_view(state_path, base, base_sha=base_sha)
     versions = versions if versions is not None else cli_versions(env)
     text = grok_models_text(env) if grok_text is ... else grok_text
-    catalogs = load_catalogs(home, versions, grok_text=text)
+    catalogs = load_catalogs(home, versions, grok_text=text, env=env)
     quota_now = read_quota(codex_sessions_dir(home, env), now)
     eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work,
                              now=now, keys=keys, interval=keys is None, quota=quota_now)
@@ -1962,6 +2171,7 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
 
     passing = []
     quota = None
+    fetched: Catalog | None = None
     scratch = Path(tempfile.mkdtemp(prefix="dmr-probe-"))
     try:
         for cand in eligible:
@@ -1971,6 +2181,43 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
             if rep["inferences"] + need > budget:
                 rep["over_budget"].append(key)
                 continue
+            if cand["status"] == "catalog_fetch":
+                # DD-61a: one `agy models` per run, then this key is asked
+                # again against the real list. Revocations and live deferrals
+                # are re-applied to a discovered id exactly as on the alias
+                # path (r1 sol F4); every outcome stamps the interval.
+                if fetched is None:
+                    fetched = parse_agy_models_text(agy_models_text(env))
+                    catalogs = {**catalogs, "gemini": fetched}
+                    rep["catalog_fetch"] = {"status": fetched.status, "reason": fetched.reason,
+                                            "sha256": fetched.sha256}
+                if fetched.status != "ok":
+                    # No negative: one slot per key holds an id's deferral,
+                    # and a fetch failure must not erase it (r2 sol F2). The
+                    # stamped interval is the retry; `run --key` bypasses it.
+                    _record(state_path, key, cand, outcome="fetch_failed", reason=fetched.reason,
+                            retry_after=None, summary_sha=None, inferences=0, now=now,
+                            checked=True)
+                    rep["failed"].append(key)
+                    continue
+                found = find_candidates({key: view.config["models"][key]}, catalogs)[key]
+                neg = (read_work_state(root).get("negatives") or {}).get(key)
+                if found["status"] != "candidate":
+                    _record(state_path, key, cand, outcome="none", reason=None,
+                            retry_after=None, summary_sha=None, inferences=0, now=now,
+                            checked=True, keep_negative=True)
+                    rep["skipped"][key] = found["status"]
+                    continue
+                if found["id"] in blocked or (
+                        neg and neg.get("id") == found["id"]
+                        and not _negative_expired(neg, versions, catalogs, now)):
+                    _record(state_path, key, {**cand, "id": found["id"]}, outcome="held",
+                            reason="blocked" if found["id"] in blocked else neg.get("reason"),
+                            retry_after=None, summary_sha=None, inferences=0, now=now,
+                            checked=True)
+                    rep["skipped"][key] = "held"
+                    continue
+                cand = {**cand, **found, "key": key, "fetched": True}
             ctx = ProbeContext(now=now, cli_version=versions.get(FAMILY_CLI[fam]))
             if aliased:
                 found = alias_probe(key=key, candidate=cand, base=base,
@@ -2021,9 +2268,12 @@ def _run_locked(root, state_path, *, env, home, now, keys, budget, probe, versio
             s = result["summary"]
             rep["inferences"] += result["inferences"]
             rep["probed"].append(key)
+            # A fetched gemini candidate's catalogue check counts for the
+            # interval even when its probe spent no inference (i1 sol F3).
             _record(state_path, key, cand, outcome=s["outcome"], reason=s.get("reason"),
                     retry_after=s.get("retry_after"), summary_sha=result["summary_sha256"],
-                    inferences=result["inferences"], now=now)
+                    inferences=result["inferences"], now=now,
+                    checked=bool(cand.get("fetched")))
             if s["outcome"] == "pass":
                 passing.append((key, s, result["summary_sha256"]))
                 rep["passed"].append(key)
@@ -2096,7 +2346,7 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
                             "blocked_ids": list((view.generation or {}).get("blocked_ids") or []),
                             "history_ids": sorted((view.generation or {}).get("history") or {})}
     versions = versions if versions is not None else cli_versions(env)
-    catalogs = load_catalogs(home, versions)
+    catalogs = load_catalogs(home, versions, env=env)
     out["cli_versions"] = dict(versions)
     out["catalogs"] = {f: {"status": c.status, "reason": c.reason, "sha256": c.sha256}
                        for f, c in sorted(catalogs.items())}
@@ -2104,9 +2354,16 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
     quota_now = read_quota(codex_sessions_dir(home, env), now)
     eligible, skipped = plan(view=view, catalogs=catalogs, versions=versions, work=work, now=now,
                              quota=quota_now)
-    out["candidates"] = {c["key"]: c["id"] or f"alias:{c['alias']}" for c in eligible}
+    out["candidates"] = {c["key"]: c["id"] or (f"alias:{c['alias']}" if c.get("alias")
+                                               else "catalog_fetch") for c in eligible}
     out["skipped"] = skipped
-    out["deferred"] = {k: {**n, "expired": _negative_expired(n, versions, catalogs, now, quota_now)}
+    # A family whose catalogue is fetched by `run` cannot have a catalogue
+    # deferral judged here: `run` re-applies it to the list (i1 fable F3).
+    out["deferred"] = {k: {**n, "expired": None if (
+        (n.get("retry_after") or {}).get("kind") == "catalog_change"
+        and (catalogs.get(n.get("family")) or Catalog("", "ok")).status != "ok"
+        and n.get("family") == "gemini") else
+        _negative_expired(n, versions, catalogs, now, quota_now)}
                        for k, n in sorted(work["negatives"].items())}
     summaries = Path(state_path) / SUMMARY_PREFIX / "summaries"
     out["recent"] = [{**r, "summary_path": str(summaries / f"{r['summary_sha256']}.json")
@@ -2234,7 +2491,8 @@ import shlex  # noqa: E402
 REPO_CONFIG = Path("skills/model-router/config/model-routing.yaml")
 REPO_SUCCESSION = Path("skills/model-router/tests/fixtures/id-succession.json")
 PRICE_RATES = ("input", "output", "cached_input", "cache_write")
-RUNTIME_OF_FAMILY = {"claude": "claude_code", "openai": "codex", "xai": "grok"}
+RUNTIME_OF_FAMILY = {"claude": "claude_code", "openai": "codex", "xai": "grok",
+                     "gemini": "claude_code", "meta": "claude_code"}
 
 
 def parse_price(spec: str | None) -> dict:
@@ -2426,10 +2684,12 @@ def _ledger_rows(key: str, e: Mapping, summary: Mapping, price: Mapping,
     new, old = e["id"], e["from_id"]
     probes = list(summary.get("probes") or [])
     p1 = next((p for p in probes if p.get("gate") == "P1"), {})
-    codex = summary.get("served_basis") == "id_accepted"
+    basis = summary.get("served_basis")
     served = ("the CLI header reported the requested id (id accepted, not served-model "
-              "attestation)" if codex else
-              f"served_models {summary.get('served_models')} are served forms of the id")
+              "attestation)" if basis == "id_accepted" else
+              f"the CLI log resolved the requested id to {summary.get('served_models')} "
+              f"(a resolution record, not served-model attestation)" if basis == "resolved"
+              else f"served_models {summary.get('served_models')} are served forms of the id")
     tokens = []
     for p in probes:
         if p.get("model_id") == new and p.get("state") == "SUCCEEDED" \

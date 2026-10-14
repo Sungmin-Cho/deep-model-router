@@ -9,6 +9,24 @@
 
 ## [Unreleased]
 
+## [1.21.0] — 2026-10-14 (Haiku 5.5, 리뷰어 좌석 실측, Gemini maker와 Codex 방향)
+
+### Added
+
+- 봉쇄된 Gemini 3.8 Flash maker 좌석 `agy-maker-v1` 프로필을 추가합니다. Antigravity CLI의 쓰기 도구에는 자체 경로 봉쇄가 없습니다(시험에서 바깥 절대 경로, `../`, 심링크, 하드 링크, 홈 디렉터리 아래 파일이 모두 써졌습니다). 그래서 supervisor는 실행 전에 파일 읽기·쓰기·치환만 허용하는 agent, 명령·MCP·URL 접근을 거부하는 프로젝트, 꺼진 텔레메트리, 단일 링크 일회용 작업 공간과 정규 경로를 검사하고, macOS receipt guard를 요구합니다. receipt guard에는 이제 커널 쓰기 울타리가 실립니다. 허용되는 쓰기는 작업 공간, 그 시도 전용 임시 디렉터리, CLI 로그뿐이며, CLI 설정 홈과 깊이에 상관없는 `.git`·`.hg`·`.jj`·`.agents`·`.gemini` 경로는 쓸 수 없습니다. 이 좌석은 프로브를 마친 것으로 기록되지만 쓰기 권한은 없어서 라우터가 앉히지 않습니다.
+- Gemini 리뷰어 좌석을 Codex 호스트에도 제공합니다. 샌드박스된 `codex exec` 세션에서 프로브했고, 그 호스트에서는 balanced 워커 폴백에서 Claude balanced 모델 다음 자리입니다.
+- model-sync가 더 새로운 Gemini Flash 세대를 찾습니다. agy 모델 목록은 `run`만 가져오고(세션 시작 tick은 오프라인 유지), effort 접미사를 떼어 내며, 새 id는 리뷰어 프로필로 프로브합니다. 더 새로운 Muse Spark id도 찾아 보고하지만 publish하지는 않습니다. Muse 스트림에 토큰 사용량이 없어 부팅 오버헤드 검사를 할 수 없기 때문입니다.
+
+### Changed
+
+- Claude 빠른 워커를 Claude Haiku 5.5로 옮기고, 이전 id는 이력 행으로 남깁니다. 가격은 프롬프트 100,000 토큰까지 이전 세대의 10분의 1이고, 더 긴 프롬프트에는 높은 구간이 적용됩니다. tier(0)는 이전 세대에서 물려받았습니다.
+- Muse Spark와 Gemini Flash 리뷰어 좌석을 실제 리뷰 세 건을 재현해 측정했습니다. 둘 다 이전 Sonnet 세대 기준으로 tier 1이 확인됐고, 재현율은 Claude Sonnet 5.5의 약 4분의 1, 5분의 1이었습니다. 그래서 Claude Code 호스트의 balanced 워커 폴백 목록에서 Claude balanced 모델을 다시 맨 앞에 둡니다. xAI 좌석을 쓸 수 없을 때 REVIEW·INVESTIGATION 리드와 해당 리뷰어 좌석은 Claude Sonnet 5.5로 돌아가고, Muse와 Gemini는 Claude 모델까지 쓸 수 없을 때만 리뷰합니다. OpenAI가 부족할 때 일부 라우트는 이 때문에 다른 가족 리뷰어를 잃습니다. 바뀌는 라우트는 모델 프로필에 정리했습니다.
+- Codex 호스트의 Gemini 리뷰어는 Claude 가족이 소진됐을 때 많은 Codex 라우트에 다른 가족 리뷰어를 더합니다. 이 좌석의 높은 effort 상한 때문에, 이미 사람 확인을 요구하던 critical 라우트에 확인 사유가 하나 더 붙습니다.
+
+### Fixed
+
+- 리뷰어 프로필의 스키마 없는 실행은 model-sync 자체 프로브에만 허용합니다. 이 프로브는 여전히 정확한 `pong` 답을 요구하고, 그 밖의 리뷰어 실행은 계속 리뷰 스키마를 요구합니다.
+
 ## [1.20.0] — 2026-10-14 (Gemini Flash 리뷰어 좌석)
 
 ### Added

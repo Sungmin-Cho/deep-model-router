@@ -81,11 +81,14 @@ def test_only_claude_code_offers_the_seat_and_only_to_read():
         assert POLICY.write_capable(runtime, "meta") is False, runtime
 
 
-def test_the_fallback_lists_name_the_seat_first_on_claude_code_only():
+def test_the_fallback_lists_name_the_seat_after_the_claude_model_on_claude_code_only():
+    """1.21.0 (design 2026-10-14 DD-58, user decision U-6): the real-review
+    replay measured this seat far below the Claude balanced model, so that
+    model leads the list again and this seat follows it."""
     for runtime, per_role in CFG["fallbacks"].items():
         for role, keys in per_role.items():
             if runtime == "claude_code" and role == "worker_balanced":
-                assert keys[0] == META_KEY, keys
+                assert keys[:2] == ["claude_worker_balanced", META_KEY], keys
             else:
                 assert META_KEY not in keys, (runtime, role)
 
@@ -191,25 +194,36 @@ def test_no_other_host_ever_seats_the_meta_model(runtime):
             assert META not in _emitted(out), (cls, extra)
 
 
-def test_a_read_route_with_the_xai_seat_out_seats_meta_as_the_lead():
-    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
-                     reversibility=1, runtime="claude_code", unavailable_models=[XAI]), CFG)
+def test_a_read_route_seats_meta_as_the_lead_only_with_the_claude_model_out_too():
+    kw = dict(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+              reversibility=1, runtime="claude_code")
+    xai_out = route(Task(**kw, unavailable_models=[XAI]), CFG)
+    assert xai_out["selected_model"] == ID("claude_worker_balanced")
+    out = route(Task(**kw, unavailable_models=[XAI, ID("claude_worker_balanced")]), CFG)
     assert out["selected_model"] == META
     assert out["review"]["reviewer_models"] == [META]
     assert any(f.endswith(f"-> {META}") for f in out["fallbacks_applied"])
 
 
-def test_an_author_excluded_xai_seat_seats_meta_as_the_lead_with_xai_up():
-    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
-                     reversibility=1, runtime="claude_code",
-                     _review_context={"target_sha256": "0" * 64, "author_families": ["xai"]}), CFG)
+def test_an_author_excluded_claude_family_seats_meta_as_the_lead_with_xai_out_too():
+    """With the Claude model first, an xai author alone seats Claude; a work
+    whose authors include Claude is where this seat leads a review."""
+    kw = dict(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+              reversibility=1, runtime="claude_code")
+    xai_only = route(Task(**kw, _review_context={"target_sha256": "0" * 64,
+                                                 "author_families": ["xai"]}), CFG)
+    assert xai_only["selected_model"] == ID("claude_worker_balanced")
+    out = route(Task(**kw, _review_context={"target_sha256": "0" * 64,
+                                            "author_families": ["xai", "claude"]}), CFG)
     assert out["selected_model"] == META
 
 
-def test_a_low_xai_quota_moves_a_read_worker_to_meta():
+def test_a_low_xai_quota_moves_a_read_worker_to_the_claude_model_not_meta():
+    """`low` moves the worker to the first same-tier model of another family in
+    the list — the Claude model since 1.21.0."""
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=0, runtime="claude_code", _family_quota={"xai": "low"}), CFG)
-    assert out["selected_model"] == META
+    assert out["selected_model"] == ID("claude_worker_balanced")
 
 
 WRITE_AT_BALANCED = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1,
@@ -225,7 +239,14 @@ def test_the_write_filter_is_per_role_so_a_balanced_writer_keeps_meta_off_review
     assert out["selected_role"] == "worker_balanced"
     assert out["selected_model"] == ID("claude_worker_balanced")
     assert META not in _emitted(out)
-    assert "worker_balanced: no write-capable meta seat on claude_code; seated the claude one" \
+    # the Claude model is first and writes, so nothing was skipped (1.21.0)
+    assert not [n for n in out["notes"] if "no write-capable" in n]
+    # with it withheld too the writer skips this seat (and gemini) and says so
+    out = route(Task(**{**WRITE_AT_BALANCED,
+                        "unavailable_models": [XAI, ID("claude_worker_balanced")]}), CFG)
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert META not in _emitted(out)
+    assert "worker_balanced: no write-capable meta seat on claude_code; seated the openai one" \
         in out["notes"]
 
 
@@ -247,15 +268,21 @@ def test_the_meta_model_never_fills_a_write_seat(cls):
             assert out["selected_model"] != META, (cls, dims, extra)
 
 
-def test_meta_supplies_the_cross_family_review_a_claude_worker_lacked():
+def test_quality_first_gives_up_the_cross_family_review_meta_supplied():
+    """1.19.0 bought a claude worker a cross-family review from this seat under
+    an OpenAI shortage; 1.21.0 (U-6) seats the Claude balanced model there
+    instead, a same-family reviewer measured four times stronger. The meta
+    reviewer comes back only where that model is withheld."""
     kw = dict(task_class="IMPLEMENTATION", complexity=1, uncertainty=1, blast_radius=1,
               reversibility=1, runtime="claude_code", unavailable_models=[XAI],
               _family_quota={"openai": "exhausted"})
-    before, after = route(Task(**kw), BASE), route(Task(**kw), CFG)
-    assert POLICY.family_of[after["selected_model"]] == "claude"
-    assert after["review"]["reviewer_models"] == [META]
-    assert after["cross_family_review"] is True
-    assert before["cross_family_review"] is False
+    out = route(Task(**kw), CFG)
+    assert POLICY.family_of[out["selected_model"]] == "claude"
+    assert out["review"]["reviewer_models"] == [ID("claude_worker_balanced")]
+    assert out["cross_family_review"] is False
+    kw["unavailable_models"] = [XAI, ID("claude_worker_balanced")]
+    out = route(Task(**kw), CFG)
+    assert out["review"]["reviewer_models"] == [META] and out["cross_family_review"] is True
 
 
 def test_the_review_of_this_tranche_seats_no_meta_model():
@@ -269,19 +296,25 @@ def test_the_review_of_this_tranche_seats_no_meta_model():
     assert META not in _emitted(out)
 
 
-def test_an_allowed_families_list_without_xai_is_the_xai_seat_out():
+def test_an_allowed_families_list_without_xai_and_claude_seats_meta():
     fams = sorted(f for f in POLICY.families if f not in ("xai", "gemini"))
-    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
-                     reversibility=1, runtime="claude_code",
-                     _local_policy={"allowed_families": fams}), CFG)
+    kw = dict(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+              reversibility=1, runtime="claude_code")
+    out = route(Task(**kw, _local_policy={"allowed_families": fams}), CFG)
+    assert out["selected_model"] == ID("claude_worker_balanced")
+    out = route(Task(**kw, _local_policy={"allowed_families": [f for f in fams
+                                                                if f != "claude"]}), CFG)
     assert out["selected_model"] == META
 
 
-def test_a_read_only_override_lets_a_write_class_lead_with_meta_only_when_xai_is_out():
+def test_a_read_only_override_lets_a_write_class_lead_with_meta_only_after_claude():
     kw = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, blast_radius=2,
               reversibility=1, runtime="claude_code", worker_seat="read_only")
     assert route(Task(**kw), CFG)["selected_model"] == XAI
-    assert route(Task(**kw, unavailable_models=[XAI]), CFG)["selected_model"] == META
+    assert route(Task(**kw, unavailable_models=[XAI]), CFG)["selected_model"] \
+        == ID("claude_worker_balanced")
+    assert route(Task(**kw, unavailable_models=[XAI, ID("claude_worker_balanced")]),
+                 CFG)["selected_model"] == META
 
 
 def test_a_write_override_on_a_read_class_never_seats_meta():
@@ -775,12 +808,16 @@ def test_the_effort_map_pin_refuses_an_undeclared_family_or_a_moved_spelling():
 
 
 def test_model_sync_reports_the_meta_line_without_a_catalog():
-    """No muse catalog reader yet: the row is discovery_unavailable, never a
-    candidate, and nothing keyed by family is consulted for it."""
+    """1.21.0 (design 2026-10-14 DD-61b, issue #61) reads the muse account
+    catalogue; with none on disk the row stays discovery_unavailable. A newer
+    id is discovered and stopped at P0 (no token usage to measure P3 with),
+    so the family's inference budget is zero.
+    tests/test_catalog_readers.py holds the reader's behaviour."""
     rows = {k: m for k, m in CFG["models"].items()}
     found = model_sync.find_candidates(rows, {})
     assert found[META_KEY]["status"] == "discovery_unavailable"
-    assert "meta" not in model_sync.FAMILY_CLI and "meta" not in model_sync.MAX_INFERENCES
+    assert model_sync.FAMILY_CLI["meta"] == "muse" and model_sync.MAX_INFERENCES["meta"] == 0
+    assert "meta" in model_sync.UNMEASURED_OVERHEAD_FAMILIES
     assert model_sync.retirement_notices(rows, {}) == []
 
 
@@ -829,8 +866,8 @@ def test_model_sync_tick_and_status_run_with_the_meta_row(tmp_path):
 
 
 def test_a_model_sync_run_on_the_meta_key_probes_nothing(tmp_path):
-    """No muse catalog reader and no FAMILY_CLI entry: `run --key` reports the
-    row and invokes no CLI at all."""
+    """No muse catalogue on disk (the fake home has none): `run --key` reports
+    the row and invokes no model CLI at all."""
     from test_model_sync import calls_of, cli_sync, fake_bin, fake_home, new_root, sync_env
     bindir, fakedir = fake_bin(tmp_path)
     home = fake_home(tmp_path)

@@ -69,6 +69,7 @@ POSIX only: process-group control uses start_new_session and os.killpg.
 from __future__ import annotations
 
 import argparse
+import atexit
 import copy
 import errno
 import fcntl
@@ -304,6 +305,8 @@ GEMINI_TRANSPORT_SUFFIX = ".to_gemini"
 # deny rules refuse writes, commands, MCP and URL access underneath it, so a
 # CLI that ever ignored the agent's list would still not write.
 AGY_SEAT_PROFILE = "agy-reviewer-v1"
+# model_sync's runtime label: its gemini probe is the one schema-less reviewer-profile run.
+AGY_PROBE_RUNTIME = "model_sync"
 AGY_REVIEWER_PROJECT = "dmr-reviewer-v1"
 AGY_REVIEWER_AGENT = "dmr-reviewer-v1"
 # The CLI actions a deny rule can name, except reading. `unsandboxed` is not
@@ -331,6 +334,56 @@ subagent: false
 # System Prompt
 You review code and documents. Read files when the request needs them, and answer in the format the request asks for.
 """
+# The maker seat (design 2026-10-14 DD-59, issue #59). agy's write tools have
+# no path containment of their own (measured on 1.3.5: an absolute path, `..`,
+# a symlink, a pre-existing hard link and HOME were all written), so this
+# profile is contained by four layers: the agent's tool list (read, write and
+# replace — no command, URL, search or subagent), the deny rules below it, a
+# kernel write fence the receipt guard adds (`receipt_guard.fence_policy`), and
+# the workspace audit. `--mode accept-edits` approves its edits whatever the
+# host's preset says.
+AGY_MAKER_PROFILE = "agy-maker-v1"
+AGY_MAKER_AGENT = "dmr-maker-v1"
+AGY_MAKER_PROJECT = "dmr-maker-v1"
+AGY_MAKER_MODE = "accept-edits"
+AGY_MAKER_DENY = ("command(*)", "mcp(*)", "read_url(*)", "execute_url(*)")
+AGY_MAKER_PROJECT_DOC = {
+    "id": AGY_MAKER_PROJECT,
+    "name": AGY_MAKER_PROJECT,
+    "projectResources": {},
+    "permissionGrants": {"permissionGrants": {"deny": list(AGY_MAKER_DENY)}},
+}
+AGY_MAKER_AGENT_TEXT = f"""---
+name: {AGY_MAKER_AGENT}
+description: Write seat for deep-model-router. It reads and edits files in its working directory and never runs commands, searches the web or delegates.
+tools:
+  - view_file
+  - write_to_file
+  - replace_file_content
+mainAgent: true
+subagent: false
+---
+# System Prompt
+You make the file changes the request asks for, inside the current working directory, using your file tools, and then report what you changed.
+"""
+# Each agy seat profile, by name: its agent, its deny-rule project and the
+# one value its argv may add to the shared allow-list (`--mode`, maker only).
+AGY_PROFILES = {
+    AGY_SEAT_PROFILE: {"agent": AGY_REVIEWER_AGENT, "agent_text": AGY_REVIEWER_AGENT_TEXT,
+                       "project": AGY_REVIEWER_PROJECT, "deny": AGY_REVIEWER_DENY,
+                       "project_doc": AGY_REVIEWER_PROJECT_DOC, "mode": None},
+    AGY_MAKER_PROFILE: {"agent": AGY_MAKER_AGENT, "agent_text": AGY_MAKER_AGENT_TEXT,
+                        "project": AGY_MAKER_PROJECT, "deny": AGY_MAKER_DENY,
+                        "project_doc": AGY_MAKER_PROJECT_DOC, "mode": AGY_MAKER_MODE},
+}
+
+
+def _agy_grants_loaded(profile: str) -> str:
+    spec = AGY_PROFILES[profile]
+    return (f"stored 0 allow, {len(spec['deny'])} deny grants from project "
+            f"\"{spec['project']}\"")
+
+
 # The workspace the CLI adopts is the child's cwd, or the enclosing repository
 # root, and it loads that root's `.agents/` customizations — hooks the CLI
 # itself runs as host commands, and agents that shadow a user agent of the same
@@ -791,7 +844,8 @@ def _grade_sandbox_events(home: Path, expected_profile: str, pins: dict
     return view, reasons
 
 
-def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
+def _agy_flag_view(argv: list[str], profile: str = AGY_SEAT_PROFILE
+                   ) -> tuple[dict | None, str | None]:
     """`({name: value}, None)` for an agy argv, or `(None, why)`.
 
     Parsed the way Go's `flag` package parses it (the CLI's usage text is that
@@ -828,14 +882,14 @@ def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
             if value not in (None, "true"):
                 return None, f"{tok!r}: only the bare flag is admitted"
             value = "true"
-        elif name in AGY_VALUE_FLAGS:
+        elif name in AGY_VALUE_FLAGS or (name == "mode" and AGY_PROFILES[profile]["mode"]):
             if value is None:
                 if i + 1 >= len(argv):
                     return None, f"{tok!r} has no value"
                 i += 1
                 value = argv[i]
         else:
-            return None, f"{tok!r} is outside the {AGY_SEAT_PROFILE} allow-list"
+            return None, f"{tok!r} is outside the {profile} allow-list"
         key = "prompt" if name in AGY_PROMPT_FLAGS else name
         if key in seen:
             return None, f"{tok!r} repeats a flag already given"
@@ -846,7 +900,8 @@ def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
     return seen, None
 
 
-def _agy_argv_problem(argv: list[str], agy_log: Path, model_id: str | None) -> str | None:
+def _agy_argv_problem(argv: list[str], agy_log: Path, model_id: str | None,
+                      profile: str = AGY_SEAT_PROFILE) -> str | None:
     """Why `argv` is not the agy-reviewer-v1 recipe, or None.
 
     The agent, the deny-rule project, JSON output and slash-command
@@ -857,15 +912,18 @@ def _agy_argv_problem(argv: list[str], agy_log: Path, model_id: str | None) -> s
     carry the wrong family into every independence claim. The effort and a
     prompt must be present; the log must be the reserved one, spelled as the
     same absolute path, because that file is what the post-run gate reads."""
-    flags, why = _agy_flag_view(argv)
+    flags, why = _agy_flag_view(argv, profile)
     if why is not None:
         return why
     # `print-timeout` is fixed too: the supervisor's deadline is the one clock,
     # and an omitted value leaves the CLI's own default, which its help text
     # and its documentation disagree on (implementation review i1 sol F2).
-    fixed = {"agent": AGY_REVIEWER_AGENT, "project": AGY_REVIEWER_PROJECT,
+    spec = AGY_PROFILES[profile]
+    fixed = {"agent": spec["agent"], "project": spec["project"],
              "output-format": "json", "disable-slash-commands": "true",
              "print-timeout": "0s"}
+    if spec["mode"]:
+        fixed["mode"] = spec["mode"]
     for name, value in fixed.items():
         if flags.get(name) != value:
             return f"--{name} must be {value!r}, not {flags.get(name)!r}"
@@ -901,14 +959,15 @@ def _agy_host_json(path: Path) -> tuple[object, str | None]:
                       f"keys and nonfinite numbers are refused)")
 
 
-def _is_reviewer_project(doc: object) -> bool:
-    """The canonical dmr-reviewer-v1 document and nothing else: no extra key
+def _is_reviewer_project(doc: object, profile: str = AGY_SEAT_PROFILE) -> bool:
+    """The profile's canonical project document and nothing else: no extra key
     (a project `settings` block can widen file access), no allow or ask list,
     and exactly the deny rules, each once, in any order."""
-    if not isinstance(doc, dict) or set(doc) != set(AGY_REVIEWER_PROJECT_DOC):
+    spec = AGY_PROFILES[profile]
+    if not isinstance(doc, dict) or set(doc) != set(spec["project_doc"]):
         return False
     if (doc["id"], doc["name"], doc["projectResources"]) != (
-            AGY_REVIEWER_PROJECT, AGY_REVIEWER_PROJECT, {}):
+            spec["project"], spec["project"], {}):
         return False
     outer = doc["permissionGrants"]
     if not isinstance(outer, dict) or set(outer) != {"permissionGrants"}:
@@ -918,10 +977,10 @@ def _is_reviewer_project(doc: object) -> bool:
         return False
     deny = inner["deny"]
     return (isinstance(deny, list) and all(isinstance(d, str) for d in deny)
-            and len(deny) == len(set(deny)) and set(deny) == set(AGY_REVIEWER_DENY))
+            and len(deny) == len(set(deny)) and set(deny) == set(spec["deny"]))
 
 
-def _agy_host_problem(home: Path) -> str | None:
+def _agy_host_problem(home: Path, profile: str = AGY_SEAT_PROFILE) -> str | None:
     """Why the host's agy configuration cannot run this seat, or None.
 
     The deny-rule project must be the canonical document (the CLI runs an
@@ -930,20 +989,21 @@ def _agy_host_problem(home: Path) -> str | None:
     but a widened tool list would not); and the CLI settings must turn
     telemetry off (design U-3). A `true` under the documented spelling of the
     telemetry key contradicts the setting, so it refuses too."""
-    project = home.joinpath(*AGY_PROJECT_RELPATH)
+    spec = AGY_PROFILES[profile]
+    project = home.joinpath(".gemini", "config", "projects", f"{spec['project']}.json")
     doc, why = _agy_host_json(project)
-    if why is None and not _is_reviewer_project(doc):
-        why = (f"{str(project)!r} is not the {AGY_REVIEWER_PROJECT} project "
+    if why is None and not _is_reviewer_project(doc, profile):
+        why = (f"{str(project)!r} is not the {spec['project']} project "
                f"document")
     if why is None:
-        agent = home.joinpath(*AGY_AGENT_RELPATH)
+        agent = home.joinpath(".gemini", "config", "agents", f"{spec['agent']}.md")
         data, oversized = _capped_bytes(agent, AGY_HOST_FILE_MAX_BYTES)
         if data is None or oversized:
             why = f"{str(agent)!r} is missing, not a regular file, or unreadable"
-        elif data != AGY_REVIEWER_AGENT_TEXT.encode("utf-8"):
-            why = f"{str(agent)!r} is not the {AGY_REVIEWER_AGENT} agent text"
+        elif data != spec["agent_text"].encode("utf-8"):
+            why = f"{str(agent)!r} is not the {spec['agent']} agent text"
     if why is not None:
-        return (f"{why}; the {AGY_SEAT_PROFILE} seat needs it exactly as "
+        return (f"{why}; the {profile} seat needs it exactly as "
                 f"references/adapters.md \"Antigravity seat profile\" shows")
     settings = home.joinpath(*AGY_SETTINGS_RELPATH)
     doc, why = _agy_host_json(settings)
@@ -954,7 +1014,7 @@ def _agy_host_problem(home: Path) -> str | None:
             if isinstance(doc, dict) else "<not an object>"
         why = f"{str(settings)!r} has {AGY_TELEMETRY_KEY} {found!r}"
     if why is not None:
-        return (f"{why}; the {AGY_SEAT_PROFILE} seat requires "
+        return (f"{why}; the {profile} seat requires "
                 f"\"{AGY_TELEMETRY_KEY}\": false in the CLI settings "
                 f"(the CLI's /config \"Enable Telemetry\" off)")
     return None
@@ -979,10 +1039,13 @@ def _agy_workspace_problem(cwd: Path, home: Path | None) -> str | None:
     root. A reviewed change that adds a customization anywhere else on the
     chain is refused rather than run: the CLI would execute its hooks on this
     host and let its agents shadow the reviewer agent, and no deny rule reaches
-    either. The caller audits both spellings of the cwd (see the preflight)."""
-    home_real = Path(os.path.realpath(home)) if home is not None else None
+    either. The caller audits both spellings of the cwd (see the preflight).
+    HOME is recognised by filesystem identity, not by spelling, so a
+    case-aliased HOME on a case-insensitive volume is still HOME
+    (implementation review i3 fable F1)."""
+    home_id = _identity(home) if home is not None else None
     for d in (cwd, *cwd.parents):
-        is_home = home_real is not None and Path(os.path.realpath(d)) == home_real
+        is_home = home_id is not None and _identity(d) == home_id
         for name in AGY_WORKSPACE_CUSTOMIZATIONS:
             if is_home and name == ".gemini":
                 continue
@@ -997,11 +1060,138 @@ def _agy_workspace_problem(cwd: Path, home: Path | None) -> str | None:
     return None
 
 
+# Directory names the maker never writes into: VCS metadata, whose hooks and
+# config run later outside any diff, and agy's own customizations. Compared
+# case-folded (APFS is case-insensitive by default).
+AGY_FENCE_PROTECTED = (".git", ".hg", ".jj", ".agents", ".gemini")
+
+
+def maker_fence_problem(receipt: dict, receipt_dir: Path) -> str | None:
+    """Why an agy-maker-v1 receipt does not carry the fence its seat requires,
+    or None (implementation review i1 fable F1): the guard metadata must hold
+    a write fence naming THIS receipt's workspace and log, the single-link
+    audit must have run, and the recorded profile must rebuild from the
+    recorded values (`receipt_guard.verified_metadata`)."""
+    if receipt.get("seat_profile") != AGY_MAKER_PROFILE:
+        return f"seat_profile {receipt.get('seat_profile')!r} is not {AGY_MAKER_PROFILE}"
+    meta = receipt.get("receipt_guard")
+    fence = meta.get("write_fence") if isinstance(meta, dict) else None
+    if not isinstance(fence, dict):
+        return "the receipt carries no write fence"
+    if fence.get("cwd") != receipt.get("child_cwd"):
+        return "the write fence names another workspace than the receipt's child_cwd"
+    if fence.get("agy_log") != receipt.get("agy_log"):
+        return "the write fence names another log than the receipt's agy_log"
+    if receipt.get("require_single_linked_cwd") is not True:
+        return "the single-link audit did not run"
+    if not receipt_guard.verified_metadata(meta, Path(receipt_dir), str(receipt.get("attempt_id"))):
+        return "the recorded guard profile does not rebuild from its recorded values"
+    return None
+
+
+def _canonical(path: str | None) -> bool:
+    return isinstance(path, str) and os.path.isabs(path) and os.path.realpath(path) == path
+
+
+def _within(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _identity(path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _overlaps(path: str, root: str) -> bool:
+    """Does `path` lie in `root`, or `root` in `path`, by filesystem identity?
+
+    A string comparison is wrong on a case-insensitive volume and through a
+    path that does not exist yet (`/x/GEMINICONF/r` is inside `/x/geminiconf`
+    on default APFS; implementation review i2 sol F1, fable F3). So every
+    existing ancestor of `path` is compared with `root` by (st_dev, st_ino),
+    and every existing ancestor of `root` with `path` — a nonexistent path is
+    judged by the directories it would be created under."""
+    rid = _identity(root)
+    if rid is not None and any(_identity(a) == rid for a in (Path(path), *Path(path).parents)):
+        return True
+    pid = _identity(path)
+    return pid is not None and any(_identity(a) == pid for a in (Path(root), *Path(root).parents))
+
+
+def _agy_maker_preflight(args) -> str | None:
+    """Why this dispatch cannot run the agy-maker-v1 seat, or None (design
+    2026-10-14 DD-59). Everything the containment rests on is checked here,
+    before spawn: the argv, the maker agent and project, telemetry, the
+    workspace audit, a single-linked disposable cwd, the receipt guard that
+    carries the write fence, and canonical, disjoint fence paths. The CLI log
+    the run leaves is only drift detection for this profile (r1 sol F1)."""
+    if args.output_envelope != AGY_JSON_FORMAT:
+        return f"requires --output-envelope {AGY_JSON_FORMAT}"
+    if args.child_cwd is None or not args.require_single_linked_cwd:
+        return ("requires --child-cwd and --require-single-linked-cwd: agy writes "
+                "through a pre-existing hard link (measured), which a path fence "
+                "cannot tell from its own file")
+    if getattr(args, "receipt_guard", "none") != receipt_guard.GUARD_NAME:
+        return (f"requires --receipt-guard {receipt_guard.GUARD_NAME}: the kernel write "
+                f"fence it carries is the seat's path containment (agy's write tools "
+                f"have none), and sandbox-exec does not nest, so the supervisor must "
+                f"itself run outside any sandbox")
+    if sys.platform != "darwin":
+        return "the write fence is a Darwin Seatbelt profile; no other platform has one"
+    home = os.environ.get("HOME", "")
+    if not os.path.isabs(home):
+        return ("HOME is unset or not absolute, so the agy configuration the child "
+                "will read cannot be located")
+    cwd, log = args.child_cwd, os.path.abspath(args.agy_log)
+    for name, value in (("--child-cwd", cwd), ("--agy-log", log)):
+        if not _canonical(value):
+            return (f"{name} {value!r} is not its own canonical path (symlinks resolved); "
+                    f"the fence compares canonical paths, so it is refused, not normalized")
+    home_gemini = os.path.realpath(os.path.join(home, ".gemini"))
+    for name, value in (("--child-cwd", cwd), ("--agy-log", log)):
+        if _within(value, home_gemini) or _within(home_gemini, value) \
+                or _overlaps(value, home_gemini):
+            return (f"{name} {value!r} overlaps the CLI's configuration home "
+                    f"{home_gemini!r}, which the fence keeps unwritable")
+    if _within(log, cwd) or _overlaps(log, cwd):
+        return f"--agy-log {log!r} is inside the workspace {cwd!r}"
+    # The log is inside the fence and the receipt store's stdout/stderr are
+    # allowed by the guard's last rule, so neither may sit where a later tool
+    # would load or run what was written there (implementation review i1 sol F1).
+    store = os.path.realpath(args.receipt_dir)
+    for name, value in (("--agy-log", log), ("--receipt-dir", store)):
+        hit = [c for c in Path(value).parts if c.casefold() in AGY_FENCE_PROTECTED]
+        if hit:
+            return (f"{name} {value!r} passes through {hit[0]!r}: a VCS or agy "
+                    f"customization directory, which the maker must never write")
+        if _within(value, home_gemini) or _within(home_gemini, value) \
+                or _overlaps(value, home_gemini):
+            return f"{name} {value!r} overlaps the CLI's configuration home {home_gemini!r}"
+    why = _agy_argv_problem(args.argv, Path(log), args.model_id, AGY_MAKER_PROFILE)
+    why = why or _agy_host_problem(Path(home), AGY_MAKER_PROFILE)
+    for spelling in (cwd, os.path.abspath(cwd)):
+        why = why or _agy_workspace_problem(Path(spelling), Path(home))
+    if why is None:
+        args.agy_log = log
+        args.agy_home_gemini = home_gemini
+    return why
+
+
+# The effort spellings the CLI resolves a base id to (agy 1.3.5 logged `-low`,
+# `-medium` and `-high`; its catalogue offers no others for the seated line).
+AGY_EFFORT_SPELLINGS = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
 def _agy_resolution_ok(model: str | None, resolved: object) -> bool:
     """The CLI's resolution of `--model` is that model or one of its effort
-    spellings (`<model>-low`, …)."""
+    spellings (`<model>-low`, …) — not any id that merely starts with it: a
+    `<model>-lite` is another model (implementation review i1)."""
     return (isinstance(model, str) and isinstance(resolved, str)
-            and (resolved == model or resolved.startswith(model + "-")))
+            and (resolved == model
+                 or resolved in {f"{model}-{e}" for e in AGY_EFFORT_SPELLINGS}))
 
 
 def _reserve_agy_log(path: Path, receipt_dir: Path, pins: dict) -> str | None:
@@ -1034,8 +1224,8 @@ def _reserve_agy_log(path: Path, receipt_dir: Path, pins: dict) -> str | None:
     return None
 
 
-def _grade_agy_log(path: Path, pins: dict, model: str | None = None
-                   ) -> tuple[dict, list[str]]:
+def _grade_agy_log(path: Path, pins: dict, model: str | None = None,
+                   profile: str = AGY_SEAT_PROFILE) -> tuple[dict, list[str]]:
     """Read the reserved agy log for proof that the deny rules loaded.
 
     Every grants record must be the dmr-reviewer-v1 one, and there must be at
@@ -1052,8 +1242,11 @@ def _grade_agy_log(path: Path, pins: dict, model: str | None = None
     update brings. It is not proof against a model that had already escaped
     containment and rewrote the file in place — the reason containment is two
     layers (the agent's tool list and these rules) checked before spawn, not
-    this gate."""
-    view: dict = {"path": str(path), "project": AGY_REVIEWER_PROJECT,
+    this gate. For the maker profile even that is weaker: the log is inside
+    the write fence and the model has write tools, so it could rewrite the
+    record in place — there the gate is drift detection only (design
+    2026-10-14 r1 sol F1)."""
+    view: dict = {"path": str(path), "project": AGY_PROFILES[profile]["project"],
                   "lines": [], "resolved_model": None}
     pin = pins.get("agy_log")
     try:
@@ -1094,7 +1287,7 @@ def _grade_agy_log(path: Path, pins: dict, model: str | None = None
     if not grants:
         reasons.append(_reason("agy_project_grants", "none"))
     else:
-        other = [g for g in grants if g != AGY_GRANTS_LOADED]
+        other = [g for g in grants if g != _agy_grants_loaded(profile)]
         if other:
             reasons.append(_reason("agy_project_grants", other[0]))
     if resolutions:
@@ -2790,6 +2983,10 @@ def cmd_run(args) -> int:
         return _run_attempt(args, pins)
     finally:
         _release_artifact_pins(pins)
+        # The agy maker's private TMPDIR goes on every way out of the attempt
+        # (implementation review i1 fable F6); atexit stays as the fallback.
+        if getattr(args, "agy_tmpdir", None):
+            shutil.rmtree(args.agy_tmpdir, ignore_errors=True)
 
 
 def _run_attempt(args, pins: list[dict]) -> int:
@@ -2894,27 +3091,37 @@ def _run_attempt(args, pins: list[dict]) -> int:
         return 2
     if (args.transport_id and args.transport_id.endswith(GEMINI_TRANSPORT_SUFFIX)
             and (args.output_envelope != AGY_JSON_FORMAT
-                 or args.seat_profile != AGY_SEAT_PROFILE)):
+                 or args.seat_profile not in AGY_PROFILES)):
         print(f"--transport-id {args.transport_id!r} dispatches into agy, so it "
               f"requires --output-envelope {AGY_JSON_FORMAT!r} and --seat-profile "
-              f"{AGY_SEAT_PROFILE!r} (got {args.output_envelope!r} and "
+              f"{' or '.join(AGY_PROFILES)} (got {args.output_envelope!r} and "
               f"{args.seat_profile!r}): no agy flag contains the seat, and the "
               f"deny-rule project that does is replaced by the CLI's default "
               f"project, silently, when its name does not resolve. See "
               f"references/adapters.md \"Antigravity seat profile\".",
               file=sys.stderr)
         return 2
-    if (args.agy_log is None) != (args.seat_profile != AGY_SEAT_PROFILE):
-        print(f"--seat-profile {AGY_SEAT_PROFILE} and --agy-log come together: "
+    if (args.agy_log is None) != (args.seat_profile not in AGY_PROFILES):
+        print(f"--seat-profile {'/'.join(AGY_PROFILES)} and --agy-log come together: "
               f"the profile's post-run gate reads the log, and a log without "
               f"the profile constrains nothing", file=sys.stderr)
         return 2
     if args.seat_profile == AGY_SEAT_PROFILE:
         # A reviewer profile: the review schema is what makes an answer that
         # is missing, or not a string, a failure rather than an empty success.
-        if args.output_envelope != AGY_JSON_FORMAT or args.output_schema != "review":
+        # The one exception is model_sync's own probe (design 2026-10-14
+        # DD-61a), whose `pong` smoke has no verdict: its caller requires the
+        # answer to be exactly `pong`, and a schema-less receipt is never
+        # review evidence (`verify-evidence` requires the review schema).
+        model_sync_probe = (args.runtime == AGY_PROBE_RUNTIME and args.seat == "probe"
+                            and args.transport_id == f"{AGY_PROBE_RUNTIME}{GEMINI_TRANSPORT_SUFFIX}")
+        if args.output_envelope != AGY_JSON_FORMAT or (
+                args.output_schema != "review"
+                and not (model_sync_probe and args.output_schema == "none")):
             print(f"--seat-profile {AGY_SEAT_PROFILE} requires --output-envelope "
-                  f"{AGY_JSON_FORMAT} and --output-schema review", file=sys.stderr)
+                  f"{AGY_JSON_FORMAT} and --output-schema review (none only for "
+                  f"--runtime {AGY_PROBE_RUNTIME} --seat probe --transport-id "
+                  f"{AGY_PROBE_RUNTIME}{GEMINI_TRANSPORT_SUFFIX})", file=sys.stderr)
             return 2
         if args.child_cwd is None:
             print(f"--seat-profile {AGY_SEAT_PROFILE} requires --child-cwd: the "
@@ -2938,6 +3145,11 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 why = why or _agy_workspace_problem(Path(spelling), Path(home))
         if why is not None:
             print(f"--seat-profile {AGY_SEAT_PROFILE}: {why}", file=sys.stderr)
+            return 2
+    if args.seat_profile == AGY_MAKER_PROFILE:
+        why = _agy_maker_preflight(args)
+        if why is not None:
+            print(f"--seat-profile {AGY_MAKER_PROFILE}: {why}", file=sys.stderr)
             return 2
 
     # --- Guard vs a nested codex sandbox (2026-09-25 DD-B9) -------------
@@ -3223,7 +3435,23 @@ def _run_attempt(args, pins: list[dict]) -> int:
                         raise receipt_guard.GuardError("deadline expired before guard preparation")
                     if stdin_f is not subprocess.DEVNULL:
                         receipt_guard.reject_protected_input(receipt_dir, stdin_f.fileno())
-                    prefix, metadata = receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(), remaining)
+                    fence = None
+                    if args.seat_profile == AGY_MAKER_PROFILE:
+                        # The attempt's own TMPDIR, inside the fence and gone
+                        # when the supervisor exits.
+                        agy_tmp = os.path.realpath(tempfile.mkdtemp(prefix="dmr-agy-tmp-"))
+                        args.agy_tmpdir = agy_tmp
+                        atexit.register(shutil.rmtree, agy_tmp, True)
+                        fence = {"cwd": args.child_cwd, "tmpdir": agy_tmp,
+                                 "agy_log": args.agy_log,
+                                 "home_gemini": args.agy_home_gemini}
+                    # A fence is passed only for the maker profile, so every
+                    # other guarded run calls the guard exactly as before.
+                    prefix, metadata = (
+                        receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(),
+                                              remaining, fence=fence) if fence is not None
+                        else receipt_guard.prepare(receipt_dir, out_f.fileno(), err_f.fileno(),
+                                                   remaining))
                     if time.monotonic() >= deadline_monotonic:
                         raise receipt_guard.GuardError("deadline expired during guard preparation")
                 except (OSError, receipt_guard.GuardError) as exc:
@@ -3248,13 +3476,16 @@ def _run_attempt(args, pins: list[dict]) -> int:
                 if args.grok_home is not None:
                     child_env = os.environ.copy()
                     child_env["GROK_HOME"] = args.grok_home
-                if args.seat_profile == AGY_SEAT_PROFILE:
+                if args.seat_profile in AGY_PROFILES:
                     # A Go child takes its cwd from $PWD whenever $PWD names the
                     # same directory, and an inherited one can be a third
                     # spelling the workspace audit never walked (implementation
                     # review i1 sol F1). Pin it to the audited real path.
                     child_env = child_env or os.environ.copy()
                     child_env["PWD"] = args.child_cwd
+                    fence_rec = (receipt.get("receipt_guard") or {}).get("write_fence")
+                    if fence_rec:
+                        child_env["TMPDIR"] = fence_rec["tmpdir"]
                 if child_env is not None:
                     popen_kw["env"] = child_env
                 if time.monotonic() >= deadline_monotonic:
@@ -3425,7 +3656,8 @@ def _run_attempt(args, pins: list[dict]) -> int:
                             reasons = reasons + event_reasons
                         if args.agy_log is not None:
                             view, agy_reasons = _grade_agy_log(
-                                Path(args.agy_log), agy_pins, args.model_id)
+                                Path(args.agy_log), agy_pins, args.model_id,
+                                args.seat_profile)
                             receipt["result"]["agy_project_grants"] = view
                             reasons = reasons + agy_reasons
                         if artifact_entries:
@@ -4029,7 +4261,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "location is read and two that disagree fail; "
                             "requires --grok-home")
     run.add_argument("--seat-profile", default=None,
-                     choices=[MAKER_SEAT_PROFILE, AGY_SEAT_PROFILE],
+                     choices=[MAKER_SEAT_PROFILE, AGY_SEAT_PROFILE, AGY_MAKER_PROFILE],
                      help="typed seat declaration; grok-maker-v1 "
                           "requires the workspace audit, per-attempt home, "
                           "auth seed, envelope, session evidence, and "

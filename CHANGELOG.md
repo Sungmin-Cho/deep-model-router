@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.0] — 2026-10-14 (Haiku 5.5, measured reviewer seats, Gemini maker and Codex direction)
+
+### Added
+
+- Add a contained Gemini 3.8 Flash maker seat, the `agy-maker-v1` profile. The Antigravity CLI's write tools have no path containment of their own (an outside absolute path, `../`, a symlink, a hard link and a file under the home directory were all written in testing), so before the run the supervisor checks an agent limited to reading, writing and replacing files, a project that denies commands, MCP and URL access, telemetry off, a single-linked disposable workspace and canonical paths, and requires the macOS receipt guard, which now carries a kernel write fence: the workspace, the attempt's own temporary directory and the CLI log only — never the CLI's configuration home, and never a `.git`, `.hg`, `.jj`, `.agents` or `.gemini` path at any depth. The seat is recorded as probed but has no write authority, so the router never seats it.
+- Offer the Gemini reviewer seat on Codex hosts, probed from a sandboxed `codex exec` session; it follows the Claude balanced model in the balanced worker's fallback list there.
+- Discover newer Gemini Flash generations in model-sync: the agy model list is fetched by `run` only (the session-start tick stays offline), the effort suffix is stripped, and a newer id is probed through the reviewer profile. Newer Muse Spark ids are discovered too and reported, never published: the Muse stream carries no token usage, so the boot-overhead check cannot run.
+
+### Changed
+
+- Move the fast Claude worker to Claude Haiku 5.5, with the previous id kept as a history row. Its prices are a tenth of the previous generation's for prompts up to 100,000 tokens, with a higher tier for longer prompts; its tier (0) is inherited.
+- Measure the Muse Spark and Gemini Flash reviewer seats by replaying three real reviews: both confirm tier 1 against the previous Sonnet generation, at about a quarter and a fifth of Claude Sonnet 5.5's recall. On Claude Code hosts the balanced worker's fallback list now puts the Claude balanced model first again, so where the xAI seat is unavailable, REVIEW and INVESTIGATION leads and those reviewer seats return to Claude Sonnet 5.5; Muse and Gemini review only where the Claude model is unavailable as well. Some routes under an OpenAI shortage give up a cross-family reviewer for it. The model profile lists what moves.
+- The Codex-hosted Gemini reviewer adds a cross-family reviewer to many Codex routes when the Claude family is exhausted; its high effort ceiling adds a human-confirmation cause to critical routes that already asked for one.
+
+### Fixed
+
+- Accept a schema-less run of the reviewer profile only for model-sync's own probe, which still requires an exact `pong` answer; every other reviewer run keeps requiring the review schema.
+
 ## [1.20.0] — 2026-10-14 (Gemini Flash reviewer seat)
 
 ### Added

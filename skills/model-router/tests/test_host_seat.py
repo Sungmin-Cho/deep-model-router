@@ -305,7 +305,7 @@ def test_undeclared_preserves_legacy_hash_by_key_omission():
 
 def test_whitespace_padded_registered_model_is_normalized_for_lookup_and_hash():
     plain = _route_with_host(ID("claude_worker_fast"))
-    padded = _route_with_host(" \tclaude-haiku-4-5-20251001\n ")
+    padded = _route_with_host(f" \t{ID('claude_worker_fast')}\n ")
     assert padded["host_seat_advisory"]["declared"] == {
         "model": ID("claude_worker_fast"), "effort": None}
     assert padded["host_seat_advisory"]["model_comparison"] == "at"

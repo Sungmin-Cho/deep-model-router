@@ -43,6 +43,9 @@ GEMINI = ID(SEAT_KEY)
 META = ID("meta_worker_balanced")
 XAI = ID("xai_frontier")
 BOTH_OUT = [XAI, META]
+# Everything ahead of this seat in claude_code's worker_balanced list since
+# 1.21.0 (user decision U-6): the xai seat, the Claude balanced model and meta.
+AHEAD_OUT = [XAI, ID("claude_worker_balanced"), META]
 SCRIPT = SKILL / "scripts" / "dispatch_agent.py"
 FIXTURES = SKILL / "tests" / "fixtures" / "agy"
 RECIPE = CFG["transports"]["claude_code"]["to_gemini"]["mechanism_reviewer"]
@@ -85,22 +88,39 @@ def test_the_ceiling_keeps_every_routed_effort_inside_the_probed_tokens():
         assert CFG["effort_map"]["gemini"][level] in probed, level
 
 
-def test_only_claude_code_offers_the_seat_and_only_to_read():
+def test_claude_code_and_codex_offer_the_seat_and_only_to_read():
+    """1.21.0: the Codex direction is probed (design DD-60); the grok one is
+    not. Claude Code ships a maker recipe (design DD-59) whose write
+    authority is withheld (user decision U-5), so no host can seat this
+    family where the work writes."""
     for runtime, entries in CFG["transports"].items():
-        assert ("to_gemini" in entries) == (runtime == "claude_code"), runtime
-    entry = CFG["transports"]["claude_code"]["to_gemini"]
-    assert entry["verified"] is True and entry["write_verified"] is False
-    assert set(k for k in entry if k.startswith("mechanism")) == {"mechanism_reviewer"}
+        assert ("to_gemini" in entries) == (runtime in ("claude_code", "codex")), runtime
+    cc = CFG["transports"]["claude_code"]["to_gemini"]
+    assert cc["verified"] is True and cc["write_verified"] is False
+    assert set(k for k in cc if k.startswith("mechanism")) == {"mechanism_reviewer",
+                                                              "mechanism_maker"}
+    cx = CFG["transports"]["codex"]["to_gemini"]
+    assert cx["verified"] is True and cx["write_verified"] is False
+    assert set(k for k in cx if k.startswith("mechanism")) == {"mechanism_reviewer"}
+    assert cx["mechanism_reviewer"] == cc["mechanism_reviewer"]
     for runtime in CFG["runtimes"]:
         assert POLICY.write_capable(runtime, "gemini") is False, runtime
 
 
-def test_the_fallback_lists_name_the_seat_second_on_claude_code_only():
+def test_the_fallback_lists_name_the_seat_after_claude_on_claude_code_and_codex():
+    """1.21.0 (user decisions U-6, U-7): the Claude balanced model first on
+    both hosts; on Claude Code the meta seat, then this one; on Codex this one
+    right after Claude. Grok hosts never list it."""
+    want = {("claude_code", "worker_balanced"): [
+                "claude_worker_balanced", "meta_worker_balanced", SEAT_KEY,
+                "openai_worker_balanced", "claude_senior"],
+            ("codex", "worker_balanced"): [
+                "claude_worker_balanced", SEAT_KEY, "openai_worker_balanced",
+                "openai_reasoning"]}
     for runtime, per_role in CFG["fallbacks"].items():
         for role, keys in per_role.items():
-            if runtime == "claude_code" and role == "worker_balanced":
-                assert keys == ["meta_worker_balanced", SEAT_KEY, "claude_worker_balanced",
-                                "openai_worker_balanced", "claude_senior"], keys
+            if (runtime, role) in want:
+                assert keys == want[(runtime, role)], (runtime, keys)
             else:
                 assert SEAT_KEY not in keys, (runtime, role)
 
@@ -218,7 +238,7 @@ def test_the_other_ways_the_xai_seat_drops_out_move_nothing_either(extra):
 def test_the_high_ceiling_adds_its_cause_to_a_gate_already_raised():
     """r2 sol: most of the disclosed cases join an existing CRITICAL gate."""
     kw = dict(task_class="DOCUMENTATION", complexity=0, uncertainty=1, blast_radius=3,
-              reversibility=3, runtime="claude_code", unavailable_models=BOTH_OUT,
+              reversibility=3, runtime="claude_code", unavailable_models=AHEAD_OUT,
               worker_seat="read_only")
     after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
     assert before["requires_human_confirmation"] is True
@@ -232,7 +252,7 @@ def test_the_high_ceiling_can_raise_a_human_gate_and_says_why():
     for a human with `effort_below_floor`; the registry without the seat seated
     a model that reached the floor."""
     kw = dict(task_class="DOCUMENTATION", complexity=3, uncertainty=3, blast_radius=0,
-              reversibility=0, runtime="claude_code", unavailable_models=BOTH_OUT,
+              reversibility=0, runtime="claude_code", unavailable_models=AHEAD_OUT,
               worker_seat="read_only")
     after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
     assert after["selected_model"] == GEMINI
@@ -243,8 +263,10 @@ def test_the_high_ceiling_can_raise_a_human_gate_and_says_why():
     assert before["requires_human_confirmation"] is False
 
 
-@pytest.mark.parametrize("runtime", ["codex", "grok"])
+@pytest.mark.parametrize("runtime", ["grok"])
 def test_no_other_host_ever_seats_the_gemini_model(runtime):
+    """Grok hosts have no probed direction (1.21.0: the grok account refused
+    the probes). Codex hosts do — see the test below."""
     for cls in CLASSES:
         for extra in ({"unavailable_models": BOTH_OUT},
                       {"unavailable_models": BOTH_OUT, "_family_quota": {"openai": "exhausted"}},
@@ -254,9 +276,27 @@ def test_no_other_host_ever_seats_the_gemini_model(runtime):
             assert GEMINI not in _emitted(out), (cls, extra)
 
 
-def test_a_read_route_with_xai_and_meta_out_seats_gemini_as_the_lead():
+def test_a_codex_host_seats_gemini_to_read_only_where_claude_does_not_resolve():
+    """1.21.0 (design DD-60, user decision U-7): codex's worker_balanced list
+    names this seat right after the Claude model, so while Claude resolves
+    no Codex route moves; where it does not, a reviewer outside the host's
+    family takes the seat — and never one that writes."""
+    for cls in CLASSES:
+        kw = dict(task_class=cls, complexity=1, uncertainty=1, blast_radius=1,
+                  reversibility=1, runtime="codex", unavailable_models=[XAI])
+        assert GEMINI not in _emitted(route(Task(**kw), CFG)), cls
+        out = route(Task(**kw, _family_quota={"claude": "exhausted"}), CFG)
+        if POLICY.worker_seat_kind(cls) == "write":
+            assert out["selected_model"] != GEMINI, cls
     out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
-                     reversibility=1, runtime="claude_code", unavailable_models=BOTH_OUT), CFG)
+                     reversibility=1, runtime="codex", unavailable_models=[XAI],
+                     _family_quota={"claude": "exhausted"}), CFG)
+    assert out["selected_model"] == GEMINI
+
+
+def test_a_read_route_with_everything_ahead_out_seats_gemini_as_the_lead():
+    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="claude_code", unavailable_models=AHEAD_OUT), CFG)
     assert out["selected_model"] == GEMINI
     assert out["review"]["reviewer_models"] == [GEMINI]
     assert any(f.endswith(f"-> {GEMINI}") for f in out["fallbacks_applied"])
@@ -264,28 +304,29 @@ def test_a_read_route_with_xai_and_meta_out_seats_gemini_as_the_lead():
 
 def test_an_exhausted_meta_quota_is_the_meta_seat_out():
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
-                     reversibility=0, runtime="claude_code", unavailable_models=[XAI],
+                     reversibility=0, runtime="claude_code",
+                     unavailable_models=[XAI, ID("claude_worker_balanced")],
                      _family_quota={"meta": "exhausted"}), CFG)
     assert out["selected_model"] == GEMINI
 
 
-def test_an_author_excluded_meta_seat_seats_gemini_with_xai_out():
+def test_an_author_excluded_meta_and_claude_seat_gemini_with_xai_out():
     out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime="claude_code", unavailable_models=[XAI],
                      _review_context={"target_sha256": "0" * 64,
-                                      "author_families": ["meta"]}), CFG)
+                                      "author_families": ["meta", "claude"]}), CFG)
     assert out["selected_model"] == GEMINI
 
 
 WRITE_AT_BALANCED = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1,
                          blast_radius=2, reversibility=1, runtime="claude_code",
-                         unavailable_models=BOTH_OUT)
+                         unavailable_models=AHEAD_OUT)
 
 
 def test_the_write_filter_is_per_role_so_a_balanced_writer_keeps_gemini_off_review():
     out = route(Task(**WRITE_AT_BALANCED), CFG)
     assert out["selected_role"] == "worker_balanced"
-    assert out["selected_model"] == ID("claude_worker_balanced")
+    assert out["selected_model"] == ID("openai_worker_balanced")
     assert GEMINI not in _emitted(out)
     assert any("no write-capable gemini seat on claude_code" in n for n in out["notes"]), \
         out["notes"]
@@ -828,6 +869,21 @@ def test_home_is_admitted_only_where_the_cli_cannot_adopt_it(tmp_path):
     assert dispatch_agent._agy_workspace_problem(home, home) is None
 
 
+def test_a_case_aliased_home_is_still_home(tmp_path):
+    """i3 fable F1: on a case-insensitive volume `/Users/U/...` is HOME too;
+    a spelling comparison missed it and refused HOME's own `.gemini`."""
+    home = tmp_path / "home"
+    (home / "work" / "repo" / ".git").mkdir(parents=True)
+    (home / ".gemini").mkdir()
+    alias = tmp_path / "HOME"
+    if not alias.exists():
+        pytest.skip("case-sensitive volume")
+    assert dispatch_agent._agy_workspace_problem(alias / "work" / "repo", home) is None
+    assert dispatch_agent._agy_workspace_problem(home / "work" / "repo", alias) is None
+    (home / ".agents").mkdir()
+    assert dispatch_agent._agy_workspace_problem(alias, home)          # cwd == HOME: .agents refused
+
+
 def test_a_symlinked_cwd_is_audited_under_both_spellings(tmp_path):
     """r2 fable F3: a Go child may take its cwd from $PWD, the literal path,
     whose ancestors can differ from the real path's."""
@@ -1210,12 +1266,18 @@ def test_an_agy_receipt_never_attests_a_served_model(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_model_sync_reports_the_gemini_line_without_a_catalog():
-    """No agy catalog reader yet: the row is discovery_unavailable, never a
-    candidate, and nothing keyed by family is consulted for it."""
+    """1.21.0 (design 2026-10-14 DD-61a, issue #61) gave the line a reader:
+    with no catalogue at all the row is still discovery_unavailable, never a
+    candidate; the tick's placeholder makes it a run-time fetch, and the
+    family has a CLI and an inference budget of its own.
+    tests/test_catalog_readers.py holds the reader's behaviour."""
     rows = {k: m for k, m in CFG["models"].items()}
     found = model_sync.find_candidates(rows, {})
     assert found[SEAT_KEY]["status"] == "discovery_unavailable"
-    assert "gemini" not in model_sync.FAMILY_CLI and "gemini" not in model_sync.MAX_INFERENCES
+    placeholder = model_sync.Catalog("gemini", "absent", "fetched at run")
+    assert model_sync.find_candidates(rows, {"gemini": placeholder})[SEAT_KEY]["status"] \
+        == "catalog_fetch"
+    assert model_sync.FAMILY_CLI["gemini"] == "agy" and model_sync.MAX_INFERENCES["gemini"] == 4
     assert model_sync.retirement_notices(rows, {}) == []
 
 
@@ -1233,7 +1295,9 @@ def test_model_sync_tick_and_status_run_with_the_gemini_row(tmp_path):
     json.loads(status.stdout)
 
 
-def test_a_model_sync_run_on_the_gemini_key_probes_nothing(tmp_path):
+def test_a_model_sync_run_on_the_gemini_key_probes_nothing_without_agy(tmp_path):
+    """No `agy` on PATH: the tick's offline gate makes the row
+    discovery_unavailable, so `run --key` fetches nothing and probes nothing."""
     from test_model_sync import calls_of, cli_sync, fake_bin, fake_home, new_root, sync_env
     bindir, fakedir = fake_bin(tmp_path)
     home = fake_home(tmp_path)
@@ -1244,3 +1308,27 @@ def test_a_model_sync_run_on_the_gemini_key_probes_nothing(tmp_path):
     for name in ("codex", "claude", "grok"):
         assert calls_of(fakedir, name) == [], name
     assert SEAT_KEY in proc.stdout
+
+
+def test_the_codex_row_binds_the_shipped_recipe():
+    from test_docs import _assert_direction_row_binds, _whole_token
+    needle = "transports.codex.to_gemini.mechanism_reviewer"
+    rows = [e for e in CFG["verification_ledger"]["entries"]
+            if _whole_token(needle, str(e.get("item", "")))]
+    assert len(rows) == 1 and rows[0]["status"] == "verified"
+    _assert_direction_row_binds(CFG["transports"]["codex"]["to_gemini"]["mechanism_reviewer"],
+                                rows[0], rows[0]["item"])
+
+
+@pytest.mark.parametrize("key", [SEAT_KEY, "meta_worker_balanced"])
+def test_the_tier_measurement_supersedes_the_external_reading(key):
+    """issue #58: the measured row is new; the external one stays as history
+    and the new row points back at it."""
+    items = {e["item"]: e for e in CFG["verification_ledger"]["entries"]}
+    old = f"{key} tier evidence (external, not measured)"
+    new = f"{key} tier measurement (real-review replay, 2026-10-14)"
+    assert old in items and new in items
+    assert items[new]["status"] == "verified"
+    assert items[new]["supersedes"] == [old]
+    assert "tier 1 confirmed" in " ".join(items[new]["evidence"].split())
+    assert CFG["models"][key]["capability_tier"] == 1

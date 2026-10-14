@@ -39,7 +39,7 @@ the policy. Regenerate rather than edit by hand.
 $SKILL_DIR/scripts/route_task.py --class DEBUGGING \
     --complexity 2 --uncertainty 2 --blast-radius 2 --reversibility 1 \
     --flags auth_sensitive \
-    --host-model claude-haiku-4-5-20251001 --host-effort HIGH
+    --host-model claude-haiku-5-5 --host-effort HIGH
 ```
 
 <!-- no-transcript -->

@@ -316,7 +316,11 @@ No mode flag in this string contains the seat; the `dmr-reviewer-v1` agent and
 project do, and the supervisor checks both. Declare `--output-envelope
 agy-print-json-v1`, `--seat-profile agy-reviewer-v1`, `--agy-log <agy-log>` (the
 same path as `--log-file`), `--model-id <id>` and `--child-cwd`; a `.to_gemini`
-dispatch without them is refused before spawn. There is no maker string. The
+dispatch without them is refused before spawn. The maker string
+(`mechanism_maker`) runs only under `--seat-profile agy-maker-v1` — see "The
+maker profile" below — and its direction's `write_verified` is false, so the
+router never seats it; it is there for an explicit dispatch and for the attended
+probe once write authority is granted. The
 prompt rides in argv — print mode reads no prompt from stdin — so the
 platform's argument limits bound the payload: 1 MiB for argv and environment
 together on macOS, where the seat was probed, and 128 KiB for any one argument
@@ -348,6 +352,24 @@ a note. Per-id maker re-verification is the attended `model_sync.py
 probe-maker`, run before `model_sync.py promote` — the only way an overlay id
 enters the registry.
 
+Two lines read their catalogue differently. **gemini:** agy keeps no catalogue
+on disk; `agy models` asks the server (about 3 s, no inference). The tick
+stays offline: it marks the row `catalog_fetch` only when `agy` is on PATH and
+the reviewer seat's host files pass the profile check (otherwise
+`discovery_unavailable`, with `no_cli` or `seat_setup`), and `run` fetches the
+list once, strips the effort suffix the catalogue appends (`-low`, `-medium`,
+`-high`), re-applies revocations and deferrals to a discovered id, and probes it
+through `--seat-profile agy-reviewer-v1`. Every fetch stamps the 24-hour lineage
+interval, which is also a failed fetch's retry; `run --key` checks at once.
+P2 admits only the row's declared `served_forms` of the id the CLI log says it
+resolved, a resolution record rather than served-model attestation. Because
+the tick cannot see the server's list, a new generation is noticed when the
+tick next re-plans (an agy self-update is enough) and the interval has passed.
+**meta:** the muse account catalogue is on disk and read offline, but the muse
+stream reports no token usage, so P3 (boot overhead) cannot run: a newer
+`muse-spark` id is reported in `status` as deferred `overhead_unmeasurable` and
+never published — a person bumps it.
+
 ### Codex
 
 **Native:** the `multi_agent` feature (stable, enabled). Its context-isolation
@@ -374,6 +396,14 @@ the keychain, so a subscription login reads as `Not logged in` (Claude Code
 the host. Verification does: the seat probes ran from a Claude Code host, so
 the Codex-hosted direction stays assumed and the YAML keeps `verified: false`
 for it.
+
+**To gemini models:** the reviewer string and `--seat-profile agy-reviewer-v1`
+exactly as on Claude Code, probed FROM a Codex host (1.21.0): a `codex exec -s
+workspace-write` turn with network access ran the supervisor, which ran a
+round trip, the three effort tokens, a containment request and a refused
+workspace. Codex's own sandbox denies agy's state writes under `~/.gemini`;
+the CLI logs that and completes, and its keychain login works. Run it without
+`--receipt-guard`: Seatbelt does not nest. No maker on this host.
 
 ### Grok seat profiles
 
@@ -836,6 +866,74 @@ You review code and documents. Read files when the request needs them, and answe
 Declare the whole profile. An `agy` dispatch that names neither the
 `.to_gemini` transport nor the profile is invisible to the supervisor as agy —
 it is then an ordinary plain-text child with no containment check at all.
+
+#### The maker profile (`agy-maker-v1`)
+
+agy's write tools have **no path containment of their own** (agy 1.3.5,
+measured with a write-capable agent and `--mode accept-edits`): an absolute
+path outside the workspace, a `../` path, a symlink's target, the outside inode
+behind a pre-existing hard link, a file under HOME and an outside edit were all
+written. So the maker seat is contained by four layers, all checked before
+spawn:
+
+- **The agent** `~/.gemini/config/agents/dmr-maker-v1.md`, byte for byte:
+
+```markdown
+---
+name: dmr-maker-v1
+description: Write seat for deep-model-router. It reads and edits files in its working directory and never runs commands, searches the web or delegates.
+tools:
+  - view_file
+  - write_to_file
+  - replace_file_content
+mainAgent: true
+subagent: false
+---
+# System Prompt
+You make the file changes the request asks for, inside the current working directory, using your file tools, and then report what you changed.
+```
+
+  The model sees those three tools and the CLI's task list: no command, URL,
+  web search or subagent. It cannot run tests.
+- **The project** `~/.gemini/config/projects/dmr-maker-v1.json`: the reviewer
+  document's shape with the deny list `command(*)`, `mcp(*)`, `read_url(*)`,
+  `execute_url(*)` — writing is not denied there, because deny outranks allow
+  and "everything but the workspace" cannot be written as rules.
+- **A kernel write fence.** The profile requires `--receipt-guard
+  darwin-sandbox-v1`, and adds to that Seatbelt profile, right after `(allow
+  default)` so the guard's own stdout/stderr rule still wins: every write
+  outside the workspace, the attempt's own TMPDIR (created by the supervisor,
+  passed to the child, removed when it exits) and the CLI log is denied;
+  nothing under `~/.gemini` is writable even where a path overlaps it; and no
+  `.git`, `.hg`, `.jj`, `.agents` or `.gemini` path anywhere under the
+  workspace is writable — the place by a `subpath` parameter, the name by a
+  fixed expression, so no path is ever spliced into a regex. agy itself runs
+  with no write under `~/.gemini` (measured: conversation persistence fails
+  and is logged, the turn completes; a large tool output then stays truncated
+  because its overflow file cannot be written). The fence paths are recorded
+  in the receipt's `receipt_guard.write_fence`, and the guard check rebuilds the
+  profile from those recorded values. Seatbelt does not nest, so the
+  supervisor itself must run outside any sandbox, and the seat exists on macOS
+  only.
+- **The workspace.** `--child-cwd` with `--require-single-linked-cwd` (a hard
+  link would carry a write past a path fence; a symlink in the tree is refused
+  too), the same ancestor audit for `.agents`/`.gemini` as the reviewer, the
+  child's `PWD` pinned. The workspace and the log must be their own canonical
+  paths (refused, not normalized), neither may overlap `~/.gemini`, and the
+  log may not sit inside the workspace.
+
+The argv is the reviewer allow-list with the maker agent and project and one
+more flag, `--mode accept-edits`, fixed (it approves edits whatever the host's
+`toolPermission` preset says). After the run the same log gate reads `stored 0
+allow, 4 deny grants from project "dmr-maker-v1"` and the model resolution —
+but here it is **drift detection only**: the log is inside the fence and the
+model has write tools, so it can rewrite the record in place. No containment
+claim rests on it.
+
+What stays writable is the workspace itself, including other tools'
+configuration in it (`.claude/`, `.vscode/`, `.envrc`, a virtualenv's
+`sitecustomize.py`, gitignored files) — as for every maker seat. Run it in a
+clean, disposable worktree and read `git status --ignored` afterwards.
 
 ### Confirming a transport
 
@@ -1300,7 +1398,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `meta_worker_balanced` (seats that read), then `gemini_worker_balanced` (seats that read), then `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read), then `gemini_worker_balanced` (seats that read), then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1311,7 +1409,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `openai_worker_balanced`, then `claude_worker_fast` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `openai_worker_balanced`, then `openai_reasoning` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_worker_balanced` (seats that read), then `openai_worker_balanced`, then `openai_reasoning` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
 | `principal_architect` (claude) | `openai_frontier`, then `openai_reasoning`, then `claude_architect` |
@@ -1336,30 +1434,34 @@ the worker. No `--unavailable-models` route-around is needed for this, and
 none should be used for it: it withholds the model from the review seats too.
 
 **The meta seat reads, on Claude Code only.** `meta_worker_balanced` is bound
-to no role. It is the first fallback of `worker_balanced` on a Claude Code host,
-so it is seated wherever the xai seat does not resolve for the route: the
-caller withholds it, it failed, its family is exhausted or excluded by
-`allowed_families`, a `review_context` names xai as the author, or a `low` xai
-quota moves a read-only worker seat to the first same-tier model of another
-family. It never fills a seat that writes. Because the write requirement binds
-the whole role (above), a route whose worker writes from `worker_balanced`
-seats the next write-capable model there — the claude one, or the openai one
-when Claude is withheld too — and the meta model nowhere; that route gains the
-note `worker_balanced: no write-capable meta seat on claude_code; seated the
-<family> one`. Where it does seat, it is a tier-1 seat of a fourth family:
-`model-profiles.md` ("The meta reviewer seat") lists what that changes.
+to no role. It is the second fallback of `worker_balanced` on a Claude Code
+host, after the Claude balanced model (since 1.21.0; 1.19.0 and 1.20.0 put it
+first), so it is seated only where neither the xai seat nor the Claude model
+resolves for the route: the caller withholds both, the families are exhausted
+or excluded by `allowed_families`, or a `review_context` names both families
+as authors. It never fills a seat that writes. Because the write requirement
+binds the whole role (above), a route whose worker writes from
+`worker_balanced` seats the next write-capable model there — the Claude one,
+or the OpenAI one when Claude is withheld too — and the meta model nowhere;
+where the meta seat was skipped to get there, the route gains the note
+`worker_balanced: no write-capable meta seat on claude_code; seated the
+<family> one`. `model-profiles.md` ("The meta reviewer seat") lists what that
+changes, and why the Claude model leads again (a measured gap in review
+recall).
 
-**The gemini seat reads, on Claude Code only, after the meta seat.**
-`gemini_worker_balanced` is bound to no role and is the second fallback of
-`worker_balanced` on a Claude Code host. A role resolves to the first usable
-model in its list, so this seat is reached only where neither the xai seat
-nor the meta seat resolves for the route — each for any of the reasons above
-(withheld, failed, exhausted, excluded, the declared author, a `low` quota
-moving a read-only worker). While the meta seat resolves, no route changes. It
-never fills a seat that writes, and on a route whose worker writes from
-`worker_balanced` the note reads `worker_balanced: no write-capable gemini
-seat on claude_code; seated the <family> one`. `model-profiles.md` ("The
-gemini reviewer seat") lists what seating it changes.
+**The gemini seat reads, after the Claude model.** `gemini_worker_balanced` is
+bound to no role. On a Claude Code host it is the third fallback of
+`worker_balanced`, after the Claude balanced model and the meta seat; on a
+Codex host it is the second, right after the Claude balanced model. A role
+resolves to the first usable model in its list, so this seat is reached only
+where everything ahead of it does not resolve for the route. It never fills a
+seat that writes: the Claude Code direction ships a maker recipe
+(`mechanism_maker`, the `agy-maker-v1` profile below) with `write_verified:
+false` by decision, and the Codex direction has a reviewer recipe only. Where it
+was skipped on a write route, the note reads `worker_balanced: no
+write-capable gemini seat on <runtime>; seated the <family> one`. Grok hosts do
+not offer the family. `model-profiles.md` ("The gemini reviewer seat") lists
+what seating it changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The
