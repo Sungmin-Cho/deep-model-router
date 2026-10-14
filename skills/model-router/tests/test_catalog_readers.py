@@ -552,3 +552,17 @@ def test_the_probe_spends_exactly_the_planned_effort_tokens(tmp_path):
     calls = [(a[a.index("--model") + 1], a[a.index("--effort") + 1])
              for a in agy_calls(fakedir) if "-p" in a]
     assert calls == [(NEWER, "low"), (GEMINI, "low"), (NEWER, "high")], calls
+
+
+def test_status_does_not_judge_a_gemini_deferral_when_the_line_is_unavailable(tmp_path):
+    """i2 sol F3 / fable F2: with no `agy` on PATH the gemini catalogue is
+    `discovery_unavailable`, not fetched: still no basis to call it expired."""
+    bindir, fakedir = fake_bin(tmp_path)
+    home = fake_home(tmp_path)
+    root = new_root(tmp_path)
+    env = sync_env(tmp_path, root, home, bindir)
+    neg = _deferral("served_mismatch", "catalog_change")
+    model_sync.update_work_state(root, lambda st: st["negatives"].__setitem__(GEMINI_KEY, neg))
+    got = model_sync.status(env=env, home=home, now=NOW)
+    assert got["catalogs"]["gemini"]["status"] == "discovery_unavailable"
+    assert got["deferred"][GEMINI_KEY]["expired"] is None

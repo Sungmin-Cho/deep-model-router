@@ -1094,6 +1094,30 @@ def _within(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
+def _identity(path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _overlaps(path: str, root: str) -> bool:
+    """Does `path` lie in `root`, or `root` in `path`, by filesystem identity?
+
+    A string comparison is wrong on a case-insensitive volume and through a
+    path that does not exist yet (`/x/GEMINICONF/r` is inside `/x/geminiconf`
+    on default APFS; implementation review i2 sol F1, fable F3). So every
+    existing ancestor of `path` is compared with `root` by (st_dev, st_ino),
+    and every existing ancestor of `root` with `path` — a nonexistent path is
+    judged by the directories it would be created under."""
+    rid = _identity(root)
+    if rid is not None and any(_identity(a) == rid for a in (Path(path), *Path(path).parents)):
+        return True
+    pid = _identity(path)
+    return pid is not None and any(_identity(a) == pid for a in (Path(root), *Path(root).parents))
+
+
 def _agy_maker_preflight(args) -> str | None:
     """Why this dispatch cannot run the agy-maker-v1 seat, or None (design
     2026-10-14 DD-59). Everything the containment rests on is checked here,
@@ -1125,10 +1149,11 @@ def _agy_maker_preflight(args) -> str | None:
                     f"the fence compares canonical paths, so it is refused, not normalized")
     home_gemini = os.path.realpath(os.path.join(home, ".gemini"))
     for name, value in (("--child-cwd", cwd), ("--agy-log", log)):
-        if _within(value, home_gemini) or _within(home_gemini, value):
+        if _within(value, home_gemini) or _within(home_gemini, value) \
+                or _overlaps(value, home_gemini):
             return (f"{name} {value!r} overlaps the CLI's configuration home "
                     f"{home_gemini!r}, which the fence keeps unwritable")
-    if _within(log, cwd):
+    if _within(log, cwd) or _overlaps(log, cwd):
         return f"--agy-log {log!r} is inside the workspace {cwd!r}"
     # The log is inside the fence and the receipt store's stdout/stderr are
     # allowed by the guard's last rule, so neither may sit where a later tool
@@ -1139,7 +1164,8 @@ def _agy_maker_preflight(args) -> str | None:
         if hit:
             return (f"{name} {value!r} passes through {hit[0]!r}: a VCS or agy "
                     f"customization directory, which the maker must never write")
-        if _within(value, home_gemini) or _within(home_gemini, value):
+        if _within(value, home_gemini) or _within(home_gemini, value) \
+                or _overlaps(value, home_gemini):
             return f"{name} {value!r} overlaps the CLI's configuration home {home_gemini!r}"
     why = _agy_argv_problem(args.argv, Path(log), args.model_id, AGY_MAKER_PROFILE)
     why = why or _agy_host_problem(Path(home), AGY_MAKER_PROFILE)

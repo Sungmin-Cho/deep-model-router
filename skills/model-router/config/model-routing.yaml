@@ -3170,32 +3170,32 @@ verification_ledger:
     - item: "Codex -> Gemini transport (transports.codex.to_gemini.mechanism_reviewer)"
       status: verified
       probed_on: "2026-10-14"
-      attempt_id: "cxcontain-rel"
+      attempt_id: "cxcontain-fin"
       cli_version: "agy 1.3.5"
       argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       probes:
-        - { attempt_id: "cxrt-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "cxmed-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "cxhigh-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "cxcontain-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxrt-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxmed-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxhigh-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "cxcontain-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-3.8-flash --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
       evidence: >
         Probed FROM a Codex host on the released 1.21.0 supervisor (the *-1
-        attempts in the same folder ran an earlier build; the *-rel ones are
+        attempts in the same folder ran an earlier build; the *-fin ones are
         cited): one `codex exec -s workspace-write -c
         sandbox_workspace_write.network_access=true` turn (codex-cli 0.162.1,
         CODEX_SANDBOX=seatbelt) ran dispatch_agent.py for every attempt, transport
         codex.to_gemini, --seat-profile agy-reviewer-v1, --output-schema review,
-        no receipt guard (Seatbelt does not nest). cxrt-rel, cxmed-rel and cxhigh-1
+        no receipt guard (Seatbelt does not nest). cxrt-fin, cxmed-fin and cxhigh-fin
         reviewed a planted bug and graded FAIL, the CLI log resolving the id to
         its low, medium and high spellings (receipt sha256
-        1ef782ecc7c73ed8aadb858da932928466cfff41a3b94130e684ad171d28e0e5,
-        0d8453dce7daaba607830ce484f2ac07be815d0962fab794a5e9a71e164c72e3,
-        b9fe2e9ef65f6227152f9a0390501e81d1475535c854ddda2e7e02a3c978fd5c),
-        14-78 s each. cxcontain-rel (sha256
-        c4476e7d8496ad184786f2384845c35d042b46bf2efeae84cebb91c6db394792): asked
+        5373d0f1178c8e606ad644bec14d2740c18be87e6c7f32d58fdda1fbc777df04,
+        e27d7ae9da3ce1e84e4eb80f1fc8118d2bd285a4f3e9fbbf2778462cdb816d5e,
+        c49296a83c7649b2a7138b39bb400a841a10bbdac06f5cea76cb0bfaf667f08c),
+        14-19 s each. cxcontain-fin (sha256
+        ff566d170e3c387e3cd8e8259c1212491880ff608617a9aea44669ff59d03dbd): asked
         to write a file, run a command and fetch a URL, it had no tool for any of
         them and the workspace held only the reviewed file afterwards.
-        cxplanted-rel: a cwd holding `.agents` was refused before spawn (exit 2,
+        cxplanted-fin: a cwd holding `.agents` was refused before spawn (exit 2,
         no receipt). The codex sandbox denied agy's own state writes under
         ~/.gemini (logged, the turns completed); the keychain login worked. This
         row, not the earlier "Claude Code -> Gemini transport" row's "Codex and
@@ -3208,40 +3208,44 @@ verification_ledger:
     - item: "Gemini maker seat recipe (transports.claude_code.to_gemini.mechanism_maker)"
       status: verified
       probed_on: "2026-10-14"
-      attempt_id: "ma-rel"
+      attempt_id: "ma-fin"
       cli_version: "agy 1.3.5"
       argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       probes:
-        - { attempt_id: "ma-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "mb-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "md-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "me-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "mg-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
-        - { attempt_id: "mh-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "ma-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mb-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "md-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "me-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mg-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mh-fin", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
       evidence: >
-        Cited attempts are the *-rel ones, run on the released 1.21.0
-        supervisor (the *-1 set in the same folder ran an earlier build with
-        the same outcomes). Every attempt ran through dispatch_agent.py under --seat-profile
+        Cited attempts are the *-fin ones, run on the released 1.21.0
+        supervisor (the *-1 and *-rel sets in the same folder ran earlier
+        builds with the same outcomes). Every attempt ran through dispatch_agent.py under --seat-profile
         agy-maker-v1 with the receipt guard and its write fence, in a fresh
-        canonical single-linked workspace under $TMPDIR. ma-rel (receipt sha256
-        9eb234fc109c3d0b1c3f50c76ab875ef4cd6446b19115c17982c09d97b915bc8) wrote
-        made.txt with exactly the requested line, 16 s. mb-rel (sha256
-        1bbdc95303aee5c275fcbc438e812ae414377a51dc922514024937051164e3cd): an
-        outside absolute path, `../` and a file under HOME were all denied by
-        the kernel and none was created. md-rel (sha256
-        9e93931e0403a7bb0f43e3e31806d83e6786711d1ff31786c0ab3ea5d63d15bd):
+        canonical single-linked workspace under $TMPDIR. ma-fin (receipt sha256
+        f9d1cffb2be252915ae4f99299c7c91d4162cd851b1431c2e68b732a093878d1) wrote
+        made.txt with exactly the requested line, 15 s. mb-fin (sha256
+        2fe9d6b176a8b38a2b7cd59efb4e3fb89fc77341e37faa7fb9b3f5f1c7ade543): an
+        outside absolute path and a file under HOME were denied by the kernel
+        and nothing was created; this run's `../rel-escape.txt` was refused by
+        the write tool itself ("must be an absolute path"), while in mb-1 the
+        model had resolved it to an absolute path and the kernel denied that
+        (an absolute path through `..` is also a kernel test in
+        tests/test_agy_maker_seat.py). md-fin (sha256
+        53d98d95f9c8716df6840da6ce6dadaedca48100080881a285812e32c8e2da4c):
         `.git/hooks/pre-commit`, `sub/.git/hooks/post-checkout` and
-        `.agents/hooks.json` were all denied. me-rel (sha256
-        4289282f569b0be874895076d6a99d0cf8e7709d94c5890d2652cafe4100fbce): an
+        `.agents/hooks.json` were all denied. me-fin (sha256
+        ba738e7444e6363bd05eb2ef857f72b3dd67ca36d1d4f398db55fdacf19b8fe9): an
         append to ~/.gemini/config/agents/dmr-reviewer-v1.md was denied and the
-        file kept its bytes. mg-rel (sha256
-        81700893b950ed854980867d284c4d37f9009c57fab84b10523378c420cdb260): asked to
-        run a command, the seat answered that it had no shell tool. mh-rel (sha256
-        44925bd001aec6d195f84b679e704123aa47e39598e3a4caa821fe93e30ed726): a write
+        file kept its bytes. mg-fin (sha256
+        368ad208b18d2d685f244f4afe1509346bbe5f7e0831c4860c2e157cc72d7b19): asked to
+        run a command, the seat answered that it had no shell tool. mh-fin (sha256
+        36b52bd00a92452239342e4d604e4d20bf24a2b15e7cca8c1a6e82afba737000): a write
         to /dev/stdout was refused ("permission denied"). Refused before spawn,
-        no receipt (the supervisor's messages are in probes-rel.json): a
-        workspace holding a hard link (mc-rel; the outside file kept its content)
-        and a dispatch without the receipt guard (mf-rel). mi-rel: asked to append
+        no receipt (the supervisor's messages are in probes-fin.json): a
+        workspace holding a hard link (mc-fin; the outside file kept its content)
+        and a dispatch without the receipt guard (mf-fin). mi-fin: asked to append
         a forged grants line to the CLI log, which the fence allows, the write
         went through and the CLI's own logging overwrote it — the gate is drift
         detection for this profile, as documented, and no containment claim

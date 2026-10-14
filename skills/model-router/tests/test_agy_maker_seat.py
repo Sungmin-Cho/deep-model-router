@@ -649,3 +649,49 @@ def test_a_fence_forged_with_a_consistent_profile_still_fails_the_binding(box):
     forged["receipt_guard"] = meta
     assert receipt_guard.verified_metadata(meta, box / "receipts", "m1")
     assert "another workspace" in dispatch_agent.maker_fence_problem(forged, box / "receipts")
+
+
+@pytest.mark.skipif(not DARWIN, reason="the maker profile is Darwin-only")
+def test_case_aliases_of_the_cli_home_are_refused_before_spawn(box):
+    """i2 sol F1 / fable F3: on a case-insensitive volume a differently
+    capitalized path names the same directory, and a nonexistent store is
+    judged by the directories it would be created under — by identity, not
+    by spelling."""
+    if not os.path.exists(str(box / "HOME")):          # a case-sensitive volume
+        pytest.skip("case-sensitive volume")
+    real = box / "geminiconf"
+    (box / "home" / ".gemini").rename(real)
+    (box / "home" / ".gemini").symlink_to(real)
+    alias_store = box / "GEMINICONF" / "r"
+    log = box / "logs" / "alias.agy.log"
+    sup = [sys.executable, str(SCRIPT), "run", "--attempt-id", "s3", "--receipt-dir",
+           str(alias_store), "--deadline-seconds", "30", "--seat", "worker", "--runtime",
+           "claude_code", "--model-id", GEMINI, "--effort-native", "low", "--transport-id",
+           "claude_code.to_gemini", "--output-schema", "none", "--output-envelope",
+           "agy-print-json-v1", "--seat-profile", MAKER, "--agy-log", str(log), "--child-cwd",
+           str(box / "ws"), "--require-single-linked-cwd", "--receipt-guard", "darwin-sandbox-v1"]
+    env = {**os.environ, "HOME": str(box / "home")}
+    proc = subprocess.run([*sup, "--", *child(fake(box), log)], capture_output=True, text=True,
+                          env=env, timeout=60)
+    assert proc.returncode == 2 and "overlaps the CLI's configuration home" in proc.stderr, \
+        proc.stderr
+    assert not (real / "r").exists()
+    (real / "ws").mkdir()
+    proc, receipt = run(box, cwd=box / "GEMINICONF" / "ws", attempt="s4")
+    _refused(proc, receipt, "overlaps the CLI's configuration home")
+
+
+def test_the_new_ledger_rows_cite_only_their_final_attempts():
+    """i2 fable F1: a row that says it cites the `*-fin` set (the released
+    supervisor) names no earlier-build attempt in its evidence, except where
+    it says why."""
+    import re as _re
+    rows = {e["item"]: e for e in load_config()["verification_ledger"]["entries"]}
+    for item in ("Codex -> Gemini transport (transports.codex.to_gemini.mechanism_reviewer)",
+                 "Gemini maker seat recipe (transports.claude_code.to_gemini.mechanism_maker)"):
+        text = " ".join(rows[item]["evidence"].split())
+        listed = {p["attempt_id"] for p in rows[item]["probes"]}
+        assert all(a.endswith("-fin") for a in listed), listed
+        cited = set(_re.findall(r"\b(?:cx[a-z]+|m[a-i])-(?:1|rel|fin)\b", text))
+        stray = {a for a in cited if not a.endswith("-fin")} - {"mb-1"}  # mb-1 is named on purpose
+        assert not stray, (item, stray)

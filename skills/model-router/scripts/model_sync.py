@@ -2361,7 +2361,7 @@ def status(*, env: Mapping[str, str], home: Path | None = None,
     # deferral judged here: `run` re-applies it to the list (i1 fable F3).
     out["deferred"] = {k: {**n, "expired": None if (
         (n.get("retry_after") or {}).get("kind") == "catalog_change"
-        and (catalogs.get(n.get("family")) or Catalog("", "ok")).status == "absent"
+        and (catalogs.get(n.get("family")) or Catalog("", "ok")).status != "ok"
         and n.get("family") == "gemini") else
         _negative_expired(n, versions, catalogs, now, quota_now)}
                        for k, n in sorted(work["negatives"].items())}
