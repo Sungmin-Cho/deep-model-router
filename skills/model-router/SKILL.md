@@ -473,7 +473,7 @@ attempt whose process tree could not be confirmed dead blocks
 write-capable retries: re-route with `--flags termination_unconfirmed` and
 let the human gate hold it.
 
-A grok seat declares `--output-envelope`, `--session-evidence` and `--session-id` (cancelled grok turns exit 0), a muse seat `--output-envelope muse-exec-jsonl-v1` (`references/adapters.md`).
+Seats declare (`references/adapters.md`): grok `--output-envelope`, `--session-evidence`, `--session-id`; muse `--output-envelope muse-exec-jsonl-v1`; agy `--seat-profile agy-reviewer-v1`.
 
 Host-seat advisory: emit `upgrade_recommended` once per decision. Recommend
 `/model` only for `model_comparison: below`, using the lowest tier-satisfying

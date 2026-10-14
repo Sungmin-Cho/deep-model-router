@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] — 2026-10-14 (Gemini Flash reviewer seat)
+
+### Added
+
+- Add Google's Gemini 3.8 Flash, run through the Antigravity CLI (`agy`), as a read-only reviewer seat on Claude Code hosts. It is bound to no role and is the balanced worker's second fallback there, after Muse Spark, so it reviews and reads only where neither the xAI seat nor the Muse seat is available for a route; it never fills a seat that writes, and Codex and Grok hosts never seat it. Its tier (1) is provisional: read from third-party benchmarks, not measured here. Its effort tops out at high.
+- Add the `agy-reviewer-v1` seat profile. No `agy` flag contains a seat, so before the run the supervisor checks a dedicated agent whose tool list allows reading only, a project whose deny rules refuse writes, commands, MCP and URL access, telemetry off, the model, and the argv; after the run it requires the CLI's log to show the deny rules loaded and none refused. A `.to_gemini` dispatch without the profile is refused before it starts.
+- Grade `agy -p --output-format json` output with `--output-envelope agy-print-json-v1`: only a `SUCCESS` status passes, an `error` key fails the attempt and its text is kept in the receipt. `verify-evidence` and observation receipt checks accept the format.
+
+### Changed
+
+- With both the xAI and the Muse seats unavailable for a route on a Claude Code host, the routes that would have seated Muse Spark seat Gemini 3.8 Flash instead. Where a floor asks a seat for very high effort, the route now asks for human confirmation more often, almost always on critical routes that already did. The model profile lists what moves.
+
+### Security
+
+- Refuse the Gemini seat when its working directory or any directory above it holds `.agents` or `.gemini` (the user's home partly excepted): the Antigravity CLI runs a workspace's hooks as host commands and lets its agents replace the reviewer's, which no permission rule stops.
+
 ## [1.19.0] — 2026-10-13 (Muse Spark reviewer seat)
 
 ### Added

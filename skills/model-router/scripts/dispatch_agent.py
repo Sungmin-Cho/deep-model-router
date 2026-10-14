@@ -90,6 +90,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import receipt_guard
+import strict_json
 from secure_io import NotARegularFile, open_regular as _open_regular
 
 STATES = (
@@ -177,8 +178,17 @@ MUSE_OK_TERMINAL = "run.terminal.completed"
 # A failed terminal's `payload.reason` (e.g. a model the account cannot use,
 # with the provider's request id) is evidence, so the receipt keeps it, bounded.
 MUSE_ERROR_REASON_MAX_CHARS = 500
+# 2026-10-14 (design DD-6). `agy -p … --output-format json` prints ONE JSON
+# document when the run ends: `status` (SUCCESS, or ERROR, CANCELED,
+# INTERRUPTED, INVALID, WAITING, RUNNING), `response` (the final answer only —
+# no tool output), `conversation_id`, `usage` token counts, and an `error`
+# string on a failure, absent on success. No served-model record (measured,
+# agy 1.3.4).
+AGY_JSON_FORMAT = "agy-print-json-v1"
+AGY_OK_STATUS = "SUCCESS"
+AGY_ERROR_REASON_MAX_CHARS = 500
 ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS,
-                    MUSE_JSONL_FORMAT)
+                    MUSE_JSONL_FORMAT, AGY_JSON_FORMAT)
 
 # Which document key carries each envelope field, per format. The shapes are
 # analogous, not identical: grok discriminates a failure with a top-level
@@ -200,6 +210,10 @@ ENVELOPE_FIELDS = {
     CODEX_JSON_FORMAT: {},
     # Line-based too; decoded by `_decode_muse_jsonl`.
     MUSE_JSONL_FORMAT: {},
+    # A document. `error` is not mapped: it is a long human message, so its
+    # presence is the failure discriminator and its text is `error_reason`.
+    AGY_JSON_FORMAT: {"stop_reason": "status", "session_id": "conversation_id",
+                      "text": "response"},
 }
 # The envelope is a GATE surface, so its read is bounded: an unbounded
 # JSON parse of a child-controlled file is a denial-of-service surface on
@@ -234,6 +248,7 @@ ENVELOPE_OK_STOP_REASONS = {
     CODEX_TEXT_FORMAT: None,
     CODEX_JSON_FORMAT: "turn.completed",
     MUSE_JSONL_FORMAT: MUSE_OK_TERMINAL,
+    AGY_JSON_FORMAT: AGY_OK_STATUS,
 }
 # Codex plain-mode stderr reads: the banner and any metadata warning are at
 # the head, the `tokens used` footer at the tail. Both are bounded.
@@ -266,6 +281,104 @@ XAI_TRANSPORT_SUFFIX = ".to_xai"
 # that is not the answer. Only the declared format grades the terminal event
 # alone, so the format is required.
 META_TRANSPORT_SUFFIX = ".to_meta"
+# And for agy (design 2026-10-14 DD-5). Here the hazard is containment, not
+# the verdict: no agy flag contains a seat — `--mode plan` wrote a file and
+# ran a shell command under a host setting of `toolPermission: always-proceed`
+# (measured) — and the deny-rule project that does contain it is silently
+# replaced by the CLI's default project when the name does not resolve. So
+# the direction requires both the envelope and the typed seat profile below.
+GEMINI_TRANSPORT_SUFFIX = ".to_gemini"
+
+# --- The agy reviewer seat profile (design 2026-10-14 DD-4, DD-5) ----------
+#
+# `agy-reviewer-v1` admits one argv shape and checks, before spawn, the host
+# files the CLI reads under $HOME — the child inherits this process's
+# environment, so that is the HOME the CLI resolves (measured: under another
+# HOME it found no credentials) — and the workspace the CLI will adopt. After
+# the run it requires the CLI's own log, written to a file the supervisor
+# reserved, to show the deny rules loaded and none of them refused.
+#
+# Two independent layers contain the seat. The agent's `tools` allow-list
+# leaves the model `view_file` (and the CLI's own task list) and nothing else:
+# no write, no command, no web search, no subagent (measured). The project's
+# deny rules refuse writes, commands, MCP and URL access underneath it, so a
+# CLI that ever ignored the agent's list would still not write.
+AGY_SEAT_PROFILE = "agy-reviewer-v1"
+AGY_REVIEWER_PROJECT = "dmr-reviewer-v1"
+AGY_REVIEWER_AGENT = "dmr-reviewer-v1"
+# The CLI actions a deny rule can name, except reading. `unsandboxed` is not
+# here: the CLI reports it as invalid and ignores it ("replace \"unsandboxed\"
+# with \"command\""), and `command(*)` is what refused the shell (measured).
+AGY_REVIEWER_DENY = ("write_file(*)", "command(*)", "mcp(*)", "read_url(*)",
+                     "execute_url(*)")
+AGY_REVIEWER_PROJECT_DOC = {
+    "id": AGY_REVIEWER_PROJECT,
+    "name": AGY_REVIEWER_PROJECT,
+    "projectResources": {},
+    "permissionGrants": {"permissionGrants": {"deny": list(AGY_REVIEWER_DENY)}},
+}
+AGY_PROJECT_RELPATH = (".gemini", "config", "projects", f"{AGY_REVIEWER_PROJECT}.json")
+# A Markdown agent with YAML frontmatter, compared byte for byte.
+AGY_AGENT_RELPATH = (".gemini", "config", "agents", f"{AGY_REVIEWER_AGENT}.md")
+AGY_REVIEWER_AGENT_TEXT = f"""---
+name: {AGY_REVIEWER_AGENT}
+description: Read-only reviewer seat for deep-model-router. It reads files and never writes, runs commands, searches the web or delegates.
+tools:
+  - view_file
+mainAgent: true
+subagent: false
+---
+# System Prompt
+You review code and documents. Read files when the request needs them, and answer in the format the request asks for.
+"""
+# The workspace the CLI adopts is the child's cwd, or the enclosing repository
+# root, and it loads that root's `.agents/` customizations — hooks the CLI
+# itself runs as host commands, and agents that shadow a user agent of the same
+# name (measured: both, in and out of a trusted directory). A deny rule stops
+# neither. `.gemini` is refused with it as the other customization directory
+# name the CLI family uses.
+AGY_WORKSPACE_CUSTOMIZATIONS = (".agents", ".gemini")
+# Only to decide whether HOME could itself be the adopted workspace. The audit
+# never stops at one of these: a reviewed tree can plant a marker anywhere.
+AGY_VCS_ROOT_MARKERS = (".git", ".hg", ".jj")
+AGY_MODEL_PREFIX = "gemini-"
+AGY_SETTINGS_RELPATH = (".gemini", "antigravity-cli", "settings.json")
+# The key agy 1.3.4 reads and keeps. The provider's settings page spells it
+# `enableTelemetry`, but the CLI rewrites this file on every run and drops that
+# spelling (measured), while `telemetryEnabled` survives; requiring the
+# documented spelling would refuse the seat from the second run on.
+AGY_TELEMETRY_KEY = "telemetryEnabled"
+AGY_HOST_FILE_MAX_BYTES = 64 * 1024
+# The CLI's log of one short review is tens of kilobytes; this is a bound on
+# a gate surface, not an expected size.
+AGY_LOG_MAX_BYTES = 8 * 1024 * 1024
+AGY_GRANTS_MARKER = "ApplyProjectPermissionGrants:"
+AGY_GRANTS_LOADED = (f"stored 0 allow, {len(AGY_REVIEWER_DENY)} deny grants "
+                     f"from project \"{AGY_REVIEWER_PROJECT}\"")
+# A grants record is a whole glog line from the CLI's settings manager, not a
+# marker anywhere in a line: a value the CLI echoes elsewhere cannot pose as one.
+AGY_GRANTS_LINE_RE = re.compile(
+    r"^[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+ cli_setting_manager\.go:\d+\] "
+    r"ApplyProjectPermissionGrants: (.*)$")
+# The CLI's own report that a permission rule it was given means nothing to it
+# — the one way a deny rule silently stops denying (measured on `unsandboxed`
+# and on unknown actions).
+AGY_INVALID_RULE_RE = re.compile(
+    r"permissions\.go:\d+\] Invalid \"[^\"]*\" permission rules found"
+    r"|ignoring invalid (?:deny|allow|ask) entry")
+AGY_RESOLVED_RE = re.compile(r'model alias "([^"]*)" resolved to "([^"]+)"')
+# Go `flag` names this seat's argv may carry. Anything else — a mode, an extra
+# workspace, an agent, a resumed conversation, a permission bypass — is not
+# part of the recipe and refused without being interpreted.
+# The prompt is admitted as `-p` only, the spelling probed as a string flag
+# (`-p` with no value: "flag needs an argument"). `--print` and `--prompt` are
+# its documented aliases, but were not probed: were either a boolean, the
+# token after it would reach the CLI as a flag of its own (design review r2
+# fable F1).
+AGY_VALUE_FLAGS = ("agent", "model", "effort", "project", "output-format",
+                   "print-timeout", "log-file", "p")
+AGY_BOOL_FLAGS = ("disable-slash-commands",)
+AGY_PROMPT_FLAGS = ("p",)
 
 # --- Required artifacts (DD-2) ----------------------------------------
 #
@@ -357,6 +470,9 @@ INVALID_REASON_PREFIXES = (
     "session_terminal_event",       # :<non-completed turn_ended outcome>
     "sandbox_profile_not_enforced",  # :<observed enforced value>
     "sandbox_profile_event_mismatch",  # :<observed profile name>
+    "agy_project_grants",           # :<what the reserved agy log showed>
+    "agy_log_identity_replaced",    # :<path> — not the inode reserved pre-spawn
+    "agy_resolved_model",           # :<the CLI's resolution of --model>
 )
 
 # A format in the choices with no field map is a KeyError inside the grading
@@ -672,6 +788,324 @@ def _grade_sandbox_events(home: Path, expected_profile: str, pins: dict
     if view["enforced"] is not True:
         reasons.append(_reason("sandbox_profile_not_enforced",
                                view["enforced"]))
+    return view, reasons
+
+
+def _agy_flag_view(argv: list[str]) -> tuple[dict | None, str | None]:
+    """`({name: value}, None)` for an agy argv, or `(None, why)`.
+
+    Parsed the way Go's `flag` package parses it (the CLI's usage text is that
+    package's): a value joined by `=` or taken from the next token, a boolean
+    flag never consuming the next token, and parsing over at the first argument
+    that is not a flag. Only the probed spellings are admitted: two dashes for
+    every name, and `-p` followed by the prompt as its own token. Go's `flag` would also read
+    `-agent=…`, but a parser that read single-dash letters as a cluster would
+    not, and the agent layer would drop silently (implementation review i1).
+    Only the agy-reviewer-v1 names are admitted, each once; a positional
+    argument or any other flag refuses the argv rather than being interpreted, so a mode, an added workspace, a resumed
+    conversation or a permission bypass cannot ride along. A value other than
+    the prompt may not hold a control character: the CLI echoes values into
+    the log the post-run gate reads, and a newline in one would start a line
+    of the caller's choosing there."""
+    if not argv or Path(argv[0]).name != "agy":
+        return None, f"argv[0] {argv[0] if argv else None!r} is not the agy CLI"
+    seen: dict = {}
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("-", "--") or not tok.startswith("-"):
+            return None, f"{tok!r} is a positional argument; the seat takes none"
+        if tok.startswith("--") and not (tok == "--p" or tok.startswith("--p=")):
+            name = tok[2:]
+        elif tok == "-p":
+            name = "p"
+        else:
+            return None, f"{tok!r}: only `--name` spellings (and `-p`) are admitted"
+        value = None
+        if "=" in name:
+            name, value = name.split("=", 1)
+        if name in AGY_BOOL_FLAGS:
+            if value not in (None, "true"):
+                return None, f"{tok!r}: only the bare flag is admitted"
+            value = "true"
+        elif name in AGY_VALUE_FLAGS:
+            if value is None:
+                if i + 1 >= len(argv):
+                    return None, f"{tok!r} has no value"
+                i += 1
+                value = argv[i]
+        else:
+            return None, f"{tok!r} is outside the {AGY_SEAT_PROFILE} allow-list"
+        key = "prompt" if name in AGY_PROMPT_FLAGS else name
+        if key in seen:
+            return None, f"{tok!r} repeats a flag already given"
+        if key != "prompt" and any(ord(c) < 0x20 or ord(c) == 0x7f for c in value):
+            return None, f"{tok!r} has a control character in its value"
+        seen[key] = value
+        i += 1
+    return seen, None
+
+
+def _agy_argv_problem(argv: list[str], agy_log: Path, model_id: str | None) -> str | None:
+    """Why `argv` is not the agy-reviewer-v1 recipe, or None.
+
+    The agent, the deny-rule project, JSON output and slash-command
+    suppression are fixed values. The model must be the gemini family's and
+    the one the caller declared as `--model-id`: the CLI's catalogue also
+    serves other vendors' models through the same account (its own error text
+    lists them), and a seat routed as gemini that ran one of those would
+    carry the wrong family into every independence claim. The effort and a
+    prompt must be present; the log must be the reserved one, spelled as the
+    same absolute path, because that file is what the post-run gate reads."""
+    flags, why = _agy_flag_view(argv)
+    if why is not None:
+        return why
+    # `print-timeout` is fixed too: the supervisor's deadline is the one clock,
+    # and an omitted value leaves the CLI's own default, which its help text
+    # and its documentation disagree on (implementation review i1 sol F2).
+    fixed = {"agent": AGY_REVIEWER_AGENT, "project": AGY_REVIEWER_PROJECT,
+             "output-format": "json", "disable-slash-commands": "true",
+             "print-timeout": "0s"}
+    for name, value in fixed.items():
+        if flags.get(name) != value:
+            return f"--{name} must be {value!r}, not {flags.get(name)!r}"
+    for name in ("model", "effort", "prompt"):
+        if not flags.get(name):
+            return f"the {'-p prompt' if name == 'prompt' else '--' + name} is missing"
+    model = flags["model"]
+    if not model.startswith(AGY_MODEL_PREFIX) or model != model_id:
+        return (f"--model {model!r} must be a {AGY_MODEL_PREFIX}* id and equal "
+                f"--model-id ({model_id!r})")
+    log = flags.get("log-file")
+    if log is None or not os.path.isabs(log) or os.path.normpath(log) != str(agy_log):
+        return (f"--log-file must be the reserved --agy-log path "
+                f"{str(agy_log)!r}, not {log!r}")
+    return None
+
+
+def _agy_host_json(path: Path) -> tuple[object, str | None]:
+    """One host JSON file the CLI reads, bounded and never through a final
+    symlink (`_capped_bytes` opens through `_open_regular`). Strict: a
+    duplicate key or a nonfinite number refuses the file — an ordinary
+    `json.loads` keeps the last duplicate, so `"projectResources": {}` after a
+    widening one would compare equal to the canonical document."""
+    data, oversized = _capped_bytes(path, AGY_HOST_FILE_MAX_BYTES)
+    if oversized:
+        return None, f"{str(path)!r} is larger than {AGY_HOST_FILE_MAX_BYTES} bytes"
+    if data is None:
+        return None, f"{str(path)!r} is missing, not a regular file, or unreadable"
+    try:
+        return strict_json.loads(data.decode("utf-8")), None
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, (f"{str(path)!r} is not a strict JSON document (duplicate "
+                      f"keys and nonfinite numbers are refused)")
+
+
+def _is_reviewer_project(doc: object) -> bool:
+    """The canonical dmr-reviewer-v1 document and nothing else: no extra key
+    (a project `settings` block can widen file access), no allow or ask list,
+    and exactly the deny rules, each once, in any order."""
+    if not isinstance(doc, dict) or set(doc) != set(AGY_REVIEWER_PROJECT_DOC):
+        return False
+    if (doc["id"], doc["name"], doc["projectResources"]) != (
+            AGY_REVIEWER_PROJECT, AGY_REVIEWER_PROJECT, {}):
+        return False
+    outer = doc["permissionGrants"]
+    if not isinstance(outer, dict) or set(outer) != {"permissionGrants"}:
+        return False
+    inner = outer["permissionGrants"]
+    if not isinstance(inner, dict) or set(inner) != {"deny"}:
+        return False
+    deny = inner["deny"]
+    return (isinstance(deny, list) and all(isinstance(d, str) for d in deny)
+            and len(deny) == len(set(deny)) and set(deny) == set(AGY_REVIEWER_DENY))
+
+
+def _agy_host_problem(home: Path) -> str | None:
+    """Why the host's agy configuration cannot run this seat, or None.
+
+    The deny-rule project must be the canonical document (the CLI runs an
+    unknown project name as its default project, silently); the agent must be
+    the canonical text, byte for byte (an unknown agent name fails the run,
+    but a widened tool list would not); and the CLI settings must turn
+    telemetry off (design U-3). A `true` under the documented spelling of the
+    telemetry key contradicts the setting, so it refuses too."""
+    project = home.joinpath(*AGY_PROJECT_RELPATH)
+    doc, why = _agy_host_json(project)
+    if why is None and not _is_reviewer_project(doc):
+        why = (f"{str(project)!r} is not the {AGY_REVIEWER_PROJECT} project "
+               f"document")
+    if why is None:
+        agent = home.joinpath(*AGY_AGENT_RELPATH)
+        data, oversized = _capped_bytes(agent, AGY_HOST_FILE_MAX_BYTES)
+        if data is None or oversized:
+            why = f"{str(agent)!r} is missing, not a regular file, or unreadable"
+        elif data != AGY_REVIEWER_AGENT_TEXT.encode("utf-8"):
+            why = f"{str(agent)!r} is not the {AGY_REVIEWER_AGENT} agent text"
+    if why is not None:
+        return (f"{why}; the {AGY_SEAT_PROFILE} seat needs it exactly as "
+                f"references/adapters.md \"Antigravity seat profile\" shows")
+    settings = home.joinpath(*AGY_SETTINGS_RELPATH)
+    doc, why = _agy_host_json(settings)
+    if why is None and not (isinstance(doc, dict)
+                            and doc.get(AGY_TELEMETRY_KEY) is False
+                            and doc.get("enableTelemetry") is not True):
+        found = doc.get(AGY_TELEMETRY_KEY, "<absent: defaults to on>") \
+            if isinstance(doc, dict) else "<not an object>"
+        why = f"{str(settings)!r} has {AGY_TELEMETRY_KEY} {found!r}"
+    if why is not None:
+        return (f"{why}; the {AGY_SEAT_PROFILE} seat requires "
+                f"\"{AGY_TELEMETRY_KEY}\": false in the CLI settings "
+                f"(the CLI's /config \"Enable Telemetry\" off)")
+    return None
+
+
+def _agy_workspace_problem(cwd: Path, home: Path | None) -> str | None:
+    """Why the workspace the CLI could adopt from `cwd` is not admissible.
+
+    The CLI's workspace is `cwd`, or the repository root that encloses it
+    (measured on git: a parent's `.agents/hooks.json` ran only once the parent
+    was a repository root, and a nested one never did), and it loads that
+    root's customizations. Which ancestor that is depends on markers the
+    reviewed tree itself can plant, so the audit relies on none of them: every
+    directory from `cwd` up to the filesystem root must hold none of
+    AGY_WORKSPACE_CUSTOMIZATIONS (design review r2 sol F1, fable F2).
+
+    HOME is the one exception, and only partly (r2 sol F3, fable F4). Its
+    `.gemini` is the CLI's own configuration home, which this profile requires
+    to exist and which is never reviewed content, so it is always admitted. Its
+    `.agents` is admitted only where the CLI cannot adopt HOME as the
+    workspace: HOME a strict ancestor of `cwd` and not itself a repository
+    root. A reviewed change that adds a customization anywhere else on the
+    chain is refused rather than run: the CLI would execute its hooks on this
+    host and let its agents shadow the reviewer agent, and no deny rule reaches
+    either. The caller audits both spellings of the cwd (see the preflight)."""
+    home_real = Path(os.path.realpath(home)) if home is not None else None
+    for d in (cwd, *cwd.parents):
+        is_home = home_real is not None and Path(os.path.realpath(d)) == home_real
+        for name in AGY_WORKSPACE_CUSTOMIZATIONS:
+            if is_home and name == ".gemini":
+                continue
+            if (is_home and name == ".agents" and d != cwd
+                    and not any(os.path.lexists(d / m) for m in AGY_VCS_ROOT_MARKERS)):
+                continue
+            if os.path.lexists(d / name):
+                return (f"{str(d / name)!r} is in a directory the CLI could adopt as "
+                        f"its workspace from {str(cwd)!r}; its hooks would run on "
+                        f"this host and its agents could replace the reviewer's. "
+                        f"Review from a tree without it")
+    return None
+
+
+def _agy_resolution_ok(model: str | None, resolved: object) -> bool:
+    """The CLI's resolution of `--model` is that model or one of its effort
+    spellings (`<model>-low`, …)."""
+    return (isinstance(model, str) and isinstance(resolved, str)
+            and (resolved == model or resolved.startswith(model + "-")))
+
+
+def _reserve_agy_log(path: Path, receipt_dir: Path, pins: dict) -> str | None:
+    """Create the attempt's agy log, empty, and pin its inode.
+
+    Outside the receipt store: the receipt guard denies the child that tree,
+    and a log the CLI cannot write fails the grants gate for a reason that is
+    the caller's, not the seat's. The CLI writes into the reserved inode
+    (measured: same inode and mode after a run), so a child that replaces the
+    file is detected by identity, as with the grok ProfileApplied log."""
+    real = Path(os.path.realpath(path))
+    store = Path(os.path.realpath(receipt_dir))
+    if real == store or store in real.parents:
+        return f"--agy-log {str(path)!r} is inside the receipt store"
+    try:
+        parent = os.lstat(path.parent)
+    except OSError as exc:
+        return f"--agy-log directory could not be read: {os.strerror(exc.errno)}"
+    if stat.S_ISLNK(parent.st_mode) or not stat.S_ISDIR(parent.st_mode):
+        return f"--agy-log directory {str(path.parent)!r} is not a plain directory"
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        os.set_inheritable(fd, False)
+        st = os.fstat(fd)
+    except OSError as exc:
+        return f"--agy-log {str(path)!r} could not be reserved: {os.strerror(exc.errno)}"
+    # Held, like the grok and artifact pins: an open descriptor keeps the
+    # inode alive, so a recycled inode number cannot pass for the reservation.
+    pins["agy_log"] = {"identity": (st.st_dev, st.st_ino), "fd": fd}
+    return None
+
+
+def _grade_agy_log(path: Path, pins: dict, model: str | None = None
+                   ) -> tuple[dict, list[str]]:
+    """Read the reserved agy log for proof that the deny rules loaded.
+
+    Every grants record must be the dmr-reviewer-v1 one, and there must be at
+    least one; no line may report a permission rule the CLI refused as
+    invalid; and every resolution the CLI logged must be of `--model`, to that
+    model or one of its effort spellings, with at least one present. A record is a whole glog line from the CLI's
+    settings manager (an unknown project logs `no grants for project "CLI
+    Project", cleared project permissions`); the log carries neither the
+    prompt nor the answer (measured), and argv values carry no control
+    characters, so nothing the caller or the model wrote can stand in for one.
+
+    What this proves is bounded. It tells a CLI that stopped loading or
+    understanding the project from one that did, which is the drift a CLI
+    update brings. It is not proof against a model that had already escaped
+    containment and rewrote the file in place — the reason containment is two
+    layers (the agent's tool list and these rules) checked before spawn, not
+    this gate."""
+    view: dict = {"path": str(path), "project": AGY_REVIEWER_PROJECT,
+                  "lines": [], "resolved_model": None}
+    pin = pins.get("agy_log")
+    try:
+        fd, st = _open_regular(path)
+    except (OSError, NotARegularFile):
+        return view, [_reason("agy_log_identity_replaced", path)]
+    try:
+        if st.st_nlink != 1 or (pin is not None
+                                and (st.st_dev, st.st_ino) != pin["identity"]):
+            os.close(fd)
+            return view, [_reason("agy_log_identity_replaced", path)]
+        with os.fdopen(fd, "rb") as f:
+            data = f.read(AGY_LOG_MAX_BYTES + 1)
+    except OSError:
+        return view, [_reason("agy_log_identity_replaced", path)]
+    if len(data) > AGY_LOG_MAX_BYTES:
+        return view, [_reason("agy_project_grants", "log_oversized")]
+    text = data.decode("utf-8", errors="replace")
+    grants, foreign, invalid, resolutions = [], [], [], []
+    for line in text.split("\n"):
+        line = line.removesuffix("\r")
+        record = AGY_GRANTS_LINE_RE.match(line)
+        if record:
+            grants.append(record.group(1).strip()[:200])
+        elif AGY_GRANTS_MARKER in line:
+            foreign.append(line.strip()[:200])
+        if AGY_INVALID_RULE_RE.search(line):
+            invalid.append(line.strip()[:200])
+        resolution = AGY_RESOLVED_RE.search(line)
+        if resolution:
+            resolutions.append((resolution.group(1), resolution.group(2)))
+    view["lines"] = grants[:20]
+    reasons: list[str] = []
+    if foreign:
+        reasons.append(_reason("agy_project_grants", f"not_a_record:{foreign[0]}"))
+    if invalid:
+        reasons.append(_reason("agy_project_grants", f"invalid_rule:{invalid[0]}"))
+    if not grants:
+        reasons.append(_reason("agy_project_grants", "none"))
+    else:
+        other = [g for g in grants if g != AGY_GRANTS_LOADED]
+        if other:
+            reasons.append(_reason("agy_project_grants", other[0]))
+    if resolutions:
+        view["resolved_model"] = resolutions[-1][1][:120]
+    # Every resolution the CLI logged must be of this model, to this model or
+    # one of its spellings — not only the last one (design review r2 sol).
+    stray = [r for r in resolutions
+             if r[0] != model or not _agy_resolution_ok(model, r[1])]
+    if model is not None and (not resolutions or stray):
+        reasons.append(_reason("agy_resolved_model",
+                               (stray[0][1] if stray else None)))
     return view, reasons
 
 
@@ -1779,6 +2213,15 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
     # that and absent from grok's, where `error_type` already carries it.
     envelope["reported_error"] = doc.get("is_error") is True
     envelope["error_discriminator_valid"] = type(doc.get("is_error")) is bool
+    if fmt == AGY_JSON_FORMAT:
+        # agy has no boolean discriminator: an `error` key is the document's
+        # own failure report whatever its value, and absent on success.
+        envelope["error_reason"] = None
+        if "error" in doc:
+            envelope["reported_error"] = True
+            envelope["error_type"] = "error"
+            if isinstance(doc["error"], str):
+                envelope["error_reason"] = doc["error"][:AGY_ERROR_REASON_MAX_CHARS]
     doc_type = doc.get("type")
     if isinstance(doc_type, str):
         envelope["doc_type"] = doc_type
@@ -1801,6 +2244,7 @@ CODEX_TEXT_RECEIPT_KEYS = ("header_model", "header_model_basis",
 # apart from `served_models` on purpose: it is a request, not an attestation —
 # and the reason a failed terminal gave.
 MUSE_RECEIPT_KEYS = ("configured_model", "error_reason")
+AGY_RECEIPT_KEYS = ("error_reason",)
 
 
 def _receipt_envelope(envelope: dict) -> dict:
@@ -1808,13 +2252,15 @@ def _receipt_envelope(envelope: dict) -> dict:
     here as the audit evidence for what the attempt-binding cross-proof
     (DD-3) actually compared; `text` is deliberately absent. Plain-mode codex
     adds its stderr evidence (DD-B9), muse the id it was asked for and a
-    failure's reason, and nothing else."""
+    failure's reason, agy a failure's reason, and nothing else."""
     keys = ("parse_ok", "stop_reason", "session_id", "served_models",
             "error_type", "usage")
     if envelope.get("fmt") == CODEX_TEXT_FORMAT:
         keys = keys + CODEX_TEXT_RECEIPT_KEYS
     elif envelope.get("fmt") == MUSE_JSONL_FORMAT:
         keys = keys + MUSE_RECEIPT_KEYS
+    elif envelope.get("fmt") == AGY_JSON_FORMAT:
+        keys = keys + AGY_RECEIPT_KEYS
     return {k: envelope.get(k) for k in keys}
 
 
@@ -1968,6 +2414,9 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
         "child_cwd": args.child_cwd,
         "grok_home": args.grok_home,
         "seat_profile": args.seat_profile,
+        # 2026-10-14 DD-5: the log the agy reviewer seat must write, reserved
+        # by this supervisor. Null when the seat profile was not declared.
+        "agy_log": args.agy_log,
         "require_single_linked_cwd": bool(args.require_single_linked_cwd),
         # 2026-09-25 DD-B9: the declared nested-sandbox opt-in, null when
         # undeclared. Recorded so a guarded codex receipt says the caller
@@ -2002,6 +2451,10 @@ def _new_receipt(args, stdout_path: Path, stderr_path: Path) -> dict:
             # Issue #19: ProfileApplied.enforced evidence. Null when
             # --expect-sandbox-enforced was not declared.
             "sandbox_events": None,
+            # 2026-10-14 DD-5: what the reserved agy log showed about the
+            # deny-rule project. Null without the agy-reviewer-v1 profile and
+            # on every termination that never reached grading.
+            "agy_project_grants": None,
         },
     }
 
@@ -2439,6 +2892,53 @@ def _run_attempt(args, pins: list[dict]) -> int:
               f"carry a `verdict:` line that is not the answer. See "
               f"references/adapters.md \"Muse seat profile\".", file=sys.stderr)
         return 2
+    if (args.transport_id and args.transport_id.endswith(GEMINI_TRANSPORT_SUFFIX)
+            and (args.output_envelope != AGY_JSON_FORMAT
+                 or args.seat_profile != AGY_SEAT_PROFILE)):
+        print(f"--transport-id {args.transport_id!r} dispatches into agy, so it "
+              f"requires --output-envelope {AGY_JSON_FORMAT!r} and --seat-profile "
+              f"{AGY_SEAT_PROFILE!r} (got {args.output_envelope!r} and "
+              f"{args.seat_profile!r}): no agy flag contains the seat, and the "
+              f"deny-rule project that does is replaced by the CLI's default "
+              f"project, silently, when its name does not resolve. See "
+              f"references/adapters.md \"Antigravity seat profile\".",
+              file=sys.stderr)
+        return 2
+    if (args.agy_log is None) != (args.seat_profile != AGY_SEAT_PROFILE):
+        print(f"--seat-profile {AGY_SEAT_PROFILE} and --agy-log come together: "
+              f"the profile's post-run gate reads the log, and a log without "
+              f"the profile constrains nothing", file=sys.stderr)
+        return 2
+    if args.seat_profile == AGY_SEAT_PROFILE:
+        # A reviewer profile: the review schema is what makes an answer that
+        # is missing, or not a string, a failure rather than an empty success.
+        if args.output_envelope != AGY_JSON_FORMAT or args.output_schema != "review":
+            print(f"--seat-profile {AGY_SEAT_PROFILE} requires --output-envelope "
+                  f"{AGY_JSON_FORMAT} and --output-schema review", file=sys.stderr)
+            return 2
+        if args.child_cwd is None:
+            print(f"--seat-profile {AGY_SEAT_PROFILE} requires --child-cwd: the "
+                  f"workspace the CLI adopts is audited before spawn, and the "
+                  f"supervisor will not audit its own ambient cwd",
+                  file=sys.stderr)
+            return 2
+        args.agy_log = os.path.abspath(args.agy_log)
+        why = _agy_argv_problem(args.argv, Path(args.agy_log), args.model_id)
+        if why is None:
+            home = os.environ.get("HOME", "")
+            why = (_agy_host_problem(Path(home)) if os.path.isabs(home) else
+                   "HOME is unset or not absolute, so the agy configuration "
+                   "the child will read cannot be located")
+        if why is None:
+            # Both spellings: the real path is what the kernel reports, but a
+            # Go child given the literal path in $PWD may use that one instead,
+            # and the two can have different ancestors (r2 fable F3).
+            for spelling in (os.path.realpath(args.child_cwd),
+                             os.path.abspath(args.child_cwd)):
+                why = why or _agy_workspace_problem(Path(spelling), Path(home))
+        if why is not None:
+            print(f"--seat-profile {AGY_SEAT_PROFILE}: {why}", file=sys.stderr)
+            return 2
 
     # --- Guard vs a nested codex sandbox (2026-09-25 DD-B9) -------------
     # Seatbelt does not nest: a codex child inside the receipt guard runs its
@@ -2634,6 +3134,18 @@ def _run_attempt(args, pins: list[dict]) -> int:
         if stdin_f is not subprocess.DEVNULL:
             stdin_f.close()
         return 2
+    # The agy log is reserved last among the pre-spawn refusals (design review
+    # r1 fable F4): an earlier refusal would leave the empty reservation
+    # behind, and a retry on the same path would then be refused as reuse.
+    agy_pins: dict = {}
+    if args.agy_log is not None:
+        err = _reserve_agy_log(Path(args.agy_log), receipt_dir, agy_pins)
+        if err is not None:
+            print(f"error: {err}", file=sys.stderr)
+            claim_path.unlink(missing_ok=True)
+            if stdin_f is not subprocess.DEVNULL:
+                stdin_f.close()
+            return 2
 
     stdout_path = receipt_dir / f"{args.attempt_id}.stdout"
     stderr_path = receipt_dir / f"{args.attempt_id}.stderr"
@@ -2732,9 +3244,18 @@ def _run_attempt(args, pins: list[dict]) -> int:
                     start_new_session=True, close_fds=True)  # only declared stdio is inherited
                 if args.child_cwd is not None:
                     popen_kw["cwd"] = args.child_cwd
+                child_env = None
                 if args.grok_home is not None:
                     child_env = os.environ.copy()
                     child_env["GROK_HOME"] = args.grok_home
+                if args.seat_profile == AGY_SEAT_PROFILE:
+                    # A Go child takes its cwd from $PWD whenever $PWD names the
+                    # same directory, and an inherited one can be a third
+                    # spelling the workspace audit never walked (implementation
+                    # review i1 sol F1). Pin it to the audited real path.
+                    child_env = child_env or os.environ.copy()
+                    child_env["PWD"] = args.child_cwd
+                if child_env is not None:
                     popen_kw["env"] = child_env
                 if time.monotonic() >= deadline_monotonic:
                     receipt["result"]["invalid_reasons"] = ["deadline_expired_before_launch"]
@@ -2902,6 +3423,11 @@ def _run_attempt(args, pins: list[dict]) -> int:
                                 sandbox_event_pins)
                             receipt["result"]["sandbox_events"] = view
                             reasons = reasons + event_reasons
+                        if args.agy_log is not None:
+                            view, agy_reasons = _grade_agy_log(
+                                Path(args.agy_log), agy_pins, args.model_id)
+                            receipt["result"]["agy_project_grants"] = view
+                            reasons = reasons + agy_reasons
                         if artifact_entries:
                             records, artifact_reasons, aborted = _grade_artifacts(
                                 artifact_entries, artifact_root,
@@ -3343,6 +3869,26 @@ def cmd_verify_evidence(args) -> int:
                 f"{attempt_id}: transport_id {transport_id!r} dispatches into "
                 f"muse but the receipt does not carry a {MUSE_JSONL_FORMAT!r} "
                 f"envelope — its verdict was not read from the terminal event")
+        if transport_id.endswith(GEMINI_TRANSPORT_SUFFIX):
+            # The same net for agy, and its containment half: a receipt that
+            # never ran the seat profile carries no proof the deny rules
+            # loaded, and the CLI runs without them silently.
+            grants = receipt.get("result", {}).get("agy_project_grants")
+            declared = receipt.get("model_id")
+            if (receipt.get("output_envelope") != AGY_JSON_FORMAT or envelope is None
+                    or receipt.get("seat_profile") != AGY_SEAT_PROFILE
+                    or not isinstance(grants, dict)
+                    or not grants.get("lines")
+                    or any(line != AGY_GRANTS_LOADED for line in grants["lines"])
+                    or not (isinstance(declared, str)
+                            and declared.startswith(AGY_MODEL_PREFIX))
+                    or not _agy_resolution_ok(declared, grants.get("resolved_model"))):
+                problems.append(
+                    f"{attempt_id}: transport_id {transport_id!r} dispatches into "
+                    f"agy but the receipt does not carry a {AGY_JSON_FORMAT!r} "
+                    f"envelope graded under --seat-profile {AGY_SEAT_PROFILE} "
+                    f"with the {AGY_REVIEWER_PROJECT} deny rules shown loaded and "
+                    f"the declared gemini model shown resolved")
         if receipt.get("result", {}).get("verdict_recovered") is True:
             # Not a problem: the verdict WAS recovered and the review did run.
             # It is a signal, and the one person who can fix the recipe is the
@@ -3483,11 +4029,21 @@ def build_parser() -> argparse.ArgumentParser:
                             "location is read and two that disagree fail; "
                             "requires --grok-home")
     run.add_argument("--seat-profile", default=None,
-                     choices=[MAKER_SEAT_PROFILE],
-                     help="typed maker-seat declaration; grok-maker-v1 "
+                     choices=[MAKER_SEAT_PROFILE, AGY_SEAT_PROFILE],
+                     help="typed seat declaration; grok-maker-v1 "
                           "requires the workspace audit, per-attempt home, "
                           "auth seed, envelope, session evidence, and "
-                          "enforced-sandbox gates together")
+                          "enforced-sandbox gates together; agy-reviewer-v1 "
+                          "requires the agy envelope, --agy-log, the "
+                          "reviewer argv, the dmr-reviewer-v1 project and "
+                          "telemetry off, and grades the CLI log after the run")
+    run.add_argument("--agy-log", default=None, metavar="FILE",
+                     help="the --log-file the agy reviewer seat must write: "
+                          "created empty 0600 before spawn (an existing path "
+                          "is refused, as is one inside the receipt store), "
+                          "pinned to its inode, and read after the run for the "
+                          "deny-rule project's load line; requires "
+                          "--seat-profile agy-reviewer-v1")
     run.add_argument("argv", nargs="+",
                      help="command to execute, after `--`")
 

@@ -35,7 +35,7 @@ Before the first route in a session, establish what you can actually invoke:
 ```yaml
 capabilities:
   runtime: claude_code | codex | grok | unknown
-  available_families: [claude, openai, xai, meta]
+  available_families: [claude, openai, xai, meta, gemini]
   available_models: []          # resolved ids only
   effort_control: native | approximate | none
   effort_values: []             # values the CLI actually accepts
@@ -147,6 +147,27 @@ MAX:       max
 
 Set it with `--reasoning-effort <value>`.
 
+### gemini family
+
+Accepted values: `low | medium | high` for the seated model, each
+round-tripped through the agy CLI, which rejects `xhigh` and `max` ("has no
+… effort") and whose API documentation says `minimal` returns an error. The
+seat's effort ceiling is HIGH, so the clamp runs before this lookup and the
+last two lines are unreachable for it.
+
+```yaml
+MINIMAL:   low
+LOW:       low
+MEDIUM:    medium
+HIGH:      high
+VERY_HIGH: high       # unreachable: the seat's ceiling is HIGH
+MAX:       high       # unreachable, as above
+```
+
+Set it with `--effort <value>` on the base id. The CLI's catalogue also lists
+effort-suffixed ids; the registry never names one, and the CLI refuses a
+suffixed id paired with a different `--effort`.
+
 ### When effort control is unavailable
 
 If `effort_control: none`, approximate in this order of preference:
@@ -175,6 +196,8 @@ Verification is per direction, not a blanket "the bridges work":
 - Claude Code → meta (the muse reviewer seat profile) — verified. Codex and
   grok hosts are not offered this family at all: no transport entry, and no
   fallback list on those runtimes names it
+- Claude Code → gemini (the agy reviewer seat profile) — verified. Codex and
+  grok hosts are not offered this family either, for the same reason
 
 **Passing the prompt.** A reviewer's prompt contains the diff, and diffs
 contain quotes, backticks, `$`, and newlines. Build argv programmatically —
@@ -279,6 +302,25 @@ There is no maker string: `write_verified` is false, so the router never
 seats this family where the work writes. Declare
 `--output-envelope muse-exec-jsonl-v1` to the supervisor; a `.to_meta`
 dispatch without it is refused before spawn.
+
+**To gemini models:** the reviewer seat only — see "Antigravity seat profile"
+below.
+
+```bash
+agy --agent dmr-reviewer-v1 --model <id> --effort <native-effort> \
+    --project dmr-reviewer-v1 --disable-slash-commands --output-format json \
+    --print-timeout 0s --log-file <agy-log> -p "<prompt>"
+```
+
+No mode flag in this string contains the seat; the `dmr-reviewer-v1` agent and
+project do, and the supervisor checks both. Declare `--output-envelope
+agy-print-json-v1`, `--seat-profile agy-reviewer-v1`, `--agy-log <agy-log>` (the
+same path as `--log-file`), `--model-id <id>` and `--child-cwd`; a `.to_gemini`
+dispatch without them is refused before spawn. There is no maker string. The
+prompt rides in argv — print mode reads no prompt from stdin — so the
+platform's argument limits bound the payload: 1 MiB for argv and environment
+together on macOS, where the seat was probed, and 128 KiB for any one argument
+on Linux, where a large diff fails to start.
 
 **Aliases float; the registry does not.** The Claude Code `Agent` tool takes
 only family aliases (`fable`, `opus`, `sonnet`, `haiku`) and always serves
@@ -648,6 +690,153 @@ it never reads argv — and is graded as plain text over the whole stream, where
 the echoed prompt and the streamed chunks can carry a `verdict:` line. That
 residue belongs to the recipe, as it does for grok.
 
+### Antigravity seat profile
+
+What contains the gemini reviewer seat, measured on agy 1.3.4 (macOS,
+2026-10-14; the ledger rows name the attempts). No mode flag does: the CLI's
+own settings (`~/.gemini/antigravity-cli/settings.json`) choose a
+`toolPermission` preset for every run on the host, and under `always-proceed`
+a `--mode plan` run wrote a file and ran a shell command when asked to. Two
+host files do, each an independent layer, and the supervisor checks both.
+
+- **The agent removes the tools.** `--agent dmr-reviewer-v1` selects
+  `~/.gemini/config/agents/dmr-reviewer-v1.md`, which must be exactly:
+
+```markdown
+---
+name: dmr-reviewer-v1
+description: Read-only reviewer seat for deep-model-router. It reads files and never writes, runs commands, searches the web or delegates.
+tools:
+  - view_file
+mainAgent: true
+subagent: false
+---
+# System Prompt
+You review code and documents. Read files when the request needs them, and answer in the format the request asks for.
+```
+
+  Its `tools` list is an allow-list. Under it the model reported two tools,
+  `view_file` and the CLI's own task list, and asked to write, edit, run a
+  command, fetch a URL, search the web or start a subagent, it had no tool for
+  any of them; the workspace was unchanged. Without it the same run had
+  thirteen, among them `run_command`, `write_to_file`, `search_web` and
+  `invoke_subagent`. The agent also cut the boot input from about 24,000
+  tokens to about 6,000. An unknown agent name fails the run (exit 1).
+- **The project's deny rules sit underneath.** `--project dmr-reviewer-v1`
+  selects `~/.gemini/config/projects/dmr-reviewer-v1.json`, which must be
+  exactly:
+
+```json
+{
+  "id": "dmr-reviewer-v1",
+  "name": "dmr-reviewer-v1",
+  "projectResources": {},
+  "permissionGrants": {
+    "permissionGrants": {
+      "deny": ["write_file(*)", "command(*)", "mcp(*)", "read_url(*)",
+               "execute_url(*)"]
+    }
+  }
+}
+```
+
+  Deny rules outrank every preset ("Deny > Ask > Allow"). Without the agent,
+  under `always-proceed`, these refused a write, an edit, a shell command, a
+  URL fetch, and a subagent's write and command, and the turn completed (exit
+  0). They cannot reach web search — the CLI rejects a rule naming it
+  (`unknown action`) — which is one reason the agent layer exists. Reading
+  stays open. `unsandboxed(*)`, which the provider's page lists, is not in the
+  list: the CLI reports it invalid and ignores it, and `command(*)` is what
+  refused the shell. The CLI does not rewrite either file (measured: same
+  bytes and inode after a run). Create both once per host; the supervisor never
+  writes them.
+- **Silent fallbacks, closed before spawn.** Given a `--project` name it cannot
+  resolve, the CLI runs in its default project, logs `no grants for project
+  "CLI Project", cleared project permissions`, and exits 0. So
+  `--seat-profile agy-reviewer-v1` refuses unless the project file is the
+  document above (strict JSON: no duplicate key, no other key, no allow or ask
+  list, the five rules once each in any order, not through a symlink) and the
+  agent file is the text above byte for byte.
+- **The reviewed tree must not configure the CLI.** The CLI's workspace is
+  its cwd, or the repository root that encloses it, and it loads that root's
+  `.agents/`: hooks it runs itself as host commands, and agents that shadow a
+  user agent of the same name. Both were measured, in and out of a trusted
+  directory, and no deny rule reaches either. Which ancestor becomes the root
+  depends on markers a reviewed tree can plant itself, so the profile relies on
+  none: it requires `--child-cwd` and refuses when that directory or any
+  ancestor up to `/` holds `.agents` or `.gemini`, under both the literal and
+  the resolved spelling of the path, and it sets the child's `PWD` to the
+  resolved one (the CLI may take its cwd from `$PWD`, which could otherwise
+  name the same directory through a third, unaudited path).
+  The user's HOME is the one exception: its `.gemini` is the CLI's own
+  configuration home, and its `.agents` is admitted only while HOME is a
+  strict ancestor of the cwd and not itself a repository root. A change that
+  adds a customization is refused, not reviewed by this seat; review it from a
+  tree without it or with another seat. A nested `.agents` below the cwd was
+  not loaded and is not refused.
+- **The model is pinned.** The CLI's catalogue serves other vendors' models
+  through the same account, so the profile requires `--model` to be a gemini
+  id equal to the declared `--model-id`, and after the run every resolution
+  the CLI logged must be of that id, to that id or one of its effort spellings
+  (`agy_resolved_model:*` otherwise); `verify-evidence` re-checks the recorded
+  one against the receipt's `model_id`.
+- **And the log is graded after.** The supervisor reserves `--agy-log`
+  (created empty, 0600, pinned to its inode, after every other pre-spawn
+  check; an existing path or one inside the receipt store is refused) and the
+  argv must name it as `--log-file`. Every grants record in it — a whole log
+  line from the CLI's settings manager — must read `stored 0 allow, 5 deny
+  grants from project "dmr-reviewer-v1"`, at least one, and no line may report
+  a permission rule the CLI refused as invalid. Anything else is
+  `agy_project_grants:<what it showed>`; a replaced log is
+  `agy_log_identity_replaced`. The log carries neither the prompt nor the
+  answer (measured) and no argv value but the prompt may hold a control
+  character, so neither the caller nor the model can write a record. This
+  gate catches a CLI that stopped loading or understanding the rules — the
+  drift an update brings. It is not proof against a model that had already
+  escaped containment and rewrote the file; that is why containment is the two
+  layers checked before spawn.
+- **The argv is an allow-list.** Parsed as Go's `flag` package parses it (a
+  value joined by `=` or given as the next token), the seat admits `--agent`,
+  `--model`, `--effort`, `--project`, `--disable-slash-commands`,
+  `--output-format json`, `--print-timeout 0s`, `--log-file` and one prompt,
+  each once, and no positional argument; anything else, `--mode`, `--add-dir`
+  and `--dangerously-skip-permissions` among it, is refused unread. Only the
+  probed spellings pass: two dashes for every name (Go's `flag` would also
+  read `-agent=…`, a parser that clusters single-dash letters would not), and
+  `-p` followed by the prompt as its own token (the CLI documents `--print`
+  and `--prompt` as aliases, but only that form was probed). The profile also
+  requires `--output-schema review`.
+- **Telemetry must be off.** On a personal Google account the provider's
+  terms let it keep and use the conversations ("Interactions") unless the user
+  turns that off in settings. The supervisor refuses the seat unless
+  `~/.gemini/antigravity-cli/settings.json` sets `"telemetryEnabled": false`
+  (the CLI's `/config` "Enable Telemetry" off; an absent key is on). The
+  provider's settings page spells the key `enableTelemetry`, but the CLI
+  rewrites this file on every run and drops that spelling, keeping
+  `telemetryEnabled` (measured, agy 1.3.4). What the switch covers is not
+  settled by the documentation: the CLI page describes anonymous usage
+  statistics and crash reports, the desktop app's toggle of the same name
+  describes interaction logs used to improve models, and neither says whether
+  the two are one account setting or whether either governs training. Turn
+  the app's toggle off as well if the app is installed.
+- **One home.** The CLI finds its credentials only under the user's real
+  home (measured: under another `HOME` it asked for a fresh login), so unlike
+  the grok maker there is no per-attempt home. Every file above is read under
+  the `HOME` the child inherits. A same-user process that edits them during the
+  run is outside what the supervisor can see, as it is for the receipt store.
+- `--disable-slash-commands` keeps a `/` line in a reviewed diff from
+  expanding into a command; `--print-timeout 0s` leaves the supervisor's
+  deadline the only clock (the CLI's own default has differed between its help
+  text and its documentation). The receipt guard (`--receipt-guard
+  darwin-sandbox-v1`) runs this seat cleanly. The CLI updates itself, so the
+  ledger records the version a probe ran on, and the log lines the gate reads
+  are the CLI's, not a published contract: if they change, the seat fails
+  closed.
+
+Declare the whole profile. An `agy` dispatch that names neither the
+`.to_gemini` transport nor the profile is invisible to the supervisor as agy —
+it is then an ordinary plain-text child with no containment check at all.
+
 ### Confirming a transport
 
 Before setting `cross_provider: available`, confirm three things:
@@ -673,7 +862,7 @@ permission posture carries across.
 
 Layer B owns the time axis after a route is emitted. Every background
 dispatch that uses a subprocess/CLI bridge transport (`codex exec`,
-`claude -p`, `grok -p`, `muse exec`) — worker or reviewer — runs under
+`claude -p`, `grok -p`, `muse exec`, `agy -p`) — worker or reviewer — runs under
 `scripts/dispatch_agent.py`, which enforces the rules below. A foreground
 dispatch a human is actively watching may skip the supervisor; it may never
 skip the rules.
@@ -1033,6 +1222,17 @@ served-model record: the receipt keeps `run.model.configured`'s id as
 null. The budget is 16 MiB, because the stream carries every file the seat
 read; over it is `evidence_oversized`, a recipe defect, not a model failure.
 
+**Agy has one document format.** `agy-print-json-v1` reads the single JSON
+document `agy -p --output-format json` prints when the run ends. The
+finishing reason is `status` and must be `SUCCESS` (the CLI's vocabulary also
+has `ERROR`, `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING` and `RUNNING`; any
+of them, an unknown value or an absent field fails). An `error` key, whatever
+its value, is the document's own failure report — the receipt keeps the first
+500 characters as `error_reason`. The verdict grammar applies to `response`,
+which holds the final answer only. `conversation_id` is recorded as the
+session id, `usage` as token counts, and there is no served-model record. The
+budget is the shared 4 MiB: no tool output rides in this document.
+
 **Both formats carry `usage`**, and the receipt's envelope carries it too, so a
 caller measuring boot or context cost reads the receipt instead of scraping the
 retained stdout. The key sets differ — grok adds `reasoning_tokens` and
@@ -1100,7 +1300,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `meta_worker_balanced` (seats that read), then `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `meta_worker_balanced` (seats that read), then `gemini_worker_balanced` (seats that read), then `claude_worker_balanced`, then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1148,6 +1348,18 @@ when Claude is withheld too — and the meta model nowhere; that route gains the
 note `worker_balanced: no write-capable meta seat on claude_code; seated the
 <family> one`. Where it does seat, it is a tier-1 seat of a fourth family:
 `model-profiles.md` ("The meta reviewer seat") lists what that changes.
+
+**The gemini seat reads, on Claude Code only, after the meta seat.**
+`gemini_worker_balanced` is bound to no role and is the second fallback of
+`worker_balanced` on a Claude Code host. A role resolves to the first usable
+model in its list, so this seat is reached only where neither the xai seat
+nor the meta seat resolves for the route — each for any of the reasons above
+(withheld, failed, exhausted, excluded, the declared author, a `low` quota
+moving a read-only worker). While the meta seat resolves, no route changes. It
+never fills a seat that writes, and on a route whose worker writes from
+`worker_balanced` the note reads `worker_balanced: no write-capable gemini
+seat on claude_code; seated the <family> one`. `model-profiles.md` ("The
+gemini reviewer seat") lists what seating it changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The

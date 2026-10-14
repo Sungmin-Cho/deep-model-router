@@ -116,8 +116,12 @@ def test_shipping_a_verified_maker_restores_the_family_without_a_code_change():
 
 
 def test_a_family_with_no_transport_entry_is_not_write_capable():
-    """gemini is registered for id spelling only; no direction bridges to it."""
-    assert POLICY.write_capable("claude_code", "gemini") is False
+    """No Codex direction bridges to gemini at all (1.20.0 added a Claude Code
+    reviewer direction only), so the family is not write-capable there. The
+    Claude Code direction is covered by test_gemini_seat (a reviewer recipe
+    with no write recipe is not write-capable either)."""
+    assert "to_gemini" not in CFG["transports"]["codex"]
+    assert POLICY.write_capable("codex", "gemini") is False
 
 
 def _cfg_with_maker(*, verified: bool) -> dict:

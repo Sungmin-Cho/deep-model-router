@@ -189,6 +189,45 @@ of 33,792 per scenario (out of 3,072 for the REVIEW-only author scenario):
   `worker_balanced` with the xai seat out now notes that the meta seat could
   not write there.
 
+### The gemini reviewer seat
+
+`gemini_worker_balanced` is the gemini family's first dispatchable model, a
+tier-1 seat bound to no role. On a Claude Code host it is the second fallback
+of `worker_balanced`, after the meta seat, through a read-only recipe and no
+write recipe (`adapters.md`, "The gemini seat reads, on Claude Code only,
+after the meta seat", and "Antigravity seat profile" for what contains it).
+A role resolves to the first usable model, so this seat is reached only where
+the xai seat AND the meta seat both fail to resolve for the route. While the
+meta seat resolves, nothing moves: the same replay method as the meta seat's
+(16,896 grid points, fresh and after a failed worker) changed no route with
+everything available, with the xai seat withheld, with an xai quota of `low`,
+with a declared implementer, with a read-only override, or with the bridge
+down. Codex and grok hosts never seat it. The unbound gemini row the suite
+names is untouched and still never seated.
+
+**Its tier is provisional**, on the same footing as the meta seat: no eval in
+this repository has measured it, and third-party benchmarks put it level with
+the previous Sonnet generation and the meta seat and below the current Claude
+balanced seat (ledger row "gemini_worker_balanced tier evidence (external, not
+measured)"). To keep it out as well, withhold its id or leave `gemini` out of
+an `allowed_families` list.
+
+Where it seats, it changes what the meta seat changes: with the meta seat out
+too, every count above recurs, the same kinds of moves in the same numbers,
+because this seat is reached exactly where the meta seat would have been and is
+a seat of the same tier and kind. One thing is new:
+
+- **A lower effort ceiling.** The CLI accepts `low`, `medium` and `high` only,
+  so the seat's ceiling is HIGH. Where it takes a seat whose effort floor is
+  higher, the route records `effort_below_floor`, which asks for a human
+  (`human_in_the_loop.on_effort_below_floor`). Almost always the route is a
+  CRITICAL one that already asked: with the xai and meta seats out, the cause
+  joins an existing gate on 1,712 routes with OpenAI also exhausted and 3,424
+  with Claude exhausted, and on 88 with a read-only worker override. A gate is
+  newly raised on 6 routes, all with that override, where this seat became a
+  worker that a floor wanted at VERY_HIGH. The effort the seat runs at is
+  capped, not silently mapped: the route shows HIGH.
+
 ### The OpenAI frontier seat
 
 `openai_frontier` fills the upper OpenAI-only roles and is the next reasoning

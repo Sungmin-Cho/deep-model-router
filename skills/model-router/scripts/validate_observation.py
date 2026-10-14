@@ -917,13 +917,17 @@ def _check_receipt_semantics(attempt, receipt, receipts_dir):
         if envelope is not None or fmt is not None:
             # The finishing reason each accepted format must show. A muse
             # stream (design 2026-10-13 DD-6b) finishes on its terminal event,
-            # and names any failed terminal it carried in `error_type`.
+            # and names any failed terminal it carried in `error_type`; an
+            # agy document (design 2026-10-14 DD-6b) on its `status`, with
+            # `error_type` set whenever it carried an `error`.
             ok_stop = {"claude-print-json-v1": "end_turn", "grok-headless-json-v1": "end_turn",
-                       "muse-exec-jsonl-v1": "run.terminal.completed"}
+                       "muse-exec-jsonl-v1": "run.terminal.completed",
+                       "agy-print-json-v1": "SUCCESS"}
             if (not isinstance(fmt, str) or fmt not in ok_stop
                     or not isinstance(envelope, dict) or envelope.get("parse_ok") is not True
                     or envelope.get("stop_reason") != ok_stop[fmt]
-                    or (fmt in ("grok-headless-json-v1", "muse-exec-jsonl-v1")
+                    or (fmt in ("grok-headless-json-v1", "muse-exec-jsonl-v1",
+                                "agy-print-json-v1")
                         and envelope.get("error_type") is not None)
                     or (fmt == "claude-print-json-v1" and envelope.get("error_type") != "success")):
                 raise ValidateError("I-RECEIPTS: success contradicts its envelope")

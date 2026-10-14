@@ -9,6 +9,22 @@
 
 ## [Unreleased]
 
+## [1.20.0] — 2026-10-14 (Gemini Flash 리뷰어 좌석)
+
+### Added
+
+- Google의 Gemini 3.8 Flash를 Antigravity CLI(`agy`)로 실행하는 Claude Code 호스트의 읽기 전용 리뷰어 좌석으로 추가합니다. 어느 역할에도 묶이지 않고 그 호스트에서 balanced 워커의 두 번째 폴백(Muse Spark 다음)이라, 라우트에 xAI 좌석도 Muse 좌석도 쓸 수 없을 때만 리뷰와 읽기를 맡습니다. 쓰는 좌석에는 앉지 않으며, Codex·Grok 호스트에서는 앉지 않습니다. tier(1)는 잠정값입니다. 외부 벤치마크로 읽은 값이며 이 리포에서 측정하지 않았습니다. effort는 high까지입니다.
+- `agy-reviewer-v1` 좌석 프로필을 추가합니다. `agy`에는 좌석을 봉쇄하는 플래그가 없습니다. 그래서 supervisor가 실행 전에 다음을 검사합니다: 읽기 도구만 허용하는 전용 agent, 쓰기·명령·MCP·URL 접근을 거부하는 프로젝트, 텔레메트리 꺼짐, 모델, argv. 실행 뒤에는 CLI 로그에 거부 규칙이 적재됐고 무효 처리된 규칙이 없다는 기록이 있어야 합니다. 이 프로필 없이 `.to_gemini`를 디스패치하면 시작 전에 거부됩니다.
+- `agy -p --output-format json` 출력을 `--output-envelope agy-print-json-v1`로 판정합니다. `SUCCESS` 상태만 통과하고, `error` 키가 있으면 시도가 실패하며 그 내용이 영수증에 남습니다. `verify-evidence`와 observation 영수증 검사가 이 형식을 받습니다.
+
+### Changed
+
+- Claude Code 호스트에서 라우트에 xAI 좌석과 Muse 좌석을 둘 다 쓸 수 없으면, Muse Spark가 앉았을 라우트에 Gemini 3.8 Flash가 앉습니다. 바닥(floor)이 아주 높은 effort를 요구하는 자리에서는 사람 확인을 요구하는 일이 늘어납니다. 대부분은 이미 확인을 요구하던 critical 라우트입니다. 무엇이 바뀌는지는 모델 프로필에 있습니다.
+
+### Security
+
+- 작업 디렉터리나 그 위의 어느 디렉터리에든 `.agents`나 `.gemini`가 있으면 Gemini 좌석을 거부합니다(사용자 홈은 일부 예외). Antigravity CLI는 작업 공간의 훅을 호스트 명령으로 실행하고 그 agent가 리뷰어 agent를 대신하게 두는데, 어떤 권한 규칙으로도 막히지 않습니다.
+
 ## [1.19.0] — 2026-10-13 (Muse Spark 리뷰어 좌석)
 
 ### Added
