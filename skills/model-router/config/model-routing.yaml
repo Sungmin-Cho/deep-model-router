@@ -3543,7 +3543,7 @@ verification_ledger:
         anchors") reads raise, raise, hold, hold. Both raise only for
         claude-sonnet-5-5, which moved to tier 2 (user decision 2026-10-15).
         claude-haiku-5-5 stays at tier 0: its gate here is 0.093750, short of
-        0.10. Not measured: grok-4.7 (live tier 1; the Grok subscription
+        0.10. Named unmeasured: grok-4.7 (live tier 1; the Grok subscription
         ended), the two read-only tier-0 seats (no verified write recipe) and
         the tier-3 rows (no verdict reads them). With claude-opus-5-5 alone as
         the tier-2 anchor claude-sonnet-5-5 would hold (0.625000 against
@@ -3574,12 +3574,13 @@ verification_ledger:
         dispatchable (3,762 terminal routes become dispatchable across the
         scenarios). 718 routes carrying an unknown root cause, all in three
         scenarios, newly end ESCALATE_ROUTING (454 retries, 264 first attempts
-        with xai withheld and OpenAI exhausted): an equal-tier balanced model
-        is no longer raised to the senior seat by the execution band, and a
-        retry after grok-4.7 fails lands on the balanced role's fallback, so
-        the route keeps a fallback's 0.06 confidence penalty that, with the
-        unknown root cause's 0.10, takes it under 0.60 (they sat exactly
-        at 0.60). Cross-family review is gained on 4,572 routes and lost on
+        of REVIEW tasks with xai withheld and OpenAI exhausted): a retry after
+        grok-4.7 fails lands on the balanced role's fallback, and a REVIEW
+        task's seat search lands on a fallback seat where it used to pair
+        claude-opus-5-5 with claude-fable-5-1, so the route takes a
+        fallback's 0.06 confidence penalty that, with the unknown root
+        cause's 0.10, takes it under 0.60 (the retries sat exactly at 0.60,
+        the REVIEW tasks at 0.65). Cross-family review is gained on 4,572 routes and lost on
         264 with every seat available (4,548 / 528 with xai withheld; 2,566 /
         4,360 with OpenAI exhausted). (H)
         claude_worker_fast capability_tier 0 -> 1, not adopted: 95,264 routes

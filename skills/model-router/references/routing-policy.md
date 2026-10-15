@@ -135,12 +135,15 @@ latency_sensitive  tool_heavy
 ```
 
 `large_context` and `latency_sensitive` are the two the router itself acts
-on: each rebinds `worker_balanced` to `worker_balanced_alt`, a same-tier
-seat. The first because the primary's price doubles and its window runs out
-past 200K input tokens; the second because a quality-tied measurement found
-the alt faster on wall-clock p50 in every probed task type. Same band, same
-review, different model — which is exactly what a context flag is allowed
-to move. Carrying both flags is the same swap, not a conflict.
+on: each rebinds `worker_balanced` to `worker_balanced_alt`. The first
+because the primary's price doubles and its window runs out past 200K input
+tokens; the second because a quality-tied measurement found the alt faster on
+wall-clock p50 in every probed task type. Same band, same review, different
+model — which is exactly what a context flag is allowed to move. The alt was
+a same-tier seat until 1.23.0; since the Claude balanced model measured at
+tier 2 (issue #65), the swap also seats a stronger worker than the xai
+primary, and the review seats chosen for that worker follow it. Carrying both
+flags is the same swap, not a conflict.
 
 `unfamiliar_codebase`, `tool_heavy` and `cross_service_change` are the
 execution axis's inputs (below): they move the worker, never the band.

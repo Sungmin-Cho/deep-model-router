@@ -692,8 +692,9 @@ reviewer become dispatchable. Retries after the xai seat fails now land on this
 seat through the balanced role's fallback list, which costs 0.06 routing
 confidence; with an unknown root cause that takes 718 routes that sat exactly
 at 0.60 under it, and they now end ESCALATE_ROUTING (454 retries, and 264
-first attempts with the xai seat withheld and OpenAI exhausted, which the
-execution band no longer raises to the senior seat). Cross-family review is
+REVIEW tasks with the xai seat withheld and OpenAI exhausted, whose seat search
+now lands on a fallback seat where it used to pair the senior and architect
+seats). Cross-family review is
 gained on 4,572 routes and lost on 264 with every seat available (4,548 and
 528 with the xai seat withheld; 2,566 and 4,360 with OpenAI exhausted). A
 `low` xai quota now swaps a reading lead to the OpenAI balanced model, the

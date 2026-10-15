@@ -483,11 +483,13 @@ RULES: dict[str, Rule] = {
     # every comparison that reads a resolved tier can move — the worker
     # through the ladder and the execution cell, every review seat, the judge,
     # the gates and the fallback records that follow — so it is admitted
-    # everywhere and held by its direction (`_t65_check`). The grid holds no
-    # retry carrying an unknown root cause: there the release replay found 718
-    # routes that newly ask to be re-routed (ESCALATE_ROUTING, a fallback's
-    # penalty on routes sitting at 0.60), which the direction check would
-    # refuse; they are disclosed and pinned in test_tier_scale.py instead.
+    # everywhere and held by its direction (`_t65_check`). The grid reaches
+    # neither place where the release replay found routes that newly ask to be
+    # re-routed (ESCALATE_ROUTING: a fallback's penalty on routes sitting at
+    # 0.60) — 454 retries carrying an unknown root cause, and 264 REVIEW
+    # tasks with one as well, the xai seat withheld and OpenAI exhausted.
+    # The direction check would refuse both; they are disclosed and pinned in
+    # test_tier_scale.py instead.
     "t65": Rule(
         "t65", predicate=lambda req, prev: True,
         fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",

@@ -557,8 +557,8 @@ def test_a_retry_at_the_confidence_threshold_now_asks_to_be_rerouted():
     unknown root cause 0.10, one failure 0.05). With the Claude balanced model
     at tier 2 the ladder's weakest role above tier 1 is the balanced role,
     which reaches that model through its fallback list (0.06 more), and the
-    route asks to be re-routed instead of dispatching. 718 such routes in the
-    replay, all carrying an unknown root cause."""
+    route asks to be re-routed instead of dispatching. 454 such retries in the
+    replay, all carrying an unknown root cause (the REVIEW half is below)."""
     kw = dict(task_class="DEBUGGING", complexity=0, uncertainty=3, blast_radius=0,
               reversibility=2, runtime="claude_code", flags=["unknown_root_cause"])
     fresh = route(Task(**kw), CFG)
@@ -570,6 +570,24 @@ def test_a_retry_at_the_confidence_threshold_now_asks_to_be_rerouted():
     before = route(Task(**kw, prior_failures=1, prior_models=[XAI]), old)
     assert (before["terminal"], before["selected_model"]) == (None, ID("claude_senior"))
     assert before["routing_confidence"] == pytest.approx(0.60)
+
+
+def test_a_review_with_two_families_out_now_asks_to_be_rerouted():
+    """Review i2 (fable F1): the first-attempt half of the 718 — 264 REVIEW
+    tasks with an unknown root cause, the xai seat withheld and OpenAI
+    exhausted. 1.22.0 paired the senior and architect seats at 0.65; the
+    seat search now lands on a fallback seat (0.06) and the route asks to be
+    re-routed."""
+    kw = dict(task_class="REVIEW", complexity=0, uncertainty=3, blast_radius=1,
+              reversibility=3, runtime="claude_code", flags=["unknown_root_cause"],
+              unavailable_models=[XAI], _family_quota={"openai": "exhausted"})
+    out = route(Task(**kw), CFG)
+    assert out["terminal"] == "ESCALATE_ROUTING"
+    assert out["routing_confidence"] == pytest.approx(0.59)
+    before = route(Task(**kw), copy_cfg_with_tier("claude_worker_balanced", 1))
+    assert before["terminal"] is None and before["routing_confidence"] == pytest.approx(0.65)
+    assert [s["model_id"] for s in before["dispatch_seats"]] == [ID("claude_senior"),
+                                                                 ID("claude_architect")]
 
 
 def copy_cfg_with_tier(key: str, tier: int) -> dict:
