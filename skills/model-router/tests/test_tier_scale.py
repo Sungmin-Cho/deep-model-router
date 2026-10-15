@@ -329,3 +329,44 @@ def test_recovered_operational_history_keeps_the_floor():
     out = rt.route(rt.task_from_request_v1(req), CFG)
     assert out.get("terminal") is None
     assert _tier_of(out) >= 1 and out["selected_model"] not in [ID(k) for k in SEATS]
+
+
+def test_a_floor_no_usable_model_meets_is_waived_and_noted():
+    """Review r4: the other waiver. With every tier-1-or-better model withheld,
+    the promoted role can only hold a tier-0 seat; the route says so."""
+    out = route(Task(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=0,
+                     reversibility=0, runtime="claude_code", flags=["unknown_root_cause"],
+                     unavailable_models=[XAI, ID("openai_worker_balanced"), ID("openai_reasoning"),
+                                         ID("openai_frontier")],
+                     _local_policy={"allowed_families": ["meta", "openai"]}), CFG)
+    assert out.get("terminal") is None
+    assert out["selected_model"] == ID("meta_worker_balanced")
+    assert out["selected_capability_tier"] == 0
+    assert ("investigation promotion: capability floor 1 for worker_balanced waived — no "
+            "usable model in the role meets it") in out["notes"]
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_a_retry_is_never_floored_and_never_ends_where_1_21_0_did_not(runtime):
+    """Reviews r3/r4: a retry is left to its ladder. No retry of a first
+    attempt carries a floor note, and no retry becomes terminal where the
+    seats at their 1.21.0 tier would have dispatched it."""
+    import itertools
+    old = _with_seat_tiers(1)
+    for extra, c, u, b, r in itertools.product(DEEP_SCARCITY, range(3), range(2), range(3), range(3)):
+        kw = dict(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
+                  reversibility=r, runtime=runtime, flags=["unknown_root_cause"], **extra)
+        pairs = []
+        for cfg in (old, CFG):
+            fresh = route(Task(**kw), cfg)
+            if fresh.get("terminal") or not fresh.get("selected_model"):
+                pairs.append(None)
+                continue
+            pairs.append(route(Task(**kw, prior_failures=1,
+                                    prior_models=[fresh["selected_model"]]), cfg))
+        before, after = pairs
+        if after is not None:
+            assert not any("not floored" in n or "floor 1 for worker_balanced waived" in n
+                           for n in after["notes"]), kw
+        if before is not None and before.get("terminal") is None and after is not None:
+            assert after.get("terminal") is None, (kw, after.get("terminal"))

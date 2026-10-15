@@ -186,13 +186,13 @@ the xai seat withheld and the Claude family exhausted, 5,956 routes change. On
 on 138 the lead of a REVIEW route, which counts as its first reviewer, goes to
 the OpenAI balanced model. Where this seat still sits beside a stronger
 reviewer on a HIGH or CRITICAL route, which already asked a human, the
-shortfall record now says tier 0. A retry after this seat fails climbs above
-tier 0 rather than above tier 1, so it reaches the OpenAI balanced model where
-it used to reach the OpenAI reasoning seat. Across both hosts 2,018 routes
-lose the cross-family review this seat or the gemini seat supplied; of 2,462
-review seats that change, 2,426 go to a model that meets the band's floor and
-36 to a slate still holding a tier-0 model below it (18 of those now ask a
-human; 24 routes stop asking). With the Claude family exhausted and the xai seat
+shortfall record now says tier 0. A retry after this seat fails is unchanged:
+it reaches the OpenAI reasoning seat either way. Across
+both hosts 2,018 routes lose the cross-family review this seat or the gemini
+seat supplied; of 2,462 review seats that change, 2,426 go to a slate that
+meets the band's floor (four of them LOW-band REVIEW leads, which have none)
+and 36 to a slate the route records as below it (18 of those now ask a human,
+18 already did; 24 routes stop asking). With the Claude family exhausted and the xai seat
 available, 1,274 Claude Code routes change only the tier that record carries.
 
 A reading lead is not a reviewer, so an INVESTIGATION still takes this model
@@ -274,9 +274,11 @@ What 1.21.0 changed for this seat, against 1.20.0:
 What 1.22.0 moves, against 1.21.0: on Codex with the xai seat withheld and the
 Claude family exhausted, 6,512 routes change. On 1,256 a MEDIUM review seat goes
 from this seat to the OpenAI reasoning seat, and on 138 a REVIEW lead goes to
-the OpenAI balanced model. A low Claude quota and an unknown root cause pass it
-over for reading leads as they pass the meta seat (144 Codex routes for the
-quota). On Claude Code this seat takes the meta seat's
+the OpenAI balanced model. A retry after this seat fails climbs above tier 0
+rather than above tier 1, so on 144 Codex routes it reaches the OpenAI balanced
+model where it used to reach the OpenAI reasoning seat. A low Claude quota and
+an unknown root cause pass it over for reading leads as they pass the meta seat
+(144 Codex routes for the quota). On Claude Code this seat takes the meta seat's
 counts above wherever that seat is withheld too. With the Claude family
 exhausted and the xai seat available, 24 Codex routes change only the tier
 their shortfall record carries. The cross-family and human-gate counts are in

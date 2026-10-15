@@ -3421,13 +3421,14 @@ verification_ledger:
         counts as moved only when its outcome moved, not its failed model. (A)
         the two reviewer seats at tier 0, still listed — adopted in 1.22.0
         (user decision 2026-10-15): with xai withheld and Claude exhausted
-        12,468 routes change; 2,462 change a review seat, 2,426 of them to
-        models that meet the band floor (mostly gpt-6.1-sol) and 36 to a slate
-        holding a tier-0 model below it (18 of those newly ask a human), while
-        24 routes lose that request;
-        2,018 lose a cross-family review; retries after a seat fails climb to
-        gpt-5.6-terra instead of gpt-6.1-sol on 292, since the failure is now
-        tier 0; proxy +0.9%. With Claude exhausted alone 1,298 change only the
+        12,468 routes change; 2,462 change a review seat, 2,426 of them to a
+        slate that meets the band floor (mostly gpt-6.1-sol; 4 are LOW-band
+        REVIEW leads, which have none) and 36 to a slate the route records as
+        below it (18 newly ask a human, 18 already did), while 24 routes stop
+        asking; 2,018 lose a cross-family review; on Codex 144 retries after
+        gemini-3.8-flash fails climb to gpt-5.6-terra instead of gpt-6.1-sol,
+        since the failure is now tier 0 (on Claude Code the retry after the
+        meta seat is unchanged); proxy +0.9%. With Claude exhausted alone 1,298 change only the
         tier a shortfall record carries. (B) the same seats at tier 0 and
         removed from every fallback list, the consequence the first replay's
         plan attached to "lowered": with xai withheld and Claude exhausted
