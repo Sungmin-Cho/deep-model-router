@@ -275,11 +275,12 @@ What 1.22.0 moves, against 1.21.0: on Codex with the xai seat withheld and the
 Claude family exhausted, 6,512 routes change. On 1,256 a MEDIUM review seat goes
 from this seat to the OpenAI reasoning seat, and on 138 a REVIEW lead goes to
 the OpenAI balanced model. A retry after this seat fails climbs above tier 0
-rather than above tier 1, so on 144 Codex routes it reaches the OpenAI balanced
-model where it used to reach the OpenAI reasoning seat. A low Claude quota and
-an unknown root cause pass it over for reading leads as they pass the meta seat
-(144 Codex routes for the quota). On Claude Code this seat takes the meta seat's
-counts above wherever that seat is withheld too. With the Claude family
+rather than above tier 1, so it reaches the OpenAI balanced model where it used
+to reach the OpenAI reasoning seat: on 144 Codex routes, and on 144 Claude Code
+routes where the meta seat is withheld too. A low Claude quota and an unknown
+root cause pass it over for reading leads as they pass the meta seat (144 Codex
+routes for the quota). On Claude Code, with the meta seat withheld, this seat
+takes the meta seat's fresh-route counts above. With the Claude family
 exhausted and the xai seat available, 24 Codex routes change only the tier
 their shortfall record carries. The cross-family and human-gate counts are in
 the meta seat's section.

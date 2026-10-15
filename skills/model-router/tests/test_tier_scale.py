@@ -238,13 +238,18 @@ def test_a_low_claude_quota_swaps_a_read_lead_past_the_tier_0_seats(runtime):
         assert ID(key) not in [out["selected_model"], *out["review"]["reviewer_models"]]
 
 
-@pytest.mark.parametrize("key,runtime", [("meta_worker_balanced", "claude_code"),
-                                         ("gemini_worker_balanced", "codex")])
-def test_a_retry_after_a_seat_fails_climbs_above_tier_0(key, runtime):
+@pytest.mark.parametrize("key,runtime,withheld", [
+    ("meta_worker_balanced", "claude_code", []),
+    ("gemini_worker_balanced", "codex", []),
+    ("gemini_worker_balanced", "claude_code", ["meta_worker_balanced"]),
+])
+def test_a_retry_after_a_seat_fails_climbs_above_tier_0(key, runtime, withheld):
     """Review r2 (fable F3): a failed reading lead on a tier-0 seat is retried
-    on a model above tier 0, and the route says so."""
+    on a model above tier 0, and the route says so (r5: the gemini seat on
+    Claude Code, with the meta seat withheld, too)."""
     kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
-              reversibility=1, runtime=runtime, unavailable_models=[XAI],
+              reversibility=1, runtime=runtime,
+              unavailable_models=[XAI, *(ID(k) for k in withheld)],
               _family_quota={"claude": "exhausted"})
     assert route(Task(**kw), CFG)["selected_model"] == ID(key)
     out = route(Task(**kw, prior_failures=1, prior_models=[ID(key)]), CFG)
