@@ -1751,7 +1751,9 @@ def _resolve_cell(cell: str, task: Task, notes: list[str]) -> str:
 
 
 def _legacy_pre(task: Task, band: str, policy: Policy) -> tuple[str, list[str]]:
-    """S1: the 1.12.1 table cell plus its class promotions, unchanged."""
+    """S1: the 1.12.1 table cell plus its class promotions, unchanged. What
+    the INVESTIGATION promotion's role may hold is floored in `Resolver`
+    (`role_tier_floor`)."""
     cfg = policy.cfg
     notes: list[str] = []
     worker = _resolve_cell(cfg["worker_selection"][task.task_class][band], task, notes)
@@ -2538,6 +2540,29 @@ class Resolver:
         # The worker is the lead reviewer (DD-B7): its seat is searched with
         # the reviewers' instead of fixed ahead of them.
         self.source_review: bool = _is_source_review(task, policy)
+        # role -> the capability tier it may not resolve below on this route.
+        # `worker_promotions` says an INVESTIGATION with an unknown root cause
+        # gets "to_at_least: worker_balanced": a capability, which the role
+        # held while every model in its fallback list was at its binding's
+        # tier. Since 1.22.0 the list holds two tier-0 reading seats (issue
+        # #63, user decision 2026-10-15), and reading the role by position
+        # there seated a model weaker than the fast worker the table chose
+        # (review r2 sol F1). On such a route the role skips models below its
+        # binding's tier for the worker seat and, once the worker sits on it,
+        # for every reader of the role — unless nothing usable meets it
+        # (`_candidates`). A retry needs no floor: its ladder already asks for
+        # a tier strictly above what failed, and flooring the role there took
+        # the seats out of review seating for nothing (r2 replay: 276 retries
+        # INDEPENDENCE_UNAVAILABLE). The DEBUGGING promotion targets roles
+        # whose lists hold nothing below their binding's tier, so it needs no
+        # floor.
+        self.role_tier_floor: dict[str, int] = {}
+        if (task.task_class == "INVESTIGATION" and task.has("unknown_root_cause")
+                and task.prior_failures == 0):
+            key = self.binding.get("worker_balanced")
+            if key is not None:
+                self.role_tier_floor["worker_balanced"] = policy.tier_of[
+                    policy.cfg["models"][key]["id"]]
 
     def _primary(self, role: str) -> str | None:
         """The registry key this role binds to FOR THIS TASK.
@@ -2612,6 +2637,17 @@ class Resolver:
                         self.task.runtime, cfg["models"][k]["family"])):
                 continue
             out.append(k)
+        # The floor binds the worker seat, and every reader of the role the
+        # worker ends up on (the role-keyed map holds one model per role, as
+        # for the write requirement). Where the worker lands elsewhere — a
+        # retry above the role — the role keeps the seats for review seating;
+        # floored there too, extreme shortages lost every independent
+        # reviewer (r2 replay: 490 retries became INDEPENDENCE_UNAVAILABLE).
+        floor = self.role_tier_floor.get(role)
+        if floor is not None and (write or role == self.write_seat_role):
+            meets = [k for k in out if self.policy.tier_of[cfg["models"][k]["id"]] >= floor]
+            if any(cfg["models"][k]["id"] not in self.unusable for k in meets):
+                out = meets
         # A REVIEW task's lead is a review seat (DD-B7), and `low` moves the
         # worker seat only (review i1).
         if self.quota_low and not self.source_review and (write or role == self.write_seat_role):

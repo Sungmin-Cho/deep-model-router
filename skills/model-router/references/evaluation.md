@@ -102,8 +102,9 @@ skipped silently.
 
 **Three verdicts, written down before the first dispatch.** The suite is
 *valid* when the anchor sits at least 0.10 recall below the mean of the tier
-above it — it separates the tiers. On a valid suite a seat within 0.05 of the
-anchor is *confirmed*, and a seat further below is *lowered*, by one tier. On
+above it — it separates the tiers. On a valid suite a seat no more than 0.05
+below the anchor is *confirmed*, and a seat further below is *lowered*, by one
+tier. On
 a suite that is not valid the verdict is *inconclusive*: the tier stays where
 it was and is recorded as provisional. Thresholds compare unrounded values.
 The subjects, margins and verdicts are fixed before any dispatch; a rule
@@ -115,8 +116,9 @@ the review side it sets each band's reviewer floor, which candidate a MEDIUM
 review seats and whether a judge outranks the parties. On the worker side it
 sets the retry ladder (a retry needs a strictly higher tier than what failed),
 whether the execution band may raise the worker, the critical-domain floor on
-the worker, the compensation a weaker architect substitute receives, and the
-same-tier swap a low quota makes. A read-only seat — no write recipe on any
+the worker, the floor an investigation's promotion puts on the balanced role,
+the compensation a weaker architect substitute receives, and the same-tier swap
+a low quota makes. A read-only seat — no write recipe on any
 host, or `write_verified: false` — only reviews and leads reading work (a
 retry after it fails is reading work too), so a real-review replay measures
 its job and may raise or lower it. For a seat that writes, a review replay

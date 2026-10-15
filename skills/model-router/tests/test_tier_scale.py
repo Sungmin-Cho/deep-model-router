@@ -40,10 +40,10 @@ def _text(item: str) -> str:
 
 
 def _recalls(text: str) -> dict:
-    """`<registry id> <recall>` pairs as the row records them (four places)."""
+    """`<registry id> <recall>` pairs as the row records them (six places)."""
     ids = {m["id"] for m in MODELS.values()}
     out = {}
-    for mid, value in re.findall(r"([a-z0-9][a-z0-9.\-]*) (0\.\d{4})\b", text):
+    for mid, value in re.findall(r"([a-z0-9][a-z0-9.\-]*) (0\.\d{6})\b", text):
         if mid in ids:
             out.setdefault(mid, float(value))
     return out
@@ -109,11 +109,14 @@ def test_the_recorded_verdicts_and_bars_follow_from_the_recorded_numbers():
         assert stated.get(mid) == d["verdicts"][key], (mid, stated.get(mid), d["verdicts"][key])
         if d["verdicts"][key] in VERDICT_TIER:
             assert MODELS[key]["capability_tier"] == VERDICT_TIER[d["verdicts"][key]], key
-    bar = float(re.search(r"Bar for tier 1: (0\.\d{4})", text).group(1))
-    mean, sep = map(float, re.search(r"Tier-2 mean (0\.\d{4}), separation (0\.\d{4})",
+    # Six places in and out (review r2 sol F2): a stated figure that moves by
+    # more than the inputs' own rounding (2e-6) fails — far below any margin
+    # the verdict uses, where four places let a 1e-4 drift through.
+    bar = float(re.search(r"Bar for tier 1: (0\.\d{6})", text).group(1))
+    mean, sep = map(float, re.search(r"Tier-2 mean (0\.\d{6}), separation (0\.\d{6})",
                                      text).groups())
-    assert abs(bar - (d["a1"] - CONFIRM_MARGIN)) < 1e-4
-    assert abs(mean - d["t2"]) < 1e-4 and abs(sep - (d["t2"] - d["a1"])) < 1e-4
+    assert abs(bar - (d["a1"] - CONFIRM_MARGIN)) < 2e-6
+    assert abs(mean - d["t2"]) < 2e-6 and abs(sep - (d["t2"] - d["a1"])) < 2e-6
     assert d["valid"] is (sep >= SEPARATION)
 
 
@@ -149,3 +152,118 @@ def test_a_writing_row_keeps_its_tier_on_a_review_replay_alone():
     evidence = " ".join(rows[0]["evidence"].split())
     assert "implementation replay" in evidence and COUNTERFACTUALS in evidence
     assert COUNTERFACTUALS in LEDGER and LEDGER[COUNTERFACTUALS]["status"] == "verified"
+
+
+# ---------------------------------------------------------------------------
+# What a tier-0 seat in a tier-1 role's fallback list must not do (1.22.0)
+# ---------------------------------------------------------------------------
+
+from route_task import Policy, Task, route  # noqa: E402
+
+POLICY = Policy.of(CFG)
+ID = lambda key: MODELS[key]["id"]                               # noqa: E731
+XAI = ID("xai_frontier")
+SCARCITY = [
+    dict(unavailable_models=[XAI]),
+    dict(unavailable_models=[XAI, ID("claude_worker_balanced")]),
+    dict(unavailable_models=[XAI, ID("claude_worker_balanced"), ID("meta_worker_balanced")]),
+    dict(unavailable_models=[XAI], _family_quota={"claude": "exhausted"}),
+    dict(unavailable_models=[XAI, ID("openai_worker_fast")], _family_quota={"claude": "exhausted"}),
+    dict(unavailable_models=[XAI, ID("openai_worker_fast")]),
+    dict(_family_quota={"claude": "exhausted"}),
+]
+
+
+def _tier_of(out):
+    return POLICY.tier_of[out["selected_model"]]
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex", "grok"])
+def test_an_at_least_promotion_never_seats_a_weaker_worker(runtime):
+    """Review r2 (sol F1): `investigation promotion` moves the worker to the
+    balanced ROLE, which a tier-0 seat can now resolve — a promotion that
+    seated a tier-0 model where the table chose a tier-1 one. On such a
+    route the role is floored at its binding's tier, so the promoted worker
+    is tier 1 or better and never a tier-0 seat. (A promotion that trades a
+    tier-2 model a scarce fast role resolved to for a tier-1 balanced one is
+    older than this release and is tracked separately.)"""
+    import itertools
+    for extra, c, u, b, r in itertools.product(SCARCITY, range(4), range(2), range(3), range(2)):
+        kw = dict(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
+                  reversibility=r, runtime=runtime, **extra)
+        plain = route(Task(**kw), CFG)
+        promoted = route(Task(**kw, flags=["unknown_root_cause"]), CFG)
+        if plain.get("terminal") or promoted.get("terminal"):
+            continue
+        assert _tier_of(promoted) >= 1, (kw, plain["selected_model"],
+                                         promoted["selected_model"])
+        for key in SEATS:
+            assert promoted["selected_model"] != ID(key), (kw, key)
+            # Where the worker sits on another role the seats stay reviewer
+            # supply; a band that asks more of them records the shortfall.
+            if ID(key) in promoted["review"]["reviewer_models"] and promoted["review"]["band"] != "LOW":
+                assert any(e["model"] == ID(key) and e["capability_tier"] == 0
+                           for e in promoted["review"]["review_depth_reduced"]), (kw, key)
+
+
+def test_the_floored_role_takes_the_next_model_that_meets_it():
+    """sol's case: Codex, the fast and xai seats out, Claude exhausted. The
+    balanced role skips gemini for the OpenAI balanced model (tier 1) rather
+    than jumping to a senior seat, and says why through its fallback record."""
+    kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=0, blast_radius=0,
+              reversibility=0, runtime="codex", unavailable_models=[XAI, ID("openai_worker_fast")],
+              _family_quota={"claude": "exhausted"})
+    out = route(Task(**kw, flags=["unknown_root_cause"]), CFG)
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert out["selected_role"] == "worker_balanced"
+    assert "investigation promotion: unknown root cause" in out["notes"]
+    assert f"worker_balanced: {XAI} unavailable -> {ID('openai_worker_balanced')}" \
+        in out["fallbacks_applied"]
+    # Without the flag nothing is floored: the reading lead may be the seat.
+    plain = route(Task(**dict(kw, complexity=2, uncertainty=1)), CFG)
+    assert plain["selected_model"] in (ID("gemini_worker_balanced"),
+                                       ID("openai_worker_balanced"))
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_a_low_claude_quota_swaps_a_read_lead_past_the_tier_0_seats(runtime):
+    """Review r2 (fable F1): the `low` swap goes to the first SAME-TIER model of
+    another family; the seats are no longer that tier."""
+    out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime=runtime, unavailable_models=[XAI],
+                     _family_quota={"claude": "low"}), CFG)
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert any(n.startswith("family_quota: claude low") for n in out["notes"])
+    for key in SEATS:
+        assert ID(key) not in [out["selected_model"], *out["review"]["reviewer_models"]]
+
+
+@pytest.mark.parametrize("key,runtime", [("meta_worker_balanced", "claude_code"),
+                                         ("gemini_worker_balanced", "codex")])
+def test_a_retry_after_a_seat_fails_climbs_above_tier_0(key, runtime):
+    """Review r2 (fable F3): a failed reading lead on a tier-0 seat is retried
+    on a model above tier 0, and the route says so."""
+    kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
+              reversibility=1, runtime=runtime, unavailable_models=[XAI],
+              _family_quota={"claude": "exhausted"})
+    assert route(Task(**kw), CFG)["selected_model"] == ID(key)
+    out = route(Task(**kw, prior_failures=1, prior_models=[ID(key)]), CFG)
+    assert _tier_of(out) >= 1 and out["selected_model"] != ID(key)
+    assert any("capability tier 0" in n for n in out["notes"])
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_a_retry_of_a_floored_investigation_keeps_the_seats_for_review(runtime):
+    """The r2 replay: flooring the balanced role on a retry too (whose ladder
+    already asks for more than what failed) took the seats out of review
+    seating, and with the fast, xai and Claude seats out the retry found no
+    independent reviewers. The floor is for the first attempt only."""
+    kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=1,
+              reversibility=2, runtime=runtime, flags=["unknown_root_cause"],
+              unavailable_models=[XAI, ID("openai_worker_fast")],
+              _family_quota={"claude": "exhausted"})
+    fresh = route(Task(**kw), CFG)
+    assert fresh["selected_model"] == ID("openai_worker_balanced")
+    retry = route(Task(**kw, prior_failures=1, prior_models=[fresh["selected_model"]]), CFG)
+    assert retry.get("terminal") is None
+    assert _tier_of(retry) >= 2

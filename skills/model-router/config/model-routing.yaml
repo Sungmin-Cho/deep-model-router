@@ -3390,14 +3390,14 @@ verification_ledger:
         the first replay had not measured were run on its three frozen packages,
         prompts, supervisor, judges and effort (high, two reps; 12 dispatches
         SUCCEEDED first time, 24 valid grades, judge agreement 1.000;
-        gpt-6-astra judged its own family's subjects). Pooled recall:
-        claude-opus-5-5 0.5160, claude-sonnet-5-5 0.4554, claude-haiku-5-5
-        0.3973, gpt-6.1-sol 0.3325, gpt-5.6-terra 0.1684, gpt-6-luna 0.1313,
-        claude-sonnet-5 0.1305, muse-spark-1.3 0.1170, gemini-3.8-flash
-        0.0976. Anchor: gpt-5.6-terra, whose own tier 1 is inherited, not
+        gpt-6-astra judged its own family's subjects). Pooled recall (six
+        places): claude-opus-5-5 0.515993, claude-sonnet-5-5 0.455387,
+        claude-haiku-5-5 0.397306, gpt-6.1-sol 0.332492, gpt-5.6-terra
+        0.168350, gpt-6-luna 0.131313, claude-sonnet-5 0.130471,
+        muse-spark-1.3 0.117003, gemini-3.8-flash 0.097643. Anchor: gpt-5.6-terra, whose own tier 1 is inherited, not
         measured; grok-4.7, also live at tier 1, is unmeasured (the Grok
-        subscription ended). Tier-2 mean 0.4242, separation 0.2559: valid. Bar
-        for tier 1: 0.1184. Verdict muse-spark-1.3: lowered. Verdict
+        subscription ended). Tier-2 mean 0.424242, separation 0.255892:
+        valid. Bar for tier 1: 0.118350. Verdict muse-spark-1.3: lowered. Verdict
         gemini-3.8-flash: lowered. Both are capability_tier 0 since 1.22.0 and
         keep their fallback places (user decision 2026-10-15). Disclosed: the
         supplementary plan, written after these two seats' numbers were known
@@ -3405,7 +3405,7 @@ verification_ledger:
         been inconclusive (lowered only 0.10 or more under the anchor); review
         found the band post hoc, and the user chose the preregistered clause.
         With claude-fable-5-1 as the only judge, muse-spark-1.3 would be
-        confirmed (0.1397). Not part of the rule: recall splits the measured
+        confirmed (0.139731). Not part of the rule: recall splits the measured
         rows into two groups that do not follow the tiers (0.33-0.52 for the
         current Claude rows and gpt-6.1-sol, tiers 0-2; 0.10-0.17 for the
         rest, tiers 0-1). The writing rows among them do not move on a review
@@ -3421,26 +3421,41 @@ verification_ledger:
         counts as moved only when its outcome moved, not its failed model. (A)
         the two reviewer seats at tier 0, still listed — adopted in 1.22.0
         (user decision 2026-10-15): with xai withheld and Claude exhausted
-        12,468 routes change (2,462 review seats go to models that meet the
-        floor, mostly gpt-6.1-sol; 2,018 lose a cross-family review; 24 lose a
-        human gate and 18 gain one; proxy +0.9%); with Claude exhausted alone
-        1,298 change only the tier a shortfall record carries. The release
-        replay against the 1.21.0 registry gives the same 12,468 and no other
-        moved route, and no write route seats a model without write authority.
-        (B) the same seats at tier 0 and removed from every fallback list, the
-        consequence the first replay's plan attached to "lowered": with xai
-        withheld and Claude exhausted 20,168 routes change, mostly to
-        gpt-5.6-terra, and 12,032 lose a cross-family review (proxy +5.6%);
-        with Claude exhausted alone 1,298 lose one. (C) claude_worker_fast
-        capability_tier 0 -> 1: with every seat available, 1,860 retries after
-        gpt-6-luna fails (930 each on Claude Code and grok hosts) climb to
-        claude-haiku-5-5 instead of grok-4.7 or claude-sonnet-5-5, and 780
-        review seats change; with OpenAI exhausted 16,551 routes change
-        (21,366 with xai withheld too), the Claude fast seat taking review
-        seats from claude-sonnet-5-5. Proxy -0.7% to -2.3% (+0.5% with OpenAI
-        exhausted). All of it rests on writing strength nobody measured; not
-        adopted. (D) claude_worker_balanced 1 -> 2: 13,368 routes change with
-        every seat available, proxy -11.1%, the move the 2026-09-30 row
-        recorded; not adopted. Proxy: the sum of the seated worker's and
-        reviewers' output prices per MTok, no token weighting. Script and
-        output: docs/research/2026-10-14-tier-scale-counterfactuals/.
+        12,468 routes change; 2,462 change a review seat, 2,444 of them to
+        models that meet the band floor (mostly gpt-6.1-sol) and 18 to a pair
+        holding gpt-6-luna that now asks a human, while 24 lose that gate;
+        2,018 lose a cross-family review; retries after a seat fails climb to
+        gpt-5.6-terra instead of gpt-6.1-sol on 292, since the failure is now
+        tier 0; proxy +0.9%. With Claude exhausted alone 1,298 change only the
+        tier a shortfall record carries. (B) the same seats at tier 0 and
+        removed from every fallback list, the consequence the first replay's
+        plan attached to "lowered": with xai withheld and Claude exhausted
+        20,168 routes change, mostly to gpt-5.6-terra, and 12,032 lose a
+        cross-family review (proxy +5.6%); with Claude exhausted alone 1,298
+        lose one. (C) claude_worker_fast capability_tier 0 -> 1: with every
+        seat available, 1,860 retries after gpt-6-luna fails (930 each on
+        Claude Code and grok hosts) climb to claude-haiku-5-5 instead of
+        grok-4.7 or claude-sonnet-5-5, and 780 review seats change; with
+        OpenAI exhausted 16,551 routes change (21,366 with xai withheld too),
+        the Claude fast seat taking review seats from claude-sonnet-5-5. Proxy
+        -0.7% to -2.3% (+0.5% with OpenAI exhausted). All of it rests on
+        writing strength nobody measured; not adopted. (D)
+        claude_worker_balanced 1 -> 2: 13,368 routes change with every seat
+        available, proxy -11.1%, the move the 2026-09-30 row recorded; not
+        adopted. The release replay (the 1.21.0 registry against this one,
+        with this router, the 1.21.0 replay's thirteen scenarios and four
+        added in review) moves routes only where a tier-0 seat resolves the
+        balanced role: A's 12,468 (and the same with meta withheld too), the
+        1,298 above, 8 shortfall records with xai and meta withheld and OpenAI
+        exhausted, 318 reading leads that a low Claude quota now swaps to
+        gpt-5.6-terra instead of a seat, and the same tier-0 effects on routes
+        carrying an unknown root cause, where the investigation promotion now
+        floors the balanced role on a first attempt: none with only xai
+        withheld, 11,164 with Claude exhausted too (1,200 stay at MEDIUM
+        because their reviewer no longer comes through a fallback, 20 leave
+        ESCALATE_ROUTING) and 11,702 with the fast seat out as well (30 gain a
+        human gate). No route gains a terminal
+        state, and none seats a model without write authority where the work
+        writes. Proxy: the sum of the seated worker's and reviewers' output
+        prices per MTok, no token weighting. Script and output:
+        docs/research/2026-10-14-tier-scale-counterfactuals/.

@@ -186,14 +186,25 @@ the xai seat withheld and the Claude family exhausted, 5,956 routes change. On
 on 138 the lead of a REVIEW route, which counts as its first reviewer, goes to
 the OpenAI balanced model. Where this seat still sits beside a stronger
 reviewer on a HIGH or CRITICAL route, which already asked a human, the
-shortfall record now says tier 0. Across both hosts 2,018 routes lose the
-cross-family review this seat or the gemini seat supplied; 24 lose a human
-gate and 18 gain one. With the Claude family exhausted and the xai seat
+shortfall record now says tier 0. A retry after this seat fails climbs above
+tier 0 rather than above tier 1, so it reaches the OpenAI balanced model where
+it used to reach the OpenAI reasoning seat. Across both hosts 2,018 routes
+lose the cross-family review this seat or the gemini seat supplied; of 2,462
+review seats that change, 2,444 go to a model that meets the band's floor and
+18 to a pair holding the OpenAI fast model, which now asks a human (24 routes
+lose that request). With the Claude family exhausted and the xai seat
 available, 1,274 Claude Code routes change only the tier that record carries.
-An INVESTIGATION lead reads and is not a reviewer, so it still takes this
-model where it resolves the role — now at tier 0, which the route's
-`selected_capability_tier` reports. The execution band raises a worker only to
-a strictly stronger tier, so a few routes no longer raise their fast worker to
+
+A reading lead is not a reviewer, so an INVESTIGATION still takes this model
+where it resolves the role — now at tier 0, which the route's
+`selected_capability_tier` reports — with two exceptions. A low Claude quota
+no longer swaps a reading lead onto it, because that swap wants a model of the
+same tier: the OpenAI balanced model takes it (174 Claude Code routes with the
+xai seat withheld). And an INVESTIGATION with an unknown root cause, whose
+promotion asks for at least the balanced role, skips both tier-0 seats on its
+first attempt; its retry is held by the retry ladder instead, and the seats
+stay available to its reviewers. The execution band raises a worker only to a
+strictly stronger tier, so a few routes no longer raise their fast worker to
 this seat, and some that kept a fast worker for this seat's cross-family
 review now raise it to the OpenAI balanced model.
 
@@ -254,7 +265,9 @@ What 1.21.0 changed for this seat, against 1.20.0:
 What 1.22.0 moves, against 1.21.0: on Codex with the xai seat withheld and the
 Claude family exhausted, 6,512 routes change. On 1,256 a MEDIUM review seat goes
 from this seat to the OpenAI reasoning seat, and on 138 a REVIEW lead goes to
-the OpenAI balanced model. On Claude Code this seat takes the meta seat's
+the OpenAI balanced model. A low Claude quota and an unknown root cause pass it
+over for reading leads as they pass the meta seat (144 Codex routes for the
+quota). On Claude Code this seat takes the meta seat's
 counts above wherever that seat is withheld too. With the Claude family
 exhausted and the xai seat available, 24 Codex routes change only the tier
 their shortfall record carries. The cross-family and human-gate counts are in
