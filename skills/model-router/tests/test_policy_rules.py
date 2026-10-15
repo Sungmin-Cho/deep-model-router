@@ -359,7 +359,10 @@ def _t65_check(req, prev, cur):
     if cur["terminal"]:
         return [f"became {cur['terminal']}"]
     out = []
-    if TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]:
+    # A REVIEW task's lead is a review seat (DD-B7), held by the review rule
+    # below: it may move from a tier-3 substitute to the band's tier-2 seat.
+    if (req["task_class"] != "REVIEW"
+            and TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]):
         out.append("worker tier fell")
     if len(cur["review"]["review_depth_reduced"]) > len(prev["review"]["review_depth_reduced"]):
         out.append("a review newly staffed below its band")
@@ -489,7 +492,7 @@ RULES: dict[str, Rule] = {
                            "review.independence_required", "review.review_independence",
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
-        check=_t65_check, changed_sample=0, changed_full=0),
+        check=_t65_check, changed_sample=958, changed_full=21848),
 }
 
 

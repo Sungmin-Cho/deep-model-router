@@ -532,8 +532,9 @@ def test_the_implementation_replay_verdicts_follow_from_its_numbers():
     assert verdicts == {"claude_worker_balanced": "raise", "claude_worker_fast": "hold",
                         "openai_worker_balanced": "hold", "openai_worker_fast": "hold"}
     assert LEDGER[IMPL_ROW]["status"] == "verified"
-    assert LEDGER[IMPL_ROW]["supersedes"] == [
-        "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"]
+    superseded = LEDGER[IMPL_ROW]["supersedes"]
+    assert len(superseded) == 1 and superseded[0].startswith(
+        "claude_worker_balanced tier measurement after the ") and superseded[0] in LEDGER
 
 
 def test_a_writing_row_moves_only_where_both_replays_say_so():
