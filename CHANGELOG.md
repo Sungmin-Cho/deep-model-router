@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.0] — 2026-10-15 (implementation replay, promotion and guard fixes)
+
+### Changed
+
+- Never let an investigation's unknown-root-cause promotion seat a weaker worker than the one the risk table chose. Under scarcity the fast role can resolve to a stronger model than anything the balanced role holds; the promotion used to move the worker to the balanced role by position anyway. It now keeps the table's worker wherever it resolves strictly stronger, and still moves the role at an equal tier. Under the deepest shortage replayed this gives 34 Claude Code investigations GPT-6.1 Sol instead of GPT-5.6 Terra — the worker the same task gets without the flag — and where Sol is then not left to review, the route asks a human, as it already did without the flag. The model profile lists what moves.
+- State the execution guard's rule as it is enforced: a stronger worker from the execution band is adopted only when the review's depth stays the same, a deeper review included. A replay of yielding only to a shallower review moved 195 first attempts, every one of them raising the worker and the review together, so the guard is unchanged.
+
 ## [1.22.0] — 2026-10-15 (tiers measured against live models)
 
 ### Changed
