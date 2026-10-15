@@ -206,6 +206,28 @@ the two plans are weighed with the promotion the penalty would have made, and
 only the adopted plan is planned without it — counting uncertainty once never
 costs the worker a tier.
 
+A model that **failed** is not a model that went missing (1.23.1, issue #70).
+`prior_failures` already charges a retry for the failure, so the seat that
+replaces a failed model is compared against the first eligible successor on
+the role's ladder that did not merely fail, before any `low` family-quota
+worker swap. That successor is exempted from the fallback charge only when it
+is usable; a withheld successor remains a scarcity fallback. A failed model
+that is also withheld right now — `unavailable_models`, an exhausted family
+quota or a local revocation — remains a fallback too, because it is a current
+supply observation, not a restatement of history. A retry-caused downgrade can
+coexist with an actual successor-outage fallback. Where author/write
+eligibility and a `low` worker swap had hidden an unavailable successor, the
+retry-aware baseline can restore its scarcity penalty. That can lower
+confidence, change the review band, or trigger reclassification. This does not
+promise monotonic confidence or unchanged terminal status across every input.
+A changed review band can also change the worker tier under the unchanged
+execution guard. `0.60` and `0.80` both read the fallbacks that remain, so a
+route that only carried the retry's second charge
+can now execute at `0.60`, and one that the charge alone promoted past `0.80`
+keeps the band its risk asks for; the risk band, the override floors and the
+review policy never change. A first REVIEW attempt with two families withheld
+has no history to exempt and still takes the fallback's penalty.
+
 Low routing confidence must never be silently ignored. Both the value and the
 reason for it belong in the emitted rationale, because "the router wasn't sure"
 is exactly the context a human needs when the route turns out wrong.
@@ -307,7 +329,8 @@ codex rollout records say, without running codex.
   family when one exists — a binding choice with no confidence penalty, and no
   move at all without a same-tier seat. Review seats are unaffected. The
   execution cell is weighed without it, so a `low` reading never costs the
-  worker a tier.
+  worker a tier. The retry fallback baseline walks the pre-swap eligible ladder;
+  it exempts the failed binding only if that ladder's successor is usable.
 - `ok`, or no entry, changes nothing. Absent, the field leaves
   `request_sha256` unchanged.
 

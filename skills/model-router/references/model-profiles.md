@@ -688,13 +688,26 @@ With the xai seat withheld 15,246 routes move, and 3,888 critical routes that
 had no adjudicator now have one. The summed output price of the seated models
 falls 11% with every seat available and 8% with the xai seat withheld; with
 OpenAI exhausted it rises 3%, and 1,024 routes that had no independent
-reviewer become dispatchable. Retries after the xai seat fails now land on this
-seat through the balanced role's fallback list, which costs 0.06 routing
-confidence; with an unknown root cause that takes 718 routes that sat exactly
-at 0.60 under it, and they now end ESCALATE_ROUTING (454 retries, and 264
-REVIEW tasks with the xai seat withheld and OpenAI exhausted, whose seat search
-now lands on a fallback seat where it used to pair the senior and architect
-seats). Cross-family review is
+reviewer become dispatchable. **1.23.0 as released** (historical numbers):
+retries after the xai seat fails landed on this seat through the balanced
+role's fallback list, which cost 0.06 routing confidence on top of the failure
+they already paid for. In the **1.23.0 replay**, 454 retries sat at 0.60 and 264
+first REVIEW attempts with the xai seat withheld and OpenAI exhausted sat at
+0.65; the fallback charge reduced them to 0.54 and 0.59, respectively, below
+the routing threshold. **1.23.1 (issue #70) repairs the retry charge:** a seat
+reached because the binding's model *failed* is not itself a scarcity fallback,
+so the retry downgrade is retained without charging that same failure twice.
+Actual scarcity still counts when the failed model is also currently withheld,
+or a successor is withheld; a retry-caused downgrade can coexist with that
+outage fallback. The 1.23.1 replay restored 452 of the 454 retries to 0.60; two
+remain below threshold because the large-context investigation has its XAI seat
+withheld, OpenAI exhausted, and the Sonnet seat failed. The 264 first REVIEW
+attempts remain fresh routes at 0.59: no model failed there, and two families
+are unavailable. Because 0.60 and 0.80 both read the remaining fallbacks,
+removing the retry-only charge can change the review band, and the existing
+execution guard may then change the worker tier too; neither path goes below
+the risk band or override floors. **The following cross-family review counts
+are the 1.23.0 tier counterfactual, not the 1.23.1 retry replay:** review is
 gained on 4,572 routes and lost on 264 with every seat available (4,548 and
 528 with the xai seat withheld; 2,566 and 4,360 with OpenAI exhausted). A
 `low` xai quota now swaps a reading lead to the OpenAI balanced model, the

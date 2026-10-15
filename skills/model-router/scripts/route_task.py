@@ -2529,6 +2529,14 @@ class Resolver:
                                 if quota.get(m["family"]) == "exhausted"}
         self.quota_low = frozenset(f for f, level in quota.items() if level == "low")
         self.quota_swaps: dict[str, str] = {}
+        # Compensation rule -> why its role moved, for rules whose role's
+        # fallback baseline the retry's eligibility rule moved off a model that
+        # failed. "retry": no fallback was recorded for the role, the retry is
+        # the whole cause. "retry_and_scarcity": the seat the baseline moved to
+        # was itself withheld, so a real fallback was recorded next to the
+        # retry. Rules absent here were caused by scarcity alone. Rebuilt by
+        # every `resolve`.
+        self.retry_compensations: dict[str, str] = {}
         self.unusable = self.blocked | self.failed | self.local_blocked | self.quota_exhausted
 
         # Does THIS route's worker seat have to write? Set by `route()`.
@@ -2619,7 +2627,15 @@ class Resolver:
                 return alt
         return self.binding.get(role)
 
-    def _candidates(self, role: str, *, write: bool = False) -> list[str]:
+    def _candidates(self, role: str, *, write: bool = False,
+                    quota_order: bool = True) -> list[str]:
+        """The role's eligible ladder, in the order the seat is chosen from.
+
+        `quota_order=False` returns the same eligible seats in the policy's
+        order BEFORE the DD-B8 low-quota swap: what the seat would have been
+        compared against had no family been low. `_retry_baseline` reads it;
+        every chooser reads the swapped order.
+        """
         cfg = self.policy.cfg
         ordered: list[str] = []
         if (primary := self._primary(role)):
@@ -2677,7 +2693,8 @@ class Resolver:
                 out = meets
         # A REVIEW task's lead is a review seat (DD-B7), and `low` moves the
         # worker seat only (review i1).
-        if self.quota_low and not self.source_review and (write or role == self.write_seat_role):
+        if (quota_order and self.quota_low and not self.source_review
+                and (write or role == self.write_seat_role)):
             out = self._quota_low_order(role, out)
         return out
 
@@ -2734,6 +2751,7 @@ class Resolver:
         fallbacks = list(self.notes)
         compensations: list[str] = []
         comp_cfg = cfg.get("fallback_compensations", {})
+        self.retry_compensations = {}
 
         for role in roles:
             if self.pinned_worker is not None and role == self.pinned_worker[0]:
@@ -2742,43 +2760,22 @@ class Resolver:
                 continue
             write = role == write_role
             primary_key = self._primary(role)
-            primary_id = cfg["models"][primary_key]["id"] if primary_key else None
-            if primary_id in self.author_excluded:
-                # Intentional author exclusion is eligibility, not an outage.
-                # Keep the first eligible candidate as the baseline BEFORE
-                # applying availability, so a real outage still gets recorded.
-                offered = self._candidates(role, write=write)
-                primary_id = cfg["models"][offered[0]]["id"] if offered else None
-            # A seat the policy never offered for THIS kind of work is not a
-            # model that went missing, and must not be billed as one. Same rule
-            # `_primary` already follows for the alt-seat preference: a swap the
-            # policy made on purpose is a binding decision, not a fallback.
-            #
-            # It is not cosmetic. `fallbacks_applied` feeds `routing_confidence`,
-            # which can promote the review band — so recording this as scarcity
-            # promoted the review of EVERY cross-family write route on the two
-            # hosts that bridge to xai, permanently, with no change in the risk
-            # that review is supposed to answer to. `test_s3` caught it as a
-            # band moving from HIGH to CRITICAL.
-            #
-            # The baseline MOVES to the first seat the policy does offer; it is
-            # never dropped. Round 1 of review dropped it, and that bought the
-            # first defect by committing its mirror image: the next candidate's
-            # genuine outage then had nothing to be compared against, so a real
-            # scarcity fallback, its 0.10 confidence penalty and the review
-            # promotion that follows all disappeared. Not recording a change
-            # that DID happen is the same failure as recording one that did not.
-            if (primary_id is not None and self.worker_writes
-                    and (write or role == self.write_seat_role)
-                    and not self.policy.write_capable(
-                        self.task.runtime, self.policy.family_of[primary_id])):
-                offered = self._candidates(role, write=write)
-                primary_id = cfg["models"][offered[0]]["id"] if offered else None
+            bound_id = cfg["models"][primary_key]["id"] if primary_key else None
+            # Two baselines from the same binding. Compensation compares the
+            # seat against the 1.23.0 effective baseline, untouched by the
+            # retry's eligibility rule; the fallback record compares it against
+            # the retry-aware one. They differ only when the first eligible seat
+            # merely failed (`_eligible_baseline`).
+            comp_primary = self._effective_baseline(role, bound_id, write=write, retry=False)
+            primary_id = self._effective_baseline(role, bound_id, write=write, retry=True)
             chosen_id = self.peek(role, write=write)
-            if (chosen_id is not None and chosen_id == self.quota_swaps.get(role)
-                    and primary_id is not None and primary_id not in self.unusable):
-                # A low-quota family moved this seat on purpose (DD-B8): a
-                # binding decision, not a model that went missing.
+            swapped = chosen_id is not None and chosen_id == self.quota_swaps.get(role)
+            # A low-quota family moved this seat on purpose (DD-B8): a binding
+            # decision, not a model that went missing. Each baseline is
+            # exempted on its own.
+            if swapped and comp_primary is not None and comp_primary not in self.unusable:
+                comp_primary = chosen_id
+            if swapped and primary_id is not None and primary_id not in self.unusable:
                 primary_id = chosen_id
             if chosen_id is None:
                 # The fourth cause is new and is often the only true one: the
@@ -2793,17 +2790,147 @@ class Resolver:
                                 f"{self.task.runtime}")
                 raise SupplyExhausted(f"no usable model for role {role!r}: {because}")
             resolved[role] = chosen_id
+            # Compensation answers "what did this role lose against what it
+            # binds to", which a retry's eligibility rule below does not change:
+            # the architect that failed and was replaced by a weaker model still
+            # needs the second review. Joint seats already meet their explicit
+            # tier/effort floors, and a role label reused for a peer is not an
+            # architect downgrade.
+            if (role not in self.assignments and comp_primary is not None
+                    and chosen_id != comp_primary):
+                found = self._compensations(role, comp_primary, chosen_id, comp_cfg)
+                compensations.extend(found)
+            else:
+                found = []
+            baseline = self._retry_baseline(role, primary_id, write=write)
+            moved = baseline != primary_id
+            # The same DD-B8 rule as above, read against the moved baseline: a
+            # low-quota swap off a seat the retry could have used is a binding
+            # decision; a swap that merely landed past a withheld seat is not.
+            if (moved and baseline is not None and baseline not in self.unusable
+                    and chosen_id == self.quota_swaps.get(role)):
+                baseline = chosen_id
+            primary_id = baseline
             # Deliberate seat allocation is not model unavailability. Preserve
             # an actual outage behind the original role baseline.
             if role in self.assignments and primary_id not in self.unusable:
                 primary_id = chosen_id
-            if primary_id is not None and chosen_id != primary_id:
+            recorded = primary_id is not None and chosen_id != primary_id
+            if recorded:
                 fallbacks.append(f"{role}: {primary_id} unavailable -> {chosen_id}")
-                # Joint seats already meet their explicit tier/effort floors.
-                # A role label reused for a peer is not an architect downgrade.
-                if role not in self.assignments:
-                    compensations.extend(self._compensations(role, primary_id, chosen_id, comp_cfg))
+            if moved and found:
+                # The retry moved what this role is compared against. Whether
+                # a fallback was still recorded (the seat it moved to was
+                # withheld) or none was, the note must say which.
+                cause = "retry_and_scarcity" if recorded else "retry"
+                for note in found:
+                    if self.retry_compensations.get(note) != "retry_and_scarcity":
+                        self.retry_compensations[note] = cause
         return resolved, fallbacks, compensations
+
+    def _retry_baseline(self, role: str, primary_id: str | None, *, write: bool) -> str | None:
+        """The model this role is compared against when a fallback is counted.
+
+        A model that already failed is not a model that went missing: the
+        caller's history made it ineligible, and `prior_failures` already
+        charged the retry for it. Counting the seat that replaces it as a
+        scarcity fallback billed the same retry twice (issue #70: 454 retries
+        sat on the 0.60 threshold in 1.22.0 and fell to 0.54 once Sonnet 5.5
+        moved to tier 2 and the balanced role reached it through its fallback
+        list). When the baseline is such a model it moves to the first seat the
+        role's candidate ladder offers that did not merely fail.
+
+        The ladder is `_candidates` itself, so author, write, family and
+        dispatch eligibility decide the successor, never a hand-built list. It
+        is read in the policy's order, BEFORE the DD-B8 low-quota swap: the
+        swap reorders the ladder the seat is chosen from, and reading the
+        swapped order here put the swap target ahead of a withheld successor
+        and lost the outage (Meta low, xai failed, Sonnet withheld: the seat
+        landed on the Gemini swap and nothing was recorded, where without the
+        quota the same route recorded Sonnet -> Muse). `resolve` exempts the
+        swap afterwards, only when the seat it moved off was usable.
+
+        A model that failed AND is currently withheld (the caller's
+        `unavailable_models`, an exhausted family, a local revocation) is a
+        real supply observation and keeps counting, as does any withheld
+        successor: only the history is exempted, never the outage.
+        """
+        failure_only = self._failure_only()
+        if primary_id is None or primary_id not in failure_only:
+            return primary_id
+        models = self.policy.cfg["models"]
+        for key in self._candidates(role, write=write, quota_order=False):
+            if models[key]["id"] not in failure_only:
+                return models[key]["id"]
+        return None
+
+    def _failure_only(self) -> set[str]:
+        """Models the caller's history excludes and nothing else withholds.
+
+        Historical failure alone is eligibility. A model that failed AND is
+        currently blocked, locally revoked or in an exhausted family is a
+        current supply observation and is not in this set.
+        """
+        return self.failed - (self.blocked | self.quota_exhausted | self.local_blocked)
+
+    def _eligible_baseline(self, role: str, *, write: bool, retry: bool) -> str | None:
+        """The first seat the policy offers, as the baseline of a role whose
+        binding is ineligible here (the author's model, or no write recipe).
+
+        `retry=False` is 1.23.0: the ladder in its chosen order, after the
+        DD-B8 low-quota swap. Compensation always reads this one, and so does
+        the fallback record on every route with no capability failure (issue
+        #70 keeps such routes as they are). `retry=True` differs in one case:
+        when the first eligible seat BEFORE the swap is a model that merely
+        failed, that seat is returned, so `_retry_baseline` moves past it on
+        the same pre-swap ladder and a withheld successor is still recorded
+        (Codex: Sonnet failed, Terra withheld, OpenAI low; the author's xai
+        seat: Sonnet failed, Muse withheld, Claude low). A failure elsewhere
+        on the ladder changes nothing.
+        """
+        models = self.policy.cfg["models"]
+        if retry:
+            offered = self._candidates(role, write=write, quota_order=False)
+            if offered and models[offered[0]]["id"] in self._failure_only():
+                return models[offered[0]]["id"]
+        offered = self._candidates(role, write=write)
+        return models[offered[0]]["id"] if offered else None
+
+    def _effective_baseline(self, role: str, bound_id: str | None, *, write: bool,
+                            retry: bool) -> str | None:
+        """The role's binding after the two eligibility rules of `resolve`.
+
+        Intentional author exclusion is eligibility, not an outage: the
+        baseline moves to the first eligible candidate BEFORE availability is
+        applied, so a real outage still gets recorded.
+
+        A seat the policy never offered for THIS kind of work is not a model
+        that went missing, and must not be billed as one. Same rule `_primary`
+        already follows for the alt-seat preference: a swap the policy made on
+        purpose is a binding decision, not a fallback. It is not cosmetic.
+        `fallbacks_applied` feeds `routing_confidence`, which can promote the
+        review band — so recording this as scarcity promoted the review of
+        EVERY cross-family write route on the two hosts that bridge to xai,
+        permanently, with no change in the risk that review is supposed to
+        answer to (`test_s3` caught it as a band moving from HIGH to CRITICAL).
+
+        The baseline MOVES to the first seat the policy does offer; it is
+        never dropped. Round 1 of review dropped it, and that bought the first
+        defect by committing its mirror image: the next candidate's genuine
+        outage then had nothing to be compared against, so a real scarcity
+        fallback, its 0.10 confidence penalty and the review promotion that
+        follows all disappeared. Not recording a change that DID happen is the
+        same failure as recording one that did not.
+        """
+        primary_id = bound_id
+        if primary_id in self.author_excluded:
+            primary_id = self._eligible_baseline(role, write=write, retry=retry)
+        if (primary_id is not None and self.worker_writes
+                and (write or role == self.write_seat_role)
+                and not self.policy.write_capable(
+                    self.task.runtime, self.policy.family_of[primary_id])):
+            primary_id = self._eligible_baseline(role, write=write, retry=retry)
+        return primary_id
 
     def _compensations(self, role, primary_id, chosen_id, comp_cfg) -> list[str]:
         """Configured compensations for a downgrade. Declared and never applied,
@@ -2818,6 +2945,26 @@ class Resolver:
             if (rule := comp_cfg.get("reasoning_specialist_to_same_family")):
                 out.append(rule)
         return out
+
+
+def diversity_compensation_note(cause: str | None) -> str:
+    """The effort note for `raise_effort_one_level`, by what moved the seat.
+
+    Id-free, like the other notes: a terminal route withholds bindings.
+    `cause` is the `Resolver.retry_compensations` entry for the rule: None
+    when scarcity alone moved the seat (a fallback is recorded), "retry" when
+    the seat moved off an already-failed model and nothing is recorded,
+    "retry_and_scarcity" when the retry moved the baseline AND the seat it
+    moved to was withheld, so a fallback is recorded as well. The note must
+    not claim a fallback that was not counted, nor hide one that was.
+    """
+    if cause == "retry":
+        return ("compensation: retry moved the seat off an already-failed model "
+                "and family diversity was lost, effort +1")
+    if cause == "retry_and_scarcity":
+        return ("compensation: retry moved the seat off an already-failed model, "
+                "its successor was unavailable, and family diversity was lost, effort +1")
+    return "compensation: fallback lost family diversity, effort +1"
 
 
 # --------------------------------------------------------------------------
@@ -3691,7 +3838,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
             for note in compensations:
                 if note == "raise_effort_one_level":
                     effort = policy.effort_up(effort)
-                    effort_notes.append("compensation: fallback lost family diversity, effort +1")
+                    effort_notes.append(diversity_compensation_note(
+                        resolver.retry_compensations.get(note)))
                     applied_compensations.append(note)
                 elif note == "raise_effort_to_MAX_and_add_second_review":
                     effort = policy.efforts[-1]

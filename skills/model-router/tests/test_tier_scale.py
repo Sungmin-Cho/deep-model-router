@@ -551,21 +551,28 @@ def test_a_writing_row_moves_only_where_both_replays_say_so():
         assert MODELS[key]["capability_tier"] == before + step, (key, review[key], impl[key])
 
 
-def test_a_retry_at_the_confidence_threshold_now_asks_to_be_rerouted():
-    """Review i1 (fable F2, sol): accepted and pinned. A retry after the xai
-    seat fails sat exactly at 0.60 on the senior seat's own binding (u3 0.20,
-    unknown root cause 0.10, one failure 0.05). With the Claude balanced model
-    at tier 2 the ladder's weakest role above tier 1 is the balanced role,
-    which reaches that model through its fallback list (0.06 more), and the
-    route asks to be re-routed instead of dispatching. 454 such retries in the
-    replay, all carrying an unknown root cause (the REVIEW half is below)."""
+def test_a_retry_at_the_confidence_threshold_dispatches_the_balanced_seat():
+    """Review i1 (fable F2, sol), pinned in 1.23.0 as ESCALATE_ROUTING at 0.54
+    and REPAIRED in 1.23.1 (issue #70). A retry after the xai seat fails sits
+    exactly at 0.60 (u3 0.20, unknown root cause 0.10, one failure 0.05). With
+    the Claude balanced model at tier 2 the ladder's weakest role above tier 1
+    is the balanced role, which reaches that model through its fallback list.
+    1.23.0 billed that as a scarcity fallback (0.06) on top of the failure the
+    retry already pays for; nothing was missing, the xai seat had FAILED, so
+    1.23.1 compares the role against the first seat that did not merely fail
+    (`Resolver._retry_baseline`) and the retry dispatches Sonnet at 0.60. The
+    1.23.0 population (454 in the release replay) is the population measured,
+    not a count promised back; the retries that stay terminal are the ones whose
+    supply is really short (test_retry_eligibility.py)."""
     kw = dict(task_class="DEBUGGING", complexity=0, uncertainty=3, blast_radius=0,
               reversibility=2, runtime="claude_code", flags=["unknown_root_cause"])
     fresh = route(Task(**kw), CFG)
     assert fresh["selected_model"] == XAI
     retry = route(Task(**kw, prior_failures=1, prior_models=[XAI]), CFG)
-    assert retry["terminal"] == "ESCALATE_ROUTING"
-    assert retry["routing_confidence"] == pytest.approx(0.54)
+    assert retry["terminal"] is None
+    assert retry["selected_model"] == ID("claude_worker_balanced")
+    assert retry["fallbacks_applied"] == []
+    assert retry["routing_confidence"] == pytest.approx(0.60)
     old = copy_cfg_with_tier("claude_worker_balanced", 1)
     before = route(Task(**kw, prior_failures=1, prior_models=[XAI]), old)
     assert (before["terminal"], before["selected_model"]) == (None, ID("claude_senior"))
@@ -577,7 +584,13 @@ def test_a_review_with_two_families_out_now_asks_to_be_rerouted():
     tasks with an unknown root cause, the xai seat withheld and OpenAI
     exhausted. 1.22.0 paired the senior and architect seats at 0.65; the
     seat search now lands on a fallback seat (0.06) and the route asks to be
-    re-routed."""
+    re-routed.
+
+    KEPT in 1.23.1 on purpose (issue #70). Unlike the retry above nothing here
+    failed: two families are really withheld, so the fallback is a genuine
+    scarcity observation and the 0.59 is the router saying the supply is thin.
+    There is no history to exempt, and no blanket exemption for assignment or
+    fallback was added."""
     kw = dict(task_class="REVIEW", complexity=0, uncertainty=3, blast_radius=1,
               reversibility=3, runtime="claude_code", flags=["unknown_root_cause"],
               unavailable_models=[XAI], _family_quota={"openai": "exhausted"})
