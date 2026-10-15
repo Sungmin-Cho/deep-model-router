@@ -1398,7 +1398,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read), then `gemini_worker_balanced` (seats that read), then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read; tier 0), then `gemini_worker_balanced` (seats that read; tier 0), then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1409,7 +1409,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `openai_worker_balanced`, then `claude_worker_fast` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_worker_balanced` (seats that read), then `openai_worker_balanced`, then `openai_reasoning` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_worker_balanced` (seats that read; tier 0), then `openai_worker_balanced`, then `openai_reasoning` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
 | `principal_architect` (claude) | `openai_frontier`, then `openai_reasoning`, then `claude_architect` |
@@ -1447,7 +1447,13 @@ where the meta seat was skipped to get there, the route gains the note
 `worker_balanced: no write-capable meta seat on claude_code; seated the
 <family> one`. `model-profiles.md` ("The meta reviewer seat") lists what that
 changes, and why the Claude model leads again (a measured gap in review
-recall).
+recall). Since 1.22.0 the seat is tier 0: a review seat whose band floor asks
+for tier 1 or more skips it for the next model that meets the floor, so it
+keeps leading reading work and sitting where nothing asks more of it. An
+INVESTIGATION with an unknown root cause is the exception: on a first attempt
+its promotion is a floor, so the balanced role skips both tier-0 seats unless
+no usable model meets the floor or meeting it would leave no independent
+reviewers; the route notes either waiver.
 
 **The gemini seat reads, after the Claude model.** `gemini_worker_balanced` is
 bound to no role. On a Claude Code host it is the third fallback of
@@ -1460,8 +1466,9 @@ seat that writes: the Claude Code direction ships a maker recipe
 false` by decision, and the Codex direction has a reviewer recipe only. Where it
 was skipped on a write route, the note reads `worker_balanced: no
 write-capable gemini seat on <runtime>; seated the <family> one`. Grok hosts do
-not offer the family. `model-profiles.md` ("The gemini reviewer seat") lists
-what seating it changes.
+not offer the family. Since 1.22.0 it is tier 0, read the same way as the meta
+seat. `model-profiles.md` ("The gemini reviewer seat") lists what seating it
+changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The

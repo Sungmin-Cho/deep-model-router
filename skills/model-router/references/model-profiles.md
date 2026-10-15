@@ -140,7 +140,7 @@ Degraded bindings for when a bridge is down are in `adapters.md`.
 
 ### The meta reviewer seat
 
-`meta_worker_balanced` is a fourth family's tier-1 model, bound to no role. On
+`meta_worker_balanced` is a fourth family's tier-0 model, bound to no role. On
 a Claude Code host it is the second fallback of `worker_balanced`, after the
 Claude balanced model, through a read-only recipe and no write recipe
 (`adapters.md`, "The meta seat reads, on Claude Code only"). A role resolves to
@@ -150,11 +150,16 @@ both withheld, the Claude family exhausted or outside `allowed_families`, or a
 `review_context` naming both families as authors. Codex and grok hosts never
 seat it.
 
-**Its tier is measured since 1.21.0.** The 2026-10-14 real-review replay
-(below) confirmed tier 1 by the rule fixed before it ran: level with the
-previous Sonnet generation, this registry's tier-1 anchor. The same replay put
-it at about a quarter of the Claude balanced seat's recall. That is why the
-Claude model leads the list again (user decision, 2026-10-14). 1.19.0 had put
+**Its tier is 0 since 1.22.0.** The 2026-10-14 real-review replay (below)
+confirmed tier 1 against the previous Sonnet generation, a history row. Read
+against the live tier-1 rows, as tiers are now measured (`evaluation.md`, "How
+a tier is measured"), the same preregistered rule lowers it: its recall falls
+more than five points under the OpenAI balanced model, the lowest measured live
+tier-1 row, and is about a quarter of the Claude balanced seat's. That last
+figure is why the Claude model leads the list again (user decision,
+2026-10-14). The seat keeps its place in the list (user decision, 2026-10-15):
+where it resolves the role, a review seat whose band asks for tier 1 or more
+now goes to a model that meets the floor. 1.19.0 had put
 this seat first, for a cross-family reviewer wherever the xai seat was out; a
 caller who still wants that withholds the Claude balanced model's id for the
 route.
@@ -174,10 +179,48 @@ author scenarios):
   the cross-family review those routes had is given up for the stronger
   same-family reviewer.
 
+What 1.22.0 moves, against 1.21.0 (the same 33,792-route grid per scenario):
+only routes where this seat resolved the balanced role. On Claude Code with
+the xai seat withheld and the Claude family exhausted, 5,956 routes change. On
+700 a MEDIUM review seat goes from this seat to the OpenAI reasoning seat, and
+on 138 the lead of a REVIEW route, which counts as its first reviewer, goes to
+the OpenAI balanced model. Where this seat still sits beside a stronger
+reviewer on a HIGH or CRITICAL route, which already asked a human, the
+shortfall record now says tier 0. A retry after this seat fails is unchanged:
+it reaches the OpenAI reasoning seat either way. Across
+both hosts 2,018 routes lose the cross-family review this seat or the gemini
+seat supplied; of 2,462 review seats that change, 2,426 go to a slate that
+meets the band's floor (four of them LOW-band REVIEW leads, which have none)
+and 36 to a slate the route records as below it (18 of those now ask a human,
+18 already did; 24 routes stop asking). With the Claude family exhausted and the xai seat
+available, 1,274 Claude Code routes change only the tier that record carries.
+
+A reading lead is not a reviewer, so an INVESTIGATION still takes this model
+where it resolves the role — now at tier 0, which the route's
+`selected_capability_tier` reports — with two exceptions. A low Claude quota
+no longer swaps a reading lead onto it, because that swap wants a model of the
+same tier: the OpenAI balanced model takes it (174 Claude Code routes with the
+xai seat withheld). And an INVESTIGATION with an unknown root cause, whose
+promotion asks for at least the balanced role, skips both tier-0 seats on its
+first attempt unless no usable model meets that floor or meeting it would
+leave no independent reviewer (the route notes either); its retry is held by
+the retry ladder instead, and the seats stay available to its reviewers.
+
+Routes carrying an unknown root cause lose some review depth too. With the
+xai seat out and the Claude family exhausted, 1,200 drop from HIGH to MEDIUM
+review — one reviewer instead of two — because their reviewer no longer comes
+through a fallback, which used to cost enough routing confidence to raise the
+band; on 88 of them, IMPLEMENTATION and DEBUGGING routes, the execution band's
+raise then yields to keep the bands equal, and the OpenAI fast model stays the
+worker where 1.21.0 raised it to the OpenAI balanced model. The execution band raises a worker only to a
+strictly stronger tier, so a few routes no longer raise their fast worker to
+this seat, and some that kept a fast worker for this seat's cross-family
+review now raise it to the OpenAI balanced model.
+
 ### The gemini reviewer seat
 
 `gemini_worker_balanced` is the gemini family's first dispatchable model, a
-tier-1 seat bound to no role. On a Claude Code host it is the third fallback of
+tier-0 seat bound to no role. On a Claude Code host it is the third fallback of
 `worker_balanced`, after the Claude balanced model and the meta seat; on a
 Codex host it is the second, right after the Claude balanced model
 (`adapters.md`, "The gemini seat reads, after the Claude model", and
@@ -186,9 +229,10 @@ Code direction ships a maker recipe, but its write authority is withheld
 (below), and the Codex direction has none. Grok hosts never seat it. The
 unbound gemini row the suite names is untouched and still never seated.
 
-**Its tier is measured since 1.21.0**, on the same footing as the meta seat:
-the replay confirmed tier 1 against the anchor and put it at about a fifth of
-the Claude balanced seat's recall.
+**Its tier is 0 since 1.22.0**, on the same footing as the meta seat:
+confirmed against the previous Sonnet generation, lowered against the live
+tier-1 rows, listed where it was, and at about a fifth of the Claude balanced
+seat's recall.
 
 **The maker seat is shipped without write authority.** The `agy-maker-v1`
 profile contains a write seat (`adapters.md`, "The maker profile"), and its
@@ -226,6 +270,20 @@ What 1.21.0 changed for this seat, against 1.20.0:
   `low`, `medium` and `high` only, so the seat's ceiling is HIGH and a floor
   that wants more records `effort_below_floor` (a human gate) rather than
   mapping silently.
+
+What 1.22.0 moves, against 1.21.0: on Codex with the xai seat withheld and the
+Claude family exhausted, 6,512 routes change. On 1,256 a MEDIUM review seat goes
+from this seat to the OpenAI reasoning seat, and on 138 a REVIEW lead goes to
+the OpenAI balanced model. A retry after this seat fails climbs above tier 0
+rather than above tier 1, so it reaches the OpenAI balanced model where it used
+to reach the OpenAI reasoning seat: on 144 Codex routes, and on 144 Claude Code
+routes where the meta seat is withheld too. A low Claude quota and an unknown
+root cause pass it over for reading leads as they pass the meta seat (144 Codex
+routes for the quota). On Claude Code, with the meta seat withheld, this seat
+takes the meta seat's fresh-route counts above. With the Claude family
+exhausted and the xai seat available, 24 Codex routes change only the tier
+their shortfall record carries. The cross-family and human-gate counts are in
+the meta seat's section.
 
 ### The OpenAI frontier seat
 
@@ -324,7 +382,10 @@ $0.10 / $0.50 per million input / output tokens, half the input price and
 under half the output price quoted above, so the price argument is stronger
 than it was. The 446-node head-to-head was not re-run. Read its scores as the
 predecessor generation's; `capability_tier` 0 comes from the lineage, and the
-ledger says so in its own row.
+ledger says so in its own row. The 2026-10-14 real-review replay measured this
+seat as a live tier-0 anchor: about a third of the Claude fast seat's review
+recall, level with the previous Sonnet generation. It writes, so that moves
+nothing on its own.
 
 So the binding rests on the verified price advantage, not on a demonstrated
 quality advantage — which is exactly what the "cheapest capable model carries
@@ -343,11 +404,19 @@ it into the registry). The published price fell to a tenth of its
 predecessor's on input and output for prompts up to 100,000 tokens; a longer
 prompt pays five times that for the whole request, recorded as the row's
 `long_context` block. The context window grew to a million tokens. Its
-`capability_tier` 0 is inherited from the lineage, and nothing here re-decided
-it. One measurement exists and moved nothing: in the 2026-10-14 real-review
-replay below, this seat — run as a reported subject — recalled close to the
-Claude balanced seat and three times the tier-1 anchor. Whether that should
-raise its tier is a binding decision of its own and is left open.
+`capability_tier` 0 is inherited from the lineage. One measurement exists: in
+the 2026-10-14 real-review replay below, this seat — run as a reported subject
+— recalled close to the Claude balanced seat and three times the previous
+Sonnet generation. **It does not raise the tier** (1.22.0). The replay
+separates this seat from neither the Claude balanced seat nor the tier-2 mean,
+so if it supported tier 1 it would support tier 2 as well; and this seat
+writes, so a review replay measures half of what its tier gates (`evaluation.md`,
+"How a tier is measured"). What a raise would have moved was replayed first:
+with every seat available, retries after the OpenAI fast seat fails would
+climb to this seat instead of a balanced one on Claude Code and grok hosts
+(1,860 routes), and with OpenAI exhausted it would take review seats from the
+Claude balanced model on thousands more — all of it resting on a writing
+strength nobody has measured.
 
 ## Why `worker_balanced` is bound to the xai frontier model
 
@@ -482,7 +551,10 @@ Average recall over two runs:
 
 This seat closes 44% of the distance from the anchor to the tier-2 seats,
 short of the 75% the rule required. It stays at tier 1, now on measured
-evidence rather than inherited evidence. The ledger row recording the balanced
+evidence rather than inherited evidence. Read under the method adopted in
+1.22.0 (`evaluation.md`, "How a tier is measured"), that check anchored on a
+history row and replayed a review for a seat that writes, so it is recorded and
+decides nothing: the tier is 1 by lineage. The ledger row recording the balanced
 seat's tier measurement has the method and its limits. A vendor's launch table is still recorded as `documented`, never as
 the reason a tier moved.
 
@@ -507,8 +579,43 @@ The rule's bar for tier 1 is the anchor minus five points, so both reviewer
 seats confirmed tier 1. What the rule could not say, the table does: the anchor
 itself sits far below the current Claude balanced and fast seats. Acting on
 that, the Claude balanced model now leads the balanced worker's fallback list
-again, and the gemini maker seat stays without write authority. Whether the
-anchor, or the fast seat's tier, should move is left open. The ledger rows "…
-tier measurement (real-review replay, 2026-10-14)" carry the limits: the ground
-truth came from two of the reviewers measured here, findings outside it are not
-credited, and the seats were compared with their own tool surfaces.
+again, and the gemini maker seat stays without write authority. The ledger
+rows "… tier measurement (real-review replay, 2026-10-14)" carry the limits:
+the ground truth came from two of the reviewers measured here, findings outside
+it are not credited, and the seats were compared with their own tool surfaces.
+
+**Re-read against live anchors (1.22.0, issue #63).** The anchor above is a
+history row: the previous Sonnet generation is never seated, so it says nothing
+about the models the router treats as tier 1 today. Tiers are now measured
+against the live rows that hold them, the lowest one measured setting the bar
+(`evaluation.md`, "How a tier is measured"). The two live OpenAI rows the replay
+had not covered were run on the same packages, judges and method:
+
+| Seat | Tier | Recall |
+|---|---|---|
+| OpenAI balanced seat | 1 | 17% |
+| OpenAI fast seat | 0 | 13% |
+
+The live tier-1 bar is therefore the OpenAI balanced seat's 16.8%, still well
+separated from tier 2 (42%); that seat's own tier is inherited, not measured,
+and the xai seat, also live at tier 1, could not be measured. Five points under
+the bar is 11.8%: the meta seat (11.7%) and the gemini seat (9.8%) fall below
+it, so the same preregistered rule that confirmed them against the history row
+lowers both, and they are tier 0. With one of the two judges alone the meta
+seat would have been confirmed. The plan for these runs, written after the two
+seats' numbers were known, had added a band that would have called both
+inconclusive; the review found it, and the preregistered rule stands (user
+decision, 2026-10-15). One judge shares the OpenAI rows' family; it agreed
+with the other on every item.
+
+What the table does not decide: review recall splits the measured rows into
+two groups that ignore the tiers — the current Claude seats and the Sol seat
+(33–52%, tiers 0 to 2) and everything else (10–17%, tiers 0 and 1). The
+writing rows in both groups keep their tiers until an implementation replay
+agrees with the review replay. That is why the Claude fast seat stays at tier 0
+(see "Why `worker_fast` is bound to the OpenAI fast tier") and the Claude
+balanced seat at tier 1: the replay separates neither from the tier-2 mean, and
+a raise of the balanced seat would move about as many routes (13,368) as the
+2026-09-30 counterfactual found. The ledger rows "Reviewer seat tiers against
+live anchors (real-review replay, 2026-10-14)" and "Tier counterfactuals after
+the 2026-10-14 replays" have the numbers.

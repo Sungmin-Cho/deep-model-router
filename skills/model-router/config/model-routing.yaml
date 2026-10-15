@@ -892,16 +892,20 @@ models:
   # What seating it changes: references/model-profiles.md, "The meta reviewer
   # seat".
   #
-  # `capability_tier: 1` is measured since 1.21.0: the 2026-10-14 real-review
-  # replay confirmed tier 1 against claude-sonnet-5 (the anchor), at about a
-  # quarter of claude-sonnet-5-5's recall — the reason for the order above.
-  # See the ledger row "meta_worker_balanced tier measurement (real-review
+  # `capability_tier: 0` since 1.22.0 (issue #63). The 2026-10-14 real-review
+  # replay confirmed tier 1 against claude-sonnet-5, a history row; measured
+  # against the lowest measured live tier-1 row (gpt-5.6-terra) by the same
+  # preregistered clause, it is lowered. It keeps its place in the fallback
+  # list (user decision 2026-10-15): the tier, not the list, now keeps it out
+  # of review seats whose band floor asks for tier 1 or more. Its recall is
+  # about a quarter of claude-sonnet-5-5's — the reason for the order above.
+  # See the ledger row "Reviewer seat tiers against live anchors (real-review
   # replay, 2026-10-14)".
   meta_worker_balanced:
     id: muse-spark-1.3
     lineage: { line: meta/spark, template: "muse-spark-{gen}" }
     family: meta
-    capability_tier: 1
+    capability_tier: 0
     verified: true
     # Like the xai row: no cache-write rate is published, so `quote_cost`
     # reports an unavailable quote rather than one built on an invented axis.
@@ -930,10 +934,12 @@ models:
   # What seating it changes: references/model-profiles.md, "The gemini
   # reviewer seat".
   #
-  # `capability_tier: 1` is measured since 1.21.0, on the same footing as the
-  # meta seat: confirmed against claude-sonnet-5, at about a fifth of
-  # claude-sonnet-5-5's recall. See the ledger row "gemini_worker_balanced tier
-  # measurement (real-review replay, 2026-10-14)".
+  # `capability_tier: 0` since 1.22.0, on the same footing as the meta seat:
+  # confirmed against claude-sonnet-5 (a history row), lowered against the
+  # lowest measured live tier-1 row, listed where it was (user decision
+  # 2026-10-15); about a fifth of claude-sonnet-5-5's recall. See the ledger
+  # row "Reviewer seat tiers against live anchors (real-review replay,
+  # 2026-10-14)".
   #
   # The lineage template does not parse the catalogue's effort-suffixed
   # spellings (gemini-<gen>-flash-<effort>) or the unbound row below, so that
@@ -945,7 +951,7 @@ models:
     lineage: { line: google/flash, template: "gemini-{gen}-flash",
                served_forms: ["{id}", "{id}-low", "{id}-medium", "{id}-high"] }
     family: gemini
-    capability_tier: 1
+    capability_tier: 0
     effort_ceiling: HIGH   # probed: the CLI rejects `xhigh` and `max`
     verified: true
     # No cache-write rate is published (cached tokens are billed for storage
@@ -1347,7 +1353,12 @@ fallbacks:
     # below claude-sonnet-5-5 (0.455), so they now take the role only where
     # the Claude model does not resolve (withheld, exhausted, excluded, or the
     # declared author's family). Neither has write authority on this host, so
-    # a route whose worker writes from this role skips both, as before.
+    # a route whose worker writes from this role skips both, as before. Since
+    # 1.22.0 both are tier 0 (issue #63: lowered against the lowest measured
+    # live tier-1 row, openai_worker_balanced at 0.168) and keep these places
+    # (user decision 2026-10-15): where one of them resolves the role, a
+    # review seat whose band floor asks for tier 1 goes to a model that meets
+    # it, and the seat stays where nothing asks more of it.
     worker_balanced:      [claude_worker_balanced, meta_worker_balanced, gemini_worker_balanced, openai_worker_balanced, claude_senior]
     senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
@@ -1357,7 +1368,8 @@ fallbacks:
     # gemini_worker_balanced after the Claude model (1.21.0, design 2026-10-14
     # DD-60, user decision U-7): no route that resolves Claude moves; where it
     # does not, a reviewer outside the host's own family still sits here. It
-    # reads only: transports.codex.to_gemini has no write authority.
+    # reads only: transports.codex.to_gemini has no write authority. Tier 0
+    # since 1.22.0, as on claude_code above.
     worker_balanced:      [claude_worker_balanced, gemini_worker_balanced, openai_worker_balanced, openai_reasoning]
     senior_engineer:      [openai_reasoning, claude_senior, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior]
@@ -2381,8 +2393,11 @@ verification_ledger:
         - "Tier 0/1 binding quality head-to-head (8 tasks, 446 hidden test nodes)"
       evidence: >
         capability_tier 0 is inherited from the openai_worker_fast lineage;
-        no quality measurement of gpt-6-luna has been run. Earlier quality
-        rows about gpt-5.6-luna describe that id, not this one.
+        no quality measurement of gpt-6-luna has been run that could move it.
+        Earlier quality rows about gpt-5.6-luna describe that id, not this one.
+        One review replay exists and moves nothing (this seat writes; see the
+        row "Reviewer seat tiers against live anchors (real-review replay,
+        2026-10-14)"): pooled recall 0.131, a third of claude-haiku-5-5's.
 
     - item: "gpt-6-luna maker seat"
       status: verified
@@ -2515,7 +2530,12 @@ verification_ledger:
         the `latency_sensitive` swap rests on: that swap now rests on the
         predecessor's numbers. The tier itself was measured separately on
         2026-09-30 and stays 1 on that evidence (see "claude_worker_balanced
-        tier measurement after the claude-sonnet-5-5 bump").
+        tier measurement after the claude-sonnet-5-5 bump"). Since 1.22.0 that
+        check reads differently: it anchored on a history row and replayed a
+        review for a seat that writes, so under references/evaluation.md ("How
+        a tier is measured") it is recorded and decides nothing; the tier
+        stays 1 by lineage. The 2026-10-14 replay does not separate this id
+        from the tier-2 mean either (0.4554 against 0.4242).
 
     - item: "claude-sonnet-5-5 maker seat"
       status: verified
@@ -3149,8 +3169,15 @@ verification_ledger:
         replay (see the rows "gemini_worker_balanced tier measurement" and
         "meta_worker_balanced tier measurement") this id, run as a reported
         subject, recalled 0.397 pooled against 0.131 for claude-sonnet-5, the
-        tier-1 anchor, and 0.455 for claude-sonnet-5-5. Raising the tier is a
-        binding decision of its own, left open.
+        tier-1 anchor, and 0.455 for claude-sonnet-5-5. 1.22.0 (issue #63)
+        decided not to raise the tier on it: the replay separates this id from
+        neither claude-sonnet-5-5 (0.058 apart) nor the tier-2 mean (0.027), so
+        it would support tier 2 as well as tier 1, and this seat writes, so a
+        review replay measures
+        half of what its tier gates — a writing row moves only when a review
+        replay and an implementation replay agree (references/evaluation.md,
+        "How a tier is measured"). What a raise would move is in the row "Tier
+        counterfactuals after the 2026-10-14 replays".
 
     - item: "claude-haiku-5-5 maker seat"
       status: verified
@@ -3343,3 +3370,99 @@ verification_ledger:
         routes lose the skipped-gemini note only. No candidate outcome in any scenario seated a model without
         write authority on its host where the work writes. The script and output
         are the local research note docs/research/2026-10-14-issues-57-61-counterfactuals/.
+
+    # --- Tier scale (issue #63, 1.22.0) ----------------------------------------
+    # Method: references/evaluation.md, "How a tier is measured". Plan, harness
+    # and results: the local notes docs/evals/2026-10-14-t3b/ and
+    # docs/research/2026-10-14-tier-scale-counterfactuals/.
+
+    - item: "Reviewer seat tiers against live anchors (real-review replay, 2026-10-14)"
+      status: verified
+      probed_on: "2026-10-14"
+      supersedes:
+        - "gemini_worker_balanced tier measurement (real-review replay, 2026-10-14)"
+        - "meta_worker_balanced tier measurement (real-review replay, 2026-10-14)"
+      evidence: >
+        The two rows above confirmed tier 1 against claude-sonnet-5, a history
+        row. A tier is held by its live rows, so this re-applies the same
+        preregistered clause with the anchor moved to the lowest measured live
+        tier-1 row other than the seats being decided. The two live OpenAI rows
+        the first replay had not measured were run on its three frozen packages,
+        prompts, supervisor, judges and effort (high, two reps; 12 dispatches
+        SUCCEEDED first time, 24 valid grades, judge agreement 1.000;
+        gpt-6-astra judged its own family's subjects). Pooled recall (six
+        places): claude-opus-5-5 0.515993, claude-sonnet-5-5 0.455387,
+        claude-haiku-5-5 0.397306, gpt-6.1-sol 0.332492, gpt-5.6-terra
+        0.168350, gpt-6-luna 0.131313, claude-sonnet-5 0.130471,
+        muse-spark-1.3 0.117003, gemini-3.8-flash 0.097643. Anchor: gpt-5.6-terra, whose own tier 1 is inherited, not
+        measured; grok-4.7, also live at tier 1, is unmeasured (the Grok
+        subscription ended). Tier-2 mean 0.424242, separation 0.255892:
+        valid. Bar for tier 1: 0.118350. Verdict muse-spark-1.3: lowered. Verdict
+        gemini-3.8-flash: lowered. Both are capability_tier 0 since 1.22.0 and
+        keep their fallback places (user decision 2026-10-15). Disclosed: the
+        supplementary plan, written after these two seats' numbers were known
+        and before gpt-5.6-terra's, had added a band in which both would have
+        been inconclusive (lowered only 0.10 or more under the anchor); review
+        found the band post hoc, and the user chose the preregistered clause.
+        With claude-fable-5-1 as the only judge, muse-spark-1.3 would be
+        confirmed (0.139731). Not part of the rule: recall splits the measured
+        rows into two groups that do not follow the tiers (0.33-0.52 for the
+        current Claude rows and gpt-6.1-sol, tiers 0-2; 0.10-0.17 for the
+        rest, tiers 0-1). The writing rows among them do not move on a review
+        replay alone.
+
+    - item: "Tier counterfactuals after the 2026-10-14 replays"
+      status: verified
+      probed_on: "2026-10-14"
+      evidence: >
+        The 16,896-point grid of the 1.21.0 placement row (each point fresh and
+        after its own worker failed, 33,792 routes per scenario), under the
+        1.21.0 registry and four one-change variants, with this router; a retry
+        counts as moved only when its outcome moved, not its failed model. (A)
+        the two reviewer seats at tier 0, still listed — adopted in 1.22.0
+        (user decision 2026-10-15): with xai withheld and Claude exhausted
+        12,468 routes change; 2,462 change a review seat, 2,426 of them to a
+        slate that meets the band floor (mostly gpt-6.1-sol; 4 are LOW-band
+        REVIEW leads, which have none) and 36 to a slate the route records as
+        below it (18 newly ask a human, 18 already did), while 24 routes stop
+        asking; 2,018 lose a cross-family review; on Codex 144 retries after
+        gemini-3.8-flash fails climb to gpt-5.6-terra instead of gpt-6.1-sol,
+        since the failure is now tier 0 (on Claude Code the retry after the
+        meta seat is unchanged); proxy +0.9%. With Claude exhausted alone 1,298 change only the
+        tier a shortfall record carries. (B) the same seats at tier 0 and
+        removed from every fallback list, the consequence the first replay's
+        plan attached to "lowered": with xai withheld and Claude exhausted
+        20,168 routes change, mostly to gpt-5.6-terra, and 12,032 lose a
+        cross-family review (proxy +5.6%); with Claude exhausted alone 1,298
+        lose one. (C) claude_worker_fast capability_tier 0 -> 1: with every
+        seat available, 1,860 retries after gpt-6-luna fails (930 each on
+        Claude Code and grok hosts) climb to claude-haiku-5-5 instead of
+        grok-4.7 or claude-sonnet-5-5, and 780 review seats change; with
+        OpenAI exhausted 16,551 routes change (21,366 with xai withheld too),
+        the Claude fast seat taking review seats from claude-sonnet-5-5. Proxy
+        -0.7% to -2.3% (+0.5% with OpenAI exhausted). All of it rests on
+        writing strength nobody measured; not adopted. (D)
+        claude_worker_balanced 1 -> 2: 13,368 routes change with every seat
+        available, proxy -11.1%, the move the 2026-09-30 row recorded; not
+        adopted. The release replay (the 1.21.0 registry against this one,
+        with this router, the 1.21.0 replay's thirteen scenarios and five
+        added in review) moves routes only where a tier-0 seat resolves the
+        balanced role: A's 12,468 (and the same with meta withheld too), the
+        1,298 above, 8 shortfall records with xai and meta withheld and OpenAI
+        exhausted, 318 reading leads that a low Claude quota now swaps to
+        gpt-5.6-terra instead of a seat, and the same tier-0 effects on routes
+        carrying an unknown root cause, where the investigation promotion now
+        floors the balanced role on a first attempt: none with only xai
+        withheld; 11,164 with Claude exhausted too, where 1,200 drop from HIGH
+        to MEDIUM review (one reviewer instead of two) because their reviewer
+        no longer comes through a fallback, which also makes the execution
+        cell yield on 88 IMPLEMENTATION and DEBUGGING routes that keep
+        gpt-6-luna where 1.21.0 raised them to gpt-5.6-terra, and 20 leave
+        ESCALATE_ROUTING; 11,702 with the fast seat out as well (30 gain a
+        human gate); 8,348 with the frontier OpenAI seat out too, where on 136
+        the floor would leave no independent reviewer and yields, as the route
+        notes. No dispatchable route becomes terminal (8 terminal routes
+        change which terminal), and none seats a model without write
+        authority where the work writes. Proxy: the sum of the seated worker's and reviewers' output
+        prices per MTok, no token weighting. Script and output:
+        docs/research/2026-10-14-tier-scale-counterfactuals/.
