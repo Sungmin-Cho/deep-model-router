@@ -549,3 +549,31 @@ def test_a_writing_row_moves_only_where_both_replays_say_so():
         before = TIERS_BEFORE_1_23.get(key, MODELS[key]["capability_tier"])
         step = {"raise": 1, "lower": -1}.get(review[key], 0) if review[key] == impl[key] else 0
         assert MODELS[key]["capability_tier"] == before + step, (key, review[key], impl[key])
+
+
+def test_a_retry_at_the_confidence_threshold_now_asks_to_be_rerouted():
+    """Review i1 (fable F2, sol): accepted and pinned. A retry after the xai
+    seat fails sat exactly at 0.60 on the senior seat's own binding (u3 0.20,
+    unknown root cause 0.10, one failure 0.05). With the Claude balanced model
+    at tier 2 the ladder's weakest role above tier 1 is the balanced role,
+    which reaches that model through its fallback list (0.06 more), and the
+    route asks to be re-routed instead of dispatching. 718 such routes in the
+    replay, all carrying an unknown root cause."""
+    kw = dict(task_class="DEBUGGING", complexity=0, uncertainty=3, blast_radius=0,
+              reversibility=2, runtime="claude_code", flags=["unknown_root_cause"])
+    fresh = route(Task(**kw), CFG)
+    assert fresh["selected_model"] == XAI
+    retry = route(Task(**kw, prior_failures=1, prior_models=[XAI]), CFG)
+    assert retry["terminal"] == "ESCALATE_ROUTING"
+    assert retry["routing_confidence"] == pytest.approx(0.54)
+    old = copy_cfg_with_tier("claude_worker_balanced", 1)
+    before = route(Task(**kw, prior_failures=1, prior_models=[XAI]), old)
+    assert (before["terminal"], before["selected_model"]) == (None, ID("claude_senior"))
+    assert before["routing_confidence"] == pytest.approx(0.60)
+
+
+def copy_cfg_with_tier(key: str, tier: int) -> dict:
+    import copy
+    cfg = copy.deepcopy(CFG)
+    cfg["models"][key]["capability_tier"] = tier
+    return cfg

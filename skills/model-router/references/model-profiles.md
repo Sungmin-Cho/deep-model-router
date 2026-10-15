@@ -672,11 +672,7 @@ weaker tier-2 row, in this replay as in the review replay: both say raise, and
 it is **tier 2** (user decision, 2026-10-15). The Claude fast seat's raise
 narrowly fails the gate here (the tier-1 mean sits 9.4 points above the other
 tier-0 row, the OpenAI fast seat, where the gate needs 10), so it stays at
-**tier 0**. One task's hidden test
-asserted a first-attempt worker that contradicts its own finding (the defect
-issue #67 fixes); graded without that case the fast seat would have raised
-too — a correction made after the results, reported, not applied. The OpenAI
-rows hold: the gate cannot separate tier 1 from tier 2 while the Claude
+**tier 0**. The OpenAI rows hold: the gate cannot separate tier 1 from tier 2 while the Claude
 balanced seat sat in tier 1, although the OpenAI balanced seat scored lowest
 of all six.
 
@@ -694,10 +690,14 @@ falls 11% with every seat available and 8% with the xai seat withheld; with
 OpenAI exhausted it rises 3%, and 1,024 routes that had no independent
 reviewer become dispatchable. Retries after the xai seat fails now land on this
 seat through the balanced role's fallback list, which costs 0.06 routing
-confidence; with an unknown root cause that takes 718 routes under 0.60, and
-they now end ESCALATE_ROUTING (454 retries, and 264 first attempts with the
-xai seat withheld and OpenAI exhausted, which the execution band no longer
-raises to the senior seat). The host advisory that names a `/model` breaks the new tie
+confidence; with an unknown root cause that takes 718 routes that sat exactly
+at 0.60 under it, and they now end ESCALATE_ROUTING (454 retries, and 264
+first attempts with the xai seat withheld and OpenAI exhausted, which the
+execution band no longer raises to the senior seat). Cross-family review is
+gained on 4,572 routes and lost on 264 with every seat available (4,548 and
+528 with the xai seat withheld; 2,566 and 4,360 with OpenAI exhausted). A
+`low` xai quota now swaps a reading lead to the OpenAI balanced model, the
+same-tier model of another family, instead of this one. The host advisory that names a `/model` breaks the new tie
 between this seat and the senior seat by role, so a Claude host below a tier-1
 or tier-2 ask is still pointed at this model. The ledger rows "Implementation
 replay of the writing rows (2026-10-15)" and "Tier counterfactuals after the

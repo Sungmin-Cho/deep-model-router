@@ -62,6 +62,10 @@ def test_routing_policy_ask_table_matches_code_cell_by_cell():
 
 
 def test_recommendation_total_order_is_well_defined():
+    """The `/model` order is a documented rule the host applies
+    (routing-policy.md, "Utterance policy"), not router code: this re-states
+    it against the registry, so a registry change that would make it name a
+    different model fails here."""
     roles = CFG["role_tiers"]
 
     def recommend(family, tier_req):
