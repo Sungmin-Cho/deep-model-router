@@ -1555,6 +1555,19 @@ Every applied fallback appears in `fallbacks_applied` and is named in the
 rationale. When a fallback reduces review independence, the degradation rules in
 `review-policy.md` apply.
 
+A model the history says **failed** is a retry's eligibility, not a degradation
+(1.23.1). Replacing it records no fallback and spends no fallback confidence:
+the failure is already charged (`control-loop.md`, "Routing confidence"). The
+exemption is the history alone. A failed model that the caller also lists in
+`availability_snapshot.unavailable_models` (or whose family is `exhausted`, or
+that a local revocation withholds) is a real, current outage and is recorded as
+before, as is a withheld successor of a failed model — the caller never has to
+strip an observation to avoid being billed twice. Compensations (the
+architect-downgrade second review, the same-family effort raise) use the
+original effective binding as their baseline, after author, write-eligibility,
+and low-quota handling. A retry-caused downgrade can be noted alongside a real
+successor-outage fallback; `excluded_prior_failures` lists the failed models.
+
 The rule underneath all of this: the metrics should let someone reconstruct not
 just what was decided, but what was *available* when it was decided. A route
 that looks weak in hindsight is a very different problem depending on whether

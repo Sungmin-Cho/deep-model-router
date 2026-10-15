@@ -66,7 +66,8 @@ FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 
 # The closed rule vocabulary, in replay order (design DD-B11 ②). A rule not
 # named here cannot explain anything.
-ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7", "t65")
+ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7", "t65",
+         "t70")
 
 # Keys that are not decisions: provenance, prose, the explicit-cfg overlay, and
 # the typed history echoed back as declared (a rule switched off projects its
@@ -373,6 +374,32 @@ def _t65_check(req, prev, cur):
     return out
 
 
+
+def _t70_admits(req, prev):
+    """A retry: the only inputs on which a model can be in `failed`."""
+    return bool(req.get("attempt_outcomes"))
+
+
+def _t70_check(req, prev, cur):
+    """A failed model is not a model that went missing (issue #70): the retry
+    stops paying a second scarcity charge for the seat that replaces it. On
+    these ledger and focused-matrix inputs, the rule may release a terminal but
+    must not add one, lower confidence, or put review below risk. This is not a
+    global monotonicity claim: an author/write + failure-only + low-quota
+    interaction can restore a withheld successor penalty hidden in 1.23.0, as
+    the separate direct Resolver regression pins."""
+    if "error" in prev or "error" in cur:
+        return []
+    out = []
+    if cur["terminal"] and not prev["terminal"]:
+        out.append(f"became {cur['terminal']}")
+    if cur["routing_confidence"] < prev["routing_confidence"]:
+        out.append("confidence fell")
+    if not cur["terminal"] and BANDS.index(cur["review"]["band"]) < BANDS.index(cur["risk_band"]):
+        out.append("review below the risk band")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -499,6 +526,24 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_t65_check, changed_sample=958, changed_full=21848),
+    # Issue #70 (1.23.1): a model that FAILED is eligibility, not scarcity.
+    # `prior_failures` already charges the retry; counting the seat that
+    # replaces the failed one as a fallback billed it twice, and once Sonnet 5.5
+    # sat at tier 2 (t65) that second charge ended 454 retries at 0.54. Not a
+    # Part B rule: a resolver change, off through patched seams that restore
+    # both 1.23.0 baselines, so every earlier row still replays 1.16.1 + the
+    # rules before it. Pinned apart
+    # from t65 on purpose: t65's own counts are the 1.23.0 release's.
+    "t70": Rule(
+        "t70", predicate=_t70_admits,
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        # The completed full ledger pins the production replay; the default sample is pinned too.
+        check=_t70_check, changed_sample=31, changed_full=992),
 }
 
 
@@ -573,7 +618,57 @@ def _c4_off(stack: ExitStack) -> None:
 
 
 # rule -> function(ExitStack) that installs the pre-rule behaviour.
-PATCH_SWITCHES: dict[str, Callable[[ExitStack], None]] = {"c4": _c4_off}
+def _t70_off(stack: ExitStack) -> None:
+    """Restore 1.23.0's post-quota eligible baseline and its unchanged retry
+    baseline, as the archived 1.23.0 resolver did."""
+    from unittest.mock import patch
+
+    def legacy_eligible(self, role, *, write, retry):
+        offered = self._candidates(role, write=write)
+        return self.policy.cfg["models"][offered[0]]["id"] if offered else None
+
+    stack.enter_context(patch.object(rt.Resolver, "_eligible_baseline", legacy_eligible))
+    stack.enter_context(patch.object(
+        rt.Resolver, "_retry_baseline", lambda self, role, primary_id, *, write: primary_id))
+
+
+def _t70_direct(task: rt.Task, *, writes: bool) -> tuple[dict, list[str], list[str]]:
+    resolver = rt.Resolver(task, POLICY)
+    resolver.worker_writes = writes
+    return resolver.resolve(["worker_balanced"], write_role="worker_balanced")
+
+
+def test_t70_off_matches_immutable_1_23_0_low_quota_retry_outcomes():
+    """Pin low-quota overlaps to the archive, then prove t70's pre-swap retry
+    baseline only changes the fallback comparison. Historical tuples were
+    checked against immutable commit b057eef40755db4ef1982477ae063f1dd599401f;
+    the test itself reads only the shipped config and the live resolver."""
+    son, terra, opus = ID("claude_worker_balanced"), ID("openai_worker_balanced"), ID("claude_senior")
+    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_worker_balanced"),
+                              ID("openai_reasoning"), ID("xai_frontier"))
+
+    cases = [
+        (rt.Task(task_class="DEBUGGING", complexity=0, uncertainty=0, blast_radius=0,
+                 reversibility=0, runtime="codex", prior_failures=1, prior_models=[son],
+                 unavailable_models=[terra], _family_quota={"openai": "low"}),
+         True, ({"worker_balanced": opus}, [], []),
+         ({"worker_balanced": opus}, [f"worker_balanced: {terra} unavailable -> {opus}"], [])),
+        (rt.Task(task_class="DEBUGGING", complexity=0, uncertainty=0, blast_radius=0,
+                 reversibility=0, runtime="claude_code", prior_failures=1, prior_models=[son],
+                 unavailable_models=[muse, gemini, terra],
+                 _review_context={"author_model_ids": [xai]},
+                 _family_quota={"claude": "low"}),
+         False, ({"worker_balanced": sol}, [], []),
+         ({"worker_balanced": sol}, [f"worker_balanced: {muse} unavailable -> {sol}"], [])),
+    ]
+    for task, writes, historical, current in cases:
+        with ExitStack() as stack:
+            _t70_off(stack)
+            assert _t70_direct(task, writes=writes) == historical
+        assert _t70_direct(task, writes=writes) == current
+
+
+PATCH_SWITCHES: dict[str, Callable[[ExitStack], None]] = {"c4": _c4_off, "t70": _t70_off}
 
 
 def project(req: dict) -> dict:
@@ -1302,3 +1397,161 @@ def test_invariant_2_raising_the_risk_never_weakens_the_review():
                 problems.append((runtime, cls, d, step, problem))
     assert not problems, (len(problems), problems[:12])
     assert checked > 2_000, checked
+
+
+# --------------------------------------------------------------------------
+# Issue #70: the inputs the ledger's grid never reached
+# --------------------------------------------------------------------------
+#
+# `t65`'s direction ("no new terminal") was held over a grid that has no
+# retry carrying `unknown_root_cause`, and none of a REVIEW task with that flag
+# under a two-family shortage — exactly where the 1.23.0 release replay found
+# 718 routes newly ending ESCALATE_ROUTING. The ledger above keeps its own
+# claims (its `t65` row is the 1.23.0 release's, counted with the retry
+# baseline switched OFF); this matrix is the separate, focused replay of the
+# missed inputs through three states of the SAME code:
+#
+#   A  the 1.22.0 tier scale        (t65 off, t70 off)
+#   B  1.23.0 as released           (t65 on,  t70 off)  <- what the issue found
+#   C  the shipped router           (t65 on,  t70 on)
+#
+# C must hold t65's direction against A, except on the one population kept on
+# purpose (below). B is replayed only to witness that the matrix does reach the
+# 1.23.0 regression: if it stops reaching it, the matrix has gone vacuous.
+
+T22_ON = frozenset(r for r in ORDER if r not in ("t65", "t70"))
+T65_ON = frozenset(r for r in ORDER if r != "t70")
+T70_DIMS = sorted(set(SAMPLE_DIMS) | {(0, 3, 0, 2), (0, 3, 1, 3), (0, 2, 0, 2), (0, 1, 0, 0)})
+T70_FULL_DIMS = DIMS[::4]
+_T70_SHORTAGE = {"unavailable_models": [ID("xai_frontier")], "family_quota": {"openai": "exhausted"}}
+
+
+def _failure_row(free: dict) -> dict:
+    return {"attempt_id": "a1", "model_id": free["selected_model"], "kind": "capability_failure",
+            "evidence_sha256": SHA_EVIDENCE, "effort": free["selected_effort_effective"],
+            "retry_evidence_sha256": SHA_RETRY}
+
+
+def t70_inputs(full: bool) -> list[tuple[str, str, dict]]:
+    """(name, variant, request): the retry carries ONE capability failure on the
+    model the history-free route (at the 1.22.0 scale) seated at the effort it
+    ran, so the history is the same in all three states."""
+    out = []
+    for runtime, cls, dims in itertools.product(RUNTIMES, CLASSES, T70_FULL_DIMS if full else T70_DIMS):
+        tag = f"{runtime}/{cls}/{''.join(map(str, dims))}"
+        unknown = _base(runtime, cls, dims, ["unknown_root_cause"])
+        free = route_live(unknown, T22_ON)
+        if "error" not in free and not free["terminal"] and free["selected_model"]:
+            row = _failure_row(free)
+            out.append((f"{tag}/retry_unknown", "retry_unknown",
+                        {**unknown, "attempt_outcomes": [row]}))
+            # The failed model is ALSO withheld by the caller: a real supply
+            # observation, which the failure must not launder.
+            out.append((f"{tag}/retry_unknown_failed_and_withheld", "failed_and_withheld",
+                        {**unknown, "attempt_outcomes": [row],
+                         "availability_snapshot": {"unavailable_models": [row["model_id"]]}}))
+        if cls == "REVIEW":
+            out.append((f"{tag}/review_unknown_shortage", "shortage",
+                        {**unknown, "availability_snapshot": dict(_T70_SHORTAGE)}))
+    return out
+
+
+def _intentional_shortage_terminal(req: dict, b: dict, c: dict) -> bool:
+    """The population 1.23.0 disclosed and 1.23.1 keeps (issue #70, decision
+    2026-10-15): a FIRST REVIEW attempt with an unknown root cause, the xai seat
+    withheld and OpenAI exhausted. Nothing in it failed, so the retry rule has
+    nothing to exempt — it is a genuine two-family shortage. Exact input, and
+    the retry rule must not have moved it (B and C are the same decision)."""
+    return (req["task_class"] == "REVIEW" and "attempt_outcomes" not in req
+            and req["flags"] == ["unknown_root_cause"]
+            and req.get("availability_snapshot") == _T70_SHORTAGE
+            and c["terminal"] == "ESCALATE_ROUTING" and b == c)
+
+
+def t70_matrix(full: bool) -> tuple[Counter, list[str]]:
+    seen: Counter = Counter()
+    problems: list[str] = []
+    for name, variant, req in t70_inputs(full):
+        a, b, c = (route_live(req, on) for on in (T22_ON, T65_ON, frozenset(ORDER)))
+        if any("error" in x for x in (a, b, c)):
+            problems.append(f"{name}: refused {[x.get('error') for x in (a, b, c)]}")
+            continue
+        seen["inputs"] += 1
+        seen[f"{variant}"] += 1
+        if variant == "failed_and_withheld":
+            # The failed model is also withheld by the caller: a real supply
+            # observation, which a failure must not launder. The rule has
+            # nothing to exempt, so the route is the 1.23.0 one — and it may
+            # end terminal on a shortage that is genuinely there, so t65's
+            # direction does not apply to it.
+            if decision(b) != decision(c):
+                problems.append(f"{name}: a failed model the caller also withheld changed the "
+                                f"route {sorted(changed_fields(b, c))}")
+            continue
+        # t65's own direction, over the whole path from the 1.22.0 scale.
+        direction = _t65_check(req, a, c)
+        if direction and _intentional_shortage_terminal(req, b, c):
+            seen["intentional_shortage_terminal"] += 1
+            direction = []
+        problems += [f"{name}: A->C {p}" for p in direction]
+        # The retry rule alone, B -> C: only a release, and the floor.
+        problems += [f"{name}: B->C {p}" for p in _t70_check(req, b, c)]
+        if not c["terminal"]:
+            problems += [f"{name}: contract {p}" for p in band_contract(req, c)]
+        # What the matrix exists to witness.
+        if not a["terminal"] and b["terminal"]:
+            seen["b_new_terminal"] += 1
+        if not a["terminal"] and c["terminal"]:
+            seen["c_new_terminal"] += 1
+        if b["terminal"] and not c["terminal"]:
+            seen["released"] += 1
+        if changed_fields(b, c):
+            seen["b_to_c_changed"] += 1
+        if (not b["terminal"] and not c["terminal"]
+                and BANDS.index(c["review"]["band"]) < BANDS.index(b["review"]["band"])):
+            seen["review_band_lowered"] += 1
+    return seen, problems
+
+
+_T70: dict[bool, tuple[Counter, list[str]]] = {}
+
+
+def t70_result() -> tuple[Counter, list[str]]:
+    if FULL not in _T70:
+        _T70[FULL] = t70_matrix(FULL)
+    return _T70[FULL]
+
+
+def test_the_retry_rule_holds_t65s_direction_on_the_inputs_the_grid_missed():
+    seen, problems = t70_result()
+    assert not problems, "\n".join(problems[:20])
+    assert seen["inputs"] > (3_000 if FULL else 600), seen
+
+
+def test_the_matrix_still_reaches_the_1_23_0_regression():
+    """Sensitivity: with the retry rule off (state B) the same inputs DO end
+    in a new terminal, and the shipped router releases them. A matrix that
+    stops reaching them would pass for the wrong reason."""
+    seen, _ = t70_result()
+    assert seen["b_new_terminal"] > 0 and seen["released"] > 0, seen
+    assert seen["c_new_terminal"] == seen["intentional_shortage_terminal"], seen
+
+
+def test_the_t70_matrix_counts_are_pinned():
+    seen, _ = t70_result()
+    assert dict(seen) == (T70_PINS_FULL if FULL else T70_PINS_SAMPLE), dict(seen)
+
+
+# What the matrix saw, by name. `b_new_terminal` is the 1.23.0 regression this
+# release repairs, witnessed on the very inputs it repairs; `c_new_terminal`
+# equals `intentional_shortage_terminal` (asserted above). `review_band_lowered`
+# counts the routes whose confidence stopped promoting the review: accepted,
+# floor-checked (`band_contract`, `_t70_check`) and disclosed, not hidden.
+T70_PINS_SAMPLE = {
+    "inputs": 897, "retry_unknown": 429, "failed_and_withheld": 429, "shortage": 39,
+    "b_new_terminal": 16, "c_new_terminal": 3, "intentional_shortage_terminal": 3,
+    "released": 34, "b_to_c_changed": 112, "review_band_lowered": 21}
+T70_PINS_FULL = {
+    "inputs": 4416, "retry_unknown": 2112, "failed_and_withheld": 2112, "shortage": 192,
+    "b_new_terminal": 53, "c_new_terminal": 24, "intentional_shortage_terminal": 24,
+    "released": 139, "b_to_c_changed": 484, "review_band_lowered": 164}
