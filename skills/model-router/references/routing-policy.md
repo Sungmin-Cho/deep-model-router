@@ -244,7 +244,10 @@ tolerates:
 
 1. Finish the risk chain exactly as before: class × risk-band cell, the class
    promotions, the critical-domain floor, the retry ladder. This is the
-   **legacy** worker and the floor.
+   **legacy** worker and the floor. A promotion is evidence of difficulty and
+   never seats a weaker model than the cell it promotes from: where the fast
+   role resolves strictly stronger than the balanced role under scarcity, the
+   INVESTIGATION promotion keeps it (issue #67).
 2. Resolve the execution cell. It becomes the **candidate** only if its
    resolved model is strictly stronger by `capability_tier` than the legacy
    worker — before and after the floor and ladder run on it.

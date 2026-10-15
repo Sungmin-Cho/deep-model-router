@@ -217,6 +217,19 @@ strictly stronger tier, so a few routes no longer raise their fast worker to
 this seat, and some that kept a fast worker for this seat's cross-family
 review now raise it to the OpenAI balanced model.
 
+That yield on 88 routes is the execution guard working as designed: a
+stronger worker may not change the review's depth, a deeper review included
+(issue #66, replayed in 1.23.0; `routing-policy.md`, "How the two tables
+combine"). Since 1.23.0 the investigation promotion also never trades a
+stronger model the fast role resolves to for the balanced role's (issue #67).
+Under the deepest shortage replayed — the xai seat and the fast and frontier
+OpenAI seats withheld, the Claude family exhausted — 32 Claude Code first
+attempts move from GPT-5.6 Terra to GPT-6.1 Sol, the worker the same task gets
+without the flag; their review then falls to the meta seat below its band and
+asks a human, and their retries end at a human, nothing stronger being left.
+With the frontier OpenAI seat available as well, 2 more move and Astra
+reviews them.
+
 ### The gemini reviewer seat
 
 `gemini_worker_balanced` is the gemini family's first dispatchable model, a
