@@ -251,9 +251,16 @@ tolerates:
 3. Settle the whole plan for both workers and compare the review / control
    contract: terminal state, human controls, review band, reviewer count and
    effort, independence, judge, cross-family, reviewer tiers and effective
-   efforts, depth shortfalls, effort-floor breaks. Adopt the candidate only if
-   no row is worse; otherwise yield to the legacy worker. Either outcome is a
-   `notes` entry (`execution band … raised worker …` / `… yielded …: <row>`).
+   efforts, depth shortfalls, effort-floor breaks. The review's depth — band,
+   reviewer count, review effort, required checks, the independence
+   requirement — must be **the same** in both plans, and no other row may be
+   worse; otherwise yield to the legacy worker. A deeper review is a change
+   too: when the candidate's seat takes a fallback, the confidence it costs
+   can raise the candidate plan's band, and the cell yields rather than let
+   difficulty move the review (issue #66 replayed the opposite reading: every
+   route it moved raised the worker and the review together). Either outcome
+   is a `notes` entry (`execution band … raised worker …` / `… yielded …:
+   <row>`).
 
 Reviewer *identity* still follows the worker (the MEDIUM floor fit below, and
 de-confliction), so a MEDIUM route whose worker rose from the fast tier gets its

@@ -76,7 +76,8 @@ def test_the_method_is_written_down():
     assert len(section) == 2, "evaluation.md has no tier-measurement section"
     body = " ".join(section[1].split())
     for phrase in ("Anchors are live rows", "never used as its anchor",
-                   "Neither may a row whose tier the measurement is deciding",
+                   "Neither may the row whose tier a verdict is deciding",
+                   "each verdict's anchors leave out that verdict's own row only", "*raised*",
                    "the anchor is the lowest one measured", "*valid*", "*confirmed*",
                    "*lowered*", "*inconclusive*", "Thresholds compare unrounded values",
                    "an implementation replay point the same way",
@@ -184,9 +185,9 @@ def test_an_at_least_promotion_never_seats_a_weaker_worker(runtime):
     balanced ROLE, which a tier-0 seat can now resolve — a promotion that
     seated a tier-0 model where the table chose a tier-1 one. On such a
     route the role is floored at its binding's tier, so the promoted worker
-    is tier 1 or better and never a tier-0 seat. (A promotion that trades a
+    is tier 1 or better and never a tier-0 seat. (A promotion that traded a
     tier-2 model a scarce fast role resolved to for a tier-1 balanced one is
-    older than this release and is tracked separately.)"""
+    older than 1.22.0; issue #67 closed it in 1.23.0 — see below.)"""
     import itertools
     for extra, c, u, b, r in itertools.product(SCARCITY, range(4), range(2), range(3), range(2)):
         kw = dict(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
@@ -375,3 +376,74 @@ def test_a_retry_is_never_floored_and_never_ends_where_1_21_0_did_not(runtime):
                            for n in after["notes"]), kw
         if before is not None and before.get("terminal") is None and after is not None:
             assert after.get("terminal") is None, (kw, after.get("terminal"))
+
+
+# ---------------------------------------------------------------------------
+# Issue #67: the promotion never trades a stronger table worker away (1.23.0)
+# ---------------------------------------------------------------------------
+
+LUNA = ID("openai_worker_fast")
+
+
+def test_the_promotion_keeps_a_strictly_stronger_table_worker():
+    """Issue #67's case: Claude Code, the xai and fast OpenAI seats out, Claude
+    exhausted. The fast role's ladder reaches gpt-6.1-sol; the balanced role's
+    floored list holds a tier-1 model. An unknown root cause is evidence of
+    difficulty, which must never weaken a route, so the flag leaves the worker
+    where the table put it."""
+    kw = dict(task_class="INVESTIGATION", complexity=3, uncertainty=0, blast_radius=0,
+              reversibility=0, runtime="claude_code", unavailable_models=[XAI, LUNA],
+              _family_quota={"claude": "exhausted"})
+    plain = route(Task(**kw), CFG)
+    flagged = route(Task(**kw, flags=["unknown_root_cause"]), CFG)
+    assert plain["selected_model"] == flagged["selected_model"] == ID("openai_reasoning")
+    assert flagged["selected_role"] == "worker_fast"
+    assert ("investigation promotion: worker_fast kept at capability tier 2 — worker_balanced "
+            "resolves to capability tier 1") in flagged["notes"]
+    assert "investigation promotion: unknown root cause" not in flagged["notes"]
+
+
+def test_at_an_equal_tier_the_promotion_still_moves_the_role():
+    """Codex with the fast OpenAI seat out: the fast role falls back to the
+    OpenAI balanced model and the balanced role holds its own binding — both
+    tier 1. The role moves as it always did. Keeping the fast role at an equal
+    tier too was replayed and rejected: it strengthened nothing, swapped tier-1
+    models and added a review through the fast seat's fallback penalty."""
+    out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=0, blast_radius=0,
+                     reversibility=0, runtime="codex", unavailable_models=[LUNA],
+                     flags=["unknown_root_cause"]), CFG)
+    assert out["selected_role"] == "worker_balanced"
+    assert out["selected_model"] == XAI
+    assert "investigation promotion: unknown root cause" in out["notes"]
+    assert out["review"]["band"] == "LOW"
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex", "grok"])
+def test_the_promotion_never_resolves_weaker_than_the_table_worker(runtime):
+    """Grid, first attempts: the risk chain's worker after the promotion is
+    never weaker than the table cell's own worker, and is strictly stronger
+    only where the promotion moved it. (A whole route can still seat a weaker
+    worker with the flag than without it: the flag's confidence penalty can
+    make the execution cell yield to keep the review unchanged — the
+    execution guard, not the promotion.)"""
+    import itertools
+    import route_task as rt
+    moved = kept = 0
+    for extra, c, u, b, r in itertools.product(DEEP_SCARCITY + [{}], range(4), range(4),
+                                               range(4), range(4)):
+        task = Task(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
+                    reversibility=r, runtime=runtime, flags=["unknown_root_cause"], **extra)
+        resolver = rt.Resolver(task, POLICY)
+        band = rt.apply_overrides(task, rt.band_from_score(rt.score(task, CFG), POLICY), POLICY)[0]
+        table = rt._resolve_cell(CFG["worker_selection"]["INVESTIGATION"][band], task, [])
+        role, notes = rt._legacy_pre(task, band, POLICY, resolver)
+        before, after = resolver.peek(table, write=True), resolver.peek(role, write=True)
+        if before is None:
+            continue
+        assert after is not None and POLICY.tier_of[after] >= POLICY.tier_of[before], \
+            (extra, (c, u, b, r), table, before, role, after)
+        if role != table:
+            moved += 1
+        elif any(n.startswith("investigation promotion: worker_fast kept") for n in notes):
+            kept += 1
+    assert moved and (kept or runtime != "claude_code")

@@ -1480,6 +1480,37 @@ def test_t15_a_fallback_that_would_promote_the_band_makes_the_cell_yield():
     assert not any(o.startswith("low_routing_confidence") for o in out["band_overrides_applied"])
 
 
+def test_t15_the_band_row_is_an_equality_row_upward_too():
+    """Issue #66: the cell also yields when ITS band would be higher. IMPLEMENTATION
+    c3 u1 b1 r0 + unknown_root_cause, the xai seat withheld and Claude exhausted:
+    the table plan reviews at MEDIUM through the reasoning seat's own binding
+    (0.85); the cell's balanced seat falls back to the OpenAI balanced model
+    (-0.06, 0.79), so its plan would review at HIGH with two reviewers. Adopting
+    it would let difficulty move the review, which the execution axis never
+    does (design DD-2 S6 / G2), so the fast worker stays. Yielding only on a
+    LOWER band was replayed against 1.22.0 and rejected: every route it moved
+    (195 first attempts) raised the worker and the review together."""
+    from unittest.mock import patch
+    import route_task as rt
+    kw = dict(task_class="IMPLEMENTATION", complexity=3, uncertainty=1, blast_radius=1,
+              reversibility=0, runtime="claude_code", flags=["unknown_root_cause"],
+              unavailable_models=[ID("xai_frontier")], _family_quota={"claude": "exhausted"})
+    out = route(Task(**kw), CFG)
+    assert out["selected_model"] == ID("openai_worker_fast")
+    assert (out["review"]["band"], len(out["review"]["reviewers"])) == ("MEDIUM", 1)
+    assert _yielded(out) == ["execution band NORMAL yielded worker_balanced: review.band"]
+    # The rejected reading, for the record: the cell's own plan reviews at HIGH.
+    seen = {}
+    orig = rt._contract_violation
+
+    def spy(policy, cand, legacy):
+        seen["cand"], seen["legacy"] = cand["review"]["band"], legacy["review"]["band"]
+        return orig(policy, cand, legacy)
+    with patch.object(rt, "_contract_violation", spy):
+        route(Task(**kw), CFG)
+    assert seen == {"cand": "HIGH", "legacy": "MEDIUM"}
+
+
 # --- T17: plan() purity -----------------------------------------------------------
 
 def test_t17_plan_is_order_independent_and_leaves_the_resolver_clean():

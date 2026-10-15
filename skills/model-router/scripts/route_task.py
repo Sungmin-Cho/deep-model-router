@@ -1750,10 +1750,12 @@ def _resolve_cell(cell: str, task: Task, notes: list[str]) -> str:
     return cell
 
 
-def _legacy_pre(task: Task, band: str, policy: Policy) -> tuple[str, list[str]]:
-    """S1: the 1.12.1 table cell plus its class promotions, unchanged. What
-    the INVESTIGATION promotion's role may hold is floored in `Resolver`
-    (`role_tier_floor`)."""
+def _legacy_pre(task: Task, band: str, policy: Policy,
+                resolver: "Resolver") -> tuple[str, list[str]]:
+    """S1: the 1.12.1 table cell plus its class promotions. What the
+    INVESTIGATION promotion's role may hold is floored in `Resolver`
+    (`role_tier_floor`); whether it moves the worker at all is read on the
+    resolved tier (issue #67)."""
     cfg = policy.cfg
     notes: list[str] = []
     worker = _resolve_cell(cfg["worker_selection"][task.task_class][band], task, notes)
@@ -1770,9 +1772,30 @@ def _legacy_pre(task: Task, band: str, policy: Policy) -> tuple[str, list[str]]:
             notes.append("debugging promotion: unknown root cause after 2+ failures")
 
     if task.task_class == "INVESTIGATION" and task.has("unknown_root_cause"):
+        # A promotion is evidence of difficulty, and evidence of difficulty
+        # must never weaken a route (the retry ladder's rule). Moving to the
+        # balanced role by position did, under scarcity: the fast role's
+        # ladder can reach a stronger model than the balanced role's list
+        # holds, and the promotion traded it away (issue #67: gpt-6.1-sol given
+        # up for the balanced role's tier-1 model). The table's worker stays
+        # only when it is STRICTLY stronger; at an equal tier the role still
+        # moves, as it always did. Keeping it at an equal tier as well (the
+        # critical-domain floor's reading) was replayed and rejected: it moved
+        # no route to a stronger model, swapped tier-1 models (Codex, the fast
+        # seat out: the balanced binding for the fast role's fallback) and
+        # added a review through the fallback's confidence penalty.
         if policy.roles.index("worker_balanced") > policy.roles.index(worker):
-            worker = "worker_balanced"
-            notes.append("investigation promotion: unknown root cause")
+            current = resolver.peek(worker, write=True)
+            promoted = resolver.peek("worker_balanced", write=True)
+            if current is not None and (promoted is None
+                                        or policy.tier_of[current] > policy.tier_of[promoted]):
+                held = "nothing usable" if promoted is None else \
+                    f"capability tier {policy.tier_of[promoted]}"
+                notes.append(f"investigation promotion: {worker} kept at capability tier "
+                             f"{policy.tier_of[current]} — worker_balanced resolves to {held}")
+            else:
+                worker = "worker_balanced"
+                notes.append("investigation promotion: unknown root cause")
 
     return worker, notes
 
@@ -1884,7 +1907,7 @@ def select_worker(task: Task, band: str, execution_band: str, policy: Policy,
                   resolver: "Resolver") -> tuple[WorkerChoice, WorkerChoice]:
     """Returns (candidate, legacy). `candidate is legacy` when the execution
     cell did not win (design DD-2 S1-S5)."""
-    legacy_role, legacy_notes = _legacy_pre(task, band, policy)
+    legacy_role, legacy_notes = _legacy_pre(task, band, policy, resolver)
     legacy = _floor_and_ladder(task, legacy_role, list(legacy_notes), policy, resolver)
 
     exec_notes: list[str] = []
@@ -2553,9 +2576,13 @@ class Resolver:
         # (`_candidates`). A retry needs no floor: its ladder already asks for
         # a tier strictly above what failed, and flooring the role there took
         # the seats out of review seating for nothing (r2 replay: 276 retries
-        # INDEPENDENCE_UNAVAILABLE). The DEBUGGING promotion targets roles
-        # whose lists hold nothing below their binding's tier, so it needs no
-        # floor.
+        # INDEPENDENCE_UNAVAILABLE). The DEBUGGING promotion needs no floor:
+        # it applies only after two failures, so the retry ladder always
+        # follows it and asks for a tier above what failed. Its target role can
+        # resolve below the table's worker under deep scarcity (every tier-2
+        # and tier-3 model withheld: the role's ladder walks down to the fast
+        # binding), but measured over 32,256 such routes the dispatched worker
+        # was never weaker than without the promotion (issue #67 replay).
         self.role_tier_floor: dict[str, int] = {}
         if (task.task_class == "INVESTIGATION" and task.has("unknown_root_cause")
                 and task.prior_failures == 0):
@@ -3047,9 +3074,18 @@ def _seat_effort(policy: Policy, plan: dict, role: str, base: str) -> str:
 
 def _contract_violation(policy: Policy, cand: dict, legacy: dict) -> str | None:
     """First row of design DD-2 S6's table that `cand` fails against `legacy`,
-    or None when adopting the candidate leaves the review/control contract no
-    worse. Row order is evaluation order; the name is what the yield note
-    reports. Both arguments are `_plan()` results (or the same shape)."""
+    or None when adopting the candidate leaves the review's DEPTH unchanged
+    and the rest of the review/control contract no worse. Row order is
+    evaluation order; the name is what the yield note reports. Both arguments
+    are `_plan()` results (or the same shape).
+
+    `review.band` and `review.shape` are equality rows, in both directions:
+    difficulty moves the worker and never the review (design G2). A candidate
+    whose own fallback costs enough routing confidence to raise its band is
+    yielded, not adopted with a deeper review — issue #66 asked whether a
+    higher band should pass, and a replay against 1.22.0 found that every
+    route it would move raised the worker and the review together (195 first
+    attempts, plus retries that gained a human gate)."""
     ei = policy.efforts.index
     cr, lr = cand["review"], legacy["review"]
     if legacy["terminal"] and not cand["terminal"]:

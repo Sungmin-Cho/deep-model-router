@@ -289,6 +289,12 @@ worker_promotions:
   - class: INVESTIGATION
     when: unknown_root_cause
     to_at_least: worker_balanced
+    note: >
+      A capability, not a position: on a first attempt the balanced role is
+      floored at its binding's tier (1.22.0), and the table's worker stays
+      where it resolves strictly stronger than the balanced role does — an
+      unknown root cause is evidence of difficulty and never weakens a route
+      (1.23.0, issue #67).
   - class: MIGRATION
     when: band == CRITICAL
     note: >

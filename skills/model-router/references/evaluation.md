@@ -90,24 +90,30 @@ right things. This section is the method; the results are in
 registry puts there, because those are the models the router seats as peers,
 and a seat's tier claim is that it is as strong as they are. A history row
 (`dispatchable: false`) is a predecessor generation: it may be reported beside
-a result, never used as its anchor. Neither may a row whose tier the
-measurement is deciding. When a tier holds several live rows, the anchor is
-the lowest one measured — a seat level with the weakest model the router
-already treats as that tier is inside the range the scale already accepts.
+a result, never used as its anchor. Neither may the row whose tier a
+verdict is deciding: when one measurement decides several rows, each
+verdict's anchors leave out that verdict's own row only, and every verdict
+reads the registry as it stood before the measurement. When a tier holds
+several live rows, the anchor is the lowest one measured — a seat level with
+the weakest model the router already treats as that tier is inside the range
+the scale already accepts.
 Each live row added to a measurement can only lower that bar, and the anchor's
 own tier may itself be inherited rather than measured, so a result names the
 row that set the bar and says how that row's tier was established. A live row
 that could not be dispatched for the measurement is named as unmeasured, not
 skipped silently.
 
-**Three verdicts, written down before the first dispatch.** The suite is
-*valid* when the anchor sits at least 0.10 recall below the mean of the tier
-above it — it separates the tiers. On a valid suite a seat no more than 0.05
-below the anchor is *confirmed*, and a seat further below is *lowered*, by one
-tier. On
+**Verdicts, written down before the first dispatch.** The suite is *valid*
+when the anchor sits at least 0.10 below the mean of the tier above it — it
+separates the tiers. On a valid suite a seat no more than 0.05 below the
+anchor is *confirmed*, and a seat further below is *lowered*, by one tier. On
 a suite that is not valid the verdict is *inconclusive*: the tier stays where
-it was and is recorded as provisional. Thresholds compare unrounded values.
-The subjects, margins and verdicts are fixed before any dispatch; a rule
+it was and is recorded as provisional. A row is *raised* one tier by the same
+rule one tier up: the suite must separate the row's tier from the one above
+without the row (the mean of the tier above at least 0.10 over the lowest
+other live row of the row's tier), and the row must sit no more than 0.05
+below the lowest live row of the tier above. Thresholds compare unrounded
+values. The subjects, margins and verdicts are fixed before any dispatch; a rule
 changed after some results were seen is not applied without saying so, and
 the result reports what the preregistered rule would have said.
 
