@@ -3472,3 +3472,36 @@ verification_ledger:
         authority where the work writes. Proxy: the sum of the seated worker's and reviewers' output
         prices per MTok, no token weighting. Script and output:
         docs/research/2026-10-14-tier-scale-counterfactuals/.
+    - item: "Router code replays for issues #66 and #67 (2026-10-15)"
+      status: verified
+      probed_on: "2026-10-15"
+      evidence: >
+        One 16,896-point grid (each point fresh and after its own fresh worker
+        failed) under one registry, routed by two copies of the router code:
+        the 1.22.0 release and a candidate, over the 1.22.0 replay's eighteen
+        scenarios and six added for these issues (682,909 routes compared).
+        Issue #67, the INVESTIGATION unknown-root-cause promotion: keeping the
+        table's worker where it resolves strictly stronger than the balanced
+        role (adopted in 1.23.0) moves 194 routes, all in three scarcity
+        scenarios: 34 Claude Code first attempts go from gpt-5.6-terra to
+        gpt-6.1-sol (32 of them with the xai, fast and frontier OpenAI seats
+        withheld and Claude exhausted, where sol is then not left to review
+        and the meta seat reviews below its band, asking a human — the route
+        the same task gets without the flag), 34 of their retries move (32
+        end HUMAN_REQUIRED, nothing stronger than tier 2 being usable; 2 go to
+        gpt-6-astra), and 126 change notes only. The issue's own proposal,
+        keeping the table's worker whenever it meets the balanced binding's
+        tier, moves 418: beyond the same strengthened routes it swaps tier-1
+        models on 64 Codex routes with the fast OpenAI seat out (48 of them
+        gain a review through that seat's fallback penalty) and relabels 160;
+        not adopted. The DEBUGGING promotion, which can resolve below the
+        table's worker under the deepest scarcity, was never weaker once the
+        retry ladder that always follows it had run (32,256 routes). Issue
+        #66, the execution guard: yielding on `review.band` only when the
+        candidate's band is lower moves 390 routes, all with an unknown root
+        cause; every one of the 195 moved first attempts raises the worker and
+        the review band together, and 68 of the retries that follow gain a
+        human gate. The band and shape rows stay equality rows (difficulty
+        moves the worker, never the review); no routing change. Write-seat
+        invariant held on every candidate outcome. Script and output:
+        docs/research/2026-10-15-issues-65-67-counterfactuals/.
