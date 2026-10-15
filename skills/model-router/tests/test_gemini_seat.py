@@ -57,10 +57,11 @@ PROJECT = dispatch_agent.AGY_REVIEWER_PROJECT
 # The registry row, the family map and the transport
 # ---------------------------------------------------------------------------
 
-def test_the_row_is_a_dispatchable_tier_1_seat_bound_to_no_role():
+def test_the_row_is_a_dispatchable_tier_0_seat_bound_to_no_role():
+    """Tier 0 since 1.22.0 (issue #63), as the meta seat."""
     row = CFG["models"][SEAT_KEY]
     assert row["family"] == "gemini"
-    assert row["capability_tier"] == 1
+    assert row["capability_tier"] == 0
     assert row.get("dispatchable", True) is True
     assert row["effort_ceiling"] == "HIGH"
     bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
@@ -288,18 +289,30 @@ def test_a_codex_host_seats_gemini_to_read_only_where_claude_does_not_resolve():
         out = route(Task(**kw, _family_quota={"claude": "exhausted"}), CFG)
         if POLICY.worker_seat_kind(cls) == "write":
             assert out["selected_model"] != GEMINI, cls
-    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+    # A reading lead takes the seat; a MEDIUM REVIEW lead is reviewer-1 and needs
+    # the tier-1 floor, which the tier-0 seat no longer meets (1.22.0).
+    out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime="codex", unavailable_models=[XAI],
                      _family_quota={"claude": "exhausted"}), CFG)
     assert out["selected_model"] == GEMINI
+    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="codex", unavailable_models=[XAI],
+                     _family_quota={"claude": "exhausted"}), CFG)
+    assert out["selected_model"] == ID("openai_worker_balanced")
 
 
 def test_a_read_route_with_everything_ahead_out_seats_gemini_as_the_lead():
-    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+    out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime="claude_code", unavailable_models=AHEAD_OUT), CFG)
     assert out["selected_model"] == GEMINI
-    assert out["review"]["reviewer_models"] == [GEMINI]
+    assert out["selected_capability_tier"] == 0
     assert any(f.endswith(f"-> {GEMINI}") for f in out["fallbacks_applied"])
+    # The same state for a MEDIUM REVIEW: its lead is a reviewer, so the
+    # tier-0 seat yields to the next model that meets the floor.
+    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="claude_code", unavailable_models=AHEAD_OUT), CFG)
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert GEMINI not in _emitted(out)
 
 
 def test_an_exhausted_meta_quota_is_the_meta_seat_out():
@@ -315,7 +328,10 @@ def test_an_author_excluded_meta_and_claude_seat_gemini_with_xai_out():
                      reversibility=1, runtime="claude_code", unavailable_models=[XAI],
                      _review_context={"target_sha256": "0" * 64,
                                       "author_families": ["meta", "claude"]}), CFG)
-    assert out["selected_model"] == GEMINI
+    # 1.22.0: below MEDIUM's floor, so the next tier-1 model outside the
+    # authors' families leads.
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert out["cross_family_review"] is True
 
 
 WRITE_AT_BALANCED = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1,
@@ -1331,4 +1347,8 @@ def test_the_tier_measurement_supersedes_the_external_reading(key):
     assert items[new]["status"] == "verified"
     assert items[new]["supersedes"] == [old]
     assert "tier 1 confirmed" in " ".join(items[new]["evidence"].split())
-    assert CFG["models"][key]["capability_tier"] == 1
+    # issue #63: that row's anchor was a history row; the live-anchor row
+    # supersedes it in turn, and the current tier is the one it records.
+    later = "Reviewer seat tiers against live anchors (real-review replay, 2026-10-14)"
+    assert new in items[later]["supersedes"]
+    assert CFG["models"][key]["capability_tier"] == 0

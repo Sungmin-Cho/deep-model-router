@@ -90,38 +90,46 @@ right things. This section is the method; the results are in
 registry puts there, because those are the models the router seats as peers,
 and a seat's tier claim is that it is as strong as they are. A history row
 (`dispatchable: false`) is a predecessor generation: it may be reported beside
-a result, never used as its anchor. When a tier holds several live rows, the
-anchor is the lowest one measured — a seat level with the weakest model the
-router already treats as that tier is inside the range the scale already
-accepts. A live row that could not be dispatched for the measurement is named
-as unmeasured, not skipped silently.
+a result, never used as its anchor. Neither may a row whose tier the
+measurement is deciding. When a tier holds several live rows, the anchor is
+the lowest one measured — a seat level with the weakest model the router
+already treats as that tier is inside the range the scale already accepts.
+Each live row added to a measurement can only lower that bar, and the anchor's
+own tier may itself be inherited rather than measured, so a result names the
+row that set the bar and says how that row's tier was established. A live row
+that could not be dispatched for the measurement is named as unmeasured, not
+skipped silently.
 
-**Three verdicts, written down before the first dispatch.** *Confirmed*: the
-anchor sits at least 0.10 recall below the tier above it (the suite separates
-the tiers), and the seat comes within 0.05 of the anchor. *Lowered*: the seat
-sits at least 0.10 below the anchor, so the suite separates it from the tier on
-its own. Anything else is *inconclusive*: the tier stays where it was and is
-recorded as provisional. The subjects, margins and verdicts are fixed before
-any dispatch; a rule written after some results were seen says which inputs
-were blind.
+**Three verdicts, written down before the first dispatch.** The suite is
+*valid* when the anchor sits at least 0.10 recall below the mean of the tier
+above it — it separates the tiers. On a valid suite a seat within 0.05 of the
+anchor is *confirmed*, and a seat further below is *lowered*, by one tier. On
+a suite that is not valid the verdict is *inconclusive*: the tier stays where
+it was and is recorded as provisional. Thresholds compare unrounded values.
+The subjects, margins and verdicts are fixed before any dispatch; a rule
+changed after some results were seen is not applied without saying so, and
+the result reports what the preregistered rule would have said.
 
 **What a measurement can move.** A tier is read on both sides of a route. On
 the review side it sets each band's reviewer floor, which candidate a MEDIUM
 review seats and whether a judge outranks the parties. On the worker side it
 sets the retry ladder (a retry needs a strictly higher tier than what failed),
-whether the execution band may raise the worker, and the same-tier swap a low
-quota makes. A read-only seat — no write recipe on any host, or
-`write_verified: false` — only reviews and leads reading work, so a
-real-review replay measures its whole job and may raise or lower it. For a
-seat that writes, a review replay measures half the job: its tier moves only
-when a review replay and an implementation replay point the same way. A
-review replay alone is recorded as a measurement and moves nothing.
+whether the execution band may raise the worker, the critical-domain floor on
+the worker, the compensation a weaker architect substitute receives, and the
+same-tier swap a low quota makes. A read-only seat — no write recipe on any
+host, or `write_verified: false` — only reviews and leads reading work (a
+retry after it fails is reading work too), so a real-review replay measures
+its job and may raise or lower it. For a seat that writes, a review replay
+measures half the job: its tier moves only when a review replay and an
+implementation replay point the same way. A review replay alone is recorded
+as a measurement and moves nothing.
 
 **The two replays.** A *review replay* re-runs a real review from this
 repository's history against its frozen target with the original prompt. The
-ground truth is the findings the author accepted; judges from families that are
-not subjects grade each review blind, after reproducing the original reviews'
-expected sets. Suites of seeded defects reached their ceiling twice and decided
+ground truth is the findings the author accepted; judges that are not
+subjects grade each review blind, after reproducing the original reviews'
+expected sets, and a judge that shares a subject's family is disclosed with
+the result. Suites of seeded defects reached their ceiling twice and decided
 nothing, which is why the replay uses real reviews. An *implementation replay*
 takes accepted findings whose fix added a test: the subject gets the pre-fix
 tree (no history) and the finding, works through its maker recipe in a

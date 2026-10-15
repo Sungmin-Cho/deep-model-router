@@ -47,10 +47,12 @@ RECIPE = CFG["transports"]["claude_code"]["to_meta"]["mechanism_reviewer"]
 # The registry row, the family map and the transport
 # ---------------------------------------------------------------------------
 
-def test_the_meta_row_is_a_dispatchable_tier_1_seat_bound_to_no_role():
+def test_the_meta_row_is_a_dispatchable_tier_0_seat_bound_to_no_role():
+    """Tier 0 since 1.22.0 (issue #63): lowered against the live tier-1 rows
+    (test_tier_scale.py re-derives the verdict from the ledger)."""
     row = CFG["models"][META_KEY]
     assert row["family"] == "meta"
-    assert row["capability_tier"] == 1
+    assert row["capability_tier"] == 0
     assert row.get("dispatchable", True) is True
     bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     assert META_KEY not in bound
@@ -195,14 +197,28 @@ def test_no_other_host_ever_seats_the_meta_model(runtime):
 
 
 def test_a_read_route_seats_meta_as_the_lead_only_with_the_claude_model_out_too():
-    kw = dict(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+    """An INVESTIGATION lead reads and is not a reviewer, so the tier-0 seat
+    still leads it where everything ahead of it is out (1.22.0 keeps the place,
+    user decision 2026-10-15)."""
+    kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
               reversibility=1, runtime="claude_code")
     xai_out = route(Task(**kw, unavailable_models=[XAI]), CFG)
     assert xai_out["selected_model"] == ID("claude_worker_balanced")
     out = route(Task(**kw, unavailable_models=[XAI, ID("claude_worker_balanced")]), CFG)
     assert out["selected_model"] == META
-    assert out["review"]["reviewer_models"] == [META]
+    assert out["selected_capability_tier"] == 0
     assert any(f.endswith(f"-> {META}") for f in out["fallbacks_applied"])
+
+
+def test_a_medium_review_lead_skips_the_tier_0_seat_for_one_that_meets_the_floor():
+    """A REVIEW lead is reviewer-1 and MEDIUM's floor is tier 1: since 1.22.0
+    the next tier-1 model in the list leads instead of this seat."""
+    out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
+                     reversibility=1, runtime="claude_code",
+                     unavailable_models=[XAI, ID("claude_worker_balanced")]), CFG)
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert META not in _emitted(out)
+    assert out["review"]["review_depth_reduced"] == []
 
 
 def test_an_author_excluded_claude_family_seats_meta_as_the_lead_with_xai_out_too():
@@ -215,7 +231,10 @@ def test_an_author_excluded_claude_family_seats_meta_as_the_lead_with_xai_out_to
     assert xai_only["selected_model"] == ID("claude_worker_balanced")
     out = route(Task(**kw, _review_context={"target_sha256": "0" * 64,
                                             "author_families": ["xai", "claude"]}), CFG)
-    assert out["selected_model"] == META
+    # 1.22.0: the tier-0 seat is below MEDIUM's floor, so the review goes to the
+    # next tier-1 model, still from outside the authors' families.
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert out["cross_family_review"] is True
 
 
 def test_a_low_xai_quota_moves_a_read_worker_to_the_claude_model_not_meta():
@@ -280,9 +299,12 @@ def test_quality_first_gives_up_the_cross_family_review_meta_supplied():
     assert POLICY.family_of[out["selected_model"]] == "claude"
     assert out["review"]["reviewer_models"] == [ID("claude_worker_balanced")]
     assert out["cross_family_review"] is False
+    # 1.22.0: with that model withheld too, the tier-0 meta seat no longer
+    # staffs MEDIUM's review; the Claude senior seat does, same family.
     kw["unavailable_models"] = [XAI, ID("claude_worker_balanced")]
     out = route(Task(**kw), CFG)
-    assert out["review"]["reviewer_models"] == [META] and out["cross_family_review"] is True
+    assert out["review"]["reviewer_models"] == [ID("claude_senior")]
+    assert out["cross_family_review"] is False
 
 
 def test_the_review_of_this_tranche_seats_no_meta_model():
@@ -302,6 +324,11 @@ def test_an_allowed_families_list_without_xai_and_claude_seats_meta():
               reversibility=1, runtime="claude_code")
     out = route(Task(**kw, _local_policy={"allowed_families": fams}), CFG)
     assert out["selected_model"] == ID("claude_worker_balanced")
+    out = route(Task(**kw, _local_policy={"allowed_families": [f for f in fams
+                                                                if f != "claude"]}), CFG)
+    # 1.22.0: a REVIEW lead needs MEDIUM's tier-1 floor; a reading lead does not.
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    kw["task_class"] = "INVESTIGATION"
     out = route(Task(**kw, _local_policy={"allowed_families": [f for f in fams
                                                                 if f != "claude"]}), CFG)
     assert out["selected_model"] == META
@@ -325,21 +352,21 @@ def test_a_write_override_on_a_read_class_never_seats_meta():
         assert out["selected_model"] != META, cls
 
 
-def test_a_claude_shortage_trades_the_balanced_writer_for_a_cross_family_review():
-    """Disclosure 3: with Claude exhausted and xai out, the execution cell
-    yields the OpenAI balanced writer to keep the meta seat's cross-family
-    review — the existing rule that seating the cell must not make the review
-    worse, applied to a supply that now has a fourth family."""
+def test_a_claude_shortage_no_longer_trades_the_balanced_writer_for_meta():
+    """Disclosure 3 (1.19.0): with Claude exhausted and xai out, the execution
+    cell yielded the OpenAI balanced writer to keep the meta seat's
+    cross-family review. At tier 0 (1.22.0) the seat cannot staff MEDIUM's
+    review, so there is nothing to keep: the cell seats the balanced writer
+    and a model that meets the floor reviews — the route this seat's absence
+    gives."""
     kw = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=2, blast_radius=0,
               reversibility=0, runtime="claude_code", unavailable_models=[XAI],
               _family_quota={"claude": "exhausted"})
     before, after = route(Task(**kw), BASE), route(Task(**kw), CFG)
-    assert before["selected_model"] == ID("openai_worker_balanced")
-    assert before["cross_family_review"] is False
-    assert after["selected_model"] == ID("openai_worker_fast")
-    assert after["review"]["reviewer_models"] == [META]
-    assert after["cross_family_review"] is True
-    assert "execution band NORMAL yielded worker_balanced: cross_family_review" in after["notes"]
+    assert before["selected_model"] == after["selected_model"] == ID("openai_worker_balanced")
+    assert after["review"]["reviewer_models"] == before["review"]["reviewer_models"]
+    assert META not in _emitted(after)
+    assert "execution band NORMAL yielded worker_balanced: cross_family_review" not in after["notes"]
 
 
 def test_an_allowed_families_list_of_meta_alone_cannot_staff_a_write_route():

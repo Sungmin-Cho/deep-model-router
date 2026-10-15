@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.21.1] — 2026-10-14 (tier measurement against live models)
+## [1.22.0] — 2026-10-15 (tiers measured against live models)
 
 ### Changed
 
-- Measure tiers against the models the router actually seats. A tier's anchor is now the weakest live model holding that tier, never a retired generation, and a seat that writes moves only when a review replay and an implementation replay agree; the evaluation reference describes the method.
-- Re-read the Muse Spark and Gemini Flash reviewer seats against that anchor, after measuring the two OpenAI models the first replay had skipped: both seats review at the level of the OpenAI balanced model that follows them in the fallback lists, so their tier 1 is provisional again rather than confirmed. No route changes.
-- Keep Claude Haiku 5.5 at tier 0 and Claude Sonnet 5.5 at tier 1. The review replay does not separate either from the stronger Claude seats, and a review replay alone does not move a seat that writes; the model profile lists what a raise would have moved.
+- Measure tiers against the models the router actually seats. A tier's anchor is now the weakest measured live model holding that tier, never a retired generation or a seat under test, and a seat that writes moves only when a review replay and an implementation replay agree; the evaluation reference describes the method.
+- Lower the Muse Spark and Gemini Flash reviewer seats to tier 0. Measured against the live tier-1 models, after measuring the two OpenAI models the first replay had skipped, both fall below the bar the earlier replay used. They keep their places in the fallback lists, so where one of them fills the balanced role, a review seat whose band asks for tier 1 or more now goes to a model that meets it, mostly GPT-6.1 Sol; this only happens when the xAI seat and the Claude family are both unavailable. The model profile lists what moves.
+- Keep Claude Haiku 5.5 at tier 0 and Claude Sonnet 5.5 at tier 1. The review replay does not separate either from the tier-2 average, and a review replay alone does not move a seat that writes; the model profile lists what a raise would have moved.
 
 ## [1.21.0] — 2026-10-14 (Haiku 5.5, measured reviewer seats, Gemini maker and Codex direction)
 
