@@ -447,3 +447,37 @@ def test_the_promotion_never_resolves_weaker_than_the_table_worker(runtime):
         elif any(n.startswith("investigation promotion: worker_fast kept") for n in notes):
             kept += 1
     assert moved and (kept or runtime != "claude_code")
+
+
+def test_the_promotion_keeps_the_table_worker_when_the_balanced_role_has_nothing():
+    """Review d1 (fable, missing test): the balanced role's list can hold
+    nothing usable while the fast role's own fallback still resolves (Claude
+    Code, the Claude family only, every Claude model but the fast one
+    withheld). The promotion then keeps the fast role and says why."""
+    import route_task as rt
+    task = Task(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=0,
+                reversibility=0, runtime="claude_code", flags=["unknown_root_cause"],
+                unavailable_models=[ID("claude_worker_balanced"), ID("claude_senior"),
+                                    ID("claude_architect")],
+                _local_policy={"allowed_families": ["claude"]})
+    resolver = rt.Resolver(task, POLICY)
+    role, notes = rt._legacy_pre(task, "LOW", POLICY, resolver)
+    assert role == "worker_fast" and resolver.peek(role, write=True) == ID("claude_worker_fast")
+    assert resolver.peek("worker_balanced", write=True) is None
+    assert ("investigation promotion: worker_fast kept at capability tier 0 — worker_balanced "
+            "resolves to nothing usable") in notes
+
+
+def test_a_retry_reads_the_unfloored_balanced_role_and_keeps_the_stronger_worker():
+    """Review d1 (fable, missing test): a retry carries no floor, so the
+    balanced role resolves to a tier-0 seat; the fast role's gpt-6.1-sol stays
+    and the ladder keeps it above the failed tier-1 model."""
+    out = route(Task(task_class="INVESTIGATION", complexity=3, uncertainty=0, blast_radius=0,
+                     reversibility=0, runtime="claude_code", flags=["unknown_root_cause"],
+                     unavailable_models=[XAI, LUNA], _family_quota={"claude": "exhausted"},
+                     prior_failures=1, prior_models=[ID("openai_worker_balanced")]), CFG)
+    assert (out["terminal"], out["selected_model"], out["selected_role"]) == \
+        (None, ID("openai_reasoning"), "worker_fast")
+    assert ("investigation promotion: worker_fast kept at capability tier 2 — worker_balanced "
+            "resolves to capability tier 0") in out["notes"]
+    assert "retry keeps worker_fast: already above the failed capability tier 1" in out["notes"]
