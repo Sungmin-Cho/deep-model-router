@@ -135,12 +135,15 @@ latency_sensitive  tool_heavy
 ```
 
 `large_context` and `latency_sensitive` are the two the router itself acts
-on: each rebinds `worker_balanced` to `worker_balanced_alt`, a same-tier
-seat. The first because the primary's price doubles and its window runs out
-past 200K input tokens; the second because a quality-tied measurement found
-the alt faster on wall-clock p50 in every probed task type. Same band, same
-review, different model — which is exactly what a context flag is allowed
-to move. Carrying both flags is the same swap, not a conflict.
+on: each rebinds `worker_balanced` to `worker_balanced_alt`. The first
+because the primary's price doubles and its window runs out past 200K input
+tokens; the second because a quality-tied measurement found the alt faster on
+wall-clock p50 in every probed task type. Same band, same review, different
+model — which is exactly what a context flag is allowed to move. The alt was
+a same-tier seat until 1.23.0; since the Claude balanced model measured at
+tier 2 (issue #65), the swap also seats a stronger worker than the xai
+primary, and the review seats chosen for that worker follow it. Carrying both
+flags is the same swap, not a conflict.
 
 `unfamiliar_codebase`, `tool_heavy` and `cross_service_change` are the
 execution axis's inputs (below): they move the worker, never the band.
@@ -244,16 +247,28 @@ tolerates:
 
 1. Finish the risk chain exactly as before: class × risk-band cell, the class
    promotions, the critical-domain floor, the retry ladder. This is the
-   **legacy** worker and the floor.
+   **legacy** worker and the floor. The INVESTIGATION promotion is evidence
+   of difficulty and never seats a weaker model than the cell it promotes
+   from: where the fast role resolves strictly stronger than the balanced
+   role under scarcity, it keeps the fast role (issue #67). The DEBUGGING
+   promotion applies only after two failures, so the retry ladder that
+   follows it decides the model.
 2. Resolve the execution cell. It becomes the **candidate** only if its
    resolved model is strictly stronger by `capability_tier` than the legacy
    worker — before and after the floor and ladder run on it.
 3. Settle the whole plan for both workers and compare the review / control
    contract: terminal state, human controls, review band, reviewer count and
    effort, independence, judge, cross-family, reviewer tiers and effective
-   efforts, depth shortfalls, effort-floor breaks. Adopt the candidate only if
-   no row is worse; otherwise yield to the legacy worker. Either outcome is a
-   `notes` entry (`execution band … raised worker …` / `… yielded …: <row>`).
+   efforts, depth shortfalls, effort-floor breaks. The review's depth — band,
+   reviewer count, review effort, required checks, the independence
+   requirement — must be **the same** in both plans, and no other row may be
+   worse; otherwise yield to the legacy worker. A deeper review is a change
+   too: when the candidate's seat takes a fallback, the confidence it costs
+   can raise the candidate plan's band, and the cell yields rather than let
+   difficulty move the review (issue #66 replayed the opposite reading: every
+   route it moved raised the worker and the review together). Either outcome
+   is a `notes` entry (`execution band … raised worker …` / `… yielded …:
+   <row>`).
 
 Reviewer *identity* still follows the worker (the MEDIUM floor fit below, and
 de-confliction), so a MEDIUM route whose worker rose from the fast tier gets its
@@ -474,8 +489,12 @@ conceptual value or leave effort undeclared.
 when either axis is below its ask. Recommend `/model` only when
 `model_comparison: below`, selecting the first registry row satisfying
 `family == local_family ∧ dispatchable != false ∧ capability_tier ≥ ask.tier`,
-sorted `(capability_tier asc, registry key asc)`. Do not compare prices within a
-tier. If no candidate exists, or the declared model is unrecognized, delegate
+sorted `(capability_tier asc, role, registry key asc)`, where `role` is the
+first role the row fills in that family's single-provider binding, in role
+order (a row it does not bind sorts last). Do not compare prices within a
+tier: two rows of one family can share a tier (since 1.23.0 the Claude
+balanced and senior models are both tier 2), and the lower role is the one the
+router itself reaches for first. If no candidate exists, or the declared model is unrecognized, delegate
 the dispatch and make no `/model` utterance. A higher effort for an orchestrator
 host is applied by the user with `/effort` or by delegating to a higher-effort
 seat.

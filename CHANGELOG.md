@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.0] — 2026-10-15 (implementation replay, promotion and guard fixes)
+
+### Changed
+
+- Raise Claude Sonnet 5.5 (the Claude balanced model) to tier 2. A model that writes moves only when a review replay and an implementation replay agree; an implementation replay now exists — eight accepted findings from this repository, each fixed from its pre-fix tree and graded by the tests its real fix added — and it puts Sonnet 5.5 level with GPT-6.1 Sol there, as the review replay did. Retries after it fails now climb to Claude Fable 5.1, it can take tier-2 review and judge seats, and the execution band no longer raises it to Claude Opus 5.5; with every seat available the summed output price of the seated models falls 11%. 718 routes carrying an unknown root cause now ask to be re-routed — 454 retries after the xAI seat fails and 264 reviews with the xAI seat and OpenAI out: they land on a fallback seat, whose confidence penalty takes them under the threshold. Claude Haiku 5.5 stays at tier 0: its raise misses the rule's gate by 0.6 points. The model profile lists what moves.
+- Break a tie between two same-tier models of the host's family by role when naming a `/model` for the host: a Claude host below a tier-1 or tier-2 ask is pointed at Sonnet 5.5, not Opus 5.5.
+- Add the raise verdict to the tier method: a row moves up one tier when the suite separates its tier from the one above without it and it sits within five points of the weakest row above. One measurement can decide several rows; each verdict leaves out only its own row, against the registry as it stood before.
+- Never let an investigation's unknown-root-cause promotion seat a weaker worker than the one the risk table chose. Under scarcity the fast role can resolve to a stronger model than anything the balanced role holds; the promotion used to move the worker to the balanced role by position anyway. It now keeps the table's worker wherever it resolves strictly stronger, and still moves the role at an equal tier. Under the deepest shortage replayed this gives 34 Claude Code investigations GPT-6.1 Sol instead of GPT-5.6 Terra — the worker the same task gets without the flag — and where Sol is then not left to review, the route asks a human, as it already did without the flag. The model profile lists what moves.
+- State the execution guard's rule as it is enforced: a stronger worker from the execution band is adopted only when the review's depth stays the same, a deeper review included. A replay of yielding only to a shallower review moved 195 first attempts, every one of them raising the worker and the review together, so the guard is unchanged.
+
 ## [1.22.0] — 2026-10-15 (tiers measured against live models)
 
 ### Changed

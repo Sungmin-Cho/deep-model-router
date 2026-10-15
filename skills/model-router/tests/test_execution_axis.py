@@ -296,7 +296,10 @@ def test_t6_iii_same_final_tier_keeps_the_legacy_model(rc):
     out = r(task_class="IMPLEMENTATION", complexity=3, uncertainty=3, reasoning_centric=rc,
             prior_failures=1, prior_models=[ID("xai_frontier")])
     assert TIER[out["selected_model"]] == 2
-    assert out["selected_model"] == ID("claude_senior")        # 1.12.1's ladder answer, both rc values
+    # The ladder takes the weakest role above the failed tier 1: since 1.23.0
+    # (issue #65) the balanced role's Claude model is tier 2, so it answers
+    # there, where 1.12.1's ladder climbed to the senior seat. Both rc values.
+    assert out["selected_model"] == ID("claude_worker_balanced")
     assert not _raised(out) and not _yielded(out)
 
 

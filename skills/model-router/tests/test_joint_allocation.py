@@ -39,7 +39,10 @@ def test_source_review_can_reserve_frontier_for_judge():
 
 
 def test_insufficient_author_eligible_supply_keeps_a_gate():
-    out = run(review_context=dict(target_sha256='a'*64, author_families=['openai'], author_model_ids=[CFG['models']['claude_architect']['id']]))
+    # Since 1.23.0 the Claude balanced model is tier 2 and fills a HIGH seat
+    # beside the senior one, so it is excluded too to keep the supply short.
+    out = run(review_context=dict(target_sha256='a'*64, author_families=['openai'], author_model_ids=[
+        CFG['models'][k]['id'] for k in ('claude_architect', 'claude_worker_balanced')]))
     assert out['terminal'] or out['requires_human_confirmation']
 
 
@@ -81,8 +84,11 @@ def test_promoted_review_band_can_promote_the_source_lead():
 
 
 def test_missing_judge_does_not_misreport_missing_source_reviewers():
+    # The Claude balanced model is tier 2 since 1.23.0 and would judge two
+    # tier-2 parties, so it is excluded too to keep the judge missing.
     out = run(flags=['review_disagreement'], review_context=dict(target_sha256='a'*64,
-        author_model_ids=[CFG['models'][k]['id'] for k in ['claude_architect','openai_frontier']]))
+        author_model_ids=[CFG['models'][k]['id'] for k in ['claude_architect','openai_frontier',
+                                                           'claude_worker_balanced']]))
     assert out['terminal'] is None
     assert out['review']['judge_unavailable']
     assert not out['review']['independence_compromised']

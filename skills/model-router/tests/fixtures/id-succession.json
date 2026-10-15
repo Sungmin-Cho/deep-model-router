@@ -27,7 +27,8 @@
       "served_model_caveats": ["security_sensitive"]
     },
     "claude_worker_balanced@claude-sonnet-5-5": {
-      "served_model_caveats": ["security_sensitive"]
+      "served_model_caveats": ["security_sensitive"],
+      "capability_tier": 2
     },
     "openai_reasoning@gpt-6.1-sol": {
       "effort_map": {

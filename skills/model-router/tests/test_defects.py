@@ -1554,10 +1554,13 @@ def test_d15_every_human_control_action_is_validated_and_load_bearing():
         # HIGH by the dimensions themselves: since DD-B2 an uncertainty that
         # raised the band no longer promotes it, which is what put this probe's
         # judge on a HIGH review before 1.17.0.
+        # The Claude balanced model is withheld too since 1.23.0: at tier 2 it
+        # would judge the two tier-2 parties.
         "on_judge_unavailable": dict(task_class="MECHANICAL", complexity=3, uncertainty=0,
                                      blast_radius=2, reversibility=1,
                                      flags=["review_disagreement"],
-                                     unavailable_models=[ARCHITECT_ID, ID("openai_reasoning")]),
+                                     unavailable_models=[ARCHITECT_ID, ID("openai_reasoning"),
+                                                         ID("claude_worker_balanced")]),
         "on_review_depth_reduced": dict(task_class="INVESTIGATION", complexity=2,
                                         uncertainty=2, blast_radius=1, reversibility=0,
                                         flags=["bridge_down"],
@@ -1781,9 +1784,12 @@ def test_d22_a_production_hotfix_dispatches_now_and_owes_the_confirmation():
         "on_production_hotfix is read but changes nothing — an inert control")
 
     # And a review that cannot be trusted still blocks, incident or not.
+    # The Claude balanced model is withheld too since 1.23.0: at tier 2 it
+    # would staff the review the probe needs to leave short.
     degraded = r(task_class="DEBUGGING", complexity=1, uncertainty=2, blast_radius=3,
                  reversibility=0, flags=["production_hotfix", "auth_sensitive"],
-                 unavailable_models=[ID("claude_senior"), ID("openai_reasoning")])
+                 unavailable_models=[ID("claude_senior"), ID("openai_reasoning"),
+                                     ID("claude_worker_balanced")])
     assert degraded["review"]["review_depth_reduced"], "probe drifted"
     assert degraded["requires_human_confirmation"]
     assert not degraded["human_confirmation_deferred"]
@@ -2684,8 +2690,12 @@ def test_d23_worker_clamp_reads_peek_not_the_provisional_resolved_map():
     the whole pass. `_seat_judge` can then drop the judge so the FINAL
     resolution succeeds, but a clamp that read `resolved.get` already ran
     against `{}` and shipped an effort the worker cannot receive."""
+    # Tier 1 as before 1.23.0: with the balanced model at tier 2 this
+    # two-model supply has no reviewer at the implementer's tier and the route
+    # goes terminal before the clamp this test is about.
     cfg = {**CFG, "models": {**CFG["models"], "claude_worker_balanced": {
-        **CFG["models"]["claude_worker_balanced"], "effort_ceiling": "LOW"}}}
+        **CFG["models"]["claude_worker_balanced"], "effort_ceiling": "LOW",
+        "capability_tier": 1}}}
     # Two models since 1.17.0: the dispute takes the review off LOW to MEDIUM
     # (DD-B4), which needs an independent reviewer beside the worker; the
     # judge still has nothing left and is dropped for the final resolution.

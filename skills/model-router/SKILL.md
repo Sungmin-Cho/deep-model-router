@@ -255,9 +255,9 @@ A second table, class × execution band (`references/routing-policy.md`,
 "Execution difficulty"), names the worker difficulty asks for. The router
 finishes the risk chain first (table, class promotions, critical floor, retry
 ladder), then adopts the execution cell only if its resolved model is
-**strictly** stronger by `capability_tier` and seating it leaves the settled
-review and control contract no worse — otherwise it yields, and says so in
-`notes` (`execution band … raised worker …` / `… yielded …`).
+**strictly** stronger by `capability_tier` and seating it leaves review depth
+unchanged and the rest of the contract no worse — otherwise it yields, and
+says so in `notes` (`execution band … raised worker …` / `… yielded …`).
 
 Then apply, in order:
 

@@ -66,7 +66,7 @@ FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 
 # The closed rule vocabulary, in replay order (design DD-B11 ②). A rule not
 # named here cannot explain anything.
-ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7")
+ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7", "t65")
 
 # Keys that are not decisions: provenance, prose, the explicit-cfg overlay, and
 # the typed history echoed back as declared (a rule switched off projects its
@@ -346,6 +346,33 @@ def _c7_check(req, prev, cur):
     return out
 
 
+def _t65_check(req, prev, cur):
+    """A seat measured stronger may move the route to stronger seats, never to
+    weaker ones (tiers read off the shipped registry): no new terminal, the
+    worker no lower, no review newly staffed below its band, and a judge never
+    below the parties it adjudicates. A reviewer may drop from a tier-3
+    substitute to the band's own tier-2 seat: the substitute was there only
+    because the execution cell had raised the worker onto that seat, which an
+    equal-tier balanced model no longer does."""
+    if "error" in prev or "error" in cur or prev["terminal"]:
+        return []
+    if cur["terminal"]:
+        return [f"became {cur['terminal']}"]
+    out = []
+    # A REVIEW task's lead is a review seat (DD-B7), held by the review rule
+    # below: it may move from a tier-3 substitute to the band's tier-2 seat.
+    if (req["task_class"] != "REVIEW"
+            and TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]):
+        out.append("worker tier fell")
+    if len(cur["review"]["review_depth_reduced"]) > len(prev["review"]["review_depth_reduced"]):
+        out.append("a review newly staffed below its band")
+    judge = cur["review"]["judge_model"]
+    parties = [m for m in cur["review"]["reviewer_models"] if m]
+    if judge and parties and TIER_OF[judge] < max(TIER_OF[m] for m in parties):
+        out.append("judge below a party")
+    return out
+
+
 # The ledger, in ORDER (plan B0 Step 3). A rule task adds its row.
 RULES: dict[str, Rule] = {
     "implementer_declared": Rule(
@@ -450,6 +477,28 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_c7_check, changed_sample=212, changed_full=2288),
+    # Issue #65 (1.23.0, user decision 2026-10-15): the Claude balanced model
+    # measured at tier 2 in a review replay and an implementation replay. Not
+    # a Part B rule but a registry move whose reach is the whole tier scale:
+    # every comparison that reads a resolved tier can move — the worker
+    # through the ladder and the execution cell, every review seat, the judge,
+    # the gates and the fallback records that follow — so it is admitted
+    # everywhere and held by its direction (`_t65_check`). The grid reaches
+    # neither place where the release replay found routes that newly ask to be
+    # re-routed (ESCALATE_ROUTING: a fallback's penalty on routes sitting at
+    # 0.60) — 454 retries carrying an unknown root cause, and 264 REVIEW
+    # tasks with one as well, the xai seat withheld and OpenAI exhausted.
+    # The direction check would refuse both; they are disclosed and pinned in
+    # test_tier_scale.py instead.
+    "t65": Rule(
+        "t65", predicate=lambda req, prev: True,
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_t65_check, changed_sample=958, changed_full=21848),
 }
 
 
@@ -492,6 +541,7 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
     "c3": lambda cfg: cfg["review"].__setitem__(
         "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
     "review_lead": lambda cfg: cfg["review"].__setitem__("review_class_lead_counts", False),
+    "t65": lambda cfg: cfg["models"]["claude_worker_balanced"].__setitem__("capability_tier", 1),
 }
 
 def _c4_off(stack: ExitStack) -> None:
