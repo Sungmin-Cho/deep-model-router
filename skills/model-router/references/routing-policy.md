@@ -486,8 +486,12 @@ conceptual value or leave effort undeclared.
 when either axis is below its ask. Recommend `/model` only when
 `model_comparison: below`, selecting the first registry row satisfying
 `family == local_family ∧ dispatchable != false ∧ capability_tier ≥ ask.tier`,
-sorted `(capability_tier asc, registry key asc)`. Do not compare prices within a
-tier. If no candidate exists, or the declared model is unrecognized, delegate
+sorted `(capability_tier asc, role, registry key asc)`, where `role` is the
+first role the row fills in that family's single-provider binding, in role
+order (a row it does not bind sorts last). Do not compare prices within a
+tier: two rows of one family can share a tier (since 1.23.0 the Claude
+balanced and senior models are both tier 2), and the lower role is the one the
+router itself reaches for first. If no candidate exists, or the declared model is unrecognized, delegate
 the dispatch and make no `/model` utterance. A higher effort for an orchestrator
 host is applied by the user with `/effort` or by delegating to a higher-effort
 seat.

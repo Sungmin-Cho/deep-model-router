@@ -237,12 +237,15 @@ def test_an_author_excluded_claude_family_seats_meta_as_the_lead_with_xai_out_to
     assert out["cross_family_review"] is True
 
 
-def test_a_low_xai_quota_moves_a_read_worker_to_the_claude_model_not_meta():
+def test_a_low_xai_quota_moves_a_read_worker_to_a_same_tier_model_not_meta():
     """`low` moves the worker to the first same-tier model of another family in
-    the list — the Claude model since 1.21.0."""
+    the list — the Claude model from 1.21.0, the OpenAI balanced model since
+    1.23.0, when the Claude model became tier 2 (issue #65). Never the meta
+    seat, which is not that tier."""
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=0, runtime="claude_code", _family_quota={"xai": "low"}), CFG)
-    assert out["selected_model"] == ID("claude_worker_balanced")
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert out["selected_model"] != ID("meta_worker_balanced")
 
 
 WRITE_AT_BALANCED = dict(task_class="IMPLEMENTATION", complexity=2, uncertainty=1,

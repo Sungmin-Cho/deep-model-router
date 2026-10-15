@@ -429,7 +429,9 @@ with every seat available, retries after the OpenAI fast seat fails would
 climb to this seat instead of a balanced one on Claude Code and grok hosts
 (1,860 routes), and with OpenAI exhausted it would take review seats from the
 Claude balanced model on thousands more — all of it resting on a writing
-strength nobody has measured.
+strength nobody had measured. The implementation replay of 2026-10-15 has now
+measured it, and it stays at tier 0: the raise misses the gate there by 0.6
+points (see "Tiers measured on 2026-10-15").
 
 ## Why `worker_balanced` is bound to the xai frontier model
 
@@ -501,17 +503,26 @@ on. This generation also keeps refusal classifiers, like the Claude senior
 seat, and its row carries the same substitution disclosure. Its tier was
 measured separately; see "Tiers after the 2026-09-30 bumps" below.
 
-**`capability_tier` is 1 on purpose.** Honesty first: the one measured
-comparison there is finished at the suite's ceiling, which separates nothing —
-promoting the model to tier 2 on it would treat an undiscriminating result as
-a demonstrated one.
-Side-effect second: MEDIUM's reviewer floor is the minimum nominal tier among
-`worker_balanced`, `senior_engineer`, and `reasoning_specialist` in the
-default binding. That minimum is currently 1. Raising this model to 2 would
-lift the floor to 2 and start marking MEDIUM reviews as below band — a
-band-policy change with nothing to do with adding a model. If a harder eval
-later supports a raise, change the registry line and decide the floor
-question at the same time.
+**`capability_tier` is 2 since 1.23.0, on two measurements.** A seat that
+writes moves only when a review replay and an implementation replay point the
+same way (`evaluation.md`, "How a tier is measured"). The real-review replay
+of 2026-10-14 put this model level with the tier-2 rows, and the
+implementation replay of 2026-10-15 — eight accepted findings from this
+repository, each fixed from its pre-fix tree and graded by the tests its real
+fix added — scored it 0.625, equal to GPT-6.1 Sol (the weaker live tier-2 row)
+and against 0.6875 for the Claude senior seat and 0.3125 for the OpenAI
+balanced model. Both replays read "raise" under the rule fixed before the
+second ran, and the user applied it (2026-10-15). The ledger row
+"Implementation replay of the writing rows (2026-10-15)" has the numbers and
+the disclosures: the raise rests on the weaker tier-2 row as the anchor (with
+the senior seat alone it would hold, one run short), and the reference fixes
+the hidden tests come from were written by the senior seat's model.
+
+MEDIUM's reviewer floor does not move: it is the minimum nominal tier among
+`worker_balanced`, `senior_engineer` and `reasoning_specialist` in the
+default binding, where the xai seat holds `worker_balanced` at tier 1. What
+moves is every comparison that reads this model's resolved tier — the
+"Tiers measured on 2026-10-15" section below lists it.
 
 ## Tiers after the 2026-09-30 bumps
 
@@ -535,7 +546,9 @@ counterfactuals after the 2026-09-30 bumps" has the counts.
   tier-3 reviewer sits today on 6,942 routes. On 4,082 retries after this
   seat fails, the next seat would be the tier-3 architect instead of the
   senior. The whole saving rests on this model being tier-2 strength, and
-  the measurement below says it is not there yet.
+  the measurement below says it is not there yet. (Measured again with live
+  anchors and an implementation replay, and adopted in 1.23.0: see "Tiers
+  measured on 2026-10-15".)
 - **The Claude balanced seat as the default `worker_balanced`** would raise
   that price sum slightly. The step from the fast worker would still cross
   family, but the next step, from the balanced worker to the senior seat,
@@ -632,3 +645,60 @@ a raise of the balanced seat would move about as many routes (13,368) as the
 2026-09-30 counterfactual found. The ledger rows "Reviewer seat tiers against
 live anchors (real-review replay, 2026-10-14)" and "Tier counterfactuals after
 the 2026-10-14 replays" have the numbers.
+
+## Tiers measured on 2026-10-15
+
+**The implementation replay (issue #65).** Eight accepted findings from this
+repository whose fix added a test, chosen before any run (four in the routing
+code, one in the local model state, two in model-sync, one in the dispatch
+supervisor). Each subject got the pre-fix tree without history and the finding
+as its reviewer wrote it, worked through a write-capable headless recipe at
+high effort in a disposable copy, twice, and was graded by the tests the real
+fix added plus the pre-fix suite — no judge. Every session was audited for
+reads outside its copy; none read an answer.
+
+| Seat | Tier (before) | Pass rate |
+|---|---|---|
+| Claude senior seat | 2 | 69% |
+| Sol seat | 2 | 63% |
+| Claude balanced seat | 1 | 63% |
+| Claude fast seat | 0 | 56% |
+| OpenAI fast seat | 0 | 38% |
+| OpenAI balanced seat | 1 | 31% |
+
+The rule fixed before the runs reads each row against the others of its tier
+and the tier above. The Claude balanced seat sits level with the Sol seat, the
+weaker tier-2 row, in this replay as in the review replay: both say raise, and
+it is **tier 2** (user decision, 2026-10-15). The Claude fast seat's raise
+narrowly fails the gate here (the tier-1 mean sits 9.4 points above the other
+tier-0 row, the OpenAI fast seat, where the gate needs 10), so it stays at
+**tier 0**. One task's hidden test
+asserted a first-attempt worker that contradicts its own finding (the defect
+issue #67 fixes); graded without that case the fast seat would have raised
+too — a correction made after the results, reported, not applied. The OpenAI
+rows hold: the gate cannot separate tier 1 from tier 2 while the Claude
+balanced seat sat in tier 1, although the OpenAI balanced seat scored lowest
+of all six.
+
+**What the raise moves.** Every comparison that reads this seat's tier. With
+every seat available, 4,082 retries after this seat fails climb to the tier-3
+architect instead of the senior seat, 2,254 retries after the xai seat fails
+take this seat instead of the senior one, the medium reviewer for a tier-2
+worker is often this seat instead of the senior one, and high and
+critical review pairs that substituted a tier-3 seat for the senior one when
+the execution band had raised the worker onto it now keep the senior seat
+(the band no longer raises this seat's work: the senior seat is no stronger).
+With the xai seat withheld 15,246 routes move, and 3,888 critical routes that
+had no adjudicator now have one. The summed output price of the seated models
+falls 11% with every seat available and 8% with the xai seat withheld; with
+OpenAI exhausted it rises 3%, and 1,024 routes that had no independent
+reviewer become dispatchable. Retries after the xai seat fails now land on this
+seat through the balanced role's fallback list, which costs 0.06 routing
+confidence; with an unknown root cause that takes 718 routes under 0.60, and
+they now end ESCALATE_ROUTING (454 retries, and 264 first attempts with the
+xai seat withheld and OpenAI exhausted, which the execution band no longer
+raises to the senior seat). The host advisory that names a `/model` breaks the new tie
+between this seat and the senior seat by role, so a Claude host below a tier-1
+or tier-2 ask is still pointed at this model. The ledger rows "Implementation
+replay of the writing rows (2026-10-15)" and "Tier counterfactuals after the
+2026-10-15 implementation replay" have the numbers.

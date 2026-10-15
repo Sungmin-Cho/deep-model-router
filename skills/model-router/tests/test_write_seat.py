@@ -380,9 +380,9 @@ def test_a_role_holds_one_model_so_the_skip_reaches_that_whole_role():
     assert out["terminal"] is None
     assert out["selected_role"] == "worker_balanced"
     assert out["selected_model"] == ID("claude_worker_balanced")
-    # Same capability tier as the seat it replaced, so the route is not
-    # weakened — and the reviewers are exactly what they were before.
-    assert POLICY.tier_of[ID("claude_worker_balanced")] == POLICY.tier_of[ID("xai_frontier")]
+    # At least the capability tier of the seat it replaced (the same tier
+    # until 1.23.0, one above since), so the route is not weakened.
+    assert POLICY.tier_of[ID("claude_worker_balanced")] >= POLICY.tier_of[ID("xai_frontier")]
     assert ID("xai_frontier") not in out["review"]["reviewer_models"]
 
 

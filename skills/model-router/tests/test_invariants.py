@@ -630,17 +630,19 @@ def test_an_unsatisfiable_band_floor_means_no_amount_of_availability_would_help(
 
     # Round 9: the two probes above both survive DELETING the implementer from
     # the seat count, so they pinned only one direction. This one needs it: a
-    # tier-2 implementer under `claude_only` occupies one of the two tier-2+
-    # models, leaving one for two reviewer seats.
+    # tier-2 implementer under `openai_only` occupies one of the two tier-2+
+    # models, leaving one for two reviewer seats. (Until 1.23.0 the probe ran
+    # under `claude_only`; the Claude balanced model is tier 2 since, which
+    # gives that binding three tier-2+ models.)
     implementer_consumes_a_seat = route(Task(
         task_class="ARCHITECTURE", complexity=2, uncertainty=2, blast_radius=2,
-        reversibility=0, flags=["bridge_down"], runtime="claude_code"), CFG)
+        reversibility=0, flags=["bridge_down"], runtime="codex"), CFG)
     rv = implementer_consumes_a_seat["review"]
     assert rv["review_depth_reduced"], "probe drifted"
     assert TIER_OF[implementer_consumes_a_seat["selected_model"]] >= BAND_FLOOR[rv["band"]], (
         "probe needs an implementer at or above the floor to exercise the term")
     assert rv["band_floor_unsatisfiable"], (
-        "claude_only has two tier-2+ models; a tier-2 implementer plus two "
+        "openai_only has two tier-2+ models; a tier-2 implementer plus two "
         "reviewer seats needs three, so this cannot be staffed at any "
         "availability — dropping the implementer term inverts it")
 
@@ -1237,15 +1239,18 @@ CTX = ["unfamiliar_codebase", "tool_heavy", "cross_service_change"]        # [P3
 
 # --- T3b: the guard yields when the review would suffer ---------------------
 
-def test_t3b_claude_only_frontier_worker_yields_and_matches_plan_legacy():
+def test_t3b_degraded_binding_frontier_worker_yields_and_matches_plan_legacy():
     import route_task as rt
     # risk 3+4+2 = 9 HIGH; exec 9+4+2 = 15 VERY_HARD. Confidence 0.95-0.08-0.06 = 0.81
     # (the degraded-binding note counts as a fallback) — no promotion. u3 would score
-    # 0.75 and promote both plans to CRITICAL, hiding the guard.
+    # 0.75 and promote both plans to CRITICAL, hiding the guard. `openai_only`
+    # since 1.23.0: under `claude_only` the balanced model is now tier 2 like
+    # the senior one, so the cell is no longer stronger and nothing yields.
     kw = dict(task_class="IMPLEMENTATION", complexity=3, uncertainty=2, blast_radius=1,
-              reversibility=0, flags=["bridge_down", "unfamiliar_codebase", "tool_heavy"])
+              reversibility=0, flags=["bridge_down", "unfamiliar_codebase", "tool_heavy"],
+              runtime="codex")
     out = route(Task(**kw), CFG)
-    assert out["selected_model"] == ID("claude_worker_balanced")
+    assert out["selected_model"] == ID("openai_worker_balanced")
     # Row 2 (human_control_causes: `review_below_band`) precedes row 11, so it is the one named.
     assert _yielded(out) == ["execution band VERY_HARD yielded senior_engineer: human_control_causes"]
     assert out["review"]["review_depth_reduced"] == [] and not out["requires_human_confirmation"]

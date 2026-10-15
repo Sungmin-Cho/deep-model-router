@@ -62,15 +62,27 @@ def test_routing_policy_ask_table_matches_code_cell_by_cell():
 
 
 def test_recommendation_total_order_is_well_defined():
+    roles = CFG["role_tiers"]
+
     def recommend(family, tier_req):
-        rows = sorted((m["capability_tier"], key)
+        binding = CFG["role_bindings"][f"{family}_only"]
+
+        def role_index(key):
+            return min((roles.index(r) for r, k in binding.items() if k == key and r in roles),
+                       default=len(roles))
+        rows = sorted((m["capability_tier"], role_index(key), key)
                       for key, m in CFG["models"].items()
                       if m["family"] == family
                       and m.get("dispatchable", True)
                       and m["capability_tier"] >= tier_req)
-        return rows[0][1] if rows else None
+        return rows[0][2] if rows else None
     assert recommend("claude", 0) == "claude_worker_fast"
+    # Since 1.23.0 the balanced and senior Claude models share tier 2; the
+    # lower role breaks the tie (registry key order would name the senior).
+    assert CFG["models"]["claude_worker_balanced"]["capability_tier"] == \
+        CFG["models"]["claude_senior"]["capability_tier"] == 2
     assert recommend("claude", 1) == "claude_worker_balanced"
+    assert recommend("claude", 2) == "claude_worker_balanced"
     assert recommend("claude", 3) == "claude_architect"
     assert recommend("xai", 2) is None
 
@@ -179,9 +191,12 @@ def test_low_confidence_escalates_and_raises_ask_effort():
 
 
 def test_confidence_boundary_at_060_is_not_low():
-    # 0.95 - 0.20 - 0.15 = 0.60; strict '<' means no escalation
+    # 0.95 - 0.20 - 0.15 = 0.60; strict '<' means no escalation. The failures
+    # leave the retry on a seat its role binds (no fallback penalty): since
+    # 1.23.0 a failed xai seat would send the ladder to the balanced role's
+    # Claude fallback (tier 2) and cost 0.06 more.
     out = route(_t(task_class="DEBUGGING", uncertainty=3, prior_failures=2,
-                   prior_models=[ID("openai_worker_fast"), ID("xai_frontier")]), CFG)
+                   prior_models=[ID("openai_worker_fast"), ID("openai_worker_balanced")]), CFG)
     assert out["routing_confidence"] == 0.60
     assert out["terminal"] != "ESCALATE_ROUTING"
     assert ("orchestrator_low_confidence"

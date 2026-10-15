@@ -49,17 +49,24 @@ def _recalls(text: str) -> dict:
     return out
 
 
-def _live_rows(tier: int) -> list[str]:
+# A verdict reads the registry as it stood before its measurement
+# (references/evaluation.md): the 2026-10-14 replays ran while the Claude
+# balanced model was tier 1; 1.23.0 moved it to 2 (issue #65).
+TIERS_BEFORE_1_23 = {"claude_worker_balanced": 1}
+
+
+def _live_rows(tier: int, as_of: dict | None = None) -> list[str]:
     """Live rows of a tier that may anchor: not history, not a decided seat."""
+    as_of = as_of or {}
     return [m["id"] for key, m in MODELS.items()
             if m.get("dispatchable", True) is not False and "history_of" not in m
-            and key not in SEATS and m["capability_tier"] == tier]
+            and key not in SEATS and as_of.get(key, m["capability_tier"]) == tier]
 
 
 def _derive(text: str) -> dict:
     measured = _recalls(text)
-    tier1 = [measured[i] for i in _live_rows(1) if i in measured]
-    tier2 = [measured[i] for i in _live_rows(2) if i in measured]
+    tier1 = [measured[i] for i in _live_rows(1, TIERS_BEFORE_1_23) if i in measured]
+    tier2 = [measured[i] for i in _live_rows(2, TIERS_BEFORE_1_23) if i in measured]
     a1, t2 = min(tier1), sum(tier2) / len(tier2)
     valid = t2 - a1 >= SEPARATION
     verdicts = {}
@@ -126,7 +133,7 @@ def test_every_live_tier_1_row_is_measured_or_named_unmeasured():
     silently would hide what the bar rests on."""
     text = _text(LIVE_ROW)
     measured = _recalls(text)
-    for mid in _live_rows(1):
+    for mid in _live_rows(1, TIERS_BEFORE_1_23):
         assert mid in measured or re.search(re.escape(mid) + r"[^.]*unmeasured", text), mid
 
 
@@ -229,11 +236,14 @@ def test_the_floored_role_takes_the_next_model_that_meets_it():
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
 def test_a_low_claude_quota_swaps_a_read_lead_past_the_tier_0_seats(runtime):
     """Review r2 (fable F1): the `low` swap goes to the first SAME-TIER model of
-    another family; the seats are no longer that tier."""
+    another family; the seats are no longer that tier. Since 1.23.0 the Claude
+    balanced model it swaps away from is tier 2, so the swap lands on the
+    OpenAI tier-2 model (issue #65)."""
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime=runtime, unavailable_models=[XAI],
                      _family_quota={"claude": "low"}), CFG)
-    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert out["selected_model"] == ID("openai_reasoning")
+    assert POLICY.tier_of[out["selected_model"]] == POLICY.tier_of[ID("claude_worker_balanced")]
     assert any(n.startswith("family_quota: claude low") for n in out["notes"])
     for key in SEATS:
         assert ID(key) not in [out["selected_model"], *out["review"]["reviewer_models"]]
@@ -481,3 +491,60 @@ def test_a_retry_reads_the_unfloored_balanced_role_and_keeps_the_stronger_worker
     assert ("investigation promotion: worker_fast kept at capability tier 2 — worker_balanced "
             "resolves to capability tier 0") in out["notes"]
     assert "retry keeps worker_fast: already above the failed capability tier 1" in out["notes"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #65: the implementation replay and the writing rows' tiers (1.23.0)
+# ---------------------------------------------------------------------------
+
+IMPL_ROW = "Implementation replay of the writing rows (2026-10-15)"
+WRITING = ("claude_worker_balanced", "claude_worker_fast", "openai_worker_balanced",
+           "openai_worker_fast")
+ANCHORS_2 = ("claude_senior", "openai_reasoning")
+
+
+def _row_verdicts(scores: dict) -> dict:
+    """evaluation.md's rule, per writing row, against the tiers the registry
+    held before the measurement; each verdict leaves out only its own row."""
+    tier = {key: TIERS_BEFORE_1_23.get(key, MODELS[key]["capability_tier"])
+            for key in WRITING + ANCHORS_2}
+    out = {}
+    for key in WRITING:
+        k = tier[key]
+        own = [scores[MODELS[o]["id"]] for o in tier if o != key and tier[o] == k]
+        up = [scores[MODELS[o]["id"]] for o in tier if o != key and tier[o] == k + 1]
+        gate = sum(up) / len(up) - min(own) >= SEPARATION
+        x = scores[MODELS[key]["id"]]
+        raise_ok = gate and x >= min(up) - CONFIRM_MARGIN
+        lower_ok = gate and k >= 1 and x < min(own) - CONFIRM_MARGIN
+        out[key] = ("hold" if raise_ok == lower_ok else "raise" if raise_ok else "lower")
+    return out
+
+
+def test_the_implementation_replay_verdicts_follow_from_its_numbers():
+    text = _text(IMPL_ROW)
+    seg = text.split("Pass rates (preregistered grading):", 1)[1].split("The preregistered rule", 1)[0]
+    scores = _recalls(seg)
+    assert set(scores) == {MODELS[k]["id"] for k in WRITING + ANCHORS_2}, scores
+    verdicts = _row_verdicts(scores)
+    stated = dict(re.findall(r"Implementation verdict ([a-z0-9.\-]+): (raise|lower|hold)\.", text))
+    assert stated == {MODELS[k]["id"]: v for k, v in verdicts.items()}
+    assert verdicts == {"claude_worker_balanced": "raise", "claude_worker_fast": "hold",
+                        "openai_worker_balanced": "hold", "openai_worker_fast": "hold"}
+    assert LEDGER[IMPL_ROW]["status"] == "verified"
+    assert LEDGER[IMPL_ROW]["supersedes"] == [
+        "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"]
+
+
+def test_a_writing_row_moves_only_where_both_replays_say_so():
+    """The review replay read by the same rule (the 2026-10-14 numbers), and
+    the implementation replay: a tier moved exactly where both raise."""
+    review = _row_verdicts(_recalls(_text(LIVE_ROW)))
+    assert review == {"claude_worker_balanced": "raise", "claude_worker_fast": "raise",
+                      "openai_worker_balanced": "hold", "openai_worker_fast": "hold"}
+    seg = _text(IMPL_ROW).split("Pass rates (preregistered grading):", 1)[1]
+    impl = _row_verdicts(_recalls(seg.split("The preregistered rule", 1)[0]))
+    for key in WRITING:
+        before = TIERS_BEFORE_1_23.get(key, MODELS[key]["capability_tier"])
+        step = {"raise": 1, "lower": -1}.get(review[key], 0) if review[key] == impl[key] else 0
+        assert MODELS[key]["capability_tier"] == before + step, (key, review[key], impl[key])

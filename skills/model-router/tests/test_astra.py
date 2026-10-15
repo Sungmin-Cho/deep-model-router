@@ -55,7 +55,12 @@ def test_frontier_addition_does_not_demote_hard_isolated_investigation(runtime, 
                      reasoning_centric=rc, runtime=runtime), CFG)
     assert out["terminal"] is None
     assert out["selected_model"] == CFG["models"]["openai_reasoning"]["id"]
-    assert out["review"]["reviewer_models"] == [CFG["models"]["claude_senior"]["id"]]
+    # The MEDIUM seat is the lowest-tier candidate that reaches the implementer's
+    # tier, cross-family first: since 1.23.0 (issue #65) that is the Claude
+    # balanced model at tier 2, listed ahead of the senior seat.
+    assert out["review"]["reviewer_models"] == [CFG["models"]["claude_worker_balanced"]["id"]]
+    assert CFG["models"]["claude_worker_balanced"]["capability_tier"] >= \
+        CFG["models"]["openai_reasoning"]["capability_tier"]
 
 
 def test_frontier_is_an_architect_fallback():

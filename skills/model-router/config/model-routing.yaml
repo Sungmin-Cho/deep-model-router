@@ -579,11 +579,17 @@ models:
     verified: true
     price_per_mtok: { input: 1.00, output: 5.00, cached_input: 0.10 }
 
+  # `capability_tier: 2` since 1.23.0 (issue #65, user decision 2026-10-15): a
+  # seat that writes moves only when a review replay and an implementation
+  # replay agree, and both put this model level with the weakest live tier-2
+  # row (gpt-6.1-sol) — see the "Implementation replay of the writing rows
+  # (2026-10-15)" ledger row. The role it binds (worker_balanced on the
+  # claude_only binding, worker_balanced_alt) is unchanged.
   claude_worker_balanced:
     id: claude-sonnet-5-5
     lineage: { line: claude/sonnet, template: "claude-sonnet-{gen}", catalog_name: Sonnet }
     family: claude
-    capability_tier: 1
+    capability_tier: 2
     verified: true
     # Provider-side substitution disclosure, as on claude_architect: this
     # generation keeps refusal classifiers, and the provider's fallback can
@@ -2534,14 +2540,11 @@ verification_ledger:
         and none was re-run on claude-sonnet-5-5. That includes the 446-node
         head-to-head and the repeat eval, whose lower Sonnet latency is what
         the `latency_sensitive` swap rests on: that swap now rests on the
-        predecessor's numbers. The tier itself was measured separately on
-        2026-09-30 and stays 1 on that evidence (see "claude_worker_balanced
-        tier measurement after the claude-sonnet-5-5 bump"). Since 1.22.0 that
-        check reads differently: it anchored on a history row and replayed a
-        review for a seat that writes, so under references/evaluation.md ("How
-        a tier is measured") it is recorded and decides nothing; the tier
-        stays 1 by lineage. The 2026-10-14 replay does not separate this id
-        from the tier-2 mean either (0.4554 against 0.4242).
+        predecessor's numbers. The tier is measured, apart from these rows:
+        since 1.23.0 it is 2, because the 2026-10-14 review replay and the
+        2026-10-15 implementation replay both put this id level with
+        gpt-6.1-sol (see "Implementation replay of the writing rows
+        (2026-10-15)", which supersedes the 2026-09-30 tier measurement).
 
     - item: "claude-sonnet-5-5 maker seat"
       status: verified
@@ -3183,7 +3186,11 @@ verification_ledger:
         half of what its tier gates — a writing row moves only when a review
         replay and an implementation replay agree (references/evaluation.md,
         "How a tier is measured"). What a raise would move is in the row "Tier
-        counterfactuals after the 2026-10-14 replays".
+        counterfactuals after the 2026-10-14 replays". The implementation
+        replay of 2026-10-15 measured it and the tier stays 0: its raise gate
+        is 0.093750, short of 0.10 (row "Implementation replay of the writing
+        rows (2026-10-15)"; with correction C1 it would raise, reported and
+        not applied — a clean re-measurement is the follow-up).
 
     - item: "claude-haiku-5-5 maker seat"
       status: verified
@@ -3505,3 +3512,74 @@ verification_ledger:
         moves the worker, never the review); no routing change. Write-seat
         invariant held on every candidate outcome. Script and output:
         docs/research/2026-10-15-issues-65-67-counterfactuals/.
+    - item: "Implementation replay of the writing rows (2026-10-15)"
+      status: verified
+      probed_on: "2026-10-15"
+      supersedes:
+        - "claude_worker_balanced tier measurement after the claude-sonnet-5-5 bump"
+      evidence: >
+        Issue #65: the implementation replay references/evaluation.md describes,
+        so that a writing row's tier can move when it agrees with the
+        2026-10-14 review replay. Eight accepted review findings from this
+        repository whose fix added a test (four in route_task, one in
+        model_state, two in model_sync, one in dispatch_agent), chosen before
+        any run; each subject got the pre-fix tree without history and the
+        finding as its reviewer wrote it, worked at effort high through a
+        write-capable headless recipe (claude -p acceptEdits; codex exec
+        workspace-write) in a disposable copy, two runs each, and passed only
+        if every test the real fix added passed and no pre-fix test that
+        passes on both trees failed. 96 runs, all audited for reads outside
+        their copy: none read an answer. Pass rates (preregistered grading):
+        claude-opus-5-5 0.687500, gpt-6.1-sol 0.625000, claude-sonnet-5-5
+        0.625000, claude-haiku-5-5 0.562500, gpt-6-luna 0.375000,
+        gpt-5.6-terra 0.312500. The preregistered rule, against the 1.22.0
+        tiers, leaving out only the row decided: a row is raised when the mean
+        of the tier above sits at least 0.10 over the lowest other row of its
+        tier and the row is no more than 0.05 below the lowest row of the tier
+        above; lowered by the mirror clause; held otherwise. Implementation
+        verdict claude-sonnet-5-5: raise. Implementation verdict
+        claude-haiku-5-5: hold. Implementation verdict gpt-5.6-terra: hold.
+        Implementation verdict gpt-6-luna: hold. The same rule over the
+        2026-10-14 review replay (row "Reviewer seat tiers against live
+        anchors") reads raise, raise, hold, hold. Both raise only for
+        claude-sonnet-5-5, which moved to tier 2 (user decision 2026-10-15).
+        claude-haiku-5-5 stays at tier 0: its gate here is 0.093750, short of
+        0.10. Disclosed: one task's hidden test asserted a first-attempt
+        worker that contradicts its finding (the defect issue #67 fixes);
+        graded without that case (correction C1, after the results) the pass
+        rates are 0.812500, 0.687500, 0.687500, 0.625000, 0.375000, 0.312500
+        and claude-haiku-5-5 would raise too — reported, not applied. With
+        claude-opus-5-5 alone as the tier-2 anchor claude-sonnet-5-5 would
+        hold (0.625000 against 0.637500). Seven of the eight reference fixes
+        were written by claude-opus-5-5, an anchor row. The plan, harness,
+        grades and audit are the local note docs/evals/2026-10-15-t4/.
+    - item: "Tier counterfactuals after the 2026-10-15 implementation replay"
+      status: verified
+      probed_on: "2026-10-15"
+      evidence: >
+        The 16,896-point grid (each point fresh and after its own fresh worker
+        failed) over twenty-four scenarios, 682,917 routes, routed by the 1.23.0
+        router under the registry with and without each move. (S)
+        claude_worker_balanced capability_tier 1 -> 2, adopted: 223,356 routes
+        change and the summed output price of the seated worker and reviewers
+        falls 3.1% overall — 11.1% with every seat available, 8.2% with the
+        xai seat withheld, +2.9% with OpenAI exhausted. With every seat
+        available 4,082 retries after claude-sonnet-5-5 fails climb to
+        claude-fable-5-1 instead of claude-opus-5-5 and 2,254 retries after
+        grok-4.7 fails take claude-sonnet-5-5 instead of claude-opus-5-5; with
+        xai withheld 3,888 critical routes that had no adjudicator now have
+        one; with OpenAI exhausted 1,024 INDEPENDENCE_UNAVAILABLE routes become
+        dispatchable (3,762 terminal routes become dispatchable across the
+        scenarios). 718 routes carrying an unknown root cause, all in three
+        scenarios, newly end ESCALATE_ROUTING (454 retries, 264 first attempts
+        with xai withheld and OpenAI exhausted): an equal-tier balanced model
+        is no longer raised to the senior seat by the execution band, and a
+        retry after grok-4.7 fails lands on the balanced role's fallback, so
+        the route keeps a fallback's 0.06 confidence penalty that, with the
+        unknown root cause's 0.10, takes it under 0.60. (H)
+        claude_worker_fast capability_tier 0 -> 1, not adopted: 95,264 routes
+        change (1,860 retries after gpt-6-luna fails take claude-haiku-5-5
+        instead of a balanced model with every seat available), proxy -0.8%.
+        Both: 247,673 routes, proxy -3.4%. The policy ledger replays the
+        adopted move as rule t65 (tests/test_policy_rules.py). Script and
+        output: docs/research/2026-10-15-issues-65-67-counterfactuals/.
