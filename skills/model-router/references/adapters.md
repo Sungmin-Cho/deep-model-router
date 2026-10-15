@@ -1450,8 +1450,10 @@ changes, and why the Claude model leads again (a measured gap in review
 recall). Since 1.22.0 the seat is tier 0: a review seat whose band floor asks
 for tier 1 or more skips it for the next model that meets the floor, so it
 keeps leading reading work and sitting where nothing asks more of it. An
-INVESTIGATION with an unknown root cause is the exception: its promotion is a
-floor, so the balanced role skips both tier-0 seats on that route.
+INVESTIGATION with an unknown root cause is the exception: on a first attempt
+its promotion is a floor, so the balanced role skips both tier-0 seats unless
+no usable model meets the floor or meeting it would leave no independent
+reviewers; the route notes either waiver.
 
 **The gemini seat reads, after the Claude model.** `gemini_worker_balanced` is
 bound to no role. On a Claude Code host it is the third fallback of

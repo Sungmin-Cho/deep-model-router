@@ -3421,9 +3421,10 @@ verification_ledger:
         counts as moved only when its outcome moved, not its failed model. (A)
         the two reviewer seats at tier 0, still listed — adopted in 1.22.0
         (user decision 2026-10-15): with xai withheld and Claude exhausted
-        12,468 routes change; 2,462 change a review seat, 2,444 of them to
-        models that meet the band floor (mostly gpt-6.1-sol) and 18 to a pair
-        holding gpt-6-luna that now asks a human, while 24 lose that gate;
+        12,468 routes change; 2,462 change a review seat, 2,426 of them to
+        models that meet the band floor (mostly gpt-6.1-sol) and 36 to a slate
+        holding a tier-0 model below it (18 of those newly ask a human), while
+        24 routes lose that request;
         2,018 lose a cross-family review; retries after a seat fails climb to
         gpt-5.6-terra instead of gpt-6.1-sol on 292, since the failure is now
         tier 0; proxy +0.9%. With Claude exhausted alone 1,298 change only the
@@ -3443,7 +3444,7 @@ verification_ledger:
         claude_worker_balanced 1 -> 2: 13,368 routes change with every seat
         available, proxy -11.1%, the move the 2026-09-30 row recorded; not
         adopted. The release replay (the 1.21.0 registry against this one,
-        with this router, the 1.21.0 replay's thirteen scenarios and four
+        with this router, the 1.21.0 replay's thirteen scenarios and five
         added in review) moves routes only where a tier-0 seat resolves the
         balanced role: A's 12,468 (and the same with meta withheld too), the
         1,298 above, 8 shortfall records with xai and meta withheld and OpenAI
@@ -3451,11 +3452,16 @@ verification_ledger:
         gpt-5.6-terra instead of a seat, and the same tier-0 effects on routes
         carrying an unknown root cause, where the investigation promotion now
         floors the balanced role on a first attempt: none with only xai
-        withheld, 11,164 with Claude exhausted too (1,200 stay at MEDIUM
-        because their reviewer no longer comes through a fallback, 20 leave
-        ESCALATE_ROUTING) and 11,702 with the fast seat out as well (30 gain a
-        human gate). No route gains a terminal
-        state, and none seats a model without write authority where the work
-        writes. Proxy: the sum of the seated worker's and reviewers' output
+        withheld; 11,164 with Claude exhausted too, where 1,200 drop from HIGH
+        to MEDIUM review (one reviewer instead of two) because their reviewer
+        no longer comes through a fallback, which also makes the execution
+        cell yield on 88 IMPLEMENTATION and DEBUGGING routes that keep
+        gpt-6-luna where 1.21.0 raised them to gpt-5.6-terra, and 20 leave
+        ESCALATE_ROUTING; 11,702 with the fast seat out as well (30 gain a
+        human gate); 8,348 with the frontier OpenAI seat out too, where on 136
+        the floor would leave no independent reviewer and yields, as the route
+        notes. No dispatchable route becomes terminal (8 terminal routes
+        change which terminal), and none seats a model without write
+        authority where the work writes. Proxy: the sum of the seated worker's and reviewers' output
         prices per MTok, no token weighting. Script and output:
         docs/research/2026-10-14-tier-scale-counterfactuals/.

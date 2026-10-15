@@ -190,9 +190,9 @@ shortfall record now says tier 0. A retry after this seat fails climbs above
 tier 0 rather than above tier 1, so it reaches the OpenAI balanced model where
 it used to reach the OpenAI reasoning seat. Across both hosts 2,018 routes
 lose the cross-family review this seat or the gemini seat supplied; of 2,462
-review seats that change, 2,444 go to a model that meets the band's floor and
-18 to a pair holding the OpenAI fast model, which now asks a human (24 routes
-lose that request). With the Claude family exhausted and the xai seat
+review seats that change, 2,426 go to a model that meets the band's floor and
+36 to a slate still holding a tier-0 model below it (18 of those now ask a
+human; 24 routes stop asking). With the Claude family exhausted and the xai seat
 available, 1,274 Claude Code routes change only the tier that record carries.
 
 A reading lead is not a reviewer, so an INVESTIGATION still takes this model
@@ -202,8 +202,17 @@ no longer swaps a reading lead onto it, because that swap wants a model of the
 same tier: the OpenAI balanced model takes it (174 Claude Code routes with the
 xai seat withheld). And an INVESTIGATION with an unknown root cause, whose
 promotion asks for at least the balanced role, skips both tier-0 seats on its
-first attempt; its retry is held by the retry ladder instead, and the seats
-stay available to its reviewers. The execution band raises a worker only to a
+first attempt unless no usable model meets that floor or meeting it would
+leave no independent reviewer (the route notes either); its retry is held by
+the retry ladder instead, and the seats stay available to its reviewers.
+
+Routes carrying an unknown root cause lose some review depth too. With the
+xai seat out and the Claude family exhausted, 1,200 drop from HIGH to MEDIUM
+review — one reviewer instead of two — because their reviewer no longer comes
+through a fallback, which used to cost enough routing confidence to raise the
+band; on 88 of them, IMPLEMENTATION and DEBUGGING routes, the execution band's
+raise then yields to keep the bands equal, and the OpenAI fast model stays the
+worker where 1.21.0 raised it to the OpenAI balanced model. The execution band raises a worker only to a
 strictly stronger tier, so a few routes no longer raise their fast worker to
 this seat, and some that kept a fast worker for this seat's cross-family
 review now raise it to the OpenAI balanced model.

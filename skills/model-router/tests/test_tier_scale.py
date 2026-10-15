@@ -267,3 +267,65 @@ def test_a_retry_of_a_floored_investigation_keeps_the_seats_for_review(runtime):
     retry = route(Task(**kw, prior_failures=1, prior_models=[fresh["selected_model"]]), CFG)
     assert retry.get("terminal") is None
     assert _tier_of(retry) >= 2
+
+
+def _with_seat_tiers(tier: int) -> dict:
+    """The registry with the two seats at `tier` — 1 is what 1.21.0 shipped."""
+    import copy
+    cfg = copy.deepcopy(CFG)
+    for key in SEATS:
+        cfg["models"][key]["capability_tier"] = tier
+    return cfg
+
+
+DEEP_SCARCITY = SCARCITY + [
+    dict(unavailable_models=[XAI, ID("openai_worker_fast"), ID("openai_frontier")],
+         _family_quota={"claude": "exhausted"}),
+    dict(unavailable_models=[XAI, ID("openai_frontier")], _family_quota={"claude": "exhausted"}),
+]
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_the_promotion_floor_makes_no_route_terminal(runtime):
+    """Review r3 (sol F1): with the frontier OpenAI seat out too, the floored
+    lead took the reviewers' last distinct model and the route went
+    INDEPENDENCE_UNAVAILABLE where 1.21.0 dispatched it. Wherever the seats at
+    their 1.21.0 tier route an investigation, the floored registry does too."""
+    import itertools
+    old = _with_seat_tiers(1)
+    for extra, c, u, b, r in itertools.product(DEEP_SCARCITY, range(3), range(2), range(3), range(3)):
+        kw = dict(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
+                  reversibility=r, runtime=runtime, flags=["unknown_root_cause"], **extra)
+        before = route(Task(**kw), old)
+        after = route(Task(**kw), CFG)
+        if before.get("terminal") is None:
+            assert after.get("terminal") is None, (kw, after.get("terminal"))
+
+
+def test_a_floor_that_would_end_the_route_yields_and_says_so():
+    kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=1,
+              reversibility=2, runtime="codex", flags=["unknown_root_cause"],
+              unavailable_models=[XAI, ID("openai_worker_fast"), ID("openai_frontier")],
+              _family_quota={"claude": "exhausted"})
+    out = route(Task(**kw), CFG)
+    assert out.get("terminal") is None
+    assert len(set(out["review"]["reviewer_models"]) | {out["selected_model"]}) == \
+        1 + len(out["review"]["reviewer_models"])
+    assert ("investigation promotion: worker_balanced not floored at capability tier 1 "
+            "on this route — floored, it was INDEPENDENCE_UNAVAILABLE") in out["notes"]
+
+
+def test_recovered_operational_history_keeps_the_floor():
+    """A recovered transport failure is not a capability failure: the route
+    is still a first attempt for the ladder, so the floor applies."""
+    import route_task as rt
+    req = dict(route_schema_version=1, task_class="INVESTIGATION", complexity=1, uncertainty=0,
+               blast_radius=0, reversibility=0, runtime="codex", flags=["unknown_root_cause"],
+               availability_snapshot={"unavailable_models": [XAI, ID("openai_worker_fast")],
+                                      "family_quota": {"claude": "exhausted"}},
+               attempt_outcomes=[dict(attempt_id="attempt-1", model_id=ID("openai_worker_balanced"),
+                                      kind="transport_failure", evidence_sha256="a" * 64,
+                                      recovery_sha256="b" * 64)])
+    out = rt.route(rt.task_from_request_v1(req), CFG)
+    assert out.get("terminal") is None
+    assert _tier_of(out) >= 1 and out["selected_model"] not in [ID(k) for k in SEATS]

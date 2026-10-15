@@ -3132,6 +3132,10 @@ class _Prelude:
     # DD-B2 (C1-iii): the double uncertainty weight alone lifted the band, and
     # the policy says not to charge it again when deciding a review promotion.
     uncertainty_counted_in_band: bool = False
+    # Issue #63 r3: the investigation promotion's role floor is waived for this
+    # route, because meeting it left nothing dispatchable. `_plan` builds its
+    # own resolver, so the waiver travels here rather than on the caller's.
+    role_floor_waived: bool = False
 
 
 def _without_low_quota(task: Task) -> Task:
@@ -3380,7 +3384,10 @@ def route(task: Task, cfg: dict | None = None, *,
         planned = _plan(retried, policy, cfg, pre, resolver, WorkerChoice(role, (), False))
         if planned["terminal"] is None and planned["selected_model"] == model:
             task, result = retried, planned
-    if result is None:
+    def decide() -> dict:
+        """The worker choice and its plan: the execution cell weighed against
+        the table plan, or the declared implementer's review."""
+        nonlocal pre
         candidate, legacy = select_worker(task, band, exec_band, policy, resolver)
         if task._implementer is not None:
             # DD-B1: the worker seat already executed. One plan, for the REVIEW of
@@ -3439,6 +3446,31 @@ def route(task: Task, cfg: dict | None = None, *,
                     f"execution band {exec_band} raised worker from {legacy.role} to {candidate.role}{capped}")
             elif note is not None:
                 result["notes"].append(note)
+        return result
+
+    if result is None:
+        result = decide()
+        floor = resolver.role_tier_floor.get("worker_balanced")
+        if floor is not None and result["terminal"] is not None:
+            # The promotion's floor is a requirement, but not one worth the
+            # route: where meeting it leaves nothing dispatchable and the role
+            # as listed does not, the floor yields and says so (review r3: the
+            # floored lead took the reviewers' last distinct model).
+            floored = result
+            resolver.role_tier_floor = {}
+            pre = replace(pre, role_floor_waived=True)
+            result = decide()
+            if result["terminal"] is None:
+                result["notes"].append(
+                    f"investigation promotion: worker_balanced not floored at capability "
+                    f"tier {floor} on this route — floored, it was {floored['terminal']}")
+            else:
+                result = floored
+        elif (floor is not None and result["selected_role"] == "worker_balanced"
+              and result["selected_model"] and policy.tier_of[result["selected_model"]] < floor):
+            result["notes"].append(
+                f"investigation promotion: capability floor {floor} for worker_balanced "
+                f"waived — no usable model in the role meets it")
     if task._review_context is not None:
         result["review_context"] = {k: list(v) if isinstance(v, list) else v
                                     for k, v in task._review_context.items()}
@@ -3498,6 +3530,8 @@ def _plan(task: Task, policy: Policy, cfg: dict, pre: _Prelude,
     # Each candidate plan owns its assignments; no state reaches a sibling plan.
     resolver = Resolver(task, policy)
     resolver.worker_writes = pre.seat_kind == "write"
+    if pre.role_floor_waived:
+        resolver.role_tier_floor = {}
     worker = choice.role
     if task._implementer is not None:
         resolver.pinned_worker = (worker, task._implementer["model_id"])
