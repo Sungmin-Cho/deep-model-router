@@ -6,7 +6,8 @@
     "openai_reasoning": ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"],
     "openai_worker_fast": ["gpt-5.6-luna", "gpt-6-luna"],
     "claude_worker_balanced": ["claude-sonnet-5", "claude-sonnet-5-5"],
-    "claude_worker_fast": ["claude-haiku-4-5-20251001", "claude-haiku-5-5"]
+    "claude_worker_fast": ["claude-haiku-4-5-20251001", "claude-haiku-5-5"],
+    "openai_worker_balanced": ["gpt-5.6-terra", "gpt-6.1-terra"]
   },
   "key_renames": {
     "claude_architect_retired": "claude_architect@claude-fable-5",
@@ -20,7 +21,8 @@
     "openai_worker_fast@gpt-5.6-luna": 0,
     "openai_reasoning@gpt-6-sol": 0,
     "claude_worker_balanced@claude-sonnet-5": 0,
-    "claude_worker_fast@claude-haiku-4-5-20251001": 0
+    "claude_worker_fast@claude-haiku-4-5-20251001": 0,
+    "openai_worker_balanced@gpt-5.6-terra": 0
   },
   "model_edits": {
     "claude_senior@claude-opus-5-5": {

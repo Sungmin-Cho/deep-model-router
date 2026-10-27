@@ -1,0 +1,30 @@
+{
+ "captured": "2026-10-27",
+ "cli": "codex-cli 0.164.0",
+ "bundled_slugs": [
+  "gpt-6-astra",
+  "gpt-6.1-sol",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-daybreak-blue-latest",
+  "gpt-daybreak-red-latest",
+  "gpt-5.5",
+  "codex-auto-review"
+ ],
+ "account_slugs": [
+  "gpt-6.1-sol",
+  "gpt-6-astra",
+  "gpt-6.1-terra",
+  "gpt-6-sol",
+  "gpt-reserve",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "codex-auto-review"
+ ],
+ "note": "slugs only, from `codex debug models --bundled` and `codex debug models` (account catalog)"
+}

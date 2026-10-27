@@ -396,6 +396,22 @@ The point release rejects the `none` effort token that the OpenAI family map
 sends for MINIMAL, so this row maps MINIMAL to `low`, as the OpenAI frontier
 seat does.
 
+### The OpenAI balanced seat
+
+**Its earlier quality numbers are inherited, not current.** On 2026-10-27 the
+`openai_worker_balanced` id moved to the next Terra generation, released the
+day before. The overlay never published it: model-sync defers an OpenAI id the
+installed CLI's bundled catalog lacks, and the CLI of that day carried this one
+in the account catalog only. The bump was written into the registry by hand in
+promote's shape, after the same contained gates passed through the released
+probe harness: the id accepted with no metadata warning, a boot overhead about
+10% above the predecessor's, and every effort token the router emits accepted,
+`none` included, so the row carries no per-model effort map. The published
+prices fell to $1 / $5 per million input / output tokens ($0.05 cached), half
+the predecessor's input price. The review recall and implementation pass rate
+recorded for this seat before that date (the 2026-10-14 and 2026-10-15
+replays, below) measured the predecessor; the ledger says so in its own row.
+
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
 Worth recording, because it is the one binding decision that rests on
