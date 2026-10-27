@@ -41,7 +41,7 @@ XAI, SON, OPUS = ID("xai_frontier"), ID("claude_worker_balanced"), ID("claude_se
 FABLE, SOL, ASTRA = ID("claude_architect"), ID("openai_reasoning"), ID("openai_frontier")
 MUSE, TERRA = ID("meta_worker_balanced"), ID("openai_worker_balanced")
 LUNA, TERRA_FAST = ID("openai_worker_fast"), ID("openai_worker_balanced")
-GEMINI = ID("gemini_worker_balanced")
+GEMINI = ID("gemini_frontier")   # the gemini seat since 1.24.0 (tier 1)
 ARCH_COMP = "raise_effort_to_MAX_and_add_second_review"
 SCARCITY = "worker_balanced: {} unavailable -> {}".format
 DEGRADED = "binding degraded to claude_only (cross-provider bridge down)"
@@ -198,14 +198,16 @@ def test_the_promotion_floor_ladder_decides_the_baseline():
     request never has both a floor and a failed model: the history is injected
     here to hold the ladder's choice). The baseline walks the FLOORED ladder
     (`_candidates`); a hand-built raw ladder would name the tier-0 seat in
-    between and record a fallback that is not one."""
+    between and record a fallback that is not one. (1.24.0: the first seat
+    that meets the floor behind the tier-0 meta seat is the tier-1 gemini
+    seat, where it was the OpenAI balanced model behind two tier-0 seats.)"""
     kw = dict(task_class="INVESTIGATION", write_role="worker_balanced",
               flags=["unknown_root_cause"])
     assert resolve(["worker_balanced"], **kw, prior_failures=0, prior_models=[XAI, SON]) == (
-        {"worker_balanced": TERRA}, [], [])
+        {"worker_balanced": GEMINI}, [], [])
     # Withheld instead of failed, the same floor still records the real outage.
     assert resolve(["worker_balanced"], **kw, unavailable_models=[XAI, SON])[1] == [
-        SCARCITY(XAI, TERRA)]
+        SCARCITY(XAI, GEMINI)]
 
 
 # --- low-quota: a binding decision, never a fallback ---
@@ -241,19 +243,21 @@ LOW_META = dict(write_role="worker_balanced", _family_quota={"meta": "low"})
 def test_a_low_quota_swap_does_not_hide_a_withheld_successor():
     """Failed xai, Sonnet withheld, Meta low: the seat lands on the Meta seat's
     same-tier swap. Sonnet is still missing, and the record says so — exactly
-    as it does when no quota is low and the seat lands on Muse."""
+    as it does when no quota is low and the seat lands on Muse. (1.24.0: the
+    gemini seat is tier 1 now, so the tier-0 swap is the OpenAI fast model.)"""
     assert resolve(["worker_balanced"], write_role="worker_balanced", **failed(XAI),
                    unavailable_models=[SON]) == (
         {"worker_balanced": MUSE}, [SCARCITY(SON, MUSE)], [])
     assert resolve(["worker_balanced"], **LOW_META, **failed(XAI), unavailable_models=[SON]) == (
-        {"worker_balanced": GEMINI}, [SCARCITY(SON, GEMINI)], [])
+        {"worker_balanced": LUNA}, [SCARCITY(SON, LUNA)], [])
+    assert POLICY.tier_of[LUNA] == POLICY.tier_of[MUSE] != POLICY.tier_of[GEMINI]
 
 
 def test_a_low_quota_swap_off_a_usable_successor_stays_a_binding_decision():
     """Both failures are history only: the first seat that did not fail (Muse)
     is usable, so moving off it for quota is the DD-B8 decision, not an outage."""
     assert resolve(["worker_balanced"], **LOW_META, **failed(XAI, SON)) == (
-        {"worker_balanced": GEMINI}, [], [])
+        {"worker_balanced": LUNA}, [], [])
     # Control: the low family is not reached at all when Sonnet is available.
     assert resolve(["worker_balanced"], **LOW_META, **failed(XAI)) == (
         {"worker_balanced": SON}, [], [])

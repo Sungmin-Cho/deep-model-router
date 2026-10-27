@@ -33,7 +33,7 @@ import receipt_guard  # noqa: E402
 from route_task import load_config  # noqa: E402
 
 SCRIPT = SKILL / "scripts" / "dispatch_agent.py"
-GEMINI = load_config()["models"]["gemini_worker_balanced"]["id"]
+GEMINI = load_config()["models"]["gemini_frontier"]["id"]   # the seat since 1.24.0
 DARWIN = sys.platform == "darwin" and os.path.isfile(receipt_guard.SANDBOX_EXEC)
 MAKER = dispatch_agent.AGY_MAKER_PROFILE
 LOADED = dispatch_agent._agy_grants_loaded(MAKER)
@@ -365,7 +365,7 @@ import model_sync  # noqa: E402
 import probe_maker  # noqa: E402
 import route_task  # noqa: E402
 
-GEMINI_KEY = "gemini_worker_balanced"
+GEMINI_KEY = "gemini_frontier"
 
 MAKER_FAKE = r'''#!{python}
 import json, re, sys
@@ -482,8 +482,13 @@ def test_the_maker_row_binds_the_recipe_and_write_authority_stays_withheld():
     needle = "transports.claude_code.to_gemini.mechanism_maker"
     rows = [e for e in cfg["verification_ledger"]["entries"]
             if _whole_token(needle, str(e.get("item", "")))]
-    assert len(rows) == 1 and rows[0]["status"] == "verified"
-    _assert_direction_row_binds(entry["mechanism_maker"], rows[0], rows[0]["item"])
+    # 1.21.0 probed it on the first gemini seat; 1.24.0 re-probed it on the
+    # current one (agy 1.4.8). Every row binds the recipe, and one names the
+    # current seat's id in its own argv.
+    assert len(rows) == 2 and all(r["status"] == "verified" for r in rows)
+    for row in rows:
+        _assert_direction_row_binds(entry["mechanism_maker"], row, row["item"])
+    assert any(f"--model {GEMINI} " in str(r["argv"]) for r in rows), [r["item"] for r in rows]
     # U-5: probed and recorded, but not authorized to seat write work
     assert entry["write_verified"] is False
     assert route_task.Policy.of(cfg).write_capable("claude_code", "gemini") is False

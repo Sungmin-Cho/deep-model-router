@@ -1,0 +1,16 @@
+I1027 17:11:17.525666      13 server.go:1892] Language server version: 1.4.8
+I1027 17:11:17.801012       1 printmode.go:202] Print mode: starting (promptLength=168, model="gemini-4-argon", conversationID="")
+I1027 17:11:17.801259       1 cli_setting_manager.go:156] applyUserSettings: no shared config permissions from /HOME/.gemini/config/config.json
+I1027 17:11:17.801284       1 cli_setting_manager.go:92] CLI settings initialized: permissions=<nil>, toolPermission=always-proceed
+I1027 17:11:20.217363       1 model_resolver.go:155] model alias "gemini-4-argon" resolved to "gemini-4-argon-low"
+I1027 17:11:20.217504       1 model_resolver.go:107] Resolving model gemini-4-argon-low
+I1027 17:11:22.407843     466 model_resolver.go:155] model alias "gemini-4-argon" resolved to "gemini-4-argon-low"
+I1027 17:11:22.407877     466 model_resolver.go:107] Resolving model gemini-4-argon-low
+I1027 17:11:22.408004     573 model_resolver.go:155] model alias "gemini-4-argon" resolved to "gemini-4-argon-low"
+I1027 17:11:22.408011     573 model_resolver.go:107] Resolving model gemini-4-argon-low
+I1027 17:11:22.418071       1 model_resolver.go:155] model alias "gemini-4-argon" resolved to "gemini-4-argon-low"
+I1027 17:11:22.418094       1 model_resolver.go:107] Resolving model gemini-4-argon-low
+I1027 17:11:22.418135       1 server.go:1208] Conversation using project ID: dmr-reviewer-v1
+I1027 17:11:22.424009       1 cli_setting_manager.go:211] ApplyProjectPermissionGrants: stored 0 allow, 5 deny grants from project "dmr-reviewer-v1"
+I1027 17:11:22.424246       1 session.go:194] Print mode: conversation=3c2d7548-2a65-4f19-9749-21bb17237f45, sending message
+I1027 17:11:22.424251       1 printmode.go:895] Print mode: slash command expansion disabled

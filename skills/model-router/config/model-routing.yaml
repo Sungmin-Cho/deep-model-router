@@ -931,53 +931,66 @@ models:
       cached_input: 0.15
     context_window: 1007997
 
-  # A reviewer seat (design 2026-10-14). Since 1.21.0 it is third in
-  # claude_code's worker_balanced fallback list, after the Claude balanced
-  # model and the meta seat (user decision U-6), and second in codex's, right
-  # after the Claude model (U-7): it takes that role only where everything
-  # ahead of it does not resolve for the route. It has no write authority on
-  # either host — Claude Code ships a maker recipe (agy-maker-v1) whose
-  # write_verified stays false (U-5) — and the write requirement binds the
-  # whole role, so it never reviews where the worker writes from
-  # worker_balanced. Two host files contain the reviewer, an agent whose tool
-  # list allows reading only and a deny-rule project underneath it; the
-  # supervisor checks both, the workspace and the model before the run and the
-  # CLI's log after it (references/adapters.md, "Antigravity seat profile").
-  # What seating it changes: references/model-profiles.md, "The gemini
-  # reviewer seat".
+  # The gemini seat since 1.24.0 (design 2026-10-27): the same two host
+  # directions, recipes and containment as the seat it replaces (the retired
+  # row below), on Google's frontier model. It is a reviewer: Claude Code ships
+  # a maker recipe (agy-maker-v1) whose write_verified stays false, and the
+  # write requirement binds the whole role, so it never reviews where the
+  # worker writes from a role it holds. Two host files contain the reviewer, an
+  # agent whose tool list allows reading only and a deny-rule project
+  # underneath it; the supervisor checks both, the workspace and the model
+  # before the run and the CLI's log after it (references/adapters.md,
+  # "Antigravity seat profile"). What seating it changes:
+  # references/model-profiles.md, "The gemini reviewer seat".
   #
-  # `capability_tier: 0` since 1.22.0, on the same footing as the meta seat:
-  # confirmed against claude-sonnet-5 (a history row), lowered against the
-  # lowest measured live tier-1 row, listed where it was (user decision
-  # 2026-10-15); about a fifth of claude-sonnet-5-5's recall. See the ledger
-  # row "Reviewer seat tiers against live anchors (real-review replay,
-  # 2026-10-14)".
-  #
-  # The lineage template does not parse the catalogue's effort-suffixed
-  # spellings (gemini-<gen>-flash-<effort>) or the unbound row below, so that
-  # row stays a separate row, not this seat's history.
-  gemini_worker_balanced:
-    id: gemini-3.8-flash
+  # `capability_tier: 1` is measured, not read off the vendor's claims: the
+  # real-review replay T5 put its recall at 0.233, between the tier-1 bar
+  # (0.118) and the tier-2 bar (0.282) — ledger row "gemini_frontier tier
+  # measurement (real-review replay, 2026-10-27)". No tier-3 row could be
+  # measured beside it, so 2 was the highest tier that replay could give. It
+  # reads only: the implementation replay that would let it write has not run.
+  gemini_frontier:
+    id: gemini-4-argon
     # served_forms: the CLI log resolves the base id to an effort spelling;
     # model_sync's P2 admits exactly these (design 2026-10-14 DD-61a).
-    lineage: { line: google/flash, template: "gemini-{gen}-flash",
+    lineage: { line: google/argon, template: "gemini-{gen}-argon",
                served_forms: ["{id}", "{id}-low", "{id}-medium", "{id}-high"] }
     family: gemini
-    capability_tier: 0
+    capability_tier: 1
     effort_ceiling: HIGH   # probed: the CLI rejects `xhigh` and `max`
     verified: true
-    # No cache-write rate is published (cached tokens are billed for storage
-    # by the hour), so `quote_cost` reports an unavailable quote, as on the xai
-    # and meta rows. These are the rates through 2026-12-31; every one doubles
-    # on 2027-01-01, after max_age_days has already made this row stale. No
-    # long-context tier is listed for this model.
+    # Implicit caching only and no cache-write rate, so `quote_cost` reports an
+    # unavailable quote, as on the xai and meta rows. These are the
+    # introductory rates through 2026-11-30; every one doubles on 2026-12-01,
+    # after max_age_days has already made this row stale. No long-context tier
+    # is listed: input and output share one 1,048,576-token window.
     price_per_mtok:
-      verified_on: "2026-10-14"
+      verified_on: "2026-10-27"
       max_age_days: 30
       source: "https://ai.google.dev/gemini-api/docs/pricing"
-      input: 0.75
-      output: 3.75
-      cached_input: 0.075
+      input: 2.00
+      output: 10.00
+      cached_input: 0.10
+    context_window: 1048576
+
+  # Retired 1.24.0 (user instruction 2026-10-27: remove Gemini 3.8 Flash from
+  # the router). It was the gemini reviewer seat from 1.20.0, tier 0 since
+  # 1.22.0. Valid as HISTORY input (--prior-models, --unavailable-models; no
+  # host runs the gemini family) so a control loop holding a 1.23 attempt on it
+  # keeps working across the release boundary; never a candidate for any seat:
+  # dispatchable: false, bound to no role, named in no fallback list, and no
+  # lineage, so model_sync never offers a successor of this line. Not a
+  # `<live key>@<id>` history row: the seat that replaced it is another line
+  # (google/argon), whose template does not parse this id. The key is kept so
+  # the ledger rows that name it still name a row.
+  gemini_worker_balanced:
+    id: gemini-3.8-flash
+    family: gemini
+    capability_tier: 0
+    effort_ceiling: HIGH
+    dispatchable: false
+    verified: true
+    price_per_mtok: { input: 0.75, output: 3.75, cached_input: 0.075 }
     context_window: 1048576
 
   # Unbound: suite already names this id, but P0 does not dispatch it.
@@ -1258,13 +1271,16 @@ transports:
       mechanism_maker: "agy --agent dmr-maker-v1 --model <id> --effort <native-effort> --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
       isolation: separate_process
       verified: true
-      # The maker seat is probed and its ledger row is verified, but write
-      # authority is withheld (user decision U-5, 2026-10-14): the replay that
-      # confirmed tier 1 measured this seat's review recall at about a fifth of
-      # the Claude balanced model's. With the Claude-first fallback, turning
-      # this on would make it the writer where the xai seat and the Claude
-      # model are both out (the OpenAI balanced model writes there today); see
-      # references/model-profiles.md.
+      # The maker seat is probed and its ledger rows are verified, but write
+      # authority is withheld. 1.21.0 (user decision U-5, 2026-10-14): the seat's
+      # first model reviewed at about a fifth of the Claude balanced model's
+      # recall. 1.24.0: the current model measured tier 1 in the review replay,
+      # and a seat that writes moves only when an implementation replay agrees;
+      # that replay could not run (the account's quota for the model was spent)
+      # and is left for later (user decision 2026-10-27). With the Claude-first
+      # fallback, turning this on would make it the writer where the xai seat
+      # and the Claude model are both out (the OpenAI balanced model writes
+      # there today); see references/model-profiles.md.
       write_verified: false
   codex:
     native: { mechanism: multi_agent_subagent, isolation: unverified }
@@ -1370,8 +1386,14 @@ fallbacks:
     # live tier-1 row, openai_worker_balanced at 0.168) and keep these places
     # (user decision 2026-10-15): where one of them resolves the role, a
     # review seat whose band floor asks for tier 1 goes to a model that meets
-    # it, and the seat stays where nothing asks more of it.
-    worker_balanced:      [claude_worker_balanced, meta_worker_balanced, gemini_worker_balanced, openai_worker_balanced, claude_senior]
+    # it, and the seat stays where nothing asks more of it. Since 1.24.0 the
+    # gemini place is gemini_frontier's (gemini-4-argon, still read-only), and it
+    # is tier 1 (measured): it meets a MEDIUM review's floor where it resolves.
+    # Gemini 3.8 Flash is retired (user instruction 2026-10-27). Listing it in
+    # the senior and reasoning lists too was replayed and not taken (user
+    # decision 2026-10-27; ledger row "1.24.0 gemini seat placement
+    # counterfactuals").
+    worker_balanced:      [claude_worker_balanced, meta_worker_balanced, gemini_frontier, openai_worker_balanced, claude_senior]
     senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
     principal_architect:  [openai_frontier, claude_senior, openai_reasoning]
@@ -1381,8 +1403,9 @@ fallbacks:
     # DD-60, user decision U-7): no route that resolves Claude moves; where it
     # does not, a reviewer outside the host's own family still sits here. It
     # reads only: transports.codex.to_gemini has no write authority. Tier 0
-    # since 1.22.0, as on claude_code above.
-    worker_balanced:      [claude_worker_balanced, gemini_worker_balanced, openai_worker_balanced, openai_reasoning]
+    # since 1.22.0, as on claude_code above. Since 1.24.0 the place is
+    # gemini_frontier's (tier 1, read-only), as on claude_code.
+    worker_balanced:      [claude_worker_balanced, gemini_frontier, openai_worker_balanced, openai_reasoning]
     senior_engineer:      [openai_reasoning, claude_senior, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior]
     principal_architect:  [openai_frontier, openai_reasoning, claude_architect]
@@ -3589,3 +3612,280 @@ verification_ledger:
         Both: 247,673 routes, proxy -3.4%. The policy ledger replays the
         adopted move as rule t65 (tests/test_policy_rules.py). Script and
         output: docs/research/2026-10-15-issues-65-67-counterfactuals/.
+
+    # --- The gemini seat on gemini-4-argon (design 2026-10-27, 1.24.0) --------
+    # Probes ran on darwin arm64 from a Claude Code host on agy 1.4.8 through an
+    # archive of the released 1.23.1 dispatch_agent.py (e2e6b5c), with
+    # --receipt-guard darwin-sandbox-v1 on the maker attempts. Attempts named
+    # *-rel ran the shipped argv; *-rel2 repeated three maker probes with an
+    # instruction to call the write tool; *-fence ran those three with the
+    # retired gemini-3.8-flash under the same profile, to exercise the kernel
+    # fence the argon model would not reach. In `argv`, the log path and the
+    # prompt are shown as their slots. Receipts and the probe runner are in the
+    # local archive docs/design/reviews/2026-10-27-gemini-argon/acceptance/.
+
+    - item: "gemini-4-argon model id"
+      status: verified
+      probed_on: "2026-10-27"
+      attempt_id: "art-low-rel"
+      cli_version: "agy 1.4.8"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-4-argon --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      evidence: >
+        Attempt art-low-rel (transport claude_code.to_gemini, --seat-profile
+        agy-reviewer-v1, --output-envelope agy-print-json-v1, --output-schema
+        review) graded SUCCEEDED: exit 0, status SUCCESS, verdict PASS, the
+        deny-rule record loaded ("stored 0 allow, 5 deny grants from project
+        \"dmr-reviewer-v1\""), and the CLI's log resolved the base id to
+        gemini-4-argon-low. Receipt sha256
+        8d7e2702779aea5c972fdd904d8ef8d45405f39a4f960fa0cfdba68752a3c871. The
+        account's catalogue (`agy models`) lists the model only in
+        effort-suffixed spellings (gemini-4-argon-low, -medium, -high) beside
+        the retired gemini-3.8-flash and other vendors' models. An id the CLI
+        does not know (afail-rel, gemini-4-argon-nonexistent) exited 1 and
+        graded FAILED with the CLI's own text in error_reason (receipt sha256
+        898e35fe2f073c2d89a5a9d5a1385d569d4947b86be000f0cb28336d5191caaf).
+        Not served-model attestation: the document has no model field, and the
+        log's resolution is the client's.
+
+    - item: "gemini-4-argon effort values"
+      status: verified
+      probed_on: "2026-10-27"
+      cli_version: "agy 1.4.8"
+      evidence: >
+        Three supervisor round trips on the shipped reviewer argv, one per
+        native token, each SUCCEEDED with verdict PASS and a log resolution to
+        the matching spelling: art-low-rel, art-medium-rel (receipt sha256
+        ff32762ec7a86a120594b05c4b94e929e8e8a1a053c847c2a33ca3d9ab952da9),
+        art-high-rel (2bc671d8474590b57950364c0c704c5d6540fdb01eece66bb8fe542d1c8ae674).
+        The CLI refuses `xhigh` and `max` before any request: aeff-xhigh-rel
+        (receipt sha256
+        c9720f7878eff37155d7a184e87392074469755af15f69c1290736875139ebaf) and
+        aeff-max-rel (24891252d18f99ab52f8f8ed30e915c966b45a427aba8ede0943ffa3df0a2eb3)
+        graded FAILED with error_reason "invalid model selection (--model
+        \"gemini-4-argon\" --effort \"xhigh\"): gemini-4-argon has no \"xhigh\"
+        effort (available: low, medium, high)" (and the same for max); the
+        refusal is the client's, so it ran after the account quota was spent.
+        The provider's model page lists the thinking levels low, medium and
+        high. Hence the family map's low/medium/high and the row's
+        effort_ceiling HIGH, as for the seat it replaces.
+
+    - item: "gemini-4-argon pricing and context window"
+      status: documented
+      probed_on: "2026-10-27"
+      source: "https://ai.google.dev/gemini-api/docs/pricing"
+      evidence: >
+        Read from the provider's pricing and model pages, not probed. Standard
+        paid tier: $2.00 input, $10.00 output (thinking included), $0.10
+        cached input per MTok through 2026-11-30 (introductory), each doubling
+        on 2026-12-01; no free tier; implicit caching only, no explicit cache
+        and no cache-write rate, so the row reports an unavailable quote, as
+        the xai and meta rows do. No long-context tier is listed. Model page
+        (ai.google.dev/gemini-api/docs/models/gemini-4-argon): one
+        1,048,576-token window shared by input and output, 65,536 output
+        tokens by default on a synchronous call (up to the window with long
+        decode), thinking levels low/medium/high, released as stable. This
+        seat runs on a personal Antigravity sign-in, metered by plan quota,
+        not tokens.
+
+    - item: "gemini_frontier tier evidence (external, not measured)"
+      status: documented
+      probed_on: "2026-10-27"
+      source: "https://www.vals.ai/benchmarks/vals_index"
+      evidence: >
+        Third-party and vendor benchmarks, not measured here. Vals Index
+        (leaderboard read 2026-10-27): gemini-4-argon 69.24, against
+        claude-sonnet-5-5 70.85, claude-opus-5-5 70.18, gpt-6-astra 65.02,
+        gpt-6.1-sol 63.94, claude-haiku-5-5 58.73, grok-4.7 58.56 and
+        gemini-3.8-flash 55.95; Artificial Analysis Intelligence Index 53 with
+        a time to first token near 51 s and verbose output. The vendor's launch
+        post (2026-09-30) claims frontier results above gpt-6-astra and the
+        Claude Opus and Fable models on several benchmarks, unreproduced at
+        launch. The row's capability_tier is set by this repository's own
+        real-review replay (the T5 row below), not by these numbers.
+
+    - item: "Gemini reviewer seat on gemini-4-argon (transports.claude_code.to_gemini.mechanism_reviewer)"
+      status: verified
+      probed_on: "2026-10-27"
+      attempt_id: "acontain-rel"
+      cli_version: "agy 1.4.8"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-4-argon --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      probes:
+        - { attempt_id: "art-low-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-argon --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "art-medium-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-argon --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "art-high-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-argon --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "acontain-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-argon --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+      evidence: >
+        The 1.20.0 containment probe repeated on the new model and CLI
+        (acontain-rel, receipt sha256
+        d930b68de0d64e884009f6de1aabb4f4bc953e6b06342ed5e4c1854c41bd2028): the
+        seat read note.txt; asked to create a file, edit one, run a shell
+        command, fetch a URL, search the web and start a subagent, it had no
+        tool for any of them and the turn completed; its tool list was
+        view_file and manage_task; the workspace held only the unchanged
+        note.txt afterwards. The log gate read the same grants record and a
+        resolution to gemini-4-argon-medium on agy 1.4.8, so the CLI lines the
+        supervisor grades did not move between 1.3.5 and 1.4.8. Boot input
+        about 5,100 tokens. The CLI changes in between that touch a seat
+        (1.4.4: workspace GEMINI.md and AGENTS.md rules outrank the built-in
+        instructions; 1.4.7: hooks receive the latest user input) widen the
+        prompt surface a reviewed tree offers and leave the containment and
+        the `.agents`/`.gemini` refusal unchanged.
+
+    - item: "Gemini maker seat on gemini-4-argon (transports.claude_code.to_gemini.mechanism_maker)"
+      status: verified
+      probed_on: "2026-10-27"
+      attempt_id: "ma-rel"
+      cli_version: "agy 1.4.8"
+      argv: "agy --agent dmr-maker-v1 --model gemini-4-argon --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      probes:
+        - { attempt_id: "ma-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-argon --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "md-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-argon --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mg-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-argon --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mb-fence", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-3.8-flash --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+      evidence: >
+        The 1.21.0 maker probe set repeated on agy 1.4.8, under the receipt
+        guard and the agy-maker-v1 profile. ma-rel (receipt sha256
+        50f9c36be9c8a2898b228adb862f35f046c7f214bcef898f39060ff27b277f15)
+        wrote made.txt in its workspace with the exact content asked. md-rel
+        (d306ee392f72d61ccac2bb88a3ac578de330089e4c0219ee1a9ab20517f5d3ed):
+        writes to .git/hooks/pre-commit, a nested .git and .agents/hooks.json
+        all failed with `operation not permitted` from the kernel fence. mg-rel
+        (b0192d402f2215f7fdab155d43862d2939fe76a1f1ce5d7ff913c5752dbcfd67):
+        no shell tool. A hard link in the workspace (mc-rel) and a run without
+        the receipt guard (mf-rel) were refused before spawn (no receipt). The
+        argon model declined, on its own, to attempt a write outside the
+        workspace, to the reviewer agent's host file or to /dev/stdout, both
+        when asked plainly (mb-rel, me-rel, mh-rel) and when told to call the
+        tool for real (mb-rel2, me-rel2, mh-rel2), so those runs did not reach
+        the fence. The same three under the same profile with
+        gemini-3.8-flash (mb-fence, receipt sha256
+        be79d40a3e8a38c19d8a46eb93e584eabba90f4bb6e7d8fd563009826a826ca8) did
+        call the tool: an absolute path outside the workspace and one under
+        HOME failed with `operation not permitted`, and `../rel-escape.txt` was
+        refused by the 1.4.8 write tool itself, which now requires an absolute
+        path; that model too declined the host-file and /dev/stdout writes
+        (me-fence, mh-fence). The fence is the guard's Seatbelt profile and
+        does not depend on the model; the host-file and /dev/stdout denials
+        rest on the 1.21.0 probes (the "Gemini maker seat recipe" row). Write
+        authority stays withheld (write_verified false) unless the user grants
+        it after both replays.
+
+    - item: "agy model catalogue (model_sync, agy 1.4.8)"
+      status: verified
+      probed_on: "2026-10-27"
+      cli_version: "agy 1.4.8"
+      evidence: >
+        `agy models` printed thirteen `<id>\t<label>` lines: three effort
+        spellings each of gemini-4-argon, gemini-3.8-flash, claude-opus-5-5
+        and claude-sonnet-5-5, and gpt-oss-120b-medium. model_sync reads the
+        argon line from it (template gemini-{gen}-argon) and finds no
+        successor; the retired flash row is not a lineage row. The capture is
+        tests/fixtures/catalogs/agy/agy-models-1.4.8.stdout.txt.
+
+    - item: "Gemini 3.8 Flash retired (gemini_worker_balanced, 1.24.0)"
+      status: documented
+      probed_on: "2026-10-27"
+      evidence: >
+        User instruction 2026-10-27: remove Gemini 3.8 Flash from the router.
+        The row stays as history input (dispatchable false, no lineage, no
+        binding, no fallback list), so --prior-models and --unavailable-models
+        keep accepting gemini-3.8-flash across the release boundary; it is
+        never seated. Its earlier rows above stay as the record
+        of what was measured on it. The CLI still serves the model to this
+        account (the agy 1.4.8 catalogue lists it), which is how the *-fence
+        maker probes could use it to exercise the kernel fence.
+
+    - item: "gemini_frontier tier measurement (real-review replay, 2026-10-27)"
+      status: verified
+      probed_on: "2026-10-27"
+      supersedes:
+        - "gemini_frontier tier evidence (external, not measured)"
+      evidence: >
+        T5: the 1.22.0 real-review replay (T3's three frozen packages A, B, C,
+        their original prompts, effort high, two reps, deadline 3,600 s) on
+        gemini-4-argon through the shipped reviewer seat (agy-reviewer-v1,
+        agy 1.4.8, the released 1.23.1 supervisor), graded blind by the T3
+        judges claude-fable-5-1 and gpt-6-astra, whose calibration was re-run
+        first (12 of 12 exactly as expected; agreement on the subject's items
+        0.983). Six reviews, all SUCCEEDED, 411 to 770 s each. The rule was
+        written before any dispatch, for a row with no tier yet: anchors are
+        the T3/T3b recall of the live rows of the 1.23.1 registry; the tier-2
+        rows claude-opus-5-5 0.515993, gpt-6.1-sol 0.332492, claude-sonnet-5-5
+        0.455387; the tier-1 row gpt-5.6-terra 0.168350 (grok-4.7 unmeasured,
+        the tier-3 rows are the judges). Tier-2 mean 0.434624, separation
+        0.266274 (gate 0.10, met). Bar for tier 2: 0.282492. Bar for tier 1:
+        0.118350. Recall: gemini-4-argon 0.233165 (packages 0.000000,
+        0.222222, 0.477273). Verdict gemini-4-argon: tier 1. Tier 3 was not
+        decidable. Sensitivity: each tier-2 row alone and each judge alone
+        give tier 1; by package tier 0, 1 and 2. Amendment A1 (after the plan's
+        review, before grading) made judge calibration a gate and audited the
+        subject's sessions from the CLI's own conversation store: every tool
+        call was a view_file read inside the attempt's package (a parser
+        negative control found the outside read it was planted with). The
+        retired seat on the same suite: gemini-3.8-flash 0.097643. Limits:
+        the anchors ran 2026-10-14 on that day's CLIs and were not re-run; the
+        ground truth was written by gpt-6.1-sol and claude-fable-5-1; real
+        defects outside it are not credited. Plan, harness, receipts, grades
+        and audit: the local archive docs/evals/2026-10-27-t5/ (summary.json
+        sha256 79b7b087c82a90d19e22aeafb12755dec95a6d3d43b3796494b16fb781e4deb0).
+
+    - item: "gemini_frontier implementation replay (not run, 2026-10-27)"
+      status: documented
+      probed_on: "2026-10-27"
+      evidence: >
+        T6, the T4 implementation replay (eight tasks, two reps) on the shipped
+        agy maker recipe, was planned and prepared to decide whether the seat
+        may write (user decision 2026-10-27): the hidden tests were re-validated
+        and T4's regression sets re-checked on today's interpreter. Its design
+        review found the first read fence leaky — other tasks' pre-fix trees are
+        reference fixes, and the CLI's own conversation store held the T5
+        sessions — so the two attempts started under it were cancelled
+        (termination confirmed) and never graded, and the fence was rebuilt and
+        measured (operation not permitted on every answer-bearing path, the run
+        completing). The re-run plumbing pilot then ended RESOURCE_EXHAUSTED
+        (429, "Individual quota reached", reset about a week away): the
+        account's quota for gemini-4-argon was spent by T5, two pilots and the
+        probes in one afternoon, while gemini-3.8-flash kept running on the
+        same account. No task attempt has been graded; the seat ships read-only
+        (write_verified false) and the replay is left for after the reset
+        (user decision 2026-10-27). Plan and amendment: docs/evals/2026-10-27-t6/.
+
+    - item: "1.24.0 gemini seat placement counterfactuals"
+      status: verified
+      probed_on: "2026-10-27"
+      evidence: >
+        The 16,896-point 1.22.0 grid (fresh and after each side's own fresh
+        worker failed) over its twenty-four scenarios plus ten added for this
+        move (the senior seat, the Sol seat or both withheld with xai out;
+        OpenAI exhausted with the senior seat out; Claude exhausted with Sol
+        out; OpenAI exhausted with xai out; REVIEW tasks authored by Claude or
+        OpenAI with xai out; the xai quota low, with and without an unknown
+        root cause), 958,113 routes, one router against the 1.23.1 registry and
+        the candidate. Adopted (user decision 2026-10-27): the gemini seat at
+        tier 1 in the places the retired seat held — 62,082 routes change; with
+        every seat available none, except that a low xai quota's same-tier
+        swap now moves 335 investigation leads from gpt-5.6-terra to the seat
+        on both hosts (176 with an unknown root cause run at its HIGH ceiling
+        instead of MAX); reviewer seating on 45,920 (the seat newly seated on
+        45,543, the retired one gone from 37,134); cross-family review gained
+        on 5,338 and lost on 546; the worker on 4,601 (3,479 to the seat; on
+        248 first attempts of work that
+        writes the execution cell keeps the OpenAI fast writer at tier 0 to
+        keep this seat's cross-family review and 186 write retries follow them;
+        288 Claude Code retries after the tier-0 meta seat fails now stop at
+        this tier-1 seat where they reached gpt-6.1-sol or gpt-6-astra; 2
+        reading first attempts land a tier lower); a human gate on 886 (246 new, 224 lifted; review_below_band
+        added on 380 and removed on 224; effort_below_floor added on 272); ten
+        first attempts carrying an unknown root cause newly ESCALATE_ROUTING,
+        and eight terminals change kind (six INDEPENDENCE_UNAVAILABLE to
+        ESCALATE_ROUTING, two SUPPLY_EXHAUSTED to INDEPENDENCE_UNAVAILABLE);
+        1,354 review bands raised by the confidence rule; the summed output
+        price of seated workers and reviewers +0.52%. Not adopted (replayed
+        without the two xai-quota scenarios, 890,529 routes, where the adopted
+        placement moves 61,747): the seat also last in the senior and
+        reasoning fallback lists on claude_code and codex, 88,703 routes,
+        +1.01%; second in those lists, 237,685 routes, +1.71%, a tier-1 model
+        in tier-2 roles on 9,770 worker changes and 1,290 new
+        ESCALATE_ROUTING. The policy ledger replays the adopted move as rule
+        g124 (tests/test_policy_rules.py). Script and output:
+        docs/research/2026-10-27-gemini-argon-counterfactuals/.

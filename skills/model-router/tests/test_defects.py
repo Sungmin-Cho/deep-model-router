@@ -191,9 +191,11 @@ def test_d1_a_failed_model_is_never_re_emitted_under_a_new_role():
     # One concrete prior from every configured family. Two Claude ids stay
     # because the original probe used them; grok-4.6 is the family that was
     # missing. A family added to the registry without a prior here is a
-    # retry path nobody exercises.
+    # retry path nobody exercises. (1.24.0: the gemini family's live seat, plus
+    # the retired one, which stays valid history input.)
     priors = (ID("claude_worker_balanced"), ID("claude_senior"), ID("openai_reasoning"),
-              ID("xai_frontier"), ID("meta_worker_balanced"), ID("gemini_worker_balanced"))
+              ID("xai_frontier"), ID("meta_worker_balanced"), ID("gemini_frontier"),
+              ID("gemini_worker_balanced"))
     fam = {m["id"]: m["family"] for m in CFG["models"].values()}
     dispatchable_fams = {
         m["family"] for m in CFG["models"].values()

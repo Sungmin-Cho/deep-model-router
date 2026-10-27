@@ -201,8 +201,9 @@ where it resolves the role — now at tier 0, which the route's
 no longer swaps a reading lead onto it, because that swap wants a model of the
 same tier: the OpenAI balanced model takes it (174 Claude Code routes with the
 xai seat withheld). And an INVESTIGATION with an unknown root cause, whose
-promotion asks for at least the balanced role, skips both tier-0 seats on its
-first attempt unless no usable model meets that floor or meeting it would
+promotion asks for at least the balanced role, skips the tier-0 seats on its
+first attempt (since 1.24.0 the meta seat alone: the gemini seat is tier 1 and
+meets the floor) unless no usable model meets that floor or meeting it would
 leave no independent reviewer (the route notes either); its retry is held by
 the retry ladder instead, and the seats stay available to its reviewers.
 
@@ -232,71 +233,104 @@ reviews them.
 
 ### The gemini reviewer seat
 
-`gemini_worker_balanced` is the gemini family's first dispatchable model, a
-tier-0 seat bound to no role. On a Claude Code host it is the third fallback of
-`worker_balanced`, after the Claude balanced model and the meta seat; on a
-Codex host it is the second, right after the Claude balanced model
-(`adapters.md`, "The gemini seat reads, after the Claude model", and
-"Antigravity seat profile" for what contains it). It reads only: the Claude
+`gemini_frontier` is the gemini family's dispatchable model since 1.24.0, a
+tier-1 seat bound to no role: Google's frontier model, through the Antigravity
+CLI. It holds the places the seat's first model held. On a Claude Code host it
+is the third fallback of `worker_balanced`, after the Claude balanced model and
+the meta seat; on a Codex host it is the second, right after the Claude
+balanced model (`adapters.md`, "The gemini seat reads, after the Claude model",
+and "Antigravity seat profile" for what contains it). It reads only: the Claude
 Code direction ships a maker recipe, but its write authority is withheld
-(below), and the Codex direction has none. Grok hosts never seat it. The
-unbound gemini row the suite names is untouched and still never seated.
+(below), and the Codex direction has none. Grok hosts never seat it. The first
+model, `gemini_worker_balanced` (tier 0 from 1.22.0), is retired at the user's
+request: it stays valid history input and is never seated. The unbound gemini
+row the suite names is untouched and still never seated.
 
-**Its tier is 0 since 1.22.0**, on the same footing as the meta seat:
-confirmed against the previous Sonnet generation, lowered against the live
-tier-1 rows, listed where it was, and at about a fifth of the Claude balanced
-seat's recall.
+**Its tier is 1 since 1.24.0**, set by a measurement rather than the vendor's
+claims. The 2026-10-27 real-review replay (the 1.22.0 method on the same three
+packages, judges and preregistered margins, read for a row with no tier yet —
+`evaluation.md`, "How a tier is measured") put its recall at 23.3%: above the
+live tier-1 bar (11.8%), below the tier-2 bar (28.2%, five points under the
+Sol seat's 33.2%), and between the OpenAI balanced seat (16.8%) and the Sol
+seat — about 2.4 times the retired model's 9.8%. Per package it
+ranged from 0% (two reviews of one implementation round that found nothing
+where the reference reviewers had found nine defects) to 48%. No tier-3 row
+could be measured beside it — the two tier-3 models are the judges — so this
+replay could not have placed it above tier 2. Its sessions were audited from
+the CLI's own conversation store: every tool call was a read inside its
+package.
 
-**The maker seat is shipped without write authority.** The `agy-maker-v1`
-profile contains a write seat (`adapters.md`, "The maker profile"), and its
-probes are in the ledger. Its `write_verified` stays false by decision. With
-the Claude-first order turning it on would not touch a route where the Claude
-balanced model resolves; it would make this model the writer where the xai seat
-and the Claude model are both out — today the OpenAI balanced model writes
-there — and the replay measured this seat's review recall at a fifth of the
-Claude model's.
+**The maker seat is still shipped without write authority.** It was re-probed
+on the new model (the profile, the kernel fence and the before-spawn refusals
+hold), but a seat that writes moves tier only when an implementation replay
+agrees with the review replay, and that replay could not run: the account's
+quota for this model was spent by the review replay. Until it runs,
+`write_verified` stays false and the seat never writes.
 
-What 1.21.0 changed for this seat, against 1.20.0:
+**Its quota is small and its turns are long.** On a personal sign-in the
+account's quota for this model ran out after about ten long agentic runs in
+one afternoon — a review here made 150 to 220 file reads — and the CLI then
+refused every run (HTTP 429, "Individual quota reached") until a reset a week
+away; other models on the same account kept working. A refused attempt ends
+FAILED with the CLI's text in its receipt. Withhold the model
+(`--unavailable-models`) until the reset rather than retrying it. A review took
+7 to 13 minutes at high effort: give the seat a generous deadline.
 
-- **On Claude Code, it is reached later.** Every route 1.20.0 gave it with the
-  xai and meta seats out goes to the Claude balanced seat while that model
-  resolves — the same counts as the meta seat above (1,521 routes).
-- **On Codex, it reviews where Claude is gone.** With the Claude family
-  exhausted (and the xai seat out), 10,366 Codex routes change: a reviewer of
-  another family than the host's appears on 6,246, mostly in place of the
-  OpenAI balanced or reasoning seat, and 284 read-only leads move from the
-  OpenAI balanced seat to this one. Its HIGH effort ceiling adds
-  `effort_below_floor` to 3,424 CRITICAL routes that already asked for a
-  human, and 3,556 write routes note that this seat could not write there. With
-  the Claude family exhausted and the xai seat available, 24 Codex routes gain
-  it as a cross-family reviewer.
-- **With the xai and meta seats out and OpenAI exhausted**, 6,278 routes
-  change: on Claude Code the Claude balanced model takes the review seats this
-  seat held beside the Claude architect or the Claude fast seat (3,123 routes
-  give up a cross-family review for it, and 1,712 lose the
-  `effort_below_floor` cause this seat's ceiling had added); on Codex 2,124
-  routes change, 1,840 of them only by a note that this seat could not write
-  where a Claude model now writes, the rest by moved review seats.
-- **A write override with the xai and meta seats out** changes notes only: on
-  1,523 routes the skipped-gemini note goes, because the Claude model is first.
-- **A lower effort ceiling** still applies wherever it seats: the CLI accepts
-  `low`, `medium` and `high` only, so the seat's ceiling is HIGH and a floor
-  that wants more records `effort_below_floor` (a human gate) rather than
-  mapping silently.
+What 1.24.0 changes for this seat, against 1.23.1 — the 1.22.0 replay grid plus
+ten scenarios (the senior and reasoning seats or whole families out, and the xai
+quota low), 958,113 routes, fresh and after a failure:
 
-What 1.22.0 moves, against 1.21.0: on Codex with the xai seat withheld and the
-Claude family exhausted, 6,512 routes change. On 1,256 a MEDIUM review seat goes
-from this seat to the OpenAI reasoning seat, and on 138 a REVIEW lead goes to
-the OpenAI balanced model. A retry after this seat fails climbs above tier 0
-rather than above tier 1, so it reaches the OpenAI balanced model where it used
-to reach the OpenAI reasoning seat: on 144 Codex routes, and on 144 Claude Code
-routes where the meta seat is withheld too. A low Claude quota and an unknown
-root cause pass it over for reading leads as they pass the meta seat (144 Codex
-routes for the quota). On Claude Code, with the meta seat withheld, this seat
-takes the meta seat's fresh-route counts above. With the Claude family
-exhausted and the xai seat available, 24 Codex routes change only the tier
-their shortfall record carries. The cross-family and human-gate counts are in
-the meta seat's section.
+- **62,082 routes change.** With every seat available nothing moves, unless the
+  xai quota is low: then the `low` swap, which moves a reading lead to the first
+  same-tier model of another family, reaches this seat — 335 investigations on
+  both hosts move from the OpenAI balanced seat to it (176 of them, with an
+  unknown root cause, run at the seat's HIGH effort ceiling rather than the MAX
+  the flag asks for; no floor is broken). Every other change is where everything
+  ahead of the seat is out, mostly with the xai seat withheld and the Claude
+  family exhausted (on both hosts), or with OpenAI exhausted.
+- **It now staffs seats whose floor is tier 1.** The retired tier-0 model could
+  read and lead reading work but not take a review seat a MEDIUM band floors at
+  tier 1; this seat can. Reviewer seating changes on 45,920 routes: where the
+  retired model sat beside another reviewer it is replaced in place, and MEDIUM
+  review leads and reviewer seats that went to the OpenAI balanced, reasoning or
+  frontier seats go to this one. A cross-family review is gained on 5,338 routes
+  and lost on 546.
+- **The worker moves on 4,601 routes** (3,478 first attempts, 1,123 retries).
+  Reading leads and promoted investigations take this seat (3,479), mostly where
+  they took the OpenAI balanced seat; a retry after it fails climbs above tier
+  1, and a retry after the tier-0 meta seat fails may now stop at this seat where
+  it went on to the Sol seat. On 248 first attempts of work that writes, with xai withheld and the
+  Claude family exhausted, the execution cell now keeps the OpenAI fast writer
+  (tier 0) instead of raising it to the OpenAI balanced one, because raising it
+  would give up this seat's cross-family review (`execution band NORMAL
+  yielded worker_balanced: cross_family_review`) — the trade 1.19.0 disclosed
+  for the meta seat, which tier 0 had ended. Their retries follow (186). On
+  Claude Code, 288 retries of investigations whose tier-0 meta lead failed (xai
+  withheld, Claude exhausted, with and without the Sol seat out) now stop at
+  this seat where they reached the Sol or frontier OpenAI seat — still above
+  what failed, a tier lower than before. On 2 first attempts of reading work
+  the lead lands a tier lower.
+- **Gates and terminals.** A human gate changes on 886 routes: 246 gain one and
+  224 lose one; a `review_below_band` cause is added to 380 and removed from
+  224, and `effort_below_floor` (the seat's HIGH effort ceiling) joins 272 gates
+  already raised. Ten first attempts carrying an unknown root cause, with xai
+  withheld and the Claude family exhausted, newly end ESCALATE_ROUTING, and
+  eight terminal routes change kind with the fast, xai and frontier OpenAI
+  seats out and Claude exhausted (six INDEPENDENCE_UNAVAILABLE first attempts
+  become ESCALATE_ROUTING, two SUPPLY_EXHAUSTED retries become
+  INDEPENDENCE_UNAVAILABLE). 1,354
+  routes have their review band raised by the confidence rule: the fallback
+  that reaches this seat is charged like any other.
+- The summed output price of the seated worker and reviewers rises 0.52%.
+
+Two wider placements were replayed and not taken (user decision 2026-10-27):
+listing the seat also last in the senior and reasoning fallback lists on both
+hosts moves 88,703 routes (+1.01%; replayed without the two xai-quota
+scenarios, 890,529 routes, where the adopted placement moves 61,747), and
+listing it second there, right after
+the Sol seat, moves 237,685 (+1.71%), seating a tier-1 model in tier-2 roles on
+9,770 worker changes and ending 1,290 more routes ESCALATE_ROUTING. The ledger
+row "1.24.0 gemini seat placement counterfactuals" has the numbers.
 
 ### The OpenAI frontier seat
 
@@ -710,9 +744,40 @@ the risk band or override floors. **The following cross-family review counts
 are the 1.23.0 tier counterfactual, not the 1.23.1 retry replay:** review is
 gained on 4,572 routes and lost on 264 with every seat available (4,548 and
 528 with the xai seat withheld; 2,566 and 4,360 with OpenAI exhausted). A
-`low` xai quota now swaps a reading lead to the OpenAI balanced model, the
-same-tier model of another family, instead of this one. The host advisory that names a `/model` breaks the new tie
+`low` xai quota now swaps a reading lead to the first same-tier model of another
+family instead of this one — the gemini seat since 1.24.0 (from 1.23.0 to
+1.23.1 the OpenAI balanced model). The host advisory that names a `/model` breaks the new tie
 between this seat and the senior seat by role, so a Claude host below a tier-1
 or tier-2 ask is still pointed at this model. The ledger rows "Implementation
 replay of the writing rows (2026-10-15)" and "Tier counterfactuals after the
 2026-10-15 implementation replay" have the numbers.
+
+## Tiers measured on 2026-10-27
+
+The gemini seat's model changed in 1.24.0 (Gemini 3.8 Flash retired at the
+user's request), so its row had no tier. It was measured by the 1.22.0 review
+replay — the same packages, judges, margins and live anchors, the judges'
+calibration re-run first (12 of 12 exact) — read for a row with no tier yet:
+the highest tier whose bar it clears on a suite that separates that tier from
+the one below.
+
+| Seat | Tier | Recall |
+|---|---|---|
+| Claude senior seat (anchor) | 2 | 52% |
+| Claude balanced seat (anchor) | 2 | 46% |
+| Sol seat (anchor, the tier-2 bar's row) | 2 | 33% |
+| **Gemini reviewer seat** | **1** | **23%** |
+| OpenAI balanced seat (anchor, the tier-1 bar's row) | 1 | 17% |
+| Gemini reviewer seat, first model (retired) | 0 | 10% |
+
+The tier-2 bar is 28.2% and the tier-1 bar 11.8%; tier 3 could not be decided,
+because the two tier-3 models are the judges. Every reading of the
+sensitivity — each tier-2 row alone as the bar, each judge alone — gives tier 1;
+by package the seat would read tier 0, 1 and 2. The seat ships read-only, so
+the review replay is its whole measurement; the implementation replay that
+would let it write is recorded as not run (the account's quota for the model
+was spent). With this seat at tier 1, a `low` xai quota swaps a reading lead to
+it, the first same-tier model of another family in the list, on both hosts. The
+ledger rows "gemini_frontier tier measurement (real-review replay,
+2026-10-27)" and "gemini_frontier implementation replay (not run, 2026-10-27)"
+have the numbers and limits.

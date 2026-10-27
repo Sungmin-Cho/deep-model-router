@@ -723,7 +723,8 @@ residue belongs to the recipe, as it does for grok.
 ### Antigravity seat profile
 
 What contains the gemini reviewer seat, measured on agy 1.3.4 (macOS,
-2026-10-14; the ledger rows name the attempts). No mode flag does: the CLI's
+2026-10-14) and re-probed with the seat's current model on agy 1.4.8
+(2026-10-27); the ledger rows name the attempts. No mode flag does: the CLI's
 own settings (`~/.gemini/antigravity-cli/settings.json`) choose a
 `toolPermission` preset for every run on the host, and under `always-proceed`
 a `--mode plan` run wrote a file and ran a shell command when asked to. Two
@@ -862,6 +863,20 @@ You review code and documents. Read files when the request needs them, and answe
   ledger records the version a probe ran on, and the log lines the gate reads
   are the CLI's, not a published contract: if they change, the seat fails
   closed.
+
+- **What agy 1.4.8 changed.** The log lines the gate reads, the agent
+  allow-list, the deny rules and the `.agents`/`.gemini` refusal all held on
+  1.4.8. Its write tool now refuses a relative path such as `../x` before the
+  write (an absolute one is required), and workspace `GEMINI.md` and
+  `AGENTS.md` rules outrank the CLI's built-in instructions (1.4.4): a reviewed
+  tree can steer the model's text, never its tools.
+- **The quota is the account's, per model.** A personal sign-in's quota for
+  the seat's current model ran out after about ten long agentic runs in one
+  afternoon, and every run was then refused before any request ("Individual
+  quota reached", HTTP 429, with a reset days away) while other models on the
+  account kept working. The attempt ends FAILED and the CLI's text is the
+  receipt's `error_reason`. Withhold the model (`--unavailable-models`) until
+  the reset; retrying spends nothing and gains nothing.
 
 Declare the whole profile. An `agy` dispatch that names neither the
 `.to_gemini` transport nor the profile is invisible to the supervisor as agy —
@@ -1398,7 +1413,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read; tier 0), then `gemini_worker_balanced` (seats that read; tier 0), then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read; tier 0), then `gemini_frontier` (seats that read; tier 1), then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1409,7 +1424,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `openai_worker_balanced`, then `claude_worker_fast` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_worker_balanced` (seats that read; tier 0), then `openai_worker_balanced`, then `openai_reasoning` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_frontier` (seats that read; tier 1), then `openai_worker_balanced`, then `openai_reasoning` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
 | `principal_architect` (claude) | `openai_frontier`, then `openai_reasoning`, then `claude_architect` |
@@ -1451,12 +1466,15 @@ recall). Since 1.22.0 the seat is tier 0: a review seat whose band floor asks
 for tier 1 or more skips it for the next model that meets the floor, so it
 keeps leading reading work and sitting where nothing asks more of it. An
 INVESTIGATION with an unknown root cause is the exception: on a first attempt
-its promotion is a floor, so the balanced role skips both tier-0 seats unless
-no usable model meets the floor or meeting it would leave no independent
-reviewers; the route notes either waiver.
+its promotion is a floor, so the balanced role skips the tier-0 meta seat (and,
+until 1.24.0, the gemini seat, then tier 0 too) unless no usable model meets
+the floor or meeting it would leave no independent reviewers; the route notes
+either waiver. The tier-1 gemini seat meets that floor, so behind the meta seat
+it can be the promoted lead.
 
-**The gemini seat reads, after the Claude model.** `gemini_worker_balanced` is
-bound to no role. On a Claude Code host it is the third fallback of
+**The gemini seat reads, after the Claude model.** `gemini_frontier` is bound
+to no role (since 1.24.0; the seat's first model, `gemini_worker_balanced`, is
+retired — valid history input, never seated). On a Claude Code host it is the third fallback of
 `worker_balanced`, after the Claude balanced model and the meta seat; on a
 Codex host it is the second, right after the Claude balanced model. A role
 resolves to the first usable model in its list, so this seat is reached only
@@ -1466,9 +1484,12 @@ seat that writes: the Claude Code direction ships a maker recipe
 false` by decision, and the Codex direction has a reviewer recipe only. Where it
 was skipped on a write route, the note reads `worker_balanced: no
 write-capable gemini seat on <runtime>; seated the <family> one`. Grok hosts do
-not offer the family. Since 1.22.0 it is tier 0, read the same way as the meta
-seat. `model-profiles.md` ("The gemini reviewer seat") lists what seating it
-changes.
+not offer the family. It is tier 1, measured (the first model was tier 0 from
+1.22.0): unlike the meta seat it meets a MEDIUM review's floor, so where it
+resolves it can lead or staff such a review, and an INVESTIGATION's promotion
+floor does not skip it. Its account quota is small (see "Antigravity seat
+profile"). `model-profiles.md` ("The gemini reviewer seat") lists what seating
+it changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per
 route with `--worker-seat write|read_only` (RouteRequestV1 `worker_seat`). The
