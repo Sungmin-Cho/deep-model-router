@@ -1466,9 +1466,11 @@ recall). Since 1.22.0 the seat is tier 0: a review seat whose band floor asks
 for tier 1 or more skips it for the next model that meets the floor, so it
 keeps leading reading work and sitting where nothing asks more of it. An
 INVESTIGATION with an unknown root cause is the exception: on a first attempt
-its promotion is a floor, so the balanced role skips both tier-0 seats unless
-no usable model meets the floor or meeting it would leave no independent
-reviewers; the route notes either waiver.
+its promotion is a floor, so the balanced role skips the tier-0 meta seat (and,
+until 1.24.0, the gemini seat, then tier 0 too) unless no usable model meets
+the floor or meeting it would leave no independent reviewers; the route notes
+either waiver. The tier-1 gemini seat meets that floor, so behind the meta seat
+it can be the promoted lead.
 
 **The gemini seat reads, after the Claude model.** `gemini_frontier` is bound
 to no role (since 1.24.0; the seat's first model, `gemini_worker_balanced`, is

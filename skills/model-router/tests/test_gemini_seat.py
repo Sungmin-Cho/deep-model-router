@@ -431,6 +431,17 @@ def test_the_retired_flash_row_is_history_input_only():
     assert lineage.parse(template, GEMINI) is not None
 
 
+def test_no_row_that_is_not_dispatchable_is_named_by_a_binding_or_fallback():
+    """Review i1 (fable): history rows are refused there at load time; a retired
+    row kept without `history_of` (the gemini seat's first model, the unbound
+    gemini row) is held here, so re-listing one cannot pass as a live seat."""
+    off = {k for k, m in CFG["models"].items() if m.get("dispatchable", True) is False}
+    assert {RETIRED_KEY, "gemini_flash"} <= off
+    named = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
+    named |= {k for per_role in CFG["fallbacks"].values() for keys in per_role.values() for k in keys}
+    assert not (off & named), sorted(off & named)
+
+
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
 def test_the_retired_flash_id_stays_valid_history_input(runtime):
     """A control loop holding a 1.23 attempt on it keeps working across the
@@ -484,6 +495,45 @@ def test_a_claude_shortage_keeps_the_fast_writer_for_this_seats_cross_family_rev
     assert before["selected_model"] == ID("openai_worker_balanced")
     assert before["cross_family_review"] is False
     assert GEMINI not in _emitted(before)
+
+
+def _seat_at_tier_0():
+    """The 1.23 routing shape: the gemini place held by a tier-0 seat."""
+    cfg = copy.deepcopy(CFG)
+    cfg["models"][SEAT_KEY]["capability_tier"] = 0
+    return cfg
+
+
+@pytest.mark.parametrize("scenario,expected", [
+    ({"unavailable_models": [XAI], "_family_quota": {"claude": "exhausted"}},
+     {(cls, (0, 3, 0, 0), lc, None, "ESCALATE_ROUTING")
+      for cls in ("MECHANICAL", "DOCUMENTATION", "TESTING", "IMPLEMENTATION", "DEBUGGING")
+      for lc in (False, True)}),
+    ({"unavailable_models": [XAI, ID("openai_worker_fast"), ID("openai_frontier")],
+      "_family_quota": {"claude": "exhausted"}},
+     {("INVESTIGATION", d, lc, "INDEPENDENCE_UNAVAILABLE", "ESCALATE_ROUTING")
+      for d in ((0, 3, 0, 0), (0, 3, 0, 1), (1, 3, 0, 0)) for lc in (False, True)}),
+], ids=["xai-out-claude-exhausted", "fast-xai-frontier-out-claude-exhausted"])
+def test_the_disclosed_terminal_changes_are_exactly_these(scenario, expected):
+    """Review i1 (fable F1/F2): the tier-1 seat's place costs routes carrying an
+    unknown root cause a fallback charge the tier-0 seat's yielding avoided, so
+    on Codex these first attempts newly ask to be re-routed (0.59 < 0.60) —
+    ten that were dispatchable and six that were INDEPENDENCE_UNAVAILABLE. No
+    other first attempt in these scenarios changes terminal."""
+    import itertools
+    old, got = _seat_at_tier_0(), set()
+    for cls in CLASSES:
+        for dims in itertools.product(range(4), repeat=4):
+            for lc in (False, True):
+                kw = dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                          blast_radius=dims[2], reversibility=dims[3], runtime="codex",
+                          flags=["unknown_root_cause", *(["large_context"] if lc else [])],
+                          **copy.deepcopy(scenario))
+                before, after = route(Task(**kw), old), route(Task(**kw), CFG)
+                if before.get("terminal") != after.get("terminal"):
+                    got.add((cls, dims, lc, before.get("terminal"), after.get("terminal")))
+                    assert after["routing_confidence"] < 0.60, (cls, dims, lc)
+    assert got == expected
 
 
 def test_the_argon_row_states_its_documented_facts():

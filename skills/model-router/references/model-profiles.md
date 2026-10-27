@@ -201,8 +201,9 @@ where it resolves the role — now at tier 0, which the route's
 no longer swaps a reading lead onto it, because that swap wants a model of the
 same tier: the OpenAI balanced model takes it (174 Claude Code routes with the
 xai seat withheld). And an INVESTIGATION with an unknown root cause, whose
-promotion asks for at least the balanced role, skips both tier-0 seats on its
-first attempt unless no usable model meets that floor or meeting it would
+promotion asks for at least the balanced role, skips the tier-0 seats on its
+first attempt (since 1.24.0 the meta seat alone: the gemini seat is tier 1 and
+meets the floor) unless no usable model meets that floor or meeting it would
 leave no independent reviewer (the route notes either); its retry is held by
 the retry ladder instead, and the seats stay available to its reviewers.
 
@@ -251,7 +252,7 @@ packages, judges and preregistered margins, read for a row with no tier yet —
 `evaluation.md`, "How a tier is measured") put its recall at 23.3%: above the
 live tier-1 bar (11.8%), below the tier-2 bar (28.2%, five points under the
 Sol seat's 33.2%), and between the OpenAI balanced seat (16.8%) and the Sol
-seat — about two and a half times the retired model's 9.8%. Per package it
+seat — about 2.4 times the retired model's 9.8%. Per package it
 ranged from 0% (two reviews of one implementation round that found nothing
 where the reference reviewers had found nine defects) to 48%. No tier-3 row
 could be measured beside it — the two tier-3 models are the judges — so this
@@ -299,14 +300,19 @@ eight scenarios where the senior and reasoning seats or whole families are out,
   would give up this seat's cross-family review (`execution band NORMAL
   yielded worker_balanced: cross_family_review`) — the trade 1.19.0 disclosed
   for the meta seat, which tier 0 had ended. Their retries follow (186), as do
-  288 retries of reading work whose first attempt moved.
+  288 retries of reading work whose first attempt moved; on 2 first attempts of
+  reading work the lead lands a tier lower.
 - **Gates and terminals.** A human gate changes on 886 routes: 246 gain one and
   224 lose one; a `review_below_band` cause is added to 380 and removed from
   224, and `effort_below_floor` (the seat's HIGH effort ceiling) joins 272 gates
   already raised. Ten first attempts carrying an unknown root cause, with xai
   withheld and the Claude family exhausted, newly end ESCALATE_ROUTING, and
-  1,354 routes have their review band raised by the confidence rule: the
-  fallback that reaches this seat is charged like any other.
+  eight terminal routes change kind with the fast, xai and frontier OpenAI
+  seats out and Claude exhausted (six INDEPENDENCE_UNAVAILABLE first attempts
+  become ESCALATE_ROUTING, two SUPPLY_EXHAUSTED retries become
+  INDEPENDENCE_UNAVAILABLE). 1,354
+  routes have their review band raised by the confidence rule: the fallback
+  that reaches this seat is charged like any other.
 - The summed output price of the seated worker and reviewers rises 0.57%.
 
 Two wider placements were replayed and not taken (user decision 2026-10-27):

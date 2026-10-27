@@ -3867,13 +3867,15 @@ verification_ledger:
         37,134); cross-family review gained on 5,338 and lost on 546; the
         worker on 4,266 (3,144 to the seat; on 248 first attempts of work that
         writes the execution cell keeps the OpenAI fast writer at tier 0 to
-        keep this seat's cross-family review, and 474 retries follow moved
-        first attempts to a lower tier); a human gate on 886 (246 new, 224
-        lifted; review_below_band added on 380 and removed on 224;
-        effort_below_floor added on 272); ten first attempts carrying an
-        unknown root cause newly ESCALATE_ROUTING; 1,354 review bands raised by
-        the confidence rule; the summed output price of seated workers and
-        reviewers +0.57%. Not adopted: the seat also last in the senior and
+        keep this seat's cross-family review, 474 retries follow moved first
+        attempts to a lower tier, and 2 reading first attempts land a tier
+        lower); a human gate on 886 (246 new, 224 lifted; review_below_band
+        added on 380 and removed on 224; effort_below_floor added on 272); ten
+        first attempts carrying an unknown root cause newly ESCALATE_ROUTING,
+        and eight terminals change kind (six INDEPENDENCE_UNAVAILABLE to
+        ESCALATE_ROUTING, two SUPPLY_EXHAUSTED to INDEPENDENCE_UNAVAILABLE);
+        1,354 review bands raised by the confidence rule; the summed output
+        price of seated workers and reviewers +0.57%. Not adopted: the seat also last in the senior and
         reasoning fallback lists on claude_code and codex, 88,703 routes,
         +1.01%; second in those lists, 237,685 routes, +1.71%, a tier-1 model
         in tier-2 roles on 9,770 worker changes and 1,290 new
