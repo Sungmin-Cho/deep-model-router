@@ -67,7 +67,7 @@ FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 # The closed rule vocabulary, in replay order (design DD-B11 ②). A rule not
 # named here cannot explain anything.
 ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7", "t65",
-         "t70")
+         "t70", "g124")
 
 # Keys that are not decisions: provenance, prose, the explicit-cfg overlay, and
 # the typed history echoed back as declared (a rule switched off projects its
@@ -375,6 +375,33 @@ def _t65_check(req, prev, cur):
 
 
 
+def _g124_check(req, prev, cur):
+    """The gemini seat measured at tier 1 (1.24.0, design 2026-10-27) may move the
+    route only as a stronger model in the same fallback place does: no new
+    terminal, the worker no lower, no review newly staffed below its band, a
+    judge never below the parties, and the seat never where the work writes
+    (its direction has no write authority on any host)."""
+    if "error" in prev or "error" in cur or prev["terminal"]:
+        return []
+    if cur["terminal"]:
+        return [f"became {cur['terminal']}"]
+    out = []
+    if (req["task_class"] != "REVIEW"
+            and TIER_OF[cur["selected_model"]] < TIER_OF[prev["selected_model"]]):
+        out.append("worker tier fell")
+    if len(cur["review"]["review_depth_reduced"]) > len(prev["review"]["review_depth_reduced"]):
+        out.append("a review newly staffed below its band")
+    judge = cur["review"]["judge_model"]
+    parties = [m for m in cur["review"]["reviewer_models"] if m]
+    if judge and parties and TIER_OF[judge] < max(TIER_OF[m] for m in parties):
+        out.append("judge below a party")
+    gemini = ID("gemini_frontier")
+    seat = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
+    if cur["selected_model"] == gemini and seat == "write" and not req.get("implementer"):
+        out.append("the gemini seat took a seat that writes")
+    return out
+
+
 def _t70_admits(req, prev):
     """A retry: the only inputs on which a model can be in `failed`."""
     return bool(req.get("attempt_outcomes"))
@@ -544,6 +571,21 @@ RULES: dict[str, Rule] = {
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         # The completed full ledger pins the production replay; the default sample is pinned too.
         check=_t70_check, changed_sample=31, changed_full=992),
+    # 1.24.0 (user instruction and decisions 2026-10-27): the gemini seat moves from
+    # gemini-3.8-flash (tier 0) to gemini-4-argon, measured at tier 1 in the T5
+    # review replay, in the same two fallback places. Off, the seat is tier 0 —
+    # the 1.23 route shape, which the grid never reached. On, it reaches review
+    # and lead seats whose floor asks for tier 1, so every comparison that reads
+    # a resolved tier can move; held by direction (`_g124_check`).
+    "g124": Rule(
+        "g124", predicate=lambda req, prev: True,
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_g124_check, changed_sample=0, changed_full=0),
 }
 
 
@@ -587,6 +629,7 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
         "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
     "review_lead": lambda cfg: cfg["review"].__setitem__("review_class_lead_counts", False),
     "t65": lambda cfg: cfg["models"]["claude_worker_balanced"].__setitem__("capability_tier", 1),
+    "g124": lambda cfg: cfg["models"]["gemini_frontier"].__setitem__("capability_tier", 0),
 }
 
 def _c4_off(stack: ExitStack) -> None:
@@ -644,7 +687,10 @@ def test_t70_off_matches_immutable_1_23_0_low_quota_retry_outcomes():
     checked against immutable commit b057eef40755db4ef1982477ae063f1dd599401f;
     the test itself reads only the shipped config and the live resolver."""
     son, terra, opus = ID("claude_worker_balanced"), ID("openai_worker_balanced"), ID("claude_senior")
-    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_worker_balanced"),
+    # The gemini place's live seat (gemini_frontier since 1.24.0; 1.23.0 held
+    # gemini-3.8-flash there). Either way the case withholds the three seats
+    # behind the Claude model, so the archived tuples are unchanged.
+    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_frontier"),
                               ID("openai_reasoning"), ID("xai_frontier"))
 
     cases = [
