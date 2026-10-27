@@ -48,7 +48,8 @@ CHAINS = json.loads((SKILL / "tests" / "fixtures" / "id-succession.json").read_t
 
 
 def _names(mid: str, text: str) -> bool:
-    return re.search(r"(?<![A-Za-z0-9._-])" + re.escape(mid) + r"(?![A-Za-z0-9._-])",
+    # a sentence-final "." is not an id character (review d3 fable F6); ".5" would be
+    return re.search(r"(?<![A-Za-z0-9._-])" + re.escape(mid) + r"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9])",
                      text) is not None
 
 
@@ -761,3 +762,5 @@ def test_a_row_is_read_under_the_id_it_names_not_the_live_one():
     assert _id("claude_architect", "nothing") == MODELS["claude_architect"]["id"]
     # a longer id that merely contains the old one is not a mention of it
     assert _id(key, f"{was}-preview 0.1") == now
+    assert _id(key, f"a row that measured {was}.") == was      # sentence-final period
+    assert _id(key, f"{was}.5 0.1") == now                      # a longer dotted id

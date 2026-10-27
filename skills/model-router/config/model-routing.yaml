@@ -3926,7 +3926,9 @@ verification_ledger:
       evidence: >
         Contained read-only probe of openai_worker_balanced (gpt-5.6-terra ->
         gpt-6.1-terra) through the released 1.24.0 model_sync gates
-        (`probe_candidate`, a scratch state root, nothing published): P1
+        (`probe_candidate`, a scratch state root, nothing published; the
+        receipt guard omitted, as for every codex probe, because codex runs
+        its own Seatbelt sandbox and the two do not nest): P1
         smoke answered pong with termination confirmed; P2 the CLI header
         reported the requested id with no metadata warning (id accepted, not
         served-model attestation); P3 boot input 35228 vs 32022 for the
@@ -3990,13 +3992,15 @@ verification_ledger:
       status: quality_inherited_not_remeasured
       supersedes:
         - "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
-        - "Reviewer seat tiers against live anchors (real-review replay, 2026-10-14)"
-        - "Implementation replay of the writing rows (2026-10-15)"
       evidence: >
         The quality numbers this registry held for openai_worker_balanced
-        measured gpt-5.6-terra: its 2026-10-14 review recall (0.168350) and
-        2026-10-15 implementation pass rate (0.312500) in the rows listed
-        here, and the 2026-09-06 diagnostic in references/evaluation.md.
+        measured gpt-5.6-terra: the row listed here, its 2026-10-14 review
+        recall (0.168350) in "Reviewer seat tiers against live anchors
+        (real-review replay, 2026-10-14)", its 2026-10-15 implementation pass
+        rate (0.312500) in "Implementation replay of the writing rows
+        (2026-10-15)", and the 2026-09-06 diagnostic in
+        references/evaluation.md. Those two rows also decide other seats and
+        stay current for them; for this key they describe the predecessor.
         None of them describes gpt-6.1-terra.
 
     - item: "gpt-6.1-terra maker seat"

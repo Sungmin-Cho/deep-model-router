@@ -156,3 +156,17 @@ def test_the_maker_seat_row_exists_for_the_new_id():
     if row["status"] == "maker_not_reprobed":
         text = _text(f"{NEW} maker seat")
         assert "No attended probe-maker summary" in text and "workspace-write" in text
+
+
+def test_the_quality_disclosure_supersedes_what_promote_would_name():
+    """promote's shape (review d3 fable F3): the disclosure points at the rows
+    whose item names the superseded id, not at shared rows that stay current
+    for other seats (those are cited in its evidence instead)."""
+    item = f"{KEY} quality evidence after the {NEW} id bump"
+    others = [e for e in CFG["verification_ledger"]["entries"] if e["item"] != item]
+    want = model_sync._superseded_items(KEY, [OLD], others)
+    assert LEDGER[item]["supersedes"] == want
+    text = _text(item)
+    for shared in ("Reviewer seat tiers against live anchors (real-review replay, 2026-10-14)",
+                   "Implementation replay of the writing rows (2026-10-15)"):
+        assert shared in LEDGER and " ".join(shared.split()) in text, shared
