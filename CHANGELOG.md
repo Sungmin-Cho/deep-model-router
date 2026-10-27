@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.24.1] — 2026-10-27 (GPT-6.1 Terra as the OpenAI balanced model)
+
+### Changed
+
+- Move the OpenAI balanced model from GPT-5.6 Terra to GPT-6.1 Terra (released 2026-10-26). It accepts every effort level the router sends, `none` included, so its row needs no effort exception. Its documented price falls to $1 / $5 per million input / output tokens ($0.05 cached), from $2 / $12. No other routing decision changes: each of the 337,920 replayed routes differs from 1.24.0 only in this id. GPT-5.6 Terra stays valid history input (`--prior-models`, `--unavailable-models`).
+- Measure the new model before it keeps the tier. Both replays were re-run on it. It recalls 25% of the accepted review findings (the predecessor recalled 17%) and fixes 44% of the implementation tasks (the predecessor fixed 31%). That is better on both, but short of both tier-2 bars (28.2% and 57.5%), so it stays at tier 1. No other tier-1 model has implementation numbers to compare against, so that half rests on the measurement plan's preregistered advisory reading. The model profile has the numbers. The attended maker probe was not re-run for this id; the sixteen write runs of the implementation replay stand in for it.
+- Record that codex-cli 0.164.0 lists GPT-6.1 Terra only in the catalog it fetches from your account, not in the one it ships with. model-sync deferred the id for that reason, so this release adds it by hand after the same probes passed. On this CLI, if a dispatch cannot refresh the catalog, it may print the "Model metadata … not found" warning; the codex envelope records it.
+
 ## [1.24.0] — 2026-10-27 (Gemini 4 Argon replaces Gemini 3.8 Flash)
 
 ### Added

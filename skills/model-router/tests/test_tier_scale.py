@@ -764,3 +764,77 @@ def test_a_row_is_read_under_the_id_it_names_not_the_live_one():
     assert _id(key, f"{was}-preview 0.1") == now
     assert _id(key, f"a row that measured {was}.") == was      # sentence-final period
     assert _id(key, f"{was}.5 0.1") == now                      # a longer dotted id
+
+
+# ---------------------------------------------------------------------------
+# The balanced OpenAI seat's new generation (1.24.1, T7 review replay, T8
+# implementation replay)
+# ---------------------------------------------------------------------------
+
+TERRA_REVIEW_ROW = "openai_worker_balanced tier measurement (real-review replay, 2026-10-27)"
+TERRA_IMPL_ROW = "openai_worker_balanced implementation replay (2026-10-27)"
+TERRA_KEY = "openai_worker_balanced"
+
+
+def _live_others(key: str) -> dict:
+    return {k: m for k, m in MODELS.items()
+            if m.get("dispatchable", True) is not False and "history_of" not in m and k != key}
+
+
+def test_the_balanced_openai_review_replay_rederives_its_verdict():
+    """T7, read for a writing row at tier 1 with the per-row rule: anchors are
+    the measured live rows of the registry before the measurement, the decided
+    row left out (its predecessor reported beside, never an anchor)."""
+    row = LEDGER[TERRA_REVIEW_ROW]
+    assert row["status"] == "verified"
+    text = _text(TERRA_REVIEW_ROW)
+    rec = _recalls(text)
+    seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
+    live = _live_others(TERRA_KEY)
+    tier = lambda t: [rec[_id(k, text)] for k, m in live.items()           # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in rec]
+    t2, t1 = tier(2), tier(1)
+    assert len(t2) == 3 and len(t1) == 1, (t2, t1)
+    a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
+    stated = {k: float(v) for k, v in re.findall(
+        r"(Tier-2 mean|separation|Bar for raise:|Bar for lower:) (0\.\d{6})", text)}
+    assert abs(stated["Tier-2 mean"] - mean2) < 2e-6
+    assert abs(stated["separation"] - (mean2 - a1)) < 2e-6 and mean2 - a1 >= SEPARATION
+    assert abs(stated["Bar for raise:"] - (a2 - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["Bar for lower:"] - (a1 - CONFIRM_MARGIN)) < 2e-6
+    r = rec[seat]
+    derived = ("raise" if r >= a2 - CONFIRM_MARGIN else
+               "lower" if r < a1 - CONFIRM_MARGIN else "hold")
+    assert re.search(rf"Review verdict {re.escape(seat)}: {derived}\.", text)
+    assert was in rec and was not in [_id(k, text) for k in live]       # beside, not an anchor
+
+
+def test_the_balanced_openai_implementation_replay_rederives_its_advisory_and_the_tier():
+    """T8: no other live tier-1 row has an implementation score, so the
+    method's verdict is withheld; the preregistered advisory uses the
+    predecessor as the tier-1 reference. A tier moves only when the review
+    verdict and the implementation reading agree on raise or lower."""
+    row = LEDGER[TERRA_IMPL_ROW]
+    assert row["status"] == "verified"
+    text = _text(TERRA_IMPL_ROW)
+    assert "withheld by construction" in text
+    scores = _recalls(text)
+    seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
+    live = _live_others(TERRA_KEY)
+    up = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 2 and m["id"] in scores]
+    own = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 1 and m["id"] in scores]
+    assert len(up) == 3 and own == [], (up, own)
+    ref, x = scores[was], scores[seat]
+    gate = sum(up) / len(up) - ref
+    stated = {k: float(v) for k, v in re.findall(
+        r"(gate|advisory raise bar|advisory lower bar) (0\.\d{6})", text)}
+    assert abs(stated["gate"] - gate) < 2e-6 and gate >= SEPARATION
+    assert abs(stated["advisory raise bar"] - (min(up) - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["advisory lower bar"] - (ref - CONFIRM_MARGIN)) < 2e-6
+    advisory = ("raise" if x >= min(up) - CONFIRM_MARGIN else
+                "lower" if x < ref - CONFIRM_MARGIN else "hold")
+    assert re.search(rf"Advisory verdict {re.escape(seat)}: {advisory}\.", text)
+    review = re.search(rf"Review verdict {re.escape(seat)}: (raise|lower|hold)\.",
+                       _text(TERRA_REVIEW_ROW)).group(1)
+    step = {"raise": 1, "lower": -1}.get(review, 0) if review == advisory else 0
+    assert MODELS[TERRA_KEY]["capability_tier"] == 1 + step

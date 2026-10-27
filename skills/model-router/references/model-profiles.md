@@ -412,6 +412,19 @@ the predecessor's input price. The review recall and implementation pass rate
 recorded for this seat before that date (the 2026-10-14 and 2026-10-15
 replays, below) measured the predecessor; the ledger says so in its own row.
 
+**Its tier is 1, measured on the new generation.** Both replays were re-run
+on it the day of the bump, under rules written before any dispatch. The
+review replay recalls 25% of the accepted findings, up from the
+predecessor's 17%: above the gemini seat's 23% (the other measured tier-1
+row) and short of the 28.2% bar a raise needs, so it holds. The
+implementation replay passes 44% of the runs, up from 31%: above the OpenAI
+fast seat (38%) and short of the 57.5% bar. That replay has no tier-1 anchor
+of its own — no other live tier-1 row has an implementation score — so the
+method's verdict is withheld by construction and the plan's advisory reading,
+which uses the predecessor as the tier-1 reference, says hold. Neither half
+points up or down, so no route moves except by the id. A raise would have
+needed both. See "Tiers measured on 2026-10-27".
+
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
 Worth recording, because it is the one binding decision that rests on
@@ -797,3 +810,25 @@ it, the first same-tier model of another family in the list, on both hosts. The
 ledger rows "gemini_frontier tier measurement (real-review replay,
 2026-10-27)" and "gemini_frontier implementation replay (not run, 2026-10-27)"
 have the numbers and limits.
+
+The OpenAI balanced seat's model moved to the next Terra generation the same
+day, and that row writes, so both replays were run on it. The table above
+lists its predecessor as the tier-1 bar's row. For the new model, its own row
+is left out, so the gemini seat sets the tier-1 bar.
+
+| Replay | New Terra generation | Predecessor | Bar to raise | Bar to lower | Reading |
+|---|---|---|---|---|---|
+| Review recall | 25% | 17% | 28.2% | 18.3% | hold |
+| Implementation pass rate | 44% | 31% | 57.5% | 26.3% | hold (advisory) |
+
+The implementation row is advisory. No other live tier-1 row has an
+implementation score, so the method's verdict is withheld and the plan's
+preregistered reading uses the predecessor as the tier-1 reference. Every
+sensitivity of the review replay holds. One sensitivity of the implementation
+replay would read raise: the share of hidden tests passed rather than whole
+fixes. The tier stays 1. Isolation was settled by an independent reader going
+through every tool call of every session (none left its working copy), after
+three design-review rounds showed that a pattern-based audit cannot rule out
+a path built at run time. The ledger rows "openai_worker_balanced tier
+measurement (real-review replay, 2026-10-27)" and "openai_worker_balanced
+implementation replay (2026-10-27)" have the numbers.
