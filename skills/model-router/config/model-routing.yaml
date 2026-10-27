@@ -3998,3 +3998,17 @@ verification_ledger:
         2026-10-15 implementation pass rate (0.312500) in the rows listed
         here, and the 2026-09-06 diagnostic in references/evaluation.md.
         None of them describes gpt-6.1-terra.
+
+    - item: "gpt-6.1-terra maker seat"
+      status: maker_not_reprobed
+      evidence: >
+        No attended probe-maker summary for gpt-6.1-terra (the probe needs a
+        person at a TTY). Containment of the write seat is the transport
+        recipe's and does not depend on the id. Functional evidence instead:
+        the 2026-10-27 implementation replay dispatched the codex maker recipe
+        with this id sixteen times through the released 1.24.0 supervisor
+        (`codex exec -m gpt-6.1-terra -c model_reasoning_effort=high -s
+        workspace-write --skip-git-repo-check --ignore-user-config -`, a
+        disposable single-linked workspace each); all sixteen ended SUCCEEDED
+        with edits in their workspaces, and the private trees beside them were
+        unchanged afterwards.

@@ -146,3 +146,13 @@ def test_a_live_openai_id_missing_from_the_bundled_catalog_discloses_it():
         text = _text(f"{mid} model id")
         assert "bundled catalog" in text and "account catalog" in text, mid
         assert LEDGER[f"{mid} model id"]["cli_version"] == SLUGS["cli"].split()[-1]
+
+
+def test_the_maker_seat_row_exists_for_the_new_id():
+    """promote's shape always writes one (review d2 fable F5): verified by an
+    attended probe, or `maker_not_reprobed` saying what stands in for it."""
+    row = LEDGER[f"{NEW} maker seat"]
+    assert row["status"] in ("verified", "maker_not_reprobed")
+    if row["status"] == "maker_not_reprobed":
+        text = _text(f"{NEW} maker seat")
+        assert "No attended probe-maker summary" in text and "workspace-write" in text
