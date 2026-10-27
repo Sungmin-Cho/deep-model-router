@@ -715,11 +715,38 @@ models:
                       cache_write: .50,
                       input: 0.40, output: 1.80, cached_input: 0.04 }
 
+  # The id moved 5.6 -> 6.1 on 2026-10-27 (released 2026-10-26). The overlay
+  # never published it: model_sync's P0 defers an OpenAI id the installed
+  # CLI's bundled catalog lacks, and codex-cli 0.164.0 carries this one only
+  # in the account catalog. The bump was written by hand in promote's shape
+  # after the same P1-P4 gates passed; see the ledger. Every effort token the
+  # router emits (`none` included) was live-probed, so no per-model map.
   openai_worker_balanced:
-    id: gpt-5.6-terra
+    id: gpt-6.1-terra
     lineage: { line: openai/terra, template: "gpt-{gen}-terra" }
     family: openai
     capability_tier: 1
+    verified: true
+    price_per_mtok:
+      verified_on: "2026-10-27"
+      max_age_days: 30
+      source: "https://developers.openai.com/api/docs/models/gpt-6.1-terra"
+      input: 1.0
+      output: 5.0
+      cached_input: 0.05
+      cache_write: 1.25
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      cache_write: 2.50,
+                      input: 2.00, output: 7.50, cached_input: 0.10 }
+
+  # History row in `model_sync.py promote`'s shape (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "openai_worker_balanced@gpt-5.6-terra":
+    id: gpt-5.6-terra
+    history_of: openai_worker_balanced
+    family: openai
+    capability_tier: 1
+    dispatchable: false
     verified: true
     price_per_mtok:
       verified_on: "2026-09-06"
@@ -3889,3 +3916,200 @@ verification_ledger:
         ESCALATE_ROUTING. The policy ledger replays the adopted move as rule
         g124 (tests/test_policy_rules.py). Script and output:
         docs/research/2026-10-27-gemini-argon-counterfactuals/.
+
+    - item: "gpt-6.1-terra model id"
+      status: verified
+      probed_on: "2026-10-27"
+      attempt_id: "p20261027T133304-5e08965e-1"
+      cli_version: "0.164.0"
+      argv: "codex exec -m gpt-6.1-terra -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
+      evidence: >
+        Contained read-only probe of openai_worker_balanced (gpt-5.6-terra ->
+        gpt-6.1-terra) through the released 1.24.0 model_sync gates
+        (`probe_candidate`, a scratch state root, nothing published; the
+        receipt guard omitted, as for every codex probe, because codex runs
+        its own Seatbelt sandbox and the two do not nest): P1
+        smoke answered pong with termination confirmed; P2 the CLI header
+        reported the requested id with no metadata warning (id accepted, not
+        served-model attestation); P3 boot input 35228 vs 32022 for the
+        current id (paired). One gate input differs from the automatic path,
+        disclosed: codex-cli 0.164.0's bundled catalog (`codex debug models
+        --bundled`) does not list this id, so model_sync's P0 had deferred it
+        (cli_metadata, 2026-10-27); the account catalog (`codex debug models`,
+        ~/.codex/models_cache.json) lists it, and P0 was given that list (the
+        cache file the probe read carried client_version 0.163.0: another
+        codex process had rewritten it a minute earlier, an observation-time
+        field). On this CLI the id's metadata comes from the account catalog only; a
+        dispatch whose catalog refresh fails may print the metadata warning,
+        which the codex envelope records. Quality is not measured by this row.
+
+    - item: "gpt-6.1-terra reasoning-effort values"
+      status: verified
+      probed_on: "2026-10-27"
+      evidence: >
+        Live-probed tokens for gpt-6.1-terra through the same harness, one
+        call each, every one SUCCEEDED with pong: none, low, medium, high,
+        xhigh, max (attempts e20261027T133304-1..6; P4 also accepted max).
+        Every token the openai family map emits is accepted, including
+        `none` (which gpt-6.1-sol and gpt-6-astra reject), so the row needs
+        no per-model effort_map and no ceiling. The model page documents the
+        same six levels, default medium; the account catalog also lists
+        `ultra`, which the router never emits.
+
+    - item: "gpt-6.1-terra pricing and context window"
+      status: documented
+      probed_on: "2026-10-27"
+      source: "https://developers.openai.com/api/docs/models/gpt-6.1-terra"
+      evidence: >
+        Reference API rates per MTok read from the source and the pricing
+        page on 2026-10-27: input 1.0, output 5.0, cached_input 0.05,
+        cache_write 1.25 (30-minute retention; 2.50 for 12 hours); above
+        272K input tokens the whole request bills input 2.00, output 7.50,
+        cached_input 0.10, cache_write 2.50. Half the predecessor's input
+        rate and 42% of its output rate. A reference record, not the
+        marginal cost of a subscription dispatch. The same source documents
+        a 1,050,000-token context window (922,000 input, 128,000 output) and
+        a 2026-06-01 knowledge cutoff; released 2026-10-26 (API changelog).
+        The row leaves `context_window` unset, as its predecessor did.
+
+    - item: "gpt-6.1-terra tier evidence (external)"
+      status: documented
+      probed_on: "2026-10-27"
+      source: "https://www.vals.ai/benchmarks/vals_index"
+      evidence: >
+        Third-party and vendor numbers read on 2026-10-27, not measurements
+        of this router: Vals Index (2026-10-26) 60.17, rank 10 - gpt-6.1-sol
+        63.94, claude-haiku-5-5 58.73, grok-4.7 58.56, gpt-6-luna 52.32,
+        gemini-4-argon 69.24; Artificial Analysis Intelligence Index 48 at
+        max (gpt-6.1-sol 52, gpt-6-astra 53, gpt-5.6-terra 42), time to first
+        token about 134 s, verbose; Artificial Analysis Terminal-Bench 4.0
+        55.6% (gpt-6.1-sol 56.1%, gpt-5.6-terra 35.4%). OpenAI's launch
+        tables (max effort): Terminal-Bench 4.0 50.3% (gpt-5.6-terra 21.5%,
+        gpt-6.1-sol 55.9%), Agents' Last Exam 60.0% (gpt-6.1-sol 58.6%). The
+        tier is set by this repository's replays, not by these.
+
+    - item: "openai_worker_balanced quality evidence after the gpt-6.1-terra id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "OpenAI model ids (gpt-5.6-luna, gpt-5.6-terra, gpt-5.6-sol)"
+      evidence: >
+        The quality numbers this registry held for openai_worker_balanced
+        measured gpt-5.6-terra: the row listed here, its 2026-10-14 review
+        recall (0.168350) in "Reviewer seat tiers against live anchors
+        (real-review replay, 2026-10-14)", its 2026-10-15 implementation pass
+        rate (0.312500) in "Implementation replay of the writing rows
+        (2026-10-15)", and the 2026-09-06 diagnostic in
+        references/evaluation.md. Those two rows also decide other seats and
+        stay current for them; for this key they describe the predecessor.
+        None of them describes gpt-6.1-terra. Its tier is measured apart from
+        these rows: capability_tier 1 holds on the 2026-10-27 review replay
+        (hold) and implementation replay (scored; the method's verdict
+        withheld, its preregistered advisory reading hold) — rows
+        "openai_worker_balanced tier measurement (real-review replay,
+        2026-10-27)" and "openai_worker_balanced implementation replay
+        (2026-10-27)".
+
+    - item: "gpt-6.1-terra maker seat"
+      status: maker_not_reprobed
+      evidence: >
+        No attended probe-maker summary for gpt-6.1-terra (the probe needs a
+        person at a TTY). Containment of the write seat is the transport
+        recipe's and does not depend on the id. Functional evidence instead:
+        the 2026-10-27 implementation replay dispatched the codex maker recipe
+        with this id sixteen times through the released 1.24.0 supervisor
+        (`codex exec -m gpt-6.1-terra -c model_reasoning_effort=high -s
+        workspace-write --skip-git-repo-check --ignore-user-config -`, a
+        disposable single-linked workspace each); all sixteen ended SUCCEEDED
+        with edits in their workspaces, and the private trees beside them were
+        unchanged afterwards.
+
+    - item: "openai_worker_balanced tier measurement (real-review replay, 2026-10-27)"
+      status: verified
+      probed_on: "2026-10-27"
+      evidence: >
+        T7: the 1.22.0 real-review replay (T3's three frozen packages A, B, C,
+        their original prompts, effort high, two reps, deadline 3,600 s) on
+        gpt-6.1-terra through T3b's codex reviewer recipe (read-only sandbox,
+        --ignore-user-config, the session kept for the audit; the released
+        1.24.0 supervisor, codex-cli 0.164.0), graded blind by the T3 judges
+        claude-fable-5-1 and gpt-6-astra, whose calibration was re-run first
+        on the new CLI (12 of 12 exactly as expected; agreement on the
+        subject's items 1.000). Six reviews, all SUCCEEDED, 34 to 75 s each
+        (harness wall time).
+        The rule, written before any dispatch, is the per-row rule of the
+        2026-10-15 implementation replay for a row at tier 1, against the live
+        rows of the 1.24.0 registry with the decided row left out (its
+        predecessor gpt-5.6-terra 0.168350 is reported beside, never an
+        anchor): the tier-2 rows claude-opus-5-5 0.515993, gpt-6.1-sol
+        0.332492, claude-sonnet-5-5 0.455387; the tier-1 row gemini-4-argon
+        0.233165 (grok-4.7 unmeasured; the tier-3 rows are the judges).
+        Tier-2 mean 0.434624, separation 0.201459 (gate 0.10, met). Bar for
+        raise: 0.282492. Bar for lower: 0.183165. Recall: gpt-6.1-terra
+        0.250842 (packages 0.111111, 0.277778, 0.363636). Review verdict
+        gpt-6.1-terra: hold. Sensitivity: six of eight readings hold on a
+        valid gate (claude-opus-5-5 or claude-sonnet-5-5 alone as the tier-2
+        row, package A or B alone, each judge alone); with gpt-6.1-sol alone
+        (gate 0.099327) or package C alone (gate -0.053030) the gate fails,
+        so those two are not evidence of hold (package C alone: recall
+        0.363636 against that package's raise bar 0.336364). Isolation: three design
+        review rounds rebuilt the audit; the decision counts a review only
+        after an independent reader read every tool call of its session in
+        full (58 calls over six sessions: all inside the attempt's package)
+        and the session carried no tool the record does not cover. This row
+        alone moves nothing: the seat writes. Plan, amendments, harness,
+        receipts, grades, call listings and the hand read: the local archive
+        docs/evals/2026-10-27-t7/ (summary.json sha256
+        2566572a2ef1f0f268d0b66088177c8d92fe2abb4e6ddc811ffa512fd2579707).
+
+    - item: "openai_worker_balanced implementation replay (2026-10-27)"
+      status: verified
+      probed_on: "2026-10-27"
+      evidence: >
+        T8: the 2026-10-15 implementation replay (the same eight tasks, hidden
+        tests, prompt and regression sets, re-validated byte for byte) on
+        gpt-6.1-terra through the codex maker recipe (workspace-write,
+        --ignore-user-config, effort high, deadline 2,700 s, the released
+        1.24.0 supervisor), two runs per task in workspaces apart from every
+        reference tree; all sixteen SUCCEEDED in 37 to 164 s, every session
+        read in full by an independent reader (292 calls: no access outside
+        the workspace but benign locations), the private trees intact
+        afterwards. Pass rate gpt-6.1-terra 0.437500 (tasks passed both runs:
+        3; one run: 1). Anchors are the 2026-10-15 pass rates under the 1.24.0
+        tiers: claude-opus-5-5 0.687500, gpt-6.1-sol 0.625000,
+        claude-sonnet-5-5 0.625000 (tier 2); claude-haiku-5-5 0.562500,
+        gpt-6-luna 0.375000 (tier 0); predecessor gpt-5.6-terra 0.312500. No
+        other live tier-1 row has an implementation score (gemini-4-argon is
+        read-only and its replay has not run; grok-4.7 is unmeasured), so the
+        method's verdict is withheld by construction. The preregistered
+        advisory reading uses the predecessor as the tier-1 reference: gate
+        0.333333 (met), advisory raise bar 0.575000, advisory lower bar
+        0.262500. Advisory verdict gpt-6.1-terra: hold. Review verdict hold
+        and advisory hold: capability_tier 1 holds (no move was proposed).
+        Sensitivity: each tier-2 row alone and T01 left out on both sides
+        hold; the share of hidden tests passed (0.895833 against the tier-2
+        rows' 0.833333 to 0.949653) would read raise. The first grading pass
+        failed on a harness defect (a pytest basetemp whose parent was
+        missing: every tmp_path fixture errored) and was discarded and
+        re-graded, as the plan's harness-error rule says; it is disclosed in
+        the plan. Seven of the eight reference fixes were written by
+        claude-opus-5-5, an anchor. Plan, amendments, harness, grades, call
+        listings and the hand read: the local archive docs/evals/2026-10-27-t8/
+        (summary.json sha256
+        230a899f9f4b2d8b103f77ff5ad61c878f65d89d9b3d2b11caebf3b845cb1dbb).
+
+    - item: "openai_worker_balanced id bump replay (gpt-5.6-terra -> gpt-6.1-terra, 2026-10-27)"
+      status: verified
+      probed_on: "2026-10-27"
+      evidence: >
+        One router, two registries (1.24.0 and the candidate), one grid: eleven
+        classes, every dimension 0-3, three runtimes, no flag and
+        auth_sensitive, ten availability scenarios (all up; xai out; xai and
+        the Claude balanced model out; the OpenAI fast model out; OpenAI quota
+        low or exhausted; Claude exhausted; xai quota low; this seat itself
+        out; OpenAI only), fresh and one retry after each side's own fresh
+        worker failed: 337,920 routes. With gpt-5.6-terra rewritten to
+        gpt-6.1-terra on the 1.24.0 side, every route is equal; only the hashes
+        of the config or of a request naming the id differ. The tier, the
+        effort map (none on either) and the lineage are unchanged, and the
+        router reads no price. Script and output: the local note
+        docs/research/2026-10-27-terra61-id-replay/.

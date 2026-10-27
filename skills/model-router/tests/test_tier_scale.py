@@ -10,6 +10,7 @@ drift apart silently.
 Run:  python3 -m pytest skills/model-router/tests/test_tier_scale.py -q
 """
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -39,6 +40,26 @@ def _text(item: str) -> str:
     return " ".join(LEDGER[item]["evidence"].split())
 
 
+# A ledger row records the ids it measured and is never edited afterwards, so
+# a key whose id moved after the row (1.24.1: openai_worker_balanced to the
+# next Terra generation) must be read under the id the row names, not the live
+# one (review d1 fable F4). The succession chain says which ids a key has held.
+CHAINS = json.loads((SKILL / "tests" / "fixtures" / "id-succession.json").read_text())["chains"]
+
+
+def _names(mid: str, text: str) -> bool:
+    # a sentence-final "." is not an id character (review d3 fable F6); ".5" would be
+    return re.search(r"(?<![A-Za-z0-9._-])" + re.escape(mid) + r"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9])",
+                     text) is not None
+
+
+def _id(key: str, text: str) -> str:
+    """The id `key` held when the row was written: the newest generation of
+    its succession chain the row names, else the live id."""
+    named = [mid for mid in CHAINS.get(key, []) if _names(mid, text)]
+    return named[-1] if named else MODELS[key]["id"]
+
+
 def _recalls(text: str) -> dict:
     """`<registry id> <recall>` pairs as the row records them (six places)."""
     ids = {m["id"] for m in MODELS.values()}
@@ -60,11 +81,11 @@ TIERS_BEFORE_1_23 = {"claude_worker_balanced": 1}
 ADDED_AFTER_2026_10_14 = {"gemini_frontier"}
 
 
-def _live_rows(tier: int, as_of: dict | None = None) -> list[str]:
+def _live_rows(tier: int, as_of: dict | None = None, text: str = "") -> list[str]:
     """Live rows of a tier that may anchor: not history, not a decided seat,
-    and present when the measurement ran."""
+    and present when the measurement ran — each under the id it held then."""
     as_of = as_of or {}
-    return [m["id"] for key, m in MODELS.items()
+    return [_id(key, text) for key, m in MODELS.items()
             if m.get("dispatchable", True) is not False and "history_of" not in m
             and key not in SEATS and key not in ADDED_AFTER_2026_10_14
             and as_of.get(key, m["capability_tier"]) == tier]
@@ -72,13 +93,13 @@ def _live_rows(tier: int, as_of: dict | None = None) -> list[str]:
 
 def _derive(text: str) -> dict:
     measured = _recalls(text)
-    tier1 = [measured[i] for i in _live_rows(1, TIERS_BEFORE_1_23) if i in measured]
-    tier2 = [measured[i] for i in _live_rows(2, TIERS_BEFORE_1_23) if i in measured]
+    tier1 = [measured[i] for i in _live_rows(1, TIERS_BEFORE_1_23, text) if i in measured]
+    tier2 = [measured[i] for i in _live_rows(2, TIERS_BEFORE_1_23, text) if i in measured]
     a1, t2 = min(tier1), sum(tier2) / len(tier2)
     valid = t2 - a1 >= SEPARATION
     verdicts = {}
     for key in SEATS:
-        r = measured[MODELS[key]["id"]]
+        r = measured[_id(key, text)]
         verdicts[key] = ("inconclusive" if not valid else
                          "confirmed" if r >= a1 - CONFIRM_MARGIN else "lowered")
     return {"measured": measured, "tier1": tier1, "a1": a1, "t2": t2, "valid": valid,
@@ -120,7 +141,7 @@ def test_the_recorded_verdicts_and_bars_follow_from_the_recorded_numbers():
     assert len(d["tier1"]) >= 2, d["tier1"]
     stated = dict(re.findall(r"Verdict ([a-z0-9.\-]+): (confirmed|lowered|inconclusive)\.", text))
     for key in SEATS:
-        mid = MODELS[key]["id"]
+        mid = _id(key, text)
         assert stated.get(mid) == d["verdicts"][key], (mid, stated.get(mid), d["verdicts"][key])
         if d["verdicts"][key] in VERDICT_TIER:
             assert MODELS[key]["capability_tier"] == VERDICT_TIER[d["verdicts"][key]], key
@@ -140,7 +161,7 @@ def test_every_live_tier_1_row_is_measured_or_named_unmeasured():
     silently would hide what the bar rests on."""
     text = _text(LIVE_ROW)
     measured = _recalls(text)
-    for mid in _live_rows(1, TIERS_BEFORE_1_23):
+    for mid in _live_rows(1, TIERS_BEFORE_1_23, text):
         assert mid in measured or re.search(re.escape(mid) + r"[^.]*unmeasured", text), mid
 
 
@@ -568,7 +589,7 @@ WRITING = ("claude_worker_balanced", "claude_worker_fast", "openai_worker_balanc
 ANCHORS_2 = ("claude_senior", "openai_reasoning")
 
 
-def _row_verdicts(scores: dict) -> dict:
+def _row_verdicts(scores: dict, text: str) -> dict:
     """evaluation.md's rule, per writing row, against the tiers the registry
     held before the measurement; each verdict leaves out only its own row."""
     tier = {key: TIERS_BEFORE_1_23.get(key, MODELS[key]["capability_tier"])
@@ -576,10 +597,10 @@ def _row_verdicts(scores: dict) -> dict:
     out = {}
     for key in WRITING:
         k = tier[key]
-        own = [scores[MODELS[o]["id"]] for o in tier if o != key and tier[o] == k]
-        up = [scores[MODELS[o]["id"]] for o in tier if o != key and tier[o] == k + 1]
+        own = [scores[_id(o, text)] for o in tier if o != key and tier[o] == k]
+        up = [scores[_id(o, text)] for o in tier if o != key and tier[o] == k + 1]
         gate = sum(up) / len(up) - min(own) >= SEPARATION
-        x = scores[MODELS[key]["id"]]
+        x = scores[_id(key, text)]
         raise_ok = gate and x >= min(up) - CONFIRM_MARGIN
         lower_ok = gate and k >= 1 and x < min(own) - CONFIRM_MARGIN
         out[key] = ("hold" if raise_ok == lower_ok else "raise" if raise_ok else "lower")
@@ -590,10 +611,10 @@ def test_the_implementation_replay_verdicts_follow_from_its_numbers():
     text = _text(IMPL_ROW)
     seg = text.split("Pass rates (preregistered grading):", 1)[1].split("The preregistered rule", 1)[0]
     scores = _recalls(seg)
-    assert set(scores) == {MODELS[k]["id"] for k in WRITING + ANCHORS_2}, scores
-    verdicts = _row_verdicts(scores)
+    assert set(scores) == {_id(k, text) for k in WRITING + ANCHORS_2}, scores
+    verdicts = _row_verdicts(scores, text)
     stated = dict(re.findall(r"Implementation verdict ([a-z0-9.\-]+): (raise|lower|hold)\.", text))
-    assert stated == {MODELS[k]["id"]: v for k, v in verdicts.items()}
+    assert stated == {_id(k, text): v for k, v in verdicts.items()}
     assert verdicts == {"claude_worker_balanced": "raise", "claude_worker_fast": "hold",
                         "openai_worker_balanced": "hold", "openai_worker_fast": "hold"}
     assert LEDGER[IMPL_ROW]["status"] == "verified"
@@ -605,11 +626,11 @@ def test_the_implementation_replay_verdicts_follow_from_its_numbers():
 def test_a_writing_row_moves_only_where_both_replays_say_so():
     """The review replay read by the same rule (the 2026-10-14 numbers), and
     the implementation replay: a tier moved exactly where both raise."""
-    review = _row_verdicts(_recalls(_text(LIVE_ROW)))
+    review = _row_verdicts(_recalls(_text(LIVE_ROW)), _text(LIVE_ROW))
     assert review == {"claude_worker_balanced": "raise", "claude_worker_fast": "raise",
                       "openai_worker_balanced": "hold", "openai_worker_fast": "hold"}
     seg = _text(IMPL_ROW).split("Pass rates (preregistered grading):", 1)[1]
-    impl = _row_verdicts(_recalls(seg.split("The preregistered rule", 1)[0]))
+    impl = _row_verdicts(_recalls(seg.split("The preregistered rule", 1)[0]), _text(IMPL_ROW))
     for key in WRITING:
         before = TIERS_BEFORE_1_23.get(key, MODELS[key]["capability_tier"])
         step = {"raise": 1, "lower": -1}.get(review[key], 0) if review[key] == impl[key] else 0
@@ -696,8 +717,8 @@ def test_the_gemini_seat_measurement_rederives_its_tier():
     live = {key: m for key, m in MODELS.items()
             if m.get("dispatchable", True) is not False and "history_of" not in m
             and key != "gemini_frontier"}
-    tier = lambda t: [rec[m["id"]] for m in live.values()                  # noqa: E731
-                      if m["capability_tier"] == t and m["id"] in rec]
+    tier = lambda t: [rec[_id(k, text)] for k, m in live.items()           # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in rec]
     t2, t1 = tier(2), tier(1)
     assert len(t2) == 3 and len(t1) == 1, (t2, t1)
     a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
@@ -721,3 +742,108 @@ def test_the_gemini_seat_cannot_write_while_its_implementation_replay_has_not_ru
     assert row["status"] == "documented"
     for host in ("claude_code", "codex"):
         assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
+
+
+# ---------------------------------------------------------------------------
+# Reading a ledger row under the ids it measured (1.24.1, review d1 fable F4)
+# ---------------------------------------------------------------------------
+
+def test_a_row_is_read_under_the_id_it_names_not_the_live_one():
+    """The 2026-10-14/15 rows measured the balanced OpenAI seat under the id
+    the registry held then; the live row has moved on since. A row naming
+    neither generation reads the live id, and a key with no chain is live."""
+    key = "openai_worker_balanced"
+    was, now = CHAINS[key][-2], CHAINS[key][-1]
+    assert MODELS[key]["id"] == now != was
+    for item in (LIVE_ROW, IMPL_ROW, ARGON_ROW):
+        assert _id(key, _text(item)) == was, item
+    assert _id(key, "a row that names no generation") == now
+    assert _id(key, f"{was} 0.1 then {now} 0.2") == now      # the newest named wins
+    assert _id("claude_architect", "nothing") == MODELS["claude_architect"]["id"]
+    # a longer id that merely contains the old one is not a mention of it
+    assert _id(key, f"{was}-preview 0.1") == now
+    assert _id(key, f"a row that measured {was}.") == was      # sentence-final period
+    assert _id(key, f"{was}.5 0.1") == now                      # a longer dotted id
+
+
+# ---------------------------------------------------------------------------
+# The balanced OpenAI seat's new generation (1.24.1, T7 review replay, T8
+# implementation replay)
+# ---------------------------------------------------------------------------
+
+TERRA_REVIEW_ROW = "openai_worker_balanced tier measurement (real-review replay, 2026-10-27)"
+TERRA_IMPL_ROW = "openai_worker_balanced implementation replay (2026-10-27)"
+TERRA_KEY = "openai_worker_balanced"
+
+
+def _live_others(key: str) -> dict:
+    return {k: m for k, m in MODELS.items()
+            if m.get("dispatchable", True) is not False and "history_of" not in m and k != key}
+
+
+def test_the_balanced_openai_review_replay_rederives_its_verdict():
+    """T7, read for a writing row at tier 1 with the per-row rule: anchors are
+    the measured live rows of the registry before the measurement, the decided
+    row left out (its predecessor reported beside, never an anchor)."""
+    row = LEDGER[TERRA_REVIEW_ROW]
+    assert row["status"] == "verified"
+    text = _text(TERRA_REVIEW_ROW)
+    rec = _recalls(text)
+    seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
+    live = _live_others(TERRA_KEY)
+    tier = lambda t: [rec[_id(k, text)] for k, m in live.items()           # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in rec]
+    t2, t1 = tier(2), tier(1)
+    assert len(t2) == 3 and len(t1) == 1, (t2, t1)
+    a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
+    stated = {k: float(v) for k, v in re.findall(
+        r"(Tier-2 mean|separation|Bar for raise:|Bar for lower:) (0\.\d{6})", text)}
+    assert abs(stated["Tier-2 mean"] - mean2) < 2e-6
+    assert abs(stated["separation"] - (mean2 - a1)) < 2e-6 and mean2 - a1 >= SEPARATION
+    assert abs(stated["Bar for raise:"] - (a2 - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["Bar for lower:"] - (a1 - CONFIRM_MARGIN)) < 2e-6
+    r = rec[seat]
+    derived = ("raise" if r >= a2 - CONFIRM_MARGIN else
+               "lower" if r < a1 - CONFIRM_MARGIN else "hold")
+    assert re.search(rf"Review verdict {re.escape(seat)}: {derived}\.", text)
+    assert was in rec and was not in [_id(k, text) for k in live]       # beside, not an anchor
+
+
+def test_the_balanced_openai_implementation_replay_rederives_its_advisory_and_the_tier():
+    """T8: no other live tier-1 row has an implementation score, so the
+    method's verdict is withheld; the preregistered advisory uses the
+    predecessor as the tier-1 reference. A tier moves only when the review
+    verdict and the implementation reading agree on raise or lower."""
+    row = LEDGER[TERRA_IMPL_ROW]
+    assert row["status"] == "verified"
+    text = _text(TERRA_IMPL_ROW)
+    assert "withheld by construction" in text
+    scores = _recalls(text)
+    seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
+    live = _live_others(TERRA_KEY)
+    up = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 2 and m["id"] in scores]
+    own = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 1 and m["id"] in scores]
+    assert len(up) == 3 and own == [], (up, own)
+    ref, x = scores[was], scores[seat]
+    gate = sum(up) / len(up) - ref
+    stated = {k: float(v) for k, v in re.findall(
+        r"(gate|advisory raise bar|advisory lower bar) (0\.\d{6})", text)}
+    assert abs(stated["gate"] - gate) < 2e-6 and gate >= SEPARATION
+    assert abs(stated["advisory raise bar"] - (min(up) - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["advisory lower bar"] - (ref - CONFIRM_MARGIN)) < 2e-6
+    advisory = ("raise" if x >= min(up) - CONFIRM_MARGIN else
+                "lower" if x < ref - CONFIRM_MARGIN else "hold")
+    assert re.search(rf"Advisory verdict {re.escape(seat)}: {advisory}\.", text)
+    review = re.search(rf"Review verdict {re.escape(seat)}: (raise|lower|hold)\.",
+                       _text(TERRA_REVIEW_ROW)).group(1)
+    step = {"raise": 1, "lower": -1}.get(review, 0) if review == advisory else 0
+    assert MODELS[TERRA_KEY]["capability_tier"] == 1 + step
+
+
+def test_the_balanced_openai_review_row_names_the_gate_blocked_sensitivities():
+    """Review i1 (fable F2): a sensitivity whose gate fails is not evidence of
+    hold, and the row must say which ones those are."""
+    text = _text(TERRA_REVIEW_ROW)
+    assert "Every sensitivity" not in text
+    sol = MODELS["openai_reasoning"]["id"]
+    assert "gate fails" in text and f"{sol} alone" in text and "package C alone" in text
