@@ -304,9 +304,12 @@ quota low), 958,113 routes, fresh and after a failure:
   (tier 0) instead of raising it to the OpenAI balanced one, because raising it
   would give up this seat's cross-family review (`execution band NORMAL
   yielded worker_balanced: cross_family_review`) — the trade 1.19.0 disclosed
-  for the meta seat, which tier 0 had ended. Their retries follow (186), as do
-  288 retries of reading work whose first attempt moved; on 2 first attempts of
-  reading work the lead lands a tier lower.
+  for the meta seat, which tier 0 had ended. Their retries follow (186). On
+  Claude Code, 288 retries of investigations whose tier-0 meta lead failed (xai
+  withheld, Claude exhausted, with and without the Sol seat out) now stop at
+  this seat where they reached the Sol or frontier OpenAI seat — still above
+  what failed, a tier lower than before. On 2 first attempts of reading work
+  the lead lands a tier lower.
 - **Gates and terminals.** A human gate changes on 886 routes: 246 gain one and
   224 lose one; a `review_below_band` cause is added to 380 and removed from
   224, and `effort_below_floor` (the seat's HIGH effort ceiling) joins 272 gates
@@ -741,8 +744,9 @@ the risk band or override floors. **The following cross-family review counts
 are the 1.23.0 tier counterfactual, not the 1.23.1 retry replay:** review is
 gained on 4,572 routes and lost on 264 with every seat available (4,548 and
 528 with the xai seat withheld; 2,566 and 4,360 with OpenAI exhausted). A
-`low` xai quota now swaps a reading lead to the OpenAI balanced model, the
-same-tier model of another family, instead of this one. The host advisory that names a `/model` breaks the new tie
+`low` xai quota now swaps a reading lead to the first same-tier model of another
+family instead of this one — the gemini seat since 1.24.0 (from 1.23.0 to
+1.23.1 the OpenAI balanced model). The host advisory that names a `/model` breaks the new tie
 between this seat and the senior seat by role, so a Claude host below a tier-1
 or tier-2 ask is still pointed at this model. The ledger rows "Implementation
 replay of the writing rows (2026-10-15)" and "Tier counterfactuals after the

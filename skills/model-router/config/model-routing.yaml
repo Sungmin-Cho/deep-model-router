@@ -3871,9 +3871,10 @@ verification_ledger:
         on 5,338 and lost on 546; the worker on 4,601 (3,479 to the seat; on
         248 first attempts of work that
         writes the execution cell keeps the OpenAI fast writer at tier 0 to
-        keep this seat's cross-family review, 474 retries follow moved first
-        attempts to a lower tier, and 2 reading first attempts land a tier
-        lower); a human gate on 886 (246 new, 224 lifted; review_below_band
+        keep this seat's cross-family review and 186 write retries follow them;
+        288 Claude Code retries after the tier-0 meta seat fails now stop at
+        this tier-1 seat where they reached gpt-6.1-sol or gpt-6-astra; 2
+        reading first attempts land a tier lower); a human gate on 886 (246 new, 224 lifted; review_below_band
         added on 380 and removed on 224; effort_below_floor added on 272); ten
         first attempts carrying an unknown root cause newly ESCALATE_ROUTING,
         and eight terminals change kind (six INDEPENDENCE_UNAVAILABLE to

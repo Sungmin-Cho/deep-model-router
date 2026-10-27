@@ -224,16 +224,18 @@ def test_while_the_meta_seat_resolves_no_route_moves(runtime, withheld):
             assert _project(route(Task(**kw), CFG)) == _project(route(Task(**kw), BASE)), (cls, dims)
 
 
-def test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat():
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat(runtime):
     """1.24.0: `low` moves the worker to the first same-tier model of another
-    family in the list. The tier-1 seat is now that model on Claude Code, ahead
-    of the OpenAI balanced model, where the worker reads; nothing else moves."""
+    family in the list. The tier-1 seat is now that model on both hosts, ahead
+    of the OpenAI balanced model, where the worker reads; nothing else moves
+    (review i3: the Codex half too)."""
     extra = {"_family_quota": {"xai": "low"}}
     moved = 0
     for cls in CLASSES:
         for dims in ((1, 1, 1, 0), (2, 1, 2, 1), (3, 2, 3, 2)):
             kw = dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
-                      blast_radius=dims[2], reversibility=dims[3], runtime="claude_code",
+                      blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
                       **copy.deepcopy(extra))
             after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
             if _project(after) == _project(before):
@@ -243,13 +245,19 @@ def test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat():
             assert after["selected_model"] == GEMINI, (cls, dims)
             assert POLICY.tier_of[before["selected_model"]] == POLICY.tier_of[GEMINI], (cls, dims)
     assert moved, "the swap never reached the seat"
-    # Review i2 (fable): the write half — a writer under the same swap skips this
-    # read-only seat for the same-tier OpenAI balanced model.
-    out = route(Task(task_class="IMPLEMENTATION", complexity=0, uncertainty=0, blast_radius=3,
-                     reversibility=2, runtime="claude_code", **copy.deepcopy(extra)), CFG)
+    # Review i2 (fable): the write half — a writer on the balanced role under the
+    # same swap never takes this read-only seat; its route is the one the
+    # registry without the seat gives (on Claude Code the same-tier OpenAI
+    # balanced model).
+    kw = dict(task_class="IMPLEMENTATION", complexity=0, uncertainty=0, blast_radius=3,
+              reversibility=2, runtime=runtime, **copy.deepcopy(extra))
+    out, without = route(Task(**kw), CFG), route(Task(**kw), BASE)
     assert out["selected_role"] == "worker_balanced"
-    assert out["selected_model"] == ID("openai_worker_balanced"), out["selected_model"]
-    assert any(n.startswith("family_quota: xai low") for n in out["notes"])
+    assert out["selected_model"] != GEMINI
+    assert out["selected_model"] == without["selected_model"]
+    if runtime == "claude_code":
+        assert out["selected_model"] == ID("openai_worker_balanced"), out["selected_model"]
+        assert any(n.startswith("family_quota: xai low") for n in out["notes"])
 
 
 @pytest.mark.parametrize("extra", [
@@ -543,21 +551,27 @@ def test_the_disclosed_terminal_changes_are_exactly_these(scenario, expected):
     assert got == expected
 
 
-def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat():
-    """Review i2 (fable F2), disclosed: a retry climbs strictly above the tier
-    that failed. After the tier-0 meta seat fails on Claude Code with xai out
-    and Claude exhausted, the first model above tier 0 is now this tier-1 seat,
-    where the tier-0 shape went on to the Sol seat (tier 2) — a retry a tier
-    lower than before, still above what failed."""
+@pytest.mark.parametrize("withheld,before_key", [
+    ([], "openai_reasoning"),
+    (["openai_reasoning"], "openai_frontier"),
+], ids=["sol-available", "sol-out"])
+def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat(withheld, before_key):
+    """Review i2 (fable F2) / i3 (fable F1), disclosed: a retry climbs strictly
+    above the tier that failed. After the tier-0 meta seat fails on Claude Code
+    with xai out and Claude exhausted, the first model above tier 0 is now this
+    tier-1 seat, where the tier-0 shape went on to the Sol seat (tier 2), or the
+    frontier OpenAI seat (tier 3) with Sol out too — a retry lower than before,
+    still above what failed."""
     kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=2,
-              reversibility=0, runtime="claude_code", unavailable_models=[XAI],
+              reversibility=0, runtime="claude_code",
+              unavailable_models=[XAI, *(ID(k) for k in withheld)],
               _family_quota={"claude": "exhausted"})
     old = _seat_at_tier_0()
     assert route(Task(**kw), CFG)["selected_model"] == META == route(Task(**kw), old)["selected_model"]
     after = route(Task(**kw, prior_failures=1, prior_models=[META]), CFG)
     before = route(Task(**kw, prior_failures=1, prior_models=[META]), old)
     assert after["selected_model"] == GEMINI and after["selected_capability_tier"] == 1
-    assert before["selected_model"] == ID("openai_reasoning")
+    assert before["selected_model"] == ID(before_key)
     assert after["selected_capability_tier"] > POLICY.tier_of[META]
 
 
