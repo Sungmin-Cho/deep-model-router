@@ -260,6 +260,24 @@ def test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat(runtime)
         assert any(n.startswith("family_quota: xai low") for n in out["notes"])
 
 
+def test_a_low_xai_quota_reaches_this_seat_on_a_retry_and_caps_an_unknown_root_cause():
+    """Review i4 (fable, low): the retry half of the xai-low swap — after the
+    fast lead fails, the retry's same-tier swap lands on this seat — and an
+    unknown root cause's MAX ask runs at the seat's HIGH ceiling there, with no
+    floor broken (no human gate)."""
+    kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=0,
+              reversibility=0, runtime="claude_code", _family_quota={"xai": "low"})
+    fresh = route(Task(**kw), CFG)
+    assert fresh["selected_model"] == ID("openai_worker_fast")
+    retry = route(Task(**kw, prior_failures=1, prior_models=[fresh["selected_model"]]), CFG)
+    assert retry["selected_model"] == GEMINI and retry["terminal"] is None
+    urc = route(Task(**dict(kw, complexity=1, uncertainty=1, blast_radius=1),
+                     flags=["unknown_root_cause"]), CFG)
+    assert urc["selected_model"] == GEMINI
+    assert (urc["selected_effort"], urc["selected_effort_effective"]) == ("MAX", "HIGH")
+    assert urc["requires_human_confirmation"] is False
+
+
 @pytest.mark.parametrize("extra", [
     {"_review_context": {"target_sha256": "0" * 64, "author_families": ["xai"]}},
     "allowed-without-xai",
