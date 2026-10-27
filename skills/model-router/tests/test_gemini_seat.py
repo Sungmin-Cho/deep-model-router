@@ -243,6 +243,13 @@ def test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat():
             assert after["selected_model"] == GEMINI, (cls, dims)
             assert POLICY.tier_of[before["selected_model"]] == POLICY.tier_of[GEMINI], (cls, dims)
     assert moved, "the swap never reached the seat"
+    # Review i2 (fable): the write half — a writer under the same swap skips this
+    # read-only seat for the same-tier OpenAI balanced model.
+    out = route(Task(task_class="IMPLEMENTATION", complexity=0, uncertainty=0, blast_radius=3,
+                     reversibility=2, runtime="claude_code", **copy.deepcopy(extra)), CFG)
+    assert out["selected_role"] == "worker_balanced"
+    assert out["selected_model"] == ID("openai_worker_balanced"), out["selected_model"]
+    assert any(n.startswith("family_quota: xai low") for n in out["notes"])
 
 
 @pytest.mark.parametrize("extra", [
@@ -534,6 +541,24 @@ def test_the_disclosed_terminal_changes_are_exactly_these(scenario, expected):
                     got.add((cls, dims, lc, before.get("terminal"), after.get("terminal")))
                     assert after["routing_confidence"] < 0.60, (cls, dims, lc)
     assert got == expected
+
+
+def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat():
+    """Review i2 (fable F2), disclosed: a retry climbs strictly above the tier
+    that failed. After the tier-0 meta seat fails on Claude Code with xai out
+    and Claude exhausted, the first model above tier 0 is now this tier-1 seat,
+    where the tier-0 shape went on to the Sol seat (tier 2) — a retry a tier
+    lower than before, still above what failed."""
+    kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=2,
+              reversibility=0, runtime="claude_code", unavailable_models=[XAI],
+              _family_quota={"claude": "exhausted"})
+    old = _seat_at_tier_0()
+    assert route(Task(**kw), CFG)["selected_model"] == META == route(Task(**kw), old)["selected_model"]
+    after = route(Task(**kw, prior_failures=1, prior_models=[META]), CFG)
+    before = route(Task(**kw, prior_failures=1, prior_models=[META]), old)
+    assert after["selected_model"] == GEMINI and after["selected_capability_tier"] == 1
+    assert before["selected_model"] == ID("openai_reasoning")
+    assert after["selected_capability_tier"] > POLICY.tier_of[META]
 
 
 def test_the_argon_row_states_its_documented_facts():

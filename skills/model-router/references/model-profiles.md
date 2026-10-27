@@ -277,13 +277,17 @@ FAILED with the CLI's text in its receipt. Withhold the model
 7 to 13 minutes at high effort: give the seat a generous deadline.
 
 What 1.24.0 changes for this seat, against 1.23.1 — the 1.22.0 replay grid plus
-eight scenarios where the senior and reasoning seats or whole families are out,
-890,529 routes, fresh and after a failure:
+ten scenarios (the senior and reasoning seats or whole families out, and the xai
+quota low), 958,113 routes, fresh and after a failure:
 
-- **61,747 routes change, all where everything ahead of the seat is out.** With
-  every seat available nothing moves. Most changes are in the scenarios with the
-  xai seat withheld and the Claude family exhausted (on both hosts), or with
-  OpenAI exhausted.
+- **62,082 routes change.** With every seat available nothing moves, unless the
+  xai quota is low: then the `low` swap, which moves a reading lead to the first
+  same-tier model of another family, reaches this seat — 335 investigations on
+  both hosts move from the OpenAI balanced seat to it (176 of them, with an
+  unknown root cause, run at the seat's HIGH effort ceiling rather than the MAX
+  the flag asks for; no floor is broken). Every other change is where everything
+  ahead of the seat is out, mostly with the xai seat withheld and the Claude
+  family exhausted (on both hosts), or with OpenAI exhausted.
 - **It now staffs seats whose floor is tier 1.** The retired tier-0 model could
   read and lead reading work but not take a review seat a MEDIUM band floors at
   tier 1; this seat can. Reviewer seating changes on 45,920 routes: where the
@@ -291,10 +295,11 @@ eight scenarios where the senior and reasoning seats or whole families are out,
   review leads and reviewer seats that went to the OpenAI balanced, reasoning or
   frontier seats go to this one. A cross-family review is gained on 5,338 routes
   and lost on 546.
-- **The worker moves on 4,266 routes** (3,158 first attempts, 1,108 retries).
-  Reading leads and promoted investigations take this seat (3,144), mostly where
-  they took the OpenAI balanced seat, and a retry after it fails climbs above
-  tier 1. On 248 first attempts of work that writes, with xai withheld and the
+- **The worker moves on 4,601 routes** (3,478 first attempts, 1,123 retries).
+  Reading leads and promoted investigations take this seat (3,479), mostly where
+  they took the OpenAI balanced seat; a retry after it fails climbs above tier
+  1, and a retry after the tier-0 meta seat fails may now stop at this seat where
+  it went on to the Sol seat. On 248 first attempts of work that writes, with xai withheld and the
   Claude family exhausted, the execution cell now keeps the OpenAI fast writer
   (tier 0) instead of raising it to the OpenAI balanced one, because raising it
   would give up this seat's cross-family review (`execution band NORMAL
@@ -313,11 +318,13 @@ eight scenarios where the senior and reasoning seats or whole families are out,
   INDEPENDENCE_UNAVAILABLE). 1,354
   routes have their review band raised by the confidence rule: the fallback
   that reaches this seat is charged like any other.
-- The summed output price of the seated worker and reviewers rises 0.57%.
+- The summed output price of the seated worker and reviewers rises 0.52%.
 
 Two wider placements were replayed and not taken (user decision 2026-10-27):
 listing the seat also last in the senior and reasoning fallback lists on both
-hosts moves 88,703 routes (+1.01%), and listing it second there, right after
+hosts moves 88,703 routes (+1.01%; replayed without the two xai-quota
+scenarios, 890,529 routes, where the adopted placement moves 61,747), and
+listing it second there, right after
 the Sol seat, moves 237,685 (+1.71%), seating a tier-1 model in tier-2 roles on
 9,770 worker changes and ending 1,290 more routes ESCALATE_ROUTING. The ledger
 row "1.24.0 gemini seat placement counterfactuals" has the numbers.
@@ -766,7 +773,7 @@ by package the seat would read tier 0, 1 and 2. The seat ships read-only, so
 the review replay is its whole measurement; the implementation replay that
 would let it write is recorded as not run (the account's quota for the model
 was spent). With this seat at tier 1, a `low` xai quota swaps a reading lead to
-it, the first same-tier model of another family in the Claude Code list. The
+it, the first same-tier model of another family in the list, on both hosts. The
 ledger rows "gemini_frontier tier measurement (real-review replay,
 2026-10-27)" and "gemini_frontier implementation replay (not run, 2026-10-27)"
 have the numbers and limits.

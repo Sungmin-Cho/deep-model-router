@@ -387,11 +387,15 @@ def _g124_check(req, prev, cur):
         return [f"became {cur['terminal']}"]
     out = []
     gemini = ID("gemini_frontier")
-    # The one disclosed weakening (review i1 sol F2 / fable F1): the execution
-    # cell keeps the worker on the fast role instead of raising it to the
-    # balanced one, because the raise would give up the cross-family review this
-    # seat now staffs (the trade 1.19.0 disclosed for the meta seat).
-    cell_trade = (prev.get("selected_role") == "worker_balanced"
+    seat = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
+    # The one disclosed weakening (review i1 sol F2 / fable F1; i2 fable F2: a
+    # write seat only): the execution cell keeps the writer on the fast role
+    # instead of raising it to the balanced one, because the raise would give up
+    # the cross-family review this seat now staffs (the trade 1.19.0 disclosed
+    # for the meta seat). The route's own note says so; notes are not decision
+    # fields here, so the trade is read off the fields it moves.
+    cell_trade = (seat == "write"
+                  and prev.get("selected_role") == "worker_balanced"
                   and cur.get("selected_role") == "worker_fast"
                   and gemini in cur["review"]["reviewer_models"]
                   and gemini not in prev["review"]["reviewer_models"]
@@ -405,7 +409,6 @@ def _g124_check(req, prev, cur):
     parties = [m for m in cur["review"]["reviewer_models"] if m]
     if judge and parties and TIER_OF[judge] < max(TIER_OF[m] for m in parties):
         out.append("judge below a party")
-    seat = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
     if cur["selected_model"] == gemini and seat == "write" and not req.get("implementer"):
         out.append("the gemini seat took a seat that writes")
     return out
@@ -592,12 +595,14 @@ RULES: dict[str, Rule] = {
     # rules before it (full grid 2026-10-27: 105,344 inputs, 0 problems; g124
     # moves 358 — 34 on the sample). The check admits one weakening by name — the execution
     # cell's cross-family trade — and refuses everything else. What this grid does
-    # not reach (the unknown-root-cause first attempts that newly ESCALATE_ROUTING,
-    # which an unknown-root-cause variant here would also feed to c4 outside its
-    # predicate) is pinned exactly in test_gemini_seat.py
-    # (`test_the_disclosed_terminal_changes_are_exactly_these`) and replayed in the
-    # release counterfactual (ledger row "1.24.0 gemini seat placement
-    # counterfactuals").
+    # not reach is pinned in test_gemini_seat.py and replayed in the release
+    # counterfactual (ledger row "1.24.0 gemini seat placement counterfactuals"):
+    # the unknown-root-cause first attempts that newly ESCALATE_ROUTING (an
+    # unknown-root-cause variant here would also feed c4 outside its predicate),
+    # exactly (`test_the_disclosed_terminal_changes_are_exactly_these`), and the
+    # retries that now land on this tier-1 seat where they reached a tier-2 one
+    # (the grid's g124 variant has no prior failure), by example
+    # (`test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat`).
     "g124": Rule(
         "g124", predicate=lambda req, prev: True,
         fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",

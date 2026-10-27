@@ -3855,17 +3855,21 @@ verification_ledger:
       probed_on: "2026-10-27"
       evidence: >
         The 16,896-point 1.22.0 grid (fresh and after each side's own fresh
-        worker failed) over its twenty-four scenarios plus eight added for this
+        worker failed) over its twenty-four scenarios plus ten added for this
         move (the senior seat, the Sol seat or both withheld with xai out;
         OpenAI exhausted with the senior seat out; Claude exhausted with Sol
         out; OpenAI exhausted with xai out; REVIEW tasks authored by Claude or
-        OpenAI with xai out), 890,529 routes, one router against the 1.23.1
-        registry and the candidate. Adopted (user decision 2026-10-27): the
-        gemini seat at tier 1 in the places the retired seat held — 61,747
-        routes change, none with every seat available; reviewer seating on
-        45,920 (the seat newly seated on 45,208, the retired one gone from
-        37,134); cross-family review gained on 5,338 and lost on 546; the
-        worker on 4,266 (3,144 to the seat; on 248 first attempts of work that
+        OpenAI with xai out; the xai quota low, with and without an unknown
+        root cause), 958,113 routes, one router against the 1.23.1 registry and
+        the candidate. Adopted (user decision 2026-10-27): the gemini seat at
+        tier 1 in the places the retired seat held — 62,082 routes change; with
+        every seat available none, except that a low xai quota's same-tier
+        swap now moves 335 investigation leads from gpt-5.6-terra to the seat
+        on both hosts (176 with an unknown root cause run at its HIGH ceiling
+        instead of MAX); reviewer seating on 45,920 (the seat newly seated on
+        45,543, the retired one gone from 37,134); cross-family review gained
+        on 5,338 and lost on 546; the worker on 4,601 (3,479 to the seat; on
+        248 first attempts of work that
         writes the execution cell keeps the OpenAI fast writer at tier 0 to
         keep this seat's cross-family review, 474 retries follow moved first
         attempts to a lower tier, and 2 reading first attempts land a tier
@@ -3875,7 +3879,9 @@ verification_ledger:
         and eight terminals change kind (six INDEPENDENCE_UNAVAILABLE to
         ESCALATE_ROUTING, two SUPPLY_EXHAUSTED to INDEPENDENCE_UNAVAILABLE);
         1,354 review bands raised by the confidence rule; the summed output
-        price of seated workers and reviewers +0.57%. Not adopted: the seat also last in the senior and
+        price of seated workers and reviewers +0.52%. Not adopted (replayed
+        without the two xai-quota scenarios, 890,529 routes, where the adopted
+        placement moves 61,747): the seat also last in the senior and
         reasoning fallback lists on claude_code and codex, 88,703 routes,
         +1.01%; second in those lists, 237,685 routes, +1.71%, a tier-1 model
         in tier-2 roles on 9,770 worker changes and 1,290 new
