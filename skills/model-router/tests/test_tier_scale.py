@@ -41,7 +41,7 @@ def _text(item: str) -> str:
 
 
 # A ledger row records the ids it measured and is never edited afterwards, so
-# a key whose id moved after the row (1.25.0: openai_worker_balanced to the
+# a key whose id moved after the row (1.24.1: openai_worker_balanced to the
 # next Terra generation) must be read under the id the row names, not the live
 # one (review d1 fable F4). The succession chain says which ids a key has held.
 CHAINS = json.loads((SKILL / "tests" / "fixtures" / "id-succession.json").read_text())["chains"]
@@ -745,7 +745,7 @@ def test_the_gemini_seat_cannot_write_while_its_implementation_replay_has_not_ru
 
 
 # ---------------------------------------------------------------------------
-# Reading a ledger row under the ids it measured (1.25.0, review d1 fable F4)
+# Reading a ledger row under the ids it measured (1.24.1, review d1 fable F4)
 # ---------------------------------------------------------------------------
 
 def test_a_row_is_read_under_the_id_it_names_not_the_live_one():
@@ -838,3 +838,12 @@ def test_the_balanced_openai_implementation_replay_rederives_its_advisory_and_th
                        _text(TERRA_REVIEW_ROW)).group(1)
     step = {"raise": 1, "lower": -1}.get(review, 0) if review == advisory else 0
     assert MODELS[TERRA_KEY]["capability_tier"] == 1 + step
+
+
+def test_the_balanced_openai_review_row_names_the_gate_blocked_sensitivities():
+    """Review i1 (fable F2): a sensitivity whose gate fails is not evidence of
+    hold, and the row must say which ones those are."""
+    text = _text(TERRA_REVIEW_ROW)
+    assert "Every sensitivity" not in text
+    sol = MODELS["openai_reasoning"]["id"]
+    assert "gate fails" in text and f"{sol} alone" in text and "package C alone" in text

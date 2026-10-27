@@ -4034,7 +4034,8 @@ verification_ledger:
         1.24.0 supervisor, codex-cli 0.164.0), graded blind by the T3 judges
         claude-fable-5-1 and gpt-6-astra, whose calibration was re-run first
         on the new CLI (12 of 12 exactly as expected; agreement on the
-        subject's items 1.000). Six reviews, all SUCCEEDED, 34 to 75 s each.
+        subject's items 1.000). Six reviews, all SUCCEEDED, 34 to 75 s each
+        (harness wall time).
         The rule, written before any dispatch, is the per-row rule of the
         2026-10-15 implementation replay for a row at tier 1, against the live
         rows of the 1.24.0 registry with the decided row left out (its
@@ -4045,8 +4046,12 @@ verification_ledger:
         Tier-2 mean 0.434624, separation 0.201459 (gate 0.10, met). Bar for
         raise: 0.282492. Bar for lower: 0.183165. Recall: gpt-6.1-terra
         0.250842 (packages 0.111111, 0.277778, 0.363636). Review verdict
-        gpt-6.1-terra: hold. Every sensitivity (each tier-2 row alone, each
-        package alone, each judge alone) also holds. Isolation: three design
+        gpt-6.1-terra: hold. Sensitivity: six of eight readings hold on a
+        valid gate (claude-opus-5-5 or claude-sonnet-5-5 alone as the tier-2
+        row, package A or B alone, each judge alone); with gpt-6.1-sol alone
+        (gate 0.099327) or package C alone (gate -0.053030) the gate fails,
+        so those two are not evidence of hold (package C alone: recall
+        0.363636 against that package's raise bar 0.336364). Isolation: three design
         review rounds rebuilt the audit; the decision counts a review only
         after an independent reader read every tool call of its session in
         full (58 calls over six sessions: all inside the attempt's package)

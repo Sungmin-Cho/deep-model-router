@@ -823,12 +823,17 @@ is left out, so the gemini seat sets the tier-1 bar.
 
 The implementation row is advisory. No other live tier-1 row has an
 implementation score, so the method's verdict is withheld and the plan's
-preregistered reading uses the predecessor as the tier-1 reference. Every
-sensitivity of the review replay holds. One sensitivity of the implementation
-replay would read raise: the share of hidden tests passed rather than whole
-fixes. The tier stays 1. Isolation was settled by an independent reader going
-through every tool call of every session (none left its working copy), after
-three design-review rounds showed that a pattern-based audit cannot rule out
-a path built at run time. The ledger rows "openai_worker_balanced tier
+preregistered reading uses the predecessor as the tier-1 reference. Six of
+the review replay's eight sensitivity readings hold on a valid gate; with the
+Sol row alone, or package C alone, the gate itself fails, so those two say
+nothing either way (in package C alone the recall would clear that package's
+raise bar). One sensitivity of the implementation replay would read raise:
+the share of hidden tests passed rather than whole fixes. The tier stays 1.
+Isolation was settled by an independent reader going through every tool call
+of every session: none read answer-bearing material, and the few reads
+outside a working copy were benign (a git status that found no repository,
+the process list, a session's own pytest temp directory). That reader was
+needed because three design-review rounds showed that a pattern-based audit
+cannot rule out a path built at run time. The ledger rows "openai_worker_balanced tier
 measurement (real-review replay, 2026-10-27)" and "openai_worker_balanced
 implementation replay (2026-10-27)" have the numbers.

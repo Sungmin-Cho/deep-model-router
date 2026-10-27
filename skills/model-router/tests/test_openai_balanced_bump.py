@@ -100,7 +100,11 @@ def test_the_old_id_is_never_seated():
 def test_a_failure_of_the_old_id_still_routes_a_retry(runtime):
     out = route(Task(task_class="IMPLEMENTATION", complexity=2, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime=runtime, prior_failures=1, prior_models=[OLD]), CFG)
-    assert out["terminal"] is None and out["selected_model"] not in (OLD,)
+    assert out["terminal"] is None and out["selected_model"] not in (OLD, NEW)
+    # review i1 (fable): the history id keeps its tier, so the retry climbs above tier 1 as it
+    # did in 1.24.0 — the one effect of a cross-release history input the id replay cannot see
+    tier = {m["id"]: m["capability_tier"] for m in CFG["models"].values()}
+    assert tier[out["selected_model"]] > HISTORY["capability_tier"] == 1
 
 
 def test_the_cli_metadata_deferral_is_dropped_once_the_id_is_live(tmp_path):
@@ -163,7 +167,10 @@ def test_the_quality_disclosure_supersedes_what_promote_would_name():
     whose item names the superseded id, not at shared rows that stay current
     for other seats (those are cited in its evidence instead)."""
     item = f"{KEY} quality evidence after the {NEW} id bump"
-    others = [e for e in CFG["verification_ledger"]["entries"] if e["item"] != item]
+    # promote reads the ledger as it stood before the bump: leave out the rows this bump added
+    # (each names the new id)
+    others = [e for e in CFG["verification_ledger"]["entries"]
+              if not re.search(r"(?<![A-Za-z0-9._-])" + re.escape(NEW) + r"(?![A-Za-z0-9_-])", e["item"])]
     want = model_sync._superseded_items(KEY, [OLD], others)
     assert LEDGER[item]["supersedes"] == want
     text = _text(item)
