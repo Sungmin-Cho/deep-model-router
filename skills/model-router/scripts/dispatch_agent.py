@@ -196,7 +196,7 @@ AGY_ERROR_REASON_MAX_CHARS = 500
 # reset is unknown. The run is FAILED either way.
 AGY_QUOTA_REFUSAL_PREFIX = "Individual quota reached."
 AGY_QUOTA_RESET_RE = re.compile(
-    r"Resets in (?=[0-9])(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?(?=\.?\Z|\.\s)")
+    r"Resets in (?=[0-9])(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?(?=\.?\s*\Z|\.\s)")
 ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS,
                     MUSE_JSONL_FORMAT, AGY_JSON_FORMAT)
 

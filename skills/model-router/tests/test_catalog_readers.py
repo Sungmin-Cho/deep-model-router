@@ -151,6 +151,15 @@ with open(log, "a") as f:
             % (model, model, effort))
     f.write('I1014 11:00:01.000000       1 cli_setting_manager.go:211] '
             'ApplyProjectPermissionGrants: stored 0 allow, 5 deny grants from project "dmr-reviewer-v1"\n')
+if (d / "agy.quota").exists():
+    # The account quota refusal agy 1.4.12 prints (exit 3, before any request).
+    sys.stdout.write(json.dumps({{"conversation_id": "c", "status": "ERROR", "response": "",
+        "error": "Individual quota reached. Please upgrade your subscription to increase "
+                 "your limits. Resets in 5h0m0s.",
+        "duration_seconds": 0, "num_turns": 1, "finished_reason": "error",
+        "usage": {{"input_tokens": 0, "output_tokens": 0, "thinking_tokens": 0,
+                  "cache_read_tokens": 0, "total_tokens": 0}}}}))
+    sys.exit(3)
 answer = "pong" if "pong" in prompt else "?"
 sys.stdout.write(json.dumps({{"conversation_id": "c", "status": "SUCCESS", "response": answer,
     "duration_seconds": 1.0, "num_turns": 1,
@@ -285,6 +294,30 @@ def test_a_fetched_id_under_a_live_deferral_is_held_without_inference(tmp_path):
     assert st["negatives"][GEMINI_KEY]["id"] == NEWER      # the deferral survives
     assert st["recent"][0]["outcome"] == "held"
     assert all(a in (["--version"], ["models"]) for a in agy_calls(fakedir))
+
+
+def test_a_quota_refused_probe_is_deferred_for_quota_and_then_held(tmp_path):
+    """End to end through the supervisor: the CLI's quota refusal on P1 records a
+    `quota` deferral under the gemini family, due at the receipt's finish time plus
+    the CLI's reset, and the next run holds the id without spending an inference."""
+    _, fakedir, home, root, env = with_agy(tmp_path, listing=newer_list())
+    (fakedir / "agy.quota").write_text("")
+    before = dt.datetime.now(dt.timezone.utc)
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
+    after = dt.datetime.now(dt.timezone.utc)
+    assert rep["deferred"] == [GEMINI_KEY] and rep["inferences"] == 1, rep
+    neg = work_state(root)["negatives"][GEMINI_KEY]
+    assert (neg["id"], neg["family"], neg["outcome"], neg["reason"]) == \
+        (NEWER, "gemini", "deferred", "quota")
+    due = dt.datetime.fromisoformat(neg["retry_after"]["at"])
+    assert neg["retry_after"]["kind"] == "time"
+    assert before.replace(microsecond=0) + dt.timedelta(hours=5) <= due \
+        <= after + dt.timedelta(hours=5)
+    (fakedir / "agy.quota").unlink()
+    probes = len([a for a in agy_calls(fakedir) if "-p" in a])
+    rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
+    assert rep["skipped"][GEMINI_KEY] == "held" and rep["inferences"] == 0, rep
+    assert len([a for a in agy_calls(fakedir) if "-p" in a]) == probes
 
 
 def test_a_newer_generation_is_probed_through_the_reviewer_profile_and_published(tmp_path):

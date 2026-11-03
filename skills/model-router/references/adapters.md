@@ -896,7 +896,10 @@ You review code and documents. Read files when the request needs them, and answe
   `<n>h<n>m<n>s` (in that order, ending the sentence) is read as unknown.
   model-sync holds a gemini probe the quota refused at least until that reset
   (24 hours when N is null); its daily interval between probes of one row still
-  applies.
+  applies. When the refused call is the overhead check's run of the CURRENT id
+  (the quota is per model, so the candidate may have answered), the candidate
+  waits for that model's reset: the check needs the paired measurement, and
+  its cap-only basis is kept for a current id the vendor no longer serves.
 
 Declare the whole profile. An `agy` dispatch that names neither the
 `.to_gemini` transport nor the profile is invisible to the supervisor as agy —

@@ -763,6 +763,16 @@ def test_a_quota_refusal_is_failed_and_carries_its_reset(tmp_path, fixture, rese
     assert env["error_reason"] == doc["error"]
 
 
+def test_a_quota_document_that_exits_zero_is_still_no_success(tmp_path):
+    """The refusal is read for the record only: grading still sees the `error` key."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    doc = json.loads(QUOTA_START_DOC.read_text())
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path, doc=doc, exit_code=0), log),
+                         home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT" and receipt["result"]["verdict"] is None
+    assert receipt["result"]["envelope"]["quota_refusal"] == {"resets_in_seconds": 19821}
+
+
 def test_finished_reason_does_not_change_agy_success_grading(tmp_path):
     home, log = _home(tmp_path), tmp_path / "agy.log"
     doc = json.loads(SUCCESS_DOC.read_text())
@@ -785,6 +795,8 @@ def test_finished_reason_does_not_change_agy_success_grading(tmp_path):
     ("Individual quota reached. Resets in 5m1h.", {"resets_in_seconds": None}),
     ("Individual quota reached. Resets in 3m. Resets in 9h.", {"resets_in_seconds": 180}),
     ("Individual quota reached. Resets in 0s.", {"resets_in_seconds": 0}),
+    ("Individual quota reached. Resets in 1h\n", {"resets_in_seconds": 3600}),
+    ("Individual quota reached. Resets in 1h", {"resets_in_seconds": 3600}),
     ("Individual quota reached. Resets in 2h 30m.", {"resets_in_seconds": None}),
     ("Individual quota reached. Resets in 2h30m (UTC).", {"resets_in_seconds": None}),
     ("model said: Individual quota reached. Resets in 1h", None),
