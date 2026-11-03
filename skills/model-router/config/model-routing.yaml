@@ -3809,6 +3809,67 @@ verification_ledger:
         successor; the retired flash row is not a lineage row. The capture is
         tests/fixtures/catalogs/agy/agy-models-1.4.8.stdout.txt.
 
+    - item: "Gemini seat profiles on agy 1.4.12 (re-probe, 2026-11-03)"
+      status: verified
+      probed_on: "2026-11-03"
+      cli_version: "agy 1.4.12"
+      evidence: >
+        The CLI updated itself from 1.4.8 to 1.4.12. The 1.24.0 probe set (the
+        "Gemini reviewer seat on gemini-4-argon" and "Gemini maker seat on
+        gemini-4-argon" rows above) was repeated through an archive of the
+        released 1.24.1 dispatch_agent.py (2d1aed2), with gemini-3.8-flash under
+        both profiles: the account's gemini-4-argon quota was spent, and the
+        argon model declines the outside writes the fence exists to stop.
+        Reviewer: art-low-flash, art-medium-flash and art-high-flash SUCCEEDED
+        with verdict PASS, the deny-rule record loaded (stored 0 allow, 5 deny
+        grants from project dmr-reviewer-v1) and the log resolved each effort
+        spelling (art-low-flash receipt sha256
+        07713146108d701f4352d8ba91f7e2d2b77be4a986c77196299a3742b7b504a6);
+        acontain-flash (be02767e62d8d104389e8b06df2c22581d70637a9f4ed2ca3686d8c3085cd5bc)
+        had no tool to write, edit, run a command, fetch a URL, search the web
+        or start a subagent, listed view_file and manage_task, and left the
+        workspace unchanged; an id the CLI does not know (afail-flash,
+        934c37878e5e0240bd556d7ea31fca8951e982535295aba410cb927e995cc965)
+        FAILED with the CLI's own text. Maker, under the receipt guard:
+        ma-flash (f720bfd87cb8dad9b10ecec56bbb47ffe5ef5e017ed3a88dac333d8b943563de)
+        wrote made.txt as asked; in mb-flash
+        (0d6b514733dc9aebbacff9630d68c84a77530e9aa9d1e90cfcbfd75237502666) an
+        absolute path outside the workspace, `../rel-escape.txt` and a file
+        under HOME all failed with `operation not permitted` from the kernel
+        fence — the 1.4.12 write tool resolves `../` itself where 1.4.8's
+        refused it; in md-flash
+        (159e7d8935c7eeffe2840ac71d1493a1bf15b32daf470c21d25b7eb7ee9a05ce)
+        .git/hooks, a nested .git and .agents were refused by the fence;
+        mg-flash (bb7042a45b1821ab9de37475168e15bbde4304afa67aa2bc0239441eb736ea64)
+        had no shell tool; a hard link in the workspace (mc-flash) and a run
+        without the receipt guard (mf-flash) were refused before spawn. The
+        flash model declined the host-file and /dev/stdout writes (me-flash,
+        mh-flash, and again when told to call the tool, *-flash-rel), as on
+        1.4.8. `agy models` printed the same thirteen lines as the 1.4.8
+        capture. Receipts and runner: the local archive
+        docs/design/reviews/2026-11-03-agy-1412/acceptance/.
+
+    - item: "agy account quota refusal (envelope quota_refusal, 1.25.0)"
+      status: verified
+      probed_on: "2026-11-03"
+      cli_version: "agy 1.4.12"
+      evidence: >
+        With the account's gemini-4-argon quota spent, a one-word print call at
+        low, medium and high effort and with the suffixed id
+        gemini-4-argon-high exited 3 with one JSON document: status ERROR,
+        error "Individual quota reached. Please upgrade your subscription to
+        increase your limits. Resets in 5h30m21s.", zero usage, and
+        finished_reason error (a key agy 1.4.11 added). The CLI log showed the
+        same personal sign-in and the requested resolution; its stderr carried
+        an AGY_ERROR line with status RESOURCE_EXHAUSTED and code 429.
+        gemini-3.8-flash answered on the same account. The same text, with
+        "Resets in 167h12m11s", ended a 514 s run that had spent tokens, on agy
+        1.4.8 (2026-10-27). Both documents are test fixtures
+        (tests/fixtures/agy/agy-1.4.12-quota-start.json and
+        agy-1.4.8-quota-midrun.json), which the envelope reads as quota_refusal
+        resets_in_seconds 19821 and 601931. The prefix and the reset wording are
+        the CLI's, not a published contract.
+
     - item: "Gemini 3.8 Flash retired (gemini_worker_balanced, 1.24.0)"
       status: documented
       probed_on: "2026-10-27"

@@ -26,7 +26,8 @@ This file so far holds:
 * publication and the CLI (DD-A2, DD-A6) — `publish_results`,
   `publish_generation` (summaries -> generation -> fsync -> in-lock recheck
   -> pointer renameat; an atomic `committed.tmp-*` bootstrap first), `tick`,
-  `run` (12-inference budget, codex quota gate), `revert`, `unblock`,
+  `run` (12-inference budget, local Codex quota gate plus provider-reported
+  Gemini quota refusals), `revert`, `unblock`,
   `repair`, `disable`/`enable`, `status`, `read_quota`, and `main`
   (`tick|run|status|revert|unblock|repair|disable|enable|quota|probe-maker`).
   The attended maker probe lives in `probe_maker.py`, imported only by the
@@ -586,7 +587,42 @@ class ProbeContext(NamedTuple):
     now: dt.datetime
     cli_version: str | None = None
     catalog_sha256: str | None = None
-    quota_resets_at: int | None = None     # epoch seconds, codex rate_limits
+    quota_resets_at: int | None = None     # epoch seconds: codex rate_limits, or an
+                                           # agy receipt's quota_refusal
+
+
+def quota_refusal_resets_at(receipt: Mapping | None) -> tuple[bool, int | None]:
+    """Return whether this is a typed AGY quota refusal and its reset epoch.
+
+    Only the AGY envelope's structured marker is authority here; CLI text from
+    another envelope is never reclassified. Missing or malformed timing means
+    a quota refusal with an unknown reset, so retry_after_for uses its fallback.
+    """
+    if not isinstance(receipt, Mapping) or receipt.get("output_envelope") != AGY_ENVELOPE:
+        return False, None
+    result = receipt.get("result")
+    envelope = result.get("envelope") if isinstance(result, Mapping) else None
+    refusal = envelope.get("quota_refusal") if isinstance(envelope, Mapping) else None
+    if not isinstance(refusal, dict):
+        return False, None
+    seconds = refusal.get("resets_in_seconds")
+    if type(seconds) is not int or seconds < 0:
+        return True, None
+    timing = receipt.get("timing")
+    finished = timing.get("finished_at") if isinstance(timing, Mapping) else None
+    if not isinstance(finished, str):
+        return True, None
+    try:
+        at = _parse_time(finished)
+        if at.tzinfo is None or at.utcoffset() is None:
+            return True, None
+        epoch = int(at.timestamp()) + seconds
+        # The delay is the CLI's text: one no datetime can hold is an unknown
+        # reset, never an exception out of `retry_after_for`.
+        dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
+        return True, epoch
+    except (ValueError, TypeError, OverflowError, OSError):
+        return True, None
 
 
 def retry_after_for(reason: str, ctx: ProbeContext) -> dict:
@@ -1069,7 +1105,10 @@ def probe_candidate(*, key: str, candidate: Mapping, base: dict, state_root: Pat
                    run_id=f"p{ctx.now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}")
         low = native_token(base, row, "LOW")
         p1_receipt, p1_text, _ = run.call("P1", cand_id, low)
-        final = gate_p1(p1_receipt, p1_text, ctx)
+        is_quota, reset_at = quota_refusal_resets_at(p1_receipt)
+        final = (_verdict("P1", "deferred", "quota",
+                          ctx._replace(quota_resets_at=reset_at)) if is_quota
+                 else gate_p1(p1_receipt, p1_text, ctx))
         verdicts.append(final)
         if final["outcome"] == "pass":
             final = gate_p2(p1_receipt, lin, ctx)
@@ -1141,6 +1180,14 @@ def _p3(run: _Run, family, cand_id, current_id, low, p1_receipt, prior_baseline,
         cap, ctx, record) -> dict:
     mode = "json" if family == "openai" else "text"
     cur_receipt, _, cur_output = run.call("P3", current_id, low, codex_mode=mode)
+    is_quota, reset_at = quota_refusal_resets_at(cur_receipt)
+    if is_quota:
+        # The quota is per model, so the candidate may have answered P1 while
+        # the current id is refused. Wait for a paired measurement rather than
+        # fall back to the absolute cap: that basis is for a current id the
+        # vendor no longer serves, not for one that is out for a week.
+        return _verdict("P3", "deferred", "quota",
+                        ctx._replace(quota_resets_at=reset_at), p3_basis=None)
     if family == "openai":
         cand_receipt, _, _ = run.call("P3", cand_id, low, codex_mode=mode)
     else:
@@ -1168,6 +1215,13 @@ def _p4(run: _Run, base, row, cand_id, ceiling, ctx, record) -> dict:
         if results and token == results[-1]["native"]:
             continue
         receipt, text, output = run.call("P4", cand_id, token)
+        is_quota, reset_at = quota_refusal_resets_at(receipt)
+        if is_quota:
+            results.append({"effort": level, "native": token, "accepted": False,
+                            "rejected": False})
+            record["effort_results"] = results
+            return _verdict("P4", "deferred", "quota",
+                            ctx._replace(quota_resets_at=reset_at), effort_ceiling=None)
         accepted = _accepted(receipt, text)
         results.append({"effort": level, "native": token, "accepted": accepted,
                         "rejected": not accepted and effort_rejected(output, token)})
@@ -1699,7 +1753,7 @@ def enable(state_path: Path) -> dict:
     return {"status": "enabled"}
 
 
-# --- quota (local codex rollout records; codex is never run) ----------------
+# --- local Codex quota reads; AGY probe refusals carry their own reset ------
 
 def codex_sessions_dir(home: Path, env: Mapping[str, str]) -> Path:
     codex_home = env.get("CODEX_HOME")
@@ -1866,7 +1920,8 @@ def _negative_expired(neg: Mapping, versions: Mapping, catalogs: Mapping,
     # A quota deferral is released as soon as a fresh local reading shows the
     # limit has room again (a reset can come earlier than the recorded time,
     # e.g. after a plan change); `unknown` or a full limit keeps it held.
-    if neg.get("reason") == "quota" and quota is not None and not quota_defers(quota):
+    if (neg.get("family") == "openai" and neg.get("reason") == "quota"
+            and quota is not None and not quota_defers(quota)):
         return True
     ra = neg.get("retry_after") or {}
     kind = ra.get("kind")
@@ -1886,7 +1941,8 @@ def _negative_expired(neg: Mapping, versions: Mapping, catalogs: Mapping,
 def _expired_time_deferrals(work: Mapping, now: dt.datetime,
                             quota: Mapping | None = None) -> bool:
     for neg in (work.get("negatives") or {}).values():
-        if neg.get("reason") == "quota" and quota is not None and not quota_defers(quota):
+        if (neg.get("family") == "openai" and neg.get("reason") == "quota"
+                and quota is not None and not quota_defers(quota)):
             return True
         ra = neg.get("retry_after") or {}
         if ra.get("kind") == "time":

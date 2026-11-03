@@ -630,6 +630,8 @@ def test_a_downed_bridge_never_reaches_the_gemini_seat():
 
 SUCCESS_DOC = FIXTURES / "agy-1.3.4-success.json"
 ERROR_DOC = FIXTURES / "agy-1.3.4-error.json"
+QUOTA_START_DOC = FIXTURES / "agy-1.4.12-quota-start.json"
+QUOTA_MIDRUN_DOC = FIXTURES / "agy-1.4.8-quota-midrun.json"
 REVIEW_TEXT = "Looked at the diff; nothing blocks it.\n=== REVIEW ===\nverdict: PASS\nconfidence: 0.9\n"
 
 
@@ -733,7 +735,9 @@ def test_a_contained_review_is_succeeded_with_its_verdict_and_grants(tmp_path):
     assert receipt["seat_profile"] == "agy-reviewer-v1"
     assert receipt["agy_log"] == str(log)
     assert set(result["envelope"]) == {"parse_ok", "stop_reason", "session_id",
-                                       "served_models", "error_type", "usage", "error_reason"}
+                                       "served_models", "error_type", "usage", "error_reason",
+                                       "quota_refusal"}
+    assert result["envelope"]["quota_refusal"] is None
 
 
 def test_a_failed_document_is_failed_and_says_why(tmp_path):
@@ -744,6 +748,92 @@ def test_a_failed_document_is_failed_and_says_why(tmp_path):
     env = receipt["result"]["envelope"]
     assert env["error_type"] == "error" and env["stop_reason"] == "ERROR"
     assert "not recognized" in env["error_reason"]
+
+
+@pytest.mark.parametrize("fixture,resets", [(QUOTA_START_DOC, 19821),
+                                               (QUOTA_MIDRUN_DOC, 601931)])
+def test_a_quota_refusal_is_failed_and_carries_its_reset(tmp_path, fixture, resets):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    doc = json.loads(fixture.read_text())
+    fake = _fake_agy(tmp_path, doc=doc, exit_code=3)
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    env = receipt["result"]["envelope"]
+    assert receipt["result"]["state"] == "FAILED"
+    assert env["quota_refusal"] == {"resets_in_seconds": resets}
+    assert env["error_reason"] == doc["error"]
+
+
+def test_a_quota_document_that_exits_zero_is_still_no_success(tmp_path):
+    """The refusal is read for the record only: grading still sees the `error` key."""
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    doc = json.loads(QUOTA_START_DOC.read_text())
+    proc, receipt = _run(tmp_path, _argv(_fake_agy(tmp_path, doc=doc, exit_code=0), log),
+                         home=home, log=log)
+    assert receipt["result"]["state"] == "INVALID_OUTPUT" and receipt["result"]["verdict"] is None
+    assert receipt["result"]["envelope"]["quota_refusal"] == {"resets_in_seconds": 19821}
+
+
+def test_finished_reason_does_not_change_agy_success_grading(tmp_path):
+    home, log = _home(tmp_path), tmp_path / "agy.log"
+    doc = json.loads(SUCCESS_DOC.read_text())
+    doc["response"] = REVIEW_TEXT
+    doc["finished_reason"] = "error"
+    fake = _fake_agy(tmp_path, doc=doc)
+    proc, receipt = _run(tmp_path, _argv(fake, log), home=home, log=log)
+    assert proc.returncode == 0, proc.stderr
+    assert receipt["result"]["state"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("error,expected", [
+    ("Individual quota reached. Resets in 45m", {"resets_in_seconds": 2700}),
+    ("Individual quota reached. Resets in 12s", {"resets_in_seconds": 12}),
+    ("Individual quota reached. no reset listed", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in soon", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in 1h2s.", {"resets_in_seconds": 3602}),
+    ("Individual quota reached. Resets in 2d3h.", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in 5.", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in 5m1h.", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in 3m. Resets in 9h.", {"resets_in_seconds": 180}),
+    ("Individual quota reached. Resets in 0s.", {"resets_in_seconds": 0}),
+    ("Individual quota reached. Resets in 1h\n", {"resets_in_seconds": 3600}),
+    ("Individual quota reached. Resets in 1h", {"resets_in_seconds": 3600}),
+    ("Individual quota reached. Resets in 2h 30m.", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in 2h30m (UTC).", {"resets_in_seconds": None}),
+    ("model said: Individual quota reached. Resets in 1h", None),
+    ("individual quota reached. Resets in 1h", None),
+])
+def test_agy_quota_refusal_decoder_parses_only_the_exact_quota_prefix(error, expected):
+    env = dispatch_agent._decode_envelope(
+        json.dumps({"status": "ERROR", "error": error}).encode(),
+        dispatch_agent.AGY_JSON_FORMAT)
+    assert env["quota_refusal"] == expected
+
+
+@pytest.mark.parametrize("error", [None, 429, ["Individual quota reached. Resets in 1h"],
+                                   {"message": "Individual quota reached. Resets in 1h"}],
+                         ids=["null", "number", "list", "object"])
+def test_a_non_string_error_is_failed_but_never_a_quota_refusal(error):
+    env = dispatch_agent._decode_envelope(json.dumps({"status": "ERROR", "error": error}).encode(),
+                                          dispatch_agent.AGY_JSON_FORMAT)
+    assert env["reported_error"] is True and env["quota_refusal"] is None
+
+
+def test_the_reset_is_read_from_the_capped_reason_and_a_cut_spec_is_unknown():
+    """The reason is capped before it is parsed: a reset cut mid-number reads as unknown."""
+    head = "Individual quota reached. "
+    pad = "x" * (dispatch_agent.AGY_ERROR_REASON_MAX_CHARS - len(head) - len("Resets in 5h3"))
+    env = dispatch_agent._decode_envelope(
+        json.dumps({"status": "ERROR", "error": head + pad + "Resets in 5h30m21s."}).encode(),
+        dispatch_agent.AGY_JSON_FORMAT)
+    assert env["error_reason"].endswith("Resets in 5h3")
+    assert env["quota_refusal"] == {"resets_in_seconds": None}
+
+
+def test_agy_quota_refusal_decoder_ignores_non_quota_errors_and_success():
+    failed = dispatch_agent._decode_envelope(ERROR_DOC.read_bytes(), dispatch_agent.AGY_JSON_FORMAT)
+    success = dispatch_agent._decode_envelope(SUCCESS_DOC.read_bytes(), dispatch_agent.AGY_JSON_FORMAT)
+    assert failed["quota_refusal"] is None
+    assert success["quota_refusal"] is None
 
 
 @pytest.mark.parametrize("doc", [

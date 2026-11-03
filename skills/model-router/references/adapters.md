@@ -723,8 +723,9 @@ residue belongs to the recipe, as it does for grok.
 ### Antigravity seat profile
 
 What contains the gemini reviewer seat, measured on agy 1.3.4 (macOS,
-2026-10-14) and re-probed with the seat's current model on agy 1.4.8
-(2026-10-27); the ledger rows name the attempts. No mode flag does: the CLI's
+2026-10-14), re-probed with the seat's current model on agy 1.4.8
+(2026-10-27) and re-probed on agy 1.4.12 (2026-11-03); the ledger rows name the
+attempts. No mode flag does: the CLI's
 own settings (`~/.gemini/antigravity-cli/settings.json`) choose a
 `toolPermission` preset for every run on the host, and under `always-proceed`
 a `--mode plan` run wrote a file and ran a shell command when asked to. Two
@@ -870,13 +871,35 @@ You review code and documents. Read files when the request needs them, and answe
   write (an absolute one is required), and workspace `GEMINI.md` and
   `AGENTS.md` rules outrank the CLI's built-in instructions (1.4.4): a reviewed
   tree can steer the model's text, never its tools.
+- **What agy 1.4.12 changed.** The CLI updated itself from 1.4.8. The log
+  lines the gate reads, the agent allow-list, the deny rules, the maker's kernel
+  fence and both before-spawn refusals held (re-probed with the retired flash
+  model, which attempts the writes the current model declines). The write tool
+  accepts a relative path such as `../x` again and resolves it against the
+  workspace; the kernel fence refuses the write (`operation not permitted`), as
+  it refuses an absolute one. The JSON result gained a `finished_reason` key
+  (1.4.11) that the envelope does not read.
 - **The quota is the account's, per model.** A personal sign-in's quota for
   the seat's current model ran out after about ten long agentic runs in one
-  afternoon, and every run was then refused before any request ("Individual
-  quota reached", HTTP 429, with a reset days away) while other models on the
-  account kept working. The attempt ends FAILED and the CLI's text is the
-  receipt's `error_reason`. Withhold the model (`--unavailable-models`) until
-  the reset; retrying spends nothing and gains nothing.
+  afternoon, with a reset a week away, while other models on the account kept
+  working. The CLI refuses the run with HTTP 429 and the text "Individual quota
+  reached … Resets in 5h30m21s." — before any request, or in the middle of a
+  run that has already spent tokens. The attempt ends FAILED, and the receipt's
+  envelope says why: `quota_refusal` is `{"resets_in_seconds": N}` (N is null
+  when the CLI's text names no reset it can read) and the text is
+  `error_reason`; any other failure has `quota_refusal: null`. The reset is
+  `timing.finished_at` plus N. Record the attempt as a `quota_exhausted`
+  outcome and withhold the model (`--unavailable-models`) until then; retrying
+  spends nothing and gains nothing. The prefix and the wording are the CLI's,
+  not a published contract: if they change, the refusal reads as an ordinary
+  FAILED with a null `quota_refusal`, and a reset spelled any other way than
+  `<n>h<n>m<n>s` (in that order, ending the sentence) is read as unknown.
+  model-sync holds a gemini probe the quota refused at least until that reset
+  (24 hours when N is null); its daily interval between probes of one row still
+  applies. When the refused call is the overhead check's run of the CURRENT id
+  (the quota is per model, so the candidate may have answered), the candidate
+  waits for that model's reset: the check needs the paired measurement, and
+  its cap-only basis is kept for a current id the vendor no longer serves.
 
 Declare the whole profile. An `agy` dispatch that names neither the
 `.to_gemini` transport nor the profile is invisible to the supervisor as agy —
@@ -1341,7 +1364,9 @@ finishing reason is `status` and must be `SUCCESS` (the CLI's vocabulary also
 has `ERROR`, `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING` and `RUNNING`; any
 of them, an unknown value or an absent field fails). An `error` key, whatever
 its value, is the document's own failure report — the receipt keeps the first
-500 characters as `error_reason`. The verdict grammar applies to `response`,
+500 characters as `error_reason`, and when that text is the account quota
+refusal it adds `quota_refusal: {"resets_in_seconds": N}` (null on any other agy
+document; "Antigravity seat profile"). The verdict grammar applies to `response`,
 which holds the final answer only. `conversation_id` is recorded as the
 session id, `usage` as token counts, and there is no served-model record. The
 budget is the shared 4 MiB: no tool output rides in this document.

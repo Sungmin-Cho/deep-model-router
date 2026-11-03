@@ -605,6 +605,141 @@ class _ScriptedRun:
         return self.answers.pop(0)
 
 
+def _agy_quota_receipt(*, resets=120, finished_at="2026-09-25T12:10:00Z", family_fmt=None):
+    rec = receipt("FAILED", fmt=family_fmt or model_sync.AGY_ENVELOPE,
+                  envelope={"error_reason": "Individual quota reached.",
+                            "quota_refusal": {"resets_in_seconds": resets}})
+    rec["timing"] = {"finished_at": finished_at}
+    return rec
+
+
+def _gemini_probe(monkeypatch, tmp_path, quota_receipt, *, candidate_id="gemini-5-argon"):
+    row = BASE["models"]["gemini_frontier"]
+    class FakeProbeRun:
+        def __init__(self):
+            self.calls = []
+            self.inferences = 0
+
+        def call(self, gate, model_id, effort_native, *, codex_mode="text"):
+            self.calls.append({"gate": gate, "attempt_id": f"{gate.lower()}-attempt",
+                               "model_id": model_id, "effort_native": effort_native,
+                               "argv": [], "receipt_sha256": "a" * 64,
+                               "state": "FAILED"})
+            self.inferences += 1
+            return quota_receipt, None, ""
+
+    run = FakeProbeRun()
+    monkeypatch.setattr(model_sync, "_Run", lambda **kwargs: run)
+    cat = model_sync.Catalog("gemini", "ok", models={candidate_id: {"efforts": []}},
+                             sha256="d" * 64)
+    return model_sync.probe_candidate(
+        key="gemini_frontier", candidate={"id": candidate_id, "efforts": []},
+        base=copy.deepcopy(BASE), state_root=_state(tmp_path), env={}, catalog=cat,
+        current_id=row["id"], superseded=[], scratch=tmp_path / "scratch", ctx=CTX)
+
+
+def test_gemini_p1_quota_refusal_defers_until_the_reported_reset(monkeypatch, tmp_path):
+    rec = _agy_quota_receipt(resets=2700)
+    got = _gemini_probe(monkeypatch, tmp_path, rec)
+    summary = got["summary"]
+    assert (summary["outcome"], summary["reason"]) == ("deferred", "quota")
+    assert summary["retry_after"] == {"kind": "time", "at": "2026-09-25T12:55:00+00:00"}
+    assert got["inferences"] == 1
+
+
+def test_gemini_p1_quota_refusal_with_unknown_reset_uses_twenty_four_hours(monkeypatch, tmp_path):
+    rec = _agy_quota_receipt(resets=None)
+    got = _gemini_probe(monkeypatch, tmp_path, rec)
+    assert got["summary"]["retry_after"] == {
+        "kind": "time", "at": (NOW + _dt.timedelta(hours=24)).isoformat()}
+
+
+def test_gemini_p3_current_quota_refusal_defers_as_quota():
+    rec = _agy_quota_receipt(resets=45)
+    run = _ScriptedRun((rec, None, ""))
+    cand = receipt(fmt=model_sync.AGY_ENVELOPE,
+                   envelope={"usage": {"input_tokens": 10}})
+    got = model_sync._p3(run, "gemini", "demo-cand", "demo-current", "low", cand,
+                         None, 60_000, CTX, {})
+    assert (got["outcome"], got["reason"], got["p3_basis"]) == ("deferred", "quota", None)
+    assert got["retry_after"]["at"] == "2026-09-25T12:10:45+00:00"
+
+
+def test_gemini_p4_quota_refusal_defers_as_quota():
+    row = copy.deepcopy(BASE["models"]["gemini_frontier"])
+    run = _ScriptedRun((_agy_quota_receipt(resets=30), None, ""))
+    got = model_sync._p4(run, BASE, row, "demo-id", None, CTX, {})
+    assert (got["outcome"], got["reason"], got["effort_ceiling"]) == \
+        ("deferred", "quota", None)
+    assert got["retry_after"]["at"] == "2026-09-25T12:10:30+00:00"
+
+
+@pytest.mark.parametrize("resets", [999_999_999_999 * 3600, 10 ** 400], ids=["year", "huge"])
+def test_an_unrepresentable_reset_is_an_unknown_one_and_never_crashes(monkeypatch, tmp_path,
+                                                                      resets):
+    """The reset delay is the CLI's text: a value no datetime can hold falls back to the
+    unknown-reset retry (24 h) instead of raising out of the probe."""
+    assert model_sync.quota_refusal_resets_at(_agy_quota_receipt(resets=resets)) == (True, None)
+    got = _gemini_probe(monkeypatch, tmp_path, _agy_quota_receipt(resets=resets))
+    assert got["summary"]["retry_after"] == {
+        "kind": "time", "at": (NOW + _dt.timedelta(hours=24)).isoformat()}
+
+
+@pytest.mark.parametrize("mutate,expected", [
+    (lambda r: r.pop("timing"), (True, None)),
+    (lambda r: r.__setitem__("timing", {"finished_at": "2026-09-25T12:10:00"}), (True, None)),
+    (lambda r: r.__setitem__("timing", {"finished_at": 1758802200}), (True, None)),
+    (lambda r: r.__setitem__("timing", {"finished_at": "not a time"}), (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", {"resets_in_seconds": True}),
+     (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", {"resets_in_seconds": 30.0}),
+     (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", {"resets_in_seconds": -1}),
+     (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", None), (False, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", "yes"), (False, None)),
+    (lambda r: r["result"].__setitem__("envelope", None), (False, None)),
+    (lambda r: r.__setitem__("result", None), (False, None)),
+], ids=["no-timing", "naive-time", "numeric-time", "bad-time", "bool-delay", "float-delay",
+        "negative-delay", "null-refusal", "string-refusal", "no-envelope", "no-result"])
+def test_a_malformed_quota_receipt_never_raises(mutate, expected):
+    rec = _agy_quota_receipt(resets=30)
+    mutate(rec)
+    assert model_sync.quota_refusal_resets_at(rec) == expected
+    assert model_sync.quota_refusal_resets_at(None) == (False, None)
+
+
+def test_a_gemini_quota_deferral_is_recorded_under_its_family_and_held_until_the_reset(tmp_path):
+    """The deferred summary becomes a negative keyed by family, which a codex reading with
+    room never releases, and which expires at the reset the CLI named."""
+    state = _state(tmp_path)
+    reset = model_sync.retry_after_for(
+        "quota", CTX._replace(quota_resets_at=int((NOW + _dt.timedelta(hours=5)).timestamp())))
+    model_sync._record(state, "gemini_frontier", {"id": "gemini-5-argon", "family": "gemini"},
+                       outcome="deferred", reason="quota", retry_after=reset,
+                       summary_sha="b" * 64, inferences=1, now=NOW)
+    neg = model_sync._peek_work_state(state)["negatives"]["gemini_frontier"]
+    assert (neg["family"], neg["reason"], neg["retry_after"]) == ("gemini", "quota", reset)
+    room = {"status": "ok", "used_percent": 0.0}
+    assert not model_sync._negative_expired(neg, {}, {}, NOW + _dt.timedelta(hours=4), room)
+    assert model_sync._negative_expired(neg, {}, {}, NOW + _dt.timedelta(hours=5), room)
+    openai = {**neg, "family": "openai"}
+    assert model_sync._negative_expired(openai, {}, {}, NOW, room)
+
+
+def test_non_agy_quota_text_is_not_treated_as_an_agy_quota_refusal():
+    rec = _agy_quota_receipt(resets=30, family_fmt="claude-print-json-v1")
+    assert model_sync.quota_refusal_resets_at(rec) == (False, None)
+
+
+def test_gemini_quota_negative_is_not_released_by_codex_quota_room():
+    neg = {"family": "gemini", "reason": "quota",
+           "retry_after": {"kind": "time", "at": (NOW + _dt.timedelta(hours=2)).isoformat()}}
+    fresh_room = {"status": "ok", "used_percent": 0.0}
+    assert not model_sync._negative_expired(neg, {}, {}, NOW, fresh_room)
+    assert not model_sync._expired_time_deferrals({"negatives": {"gemini": neg}}, NOW, fresh_room)
+
+
 def _p4_row():
     key = next(k for k, r in BASE["models"].items()
                if r.get("family") == "claude" and "lineage" in r and "history_of" not in r
