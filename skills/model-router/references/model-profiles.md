@@ -272,9 +272,10 @@ account's quota for this model ran out after about ten long agentic runs in
 one afternoon — a review here made 150 to 220 file reads — and the CLI then
 refused every run (HTTP 429, "Individual quota reached") until a reset a week
 away; other models on the same account kept working. A refused attempt ends
-FAILED with the CLI's text in its receipt. Withhold the model
-(`--unavailable-models`) until the reset rather than retrying it. A review took
-7 to 13 minutes at high effort: give the seat a generous deadline.
+FAILED, and since 1.25.0 its receipt says it was the quota and when it resets
+(`quota_refusal`, `adapters.md`). Withhold the model (`--unavailable-models`)
+until the reset rather than retrying it. A review took 7 to 13 minutes at high
+effort: give the seat a generous deadline.
 
 What 1.24.0 changes for this seat, against 1.23.1 — the 1.22.0 replay grid plus
 ten scenarios (the senior and reasoning seats or whole families out, and the xai

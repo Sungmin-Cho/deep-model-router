@@ -188,6 +188,15 @@ MUSE_ERROR_REASON_MAX_CHARS = 500
 AGY_JSON_FORMAT = "agy-print-json-v1"
 AGY_OK_STATUS = "SUCCESS"
 AGY_ERROR_REASON_MAX_CHARS = 500
+# The account quota refusal (HTTP 429): the `error` text agy prints, before any
+# request (agy 1.4.12) or in the middle of a run (agy 1.4.8), e.g. "Individual
+# quota reached. Please upgrade your subscription to increase your limits.
+# Resets in 5h30m21s." The prefix and the reset wording are the CLI's text,
+# not a published contract: other wording is no quota refusal, or one whose
+# reset is unknown. The run is FAILED either way.
+AGY_QUOTA_REFUSAL_PREFIX = "Individual quota reached."
+AGY_QUOTA_RESET_RE = re.compile(
+    r"Resets in (?=[0-9])(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?(?=\.|\s|$)")
 ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS,
                     MUSE_JSONL_FORMAT, AGY_JSON_FORMAT)
 
@@ -2410,11 +2419,13 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
         # agy has no boolean discriminator: an `error` key is the document's
         # own failure report whatever its value, and absent on success.
         envelope["error_reason"] = None
+        envelope["quota_refusal"] = None
         if "error" in doc:
             envelope["reported_error"] = True
             envelope["error_type"] = "error"
             if isinstance(doc["error"], str):
                 envelope["error_reason"] = doc["error"][:AGY_ERROR_REASON_MAX_CHARS]
+                envelope["quota_refusal"] = _agy_quota_refusal(envelope["error_reason"])
     doc_type = doc.get("type")
     if isinstance(doc_type, str):
         envelope["doc_type"] = doc_type
@@ -2430,6 +2441,21 @@ def _decode_envelope(data: bytes | None, fmt: str, *, oversized: bool = False) -
     return envelope
 
 
+def _agy_quota_refusal(reason: str) -> dict | None:
+    """`{"resets_in_seconds": N | None}` when `reason` is agy's quota refusal
+    (anchored at its first character), else None. N reads the first `Resets in`
+    and its `<n>h`, `<n>m`, `<n>s` parts, in that order; any other spelling
+    leaves the reset unknown."""
+    if not reason.startswith(AGY_QUOTA_REFUSAL_PREFIX):
+        return None
+    at = reason.find("Resets in ")
+    m = AGY_QUOTA_RESET_RE.match(reason, at) if at >= 0 else None
+    if m is None or not any(m.groups()):
+        return {"resets_in_seconds": None}
+    hours, minutes, seconds = (int(v or 0) for v in m.groups())
+    return {"resets_in_seconds": hours * 3600 + minutes * 60 + seconds}
+
+
 CODEX_TEXT_RECEIPT_KEYS = ("header_model", "header_model_basis",
                            "metadata_warning", "footer_tokens_uncached",
                            "cli_version")
@@ -2437,7 +2463,7 @@ CODEX_TEXT_RECEIPT_KEYS = ("header_model", "header_model_basis",
 # apart from `served_models` on purpose: it is a request, not an attestation —
 # and the reason a failed terminal gave.
 MUSE_RECEIPT_KEYS = ("configured_model", "error_reason")
-AGY_RECEIPT_KEYS = ("error_reason",)
+AGY_RECEIPT_KEYS = ("error_reason", "quota_refusal")
 
 
 def _receipt_envelope(envelope: dict) -> dict:

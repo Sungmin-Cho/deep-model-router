@@ -320,7 +320,12 @@ enforce the LOW checks (open item L-8).
 (CLI `--family-quota openai=low,xai=ok`) is the caller's reading of each
 provider's remaining quota (design 2026-09-25 DD-B8). The router reads no
 network and no user file for it; `model_sync.py quota` reports what the local
-codex rollout records say, without running codex.
+codex rollout records say, without running codex. The gemini seat's quota is
+the account's and per model, and its reading is the refused dispatch itself:
+an agy receipt whose envelope carries a non-null `quota_refusal` is a
+`quota_exhausted` outcome, and the model stays out (`unavailable_models`) until
+`timing.finished_at` plus its `resets_in_seconds` (`adapters.md`, "Antigravity
+seat profile").
 
 - `exhausted` withholds every model of the family from every seat, like
   `unavailable_models` with the reason quota (not echoed in that list — it is

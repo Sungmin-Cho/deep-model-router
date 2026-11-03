@@ -9,6 +9,17 @@
 
 ## [Unreleased]
 
+## [1.25.0] — 2026-11-03 (gemini 좌석의 한도 거부를 기록)
+
+### Added
+
+- 계정의 모델 한도가 소진돼 gemini 좌석 실행이 실패하면 그 이유를 기록합니다. Antigravity CLI는 이런 실행을 요청 전에, 또는 실행 도중에 HTTP 429("Individual quota reached … Resets in 5h30m21s.")로 거부합니다. 이제 영수증에 CLI가 알린 초기화까지의 초(문구에 없으면 null)를 담은 `quota_refusal`이 실리므로, 초기화 시각은 실행 종료 시각에 그 값을 더한 것입니다. 실행은 여전히 FAILED로 끝납니다. `quota_exhausted` 결과로 기록하고 초기화까지 그 모델을 빼십시오. 다른 실패에는 `quota_refusal: null`이 실립니다.
+
+### Changed
+
+- 계정 한도에 거부된 gemini 모델 프로브를 smoke 실패로 처리해 6시간마다 다시 시도하지 않고, CLI가 알린 초기화 시각(알리지 않으면 24시간 뒤)까지 보류합니다. 새 codex 한도 판독은 OpenAI의 한도 보류만 풀므로 이 보류를 일찍 풀지 않습니다.
+- CLI가 스스로 업데이트한 Antigravity CLI 1.4.12에서 gemini 좌석을 다시 검증했습니다. reviewer·maker 봉쇄는 그대로입니다. CLI의 쓰기 도구는 `../x` 같은 상대 경로를 다시 받지만, maker의 커널 울타리가 작업 공간 밖 절대 경로와 마찬가지로 그 쓰기를 막습니다.
+
 ## [1.24.1] — 2026-10-27 (OpenAI balanced 모델을 GPT-6.1 Terra로)
 
 ### Changed
