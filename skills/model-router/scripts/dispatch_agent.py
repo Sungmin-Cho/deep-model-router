@@ -196,7 +196,7 @@ AGY_ERROR_REASON_MAX_CHARS = 500
 # reset is unknown. The run is FAILED either way.
 AGY_QUOTA_REFUSAL_PREFIX = "Individual quota reached."
 AGY_QUOTA_RESET_RE = re.compile(
-    r"Resets in (?=[0-9])(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?(?=\.|\s|$)")
+    r"Resets in (?=[0-9])(?:([0-9]+)h)?(?:([0-9]+)m)?(?:([0-9]+)s)?(?=\.?\Z|\.\s)")
 ENVELOPE_FORMATS = (GROK_ENVELOPE_FORMAT, "claude-print-json-v1", *CODEX_FORMATS,
                     MUSE_JSONL_FORMAT, AGY_JSON_FORMAT)
 
@@ -2471,7 +2471,8 @@ def _receipt_envelope(envelope: dict) -> dict:
     here as the audit evidence for what the attempt-binding cross-proof
     (DD-3) actually compared; `text` is deliberately absent. Plain-mode codex
     adds its stderr evidence (DD-B9), muse the id it was asked for and a
-    failure's reason, agy a failure's reason, and nothing else."""
+    failure's reason, agy a failure's reason and whether it was the account
+    quota (`quota_refusal`), and nothing else."""
     keys = ("parse_ok", "stop_reason", "session_id", "served_models",
             "error_type", "usage")
     if envelope.get("fmt") == CODEX_TEXT_FORMAT:

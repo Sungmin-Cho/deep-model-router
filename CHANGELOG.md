@@ -13,12 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Record why a gemini seat run failed when the account's quota for its model was spent. The Antigravity CLI refuses such a run with HTTP 429 ("Individual quota reached … Resets in 5h30m21s."), before any request or in the middle of a run; the receipt now carries `quota_refusal` with the CLI's reset delay in seconds (null when the text names none), so the reset time is the run's finish time plus that delay. The run still ends FAILED; record it as a `quota_exhausted` outcome and withhold the model until the reset. Any other failure carries `quota_refusal: null`.
+- Record why a gemini seat run failed when the account's quota for its model was spent. The Antigravity CLI refuses such a run with HTTP 429 ("Individual quota reached … Resets in 5h30m21s."), before any request or in the middle of a run; the receipt now carries `quota_refusal` with the CLI's reset delay in seconds (null when the text names none), so the reset time is the run's finish time plus that delay. The run still ends FAILED; record it as a `quota_exhausted` outcome and withhold the model until the reset. Any other failure of the gemini seat carries `quota_refusal: null`.
 
 ### Changed
 
-- Defer a gemini model probe that the account's quota refused, until the reset the CLI named (24 hours when it named none), instead of failing it as a smoke test and retrying every six hours. A fresh codex quota reading releases only an OpenAI quota deferral, so it never releases this one early.
-- Re-verify the gemini seat on Antigravity CLI 1.4.12, to which the CLI updated itself. The reviewer and maker containment held unchanged. The CLI's write tool again accepts a relative path such as `../x`; the maker's kernel fence refuses the write, as it refuses an absolute path outside the workspace.
+- Hold a gemini model probe that the account's quota refused at least until the reset the CLI named (24 hours when it named none), instead of failing it as a smoke test and retrying six hours later. A fresh codex quota reading releases only an OpenAI quota deferral, so it never releases this one early.
+- The gemini seat keeps working on Antigravity CLI 1.4.12, to which the CLI updates itself: its reviewer and maker containment were re-verified there unchanged. That CLI's write tool accepts a relative path such as `../x` again, and the maker's kernel fence refuses such a write outside the workspace.
 
 ## [1.24.1] — 2026-10-27 (GPT-6.1 Terra as the OpenAI balanced model)
 

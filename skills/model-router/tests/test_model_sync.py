@@ -685,6 +685,48 @@ def test_an_unrepresentable_reset_is_an_unknown_one_and_never_crashes(monkeypatc
         "kind": "time", "at": (NOW + _dt.timedelta(hours=24)).isoformat()}
 
 
+@pytest.mark.parametrize("mutate,expected", [
+    (lambda r: r.pop("timing"), (True, None)),
+    (lambda r: r.__setitem__("timing", {"finished_at": "2026-09-25T12:10:00"}), (True, None)),
+    (lambda r: r.__setitem__("timing", {"finished_at": 1758802200}), (True, None)),
+    (lambda r: r.__setitem__("timing", {"finished_at": "not a time"}), (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", {"resets_in_seconds": True}),
+     (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", {"resets_in_seconds": 30.0}),
+     (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", {"resets_in_seconds": -1}),
+     (True, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", None), (False, None)),
+    (lambda r: r["result"]["envelope"].__setitem__("quota_refusal", "yes"), (False, None)),
+    (lambda r: r["result"].__setitem__("envelope", None), (False, None)),
+    (lambda r: r.__setitem__("result", None), (False, None)),
+], ids=["no-timing", "naive-time", "numeric-time", "bad-time", "bool-delay", "float-delay",
+        "negative-delay", "null-refusal", "string-refusal", "no-envelope", "no-result"])
+def test_a_malformed_quota_receipt_never_raises(mutate, expected):
+    rec = _agy_quota_receipt(resets=30)
+    mutate(rec)
+    assert model_sync.quota_refusal_resets_at(rec) == expected
+    assert model_sync.quota_refusal_resets_at(None) == (False, None)
+
+
+def test_a_gemini_quota_deferral_is_recorded_under_its_family_and_held_until_the_reset(tmp_path):
+    """The deferred summary becomes a negative keyed by family, which a codex reading with
+    room never releases, and which expires at the reset the CLI named."""
+    state = _state(tmp_path)
+    reset = model_sync.retry_after_for(
+        "quota", CTX._replace(quota_resets_at=int((NOW + _dt.timedelta(hours=5)).timestamp())))
+    model_sync._record(state, "gemini_frontier", {"id": "gemini-5-argon", "family": "gemini"},
+                       outcome="deferred", reason="quota", retry_after=reset,
+                       summary_sha="b" * 64, inferences=1, now=NOW)
+    neg = model_sync._peek_work_state(state)["negatives"]["gemini_frontier"]
+    assert (neg["family"], neg["reason"], neg["retry_after"]) == ("gemini", "quota", reset)
+    room = {"status": "ok", "used_percent": 0.0}
+    assert not model_sync._negative_expired(neg, {}, {}, NOW + _dt.timedelta(hours=4), room)
+    assert model_sync._negative_expired(neg, {}, {}, NOW + _dt.timedelta(hours=5), room)
+    openai = {**neg, "family": "openai"}
+    assert model_sync._negative_expired(openai, {}, {}, NOW, room)
+
+
 def test_non_agy_quota_text_is_not_treated_as_an_agy_quota_refusal():
     rec = _agy_quota_receipt(resets=30, family_fmt="claude-print-json-v1")
     assert model_sync.quota_refusal_resets_at(rec) == (False, None)

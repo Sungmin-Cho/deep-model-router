@@ -1182,6 +1182,10 @@ def _p3(run: _Run, family, cand_id, current_id, low, p1_receipt, prior_baseline,
     cur_receipt, _, cur_output = run.call("P3", current_id, low, codex_mode=mode)
     is_quota, reset_at = quota_refusal_resets_at(cur_receipt)
     if is_quota:
+        # The quota is per model, so the candidate may have answered P1 while
+        # the current id is refused. Wait for a paired measurement rather than
+        # fall back to the absolute cap: that basis is for a current id the
+        # vendor no longer serves, not for one that is out for a week.
         return _verdict("P3", "deferred", "quota",
                         ctx._replace(quota_resets_at=reset_at), p3_basis=None)
     if family == "openai":

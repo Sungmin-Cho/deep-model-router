@@ -784,6 +784,9 @@ def test_finished_reason_does_not_change_agy_success_grading(tmp_path):
     ("Individual quota reached. Resets in 5.", {"resets_in_seconds": None}),
     ("Individual quota reached. Resets in 5m1h.", {"resets_in_seconds": None}),
     ("Individual quota reached. Resets in 3m. Resets in 9h.", {"resets_in_seconds": 180}),
+    ("Individual quota reached. Resets in 0s.", {"resets_in_seconds": 0}),
+    ("Individual quota reached. Resets in 2h 30m.", {"resets_in_seconds": None}),
+    ("Individual quota reached. Resets in 2h30m (UTC).", {"resets_in_seconds": None}),
     ("model said: Individual quota reached. Resets in 1h", None),
     ("individual quota reached. Resets in 1h", None),
 ])
@@ -792,6 +795,26 @@ def test_agy_quota_refusal_decoder_parses_only_the_exact_quota_prefix(error, exp
         json.dumps({"status": "ERROR", "error": error}).encode(),
         dispatch_agent.AGY_JSON_FORMAT)
     assert env["quota_refusal"] == expected
+
+
+@pytest.mark.parametrize("error", [None, 429, ["Individual quota reached. Resets in 1h"],
+                                   {"message": "Individual quota reached. Resets in 1h"}],
+                         ids=["null", "number", "list", "object"])
+def test_a_non_string_error_is_failed_but_never_a_quota_refusal(error):
+    env = dispatch_agent._decode_envelope(json.dumps({"status": "ERROR", "error": error}).encode(),
+                                          dispatch_agent.AGY_JSON_FORMAT)
+    assert env["reported_error"] is True and env["quota_refusal"] is None
+
+
+def test_the_reset_is_read_from_the_capped_reason_and_a_cut_spec_is_unknown():
+    """The reason is capped before it is parsed: a reset cut mid-number reads as unknown."""
+    head = "Individual quota reached. "
+    pad = "x" * (dispatch_agent.AGY_ERROR_REASON_MAX_CHARS - len(head) - len("Resets in 5h3"))
+    env = dispatch_agent._decode_envelope(
+        json.dumps({"status": "ERROR", "error": head + pad + "Resets in 5h30m21s."}).encode(),
+        dispatch_agent.AGY_JSON_FORMAT)
+    assert env["error_reason"].endswith("Resets in 5h3")
+    assert env["quota_refusal"] == {"resets_in_seconds": None}
 
 
 def test_agy_quota_refusal_decoder_ignores_non_quota_errors_and_success():

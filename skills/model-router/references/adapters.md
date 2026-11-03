@@ -892,8 +892,11 @@ You review code and documents. Read files when the request needs them, and answe
   outcome and withhold the model (`--unavailable-models`) until then; retrying
   spends nothing and gains nothing. The prefix and the wording are the CLI's,
   not a published contract: if they change, the refusal reads as an ordinary
-  FAILED with a null `quota_refusal`. model-sync defers a gemini probe the quota
-  refused, until that reset (24 hours when N is null).
+  FAILED with a null `quota_refusal`, and a reset spelled any other way than
+  `<n>h<n>m<n>s` (in that order, ending the sentence) is read as unknown.
+  model-sync holds a gemini probe the quota refused at least until that reset
+  (24 hours when N is null); its daily interval between probes of one row still
+  applies.
 
 Declare the whole profile. An `agy` dispatch that names neither the
 `.to_gemini` transport nor the profile is invisible to the supervisor as agy —
@@ -1358,7 +1361,9 @@ finishing reason is `status` and must be `SUCCESS` (the CLI's vocabulary also
 has `ERROR`, `CANCELED`, `INTERRUPTED`, `INVALID`, `WAITING` and `RUNNING`; any
 of them, an unknown value or an absent field fails). An `error` key, whatever
 its value, is the document's own failure report — the receipt keeps the first
-500 characters as `error_reason`. The verdict grammar applies to `response`,
+500 characters as `error_reason`, and when that text is the account quota
+refusal it adds `quota_refusal: {"resets_in_seconds": N}` (null on any other agy
+document; "Antigravity seat profile"). The verdict grammar applies to `response`,
 which holds the final answer only. `conversation_id` is recorded as the
 session id, `usage` as token counts, and there is no served-model record. The
 budget is the shared 4 MiB: no tool output rides in this document.
