@@ -647,13 +647,13 @@ models:
   # effort token the claude family map emits was live-probed on it, so no
   # per-model map or ceiling. `capability_tier: 3` is a policy assignment, as
   # it always was for this row: until this generation the row was never a
-  # subject of a replay (it was a judge). Both replays were run on the new
-  # generation; the method cannot decide a tier-3 row (no tier above it for the
-  # gate, and the other tier-3 row has no score), so the tier is recorded as
-  # held with scores, not as measured - ledger rows "claude_architect review
-  # replay (2026-11-10)" and "claude_architect implementation replay
-  # (2026-11-10)". The router reads no price: the lower list price moves no
-  # route.
+  # subject of a replay (a judge of the review replays, absent from the
+  # implementation replays). Both replays were run on the new generation; the
+  # method cannot decide a tier-3 row (no tier above it for the gate, and the
+  # other tier-3 row has no score), so the tier stays the assignment it was
+  # and is not a measured tier - ledger rows "claude_architect review replay
+  # (2026-11-10)" and "claude_architect implementation replay (2026-11-10)".
+  # The router reads no price: the lower list price moves no route.
   claude_architect:
     id: claude-fable-5-2
     lineage: { line: claude/fable, template: "claude-fable-{gen}", catalog_name: Fable }
@@ -4281,7 +4281,7 @@ verification_ledger:
         concerns a caller that builds Messages API requests itself; the
         router dispatches this seat through `claude -p` only.
 
-    - item: "claude-fable-5-2 tier evidence (external)"
+    - item: "claude-fable-5-2 external benchmark reference (not tier evidence)"
       status: documented
       probed_on: "2026-11-10"
       source: "https://www.vals.ai/benchmarks/vals_index"
@@ -4294,8 +4294,9 @@ verification_ledger:
         against 24.77 for claude-opus-5-5 and 16.18 for claude-sonnet-5-5.
         The predecessor is not on that list. The provider positions the
         model as its most capable widely released one, for work where an
-        Opus model at higher effort still falls short. The row's tier is a
-        policy assignment and is not set by these.
+        Opus model at higher effort still falls short. Recorded for
+        reference only: the row's tier is a policy assignment, and neither
+        this number nor the two replays below is evidence for it.
 
     - item: "claude_architect quality evidence after the claude-fable-5-2 id bump"
       status: quality_inherited_not_remeasured
@@ -4304,15 +4305,16 @@ verification_ledger:
       evidence: >
         capability_tier 3 is the policy assignment this key has always
         carried, and there is no measured quality of the predecessor to
-        inherit: in every replay before 2026-11-10 the two tier-3 models were
-        the judges, never subjects, and the row listed here records the
-        predecessor's id only. Both replays were run on claude-fable-5-2 on
-        2026-11-10 - rows "claude_architect review replay (2026-11-10)" and
-        "claude_architect implementation replay (2026-11-10)" - and scored
-        it; the method cannot decide a row at the top tier, so the tier is
-        held with those scores and is not a measured tier. Neither row says
-        anything about claude-fable-5-1, which was a judge in one and absent
-        from the other.
+        inherit: before 2026-11-10 the two tier-3 models were judges of the
+        review replays and absent from the implementation replays, never
+        subjects, and the row listed here records the predecessor's id only.
+        Both replays were run on claude-fable-5-2 on 2026-11-10 - rows
+        "claude_architect review replay (2026-11-10)" and "claude_architect
+        implementation replay (2026-11-10)" - and scored it; the method
+        cannot decide a row at the top tier, so the tier stays the assignment
+        it was: it is not a measured tier, and the scores are no evidence
+        for it. Neither row says anything about claude-fable-5-1, which was a
+        judge in one and absent from the other.
 
     - item: "claude-fable-5-2 maker seat"
       status: maker_not_reprobed
@@ -4361,19 +4363,23 @@ verification_ledger:
         ground-truth items come from the original reviews by claude-fable-5-1,
         the subject's predecessor (gpt-6.1-sol's found 12, two shared), and
         claude-fable-5-1 is also one of the two judges (the gpt-6-astra-only
-        reading is the same value); the orchestrator of the measurement was a
-        claude-fable-5-2 session, so the rule was fixed before dispatch and
-        the judges, the audit readers and the three design-review rounds
-        (gpt-6.1-sol, claude-sonnet-5-5) were other models. Each of these can
-        only raise the score: "not below" is weak evidence, compatible with
-        tier 2, and says nothing about the predecessor, which was never a
-        subject.
-        Memory correction: a Claude subject loads the user's shared memory
-        index and may read its files, as T3's unaudited anchors did (all six
-        of their scored attempts on package C read the same file). That file
-        had grown from 4,105 to 8,790 characters since; both readers found
-        that one added line states package C's item GT01, so GT01 scores
-        not-found for the two C reps that read it (the primary value above).
+        reading is the same value). Both can only raise the score: "not
+        below" is weak evidence, compatible with tier 2, no evidence for tier
+        3, and says nothing about the predecessor, which was never a subject.
+        The orchestrator of the measurement was a claude-fable-5-2 session.
+        Only the advisory reading was fixed before the reviews were
+        dispatched; the audit gates and the memory correction below were
+        added by amendments (A1 to A3) after dispatch and before any review
+        was read or graded, on three design-review rounds by other models
+        (gpt-6.1-sol, claude-sonnet-5-5); the judges and the audit readers
+        were other models too.
+        Memory correction (it lowers the score): a Claude subject loads the
+        user's shared memory index and may read its files, as T3's anchors
+        did - sessions that were never audited (all six of their scored
+        attempts on package C read the same file). That file had grown from
+        4,105 to 8,790 characters since; both readers found that one added
+        line states package C's item GT01, so GT01 scores not-found for the
+        two C reps that read it (the primary value above).
         Isolation: every tool call of the six sessions (227: Bash and Read
         only; no subagent, no network, no other agent CLI) and every text the
         CLI injected into them (43) was read in full by two readers that are
@@ -4417,10 +4423,13 @@ verification_ledger:
         memory correction below, 0.750000 (twelve of sixteen): the same
         reading. The primary value equals the highest tier-2 row, so this
         replay does not separate the model from tier 2.
-        Memory correction: one T07 run read a shared memory file whose text,
-        both readers found, states part of T07's fix beyond the finding (what
-        a verdict line may carry); no anchor session had read that file, so
-        the run scores 0 in the primary reading although its fix passes.
+        Memory correction (it lowers the score; the rule was set before this
+        replay's dispatch and refined by amendment while attempts ran, before
+        any was graded or read): one T07 run read a shared memory file whose
+        text, both readers found, states part of T07's fix beyond the finding
+        (what a verdict line may carry); no anchor session had read that
+        file, so the run scores 0 in the primary reading although its fix
+        passes.
         Isolation: every tool call of the sixteen sessions (1,016; no
         subagent, no network, no other agent CLI) and every text the CLI
         injected into them was read in full, in four packages, by two readers
@@ -4430,18 +4439,21 @@ verification_ledger:
         hashes were the same before the first dispatch and after the last;
         outside a workspace the sessions used their own scratch directories
         and scratch scripts under /tmp, none shared between sessions.
-        With the review replay: neither reads below tier 2, so nothing is
-        proposed and tier 3 holds - as a policy assignment with scores, never
-        as a measured tier. Sensitivity: each tier-2 row alone, and T01 left
-        out on both sides, read the same; the share of hidden tests passed
-        (0.861111) gives no reading (gate -0.001736: on that metric the
-        tier-1 anchor is level with the tier-2 rows). T01 under the retracted
-        C1 file passes both runs (reported beside; it decides nothing).
+        With the review replay: neither reads below tier 2, so the readings
+        trigger no proposal. Tier 3 holds by assignment; it is not a measured
+        tier, and "not below tier 2" is no evidence for it. Sensitivity: each
+        tier-2 row alone, and T01 left out on both sides, read the same; the
+        share of hidden tests passed (0.861111) gives no reading (gate
+        -0.001736: on that metric the tier-1 anchor is level with the tier-2
+        rows). T01 under the retracted C1 file passes both runs on the hidden
+        tests alone (reported beside; it decides nothing).
         Biases: seven of the eight reference fixes were written by
         claude-opus-5-5, so the hidden tests encode a Claude model's reading
-        of each finding; the orchestrator of the measurement was a
-        claude-fable-5-2 session (the rule fixed before dispatch, grading
-        deterministic, the audit readers and design reviewers other models).
+        of each finding; the anchors' sessions were never audited; the
+        orchestrator of the measurement was a claude-fable-5-2 session (the
+        advisory reading fixed before dispatch, the audit gates added by
+        amendments A1 to A4 before any grade was read, grading deterministic,
+        the audit readers and design reviewers other models).
         Plan, amendments A1 to A4, harness, grades, call listing and hand
         read: the local archive docs/evals/2026-11-10-t10/ (summary.json
         sha256

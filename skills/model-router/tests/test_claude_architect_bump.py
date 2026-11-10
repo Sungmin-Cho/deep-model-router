@@ -55,9 +55,12 @@ def test_the_row_is_the_probed_generation_with_no_effort_exception():
     assert ROW["id"] == NEW and ROW["lineage"]["line"] == "claude/fable"
     for leaf in ("effort_map", "effort_ceiling", "context_window"):
         assert leaf not in ROW, leaf
+    # the tokens the row vouches for are the ones listed as probed and served, not any token
+    # the prose happens to mention (review i1 sonnet F6)
     probed = _text(f"{NEW} reasoning-effort values")
-    for token in CFG["effort_map"]["claude"].values():
-        assert re.search(rf"\b{token}\b", probed), token
+    listed = re.search(r"SUCCEEDED with pong and served by the requested id: ([a-z, ]+) \(attempts", probed)
+    assert listed, probed
+    assert set(listed.group(1).replace(",", " ").split()) == set(CFG["effort_map"]["claude"].values())
 
 
 def test_the_prices_are_the_documented_rates_with_no_long_context_tier():
@@ -156,25 +159,107 @@ def test_the_quality_disclosure_supersedes_what_promote_would_name():
         assert cited in LEDGER and cited in text, cited
 
 
-def test_the_tier_is_recorded_as_held_with_scores_never_as_measured():
+REPO = SKILL.parent.parent
+CLAIM = re.compile(r"\b(?:measured|confirmed|supported|evidence for)\b", re.I)
+NEGATION = re.compile(r"\b(?:not|no|never|neither|nor|cannot|nothing)\b|않|아닙|아니|없", re.I)
+
+
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s*", " ".join(text.split())) if x]
+
+
+def _changelog_entry(name: str) -> str:
+    text = (REPO / name).read_text()
+    version = json.loads((REPO / "package.json").read_text())["version"]
+    start = text.index(f"## [{version}]")
+    return text[start:text.index("\n## [", start + 1)]
+
+
+def _profile_sections() -> str:
+    text = (SKILL / "references" / "model-profiles.md").read_text()
+    a = text.index("### The Claude architect seat")
+    b = text.index("## The architect seat's replays on 2026-11-10")
+    return text[a:text.index("\n## ", a)] + text[b:]
+
+
+def test_the_tier_is_recorded_as_an_assignment_never_as_measured():
     """The method cannot decide a row at the top tier: there is no tier above
-    it for the gate, and the only other tier-3 row has no score. Both replay
-    rows must say so, carry the advisory reading under that name, and name the
-    two disclosures the scores depend on (the predecessor as a judge and as
-    the author of most of the answer key; the subject as the orchestrator)."""
+    it for the gate, and no other top-tier row has a score. Both replay rows
+    must say so, carry the advisory reading under that name, and name the
+    disclosures the scores depend on (the predecessor as a judge and as the
+    author of most of the answer key; the subject as the orchestrator)."""
     top = max(m["capability_tier"] for m in CFG["models"].values())
     assert ROW["capability_tier"] == top
     peers = [k for k, m in CFG["models"].items()
              if m["capability_tier"] == top and "history_of" not in m
              and m.get("dispatchable", True) is not False and k != KEY]
-    assert peers == ["openai_frontier"]
+    # "no scored tier-3 anchor": every other live top-tier row is named in the review row and
+    # has no replay or tier-measurement row of its own (review i1 sonnet F6: not a fixed key)
+    assert peers
+    review = _text(REVIEW_ROW)
+    for peer in peers:
+        assert CFG["models"][peer]["id"] in review, peer
+        assert not [i for i in LEDGER if i.startswith(f"{peer} ")
+                    and ("replay" in i or "tier measurement" in i)], peer
     for item in (REVIEW_ROW, IMPL_ROW):
         text = _text(item)
         assert LEDGER[item]["status"] == "verified"
         assert "verdict is withheld by construction" in text, item
         assert "Advisory reading" in text and "policy assignment" in text, item
-        assert not re.search(r"tier 3 (?:is|was) (?:confirmed|measured)", text), item
-    review = _text(REVIEW_ROW)
+        assert "orchestrat" in text, item
     assert OLD in review and "judge" in review and "19 of the 29" in review
-    for item in (REVIEW_ROW, IMPL_ROW):
-        assert "orchestrat" in _text(item), item
+
+
+def test_nothing_published_claims_the_tier_is_measured_or_supported():
+    """Plan A1.9: the scores must not be said to measure, confirm or support
+    tier 3 (review i1: a sentence may use such a word about tier 3 only inside a
+    negation). Checked in every place the figures are published."""
+    texts = {REVIEW_ROW: _text(REVIEW_ROW), IMPL_ROW: _text(IMPL_ROW),
+             "quality row": _text(f"{KEY} quality evidence after the {NEW} id bump"),
+             "profile": _profile_sections(), "CHANGELOG.md": _changelog_entry("CHANGELOG.md"),
+             "CHANGELOG.ko.md": _changelog_entry("CHANGELOG.ko.md")}
+    for where, text in texts.items():
+        for sentence in _sentences(text):
+            if re.search(r"tier[- ]3", sentence, re.I) and CLAIM.search(sentence) \
+                    or re.search(r"tier 3", sentence) and re.search(r"측정|확인|뒷받침", sentence):
+                assert NEGATION.search(sentence), (where, sentence)
+
+
+def test_the_published_figures_agree_everywhere():
+    """One measurement, five places (review i1, missing tests): the two ledger
+    rows, the model profile and both changelogs carry the same primary and
+    as-graded figures, and the changelogs carry the same numbers and the same
+    disclosures in both languages."""
+    def pct(x: str) -> str:
+        return f"{round(float(x) * 100)}%"
+    review, impl = _text(REVIEW_ROW), _text(IMPL_ROW)
+    r_primary = re.search(rf"Recall: {re.escape(NEW)} (0\.\d+)", review).group(1)
+    r_graded = re.search(r"As graded, before the memory correction below, (0\.\d+)", review).group(1)
+    p_primary = re.search(rf"Pass rate: {re.escape(NEW)} (0\.\d+)", impl).group(1)
+    p_graded = re.search(r"As graded, before the memory correction below, (0\.\d+)", impl).group(1)
+    figures = [pct(r_primary), pct(r_graded), pct(p_primary), pct(p_graded)]
+    assert figures == ["56%", "59%", "69%", "75%"], figures
+    # the profile states them twice (the seat's section and the replay table), each time as
+    # "primary (as graded)" beside the bar the reading was taken against
+    bars = [f"{float(re.search(r'bar (0\.\d+)', x).group(1)) * 100:.1f}%" for x in (review, impl)]
+    profile = " ".join(_profile_sections().split())
+    seat, table = profile.split("## The architect seat's replays on 2026-11-10")
+    assert f"{figures[0]} review recall against a {bars[0]} bar ({figures[1]} as graded)" in seat
+    assert f"{figures[2]} of implementation runs against {bars[1]} ({figures[3]} as graded)" in seat
+    rows = {r.split("|")[1].strip(): [c.strip() for c in r.split("|")[2:-1]]
+            for r in _profile_sections().splitlines() if r.startswith("| ") and "as graded" in r}
+    assert rows["Review recall"][0] == f"{figures[0]} ({figures[1]} as graded)"
+    assert rows["Implementation pass rate"][0] == f"{figures[2]} ({figures[3]} as graded)"
+    assert [rows["Review recall"][3], rows["Implementation pass rate"][3]] == bars
+    assert table.count(figures[1]) == 1 and table.count(figures[3]) == 1
+    en, ko = _changelog_entry("CHANGELOG.md"), _changelog_entry("CHANGELOG.ko.md")
+    for f in figures[:3]:                         # the changelogs give the fourth as 12 of 16
+        assert f in en and f in ko, f
+    assert "12 of 16" in en and "16회 중 12회" in ko and "11 of 16" in en and "16회 중 11회" in ko
+    # every percentage, price and route count, as a multiset: one language spells some counts
+    # out ("sixteen"), so plain integers are compared through the pairs above instead
+    numbers = lambda t: sorted(re.findall(r"\$\d+(?:\.\d+)?|\d+%|\d{1,3}(?:,\d{3})+", t))  # noqa: E731
+    assert numbers(en) == numbers(ko), (numbers(en), numbers(ko))
+    for a, b in (("shared memory", "공유 메모리"), ("answer key", "정답지"), ("judges", "심판"),
+                 ("model being measured", "측정 대상 모델"), ("never audited", "감사된 적이 없")):
+        assert a in en and b in ko, (a, b)

@@ -428,7 +428,7 @@ needed both. See "Tiers measured on 2026-10-27".
 
 ### The Claude architect seat
 
-**Its tier is a policy assignment, held with scores, not a measured tier.** On
+**Its tier is a policy assignment, not a measured tier.** On
 2026-11-10 the `claude_architect` id moved to the next Fable generation. The
 overlay had published it that morning after the contained gates passed (the id
 served, a boot overhead level with the predecessor's), and promote moved it
@@ -440,16 +440,23 @@ Like its predecessor it keeps refusal classifiers, and the provider's fallback
 can rerun a declined request on another Claude model, so the row keeps the
 `security_sensitive` substitution disclosure.
 
-Tier 3 was never measured for this seat: in every replay before this one the
-two tier-3 models were the judges. Both replays were run on the new generation
-under rules written before any dispatch. The method cannot decide a row at the
-top tier (its gate reads the tier above, and the only other tier-3 row has no
-score), so the plan asked the one question the suite can answer: is the model
-below the weakest tier-2 row? It is not, on either replay (56% review recall
-against a 28.2% bar; 69% of implementation runs against 57.5%). That is weak
-evidence: it is compatible with tier 2 as much as with tier 3, and it says
-nothing about the predecessor, which was never a subject. No route moves
-except by the id. See "The architect seat's replays on 2026-11-10".
+Tier 3 was never measured for this seat: until now the two tier-3 models
+judged the review replays and were absent from the implementation replays.
+Both replays were run on the new generation. The method cannot decide a row
+at the top tier (its gate reads the tier above, and the only other tier-3 row
+has no score), so the plan fixed, before any dispatch, the one question the
+suite can answer: is the model below the weakest tier-2 row? It is not, on
+either replay: 56% review recall against a 28.2% bar (59% as graded), and 69%
+of implementation runs against 57.5% (75% as graded). Each first figure
+already carries a correction that lowers it, for answers the user's shared
+memory handed a session; that correction and the audit rules were added by
+amendments after the review replay was dispatched, before any result was read
+or graded. The reading
+is weak: it is compatible with tier 2 as much as with tier 3, it is no
+evidence for tier 3, and it says nothing about the predecessor, which was
+never a subject. The session that ran the measurement was the model being
+measured. No route moves except by the id. See "The architect seat's replays
+on 2026-11-10".
 
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
@@ -868,7 +875,8 @@ implementation replay (2026-10-27)" have the numbers.
 
 The Claude architect seat's model moved to the next Fable generation, and that
 row writes, so both replays were run on it. This is the first time a tier-3
-row was a subject: until now the two tier-3 models graded the others.
+row was a subject: until now the two tier-3 models judged the review replays
+and were absent from the implementation replays.
 
 | Replay | New Fable generation | Tier-2 rows | Tier-1 anchor | Bar | Reading |
 |---|---|---|---|---|---|
@@ -892,10 +900,17 @@ recall). The user's shared memory, which every Claude subject loads, had grown
 since the anchors ran: one added line states a finding of the third review
 package, and another file states part of one task's fix. Each is scored
 against the model where a session read it, which is the difference between
-the two figures in each cell. And the session that ran the measurement was the
-model being measured, so the rules were fixed before any dispatch, grading was
-left to the judges and the hidden tests, and the audit and the three
-design-review rounds were done by other models.
+the two figures in each cell; that correction lowers the score, and it was
+added by amendment after the reviews were dispatched and before any was read
+or graded. And the session that ran the measurement was the model being
+measured: the advisory reading was fixed before any dispatch, the audit rules
+were added by amendments on three design-review rounds before any result was
+read, grading was left to the judges and the hidden tests, and the audit and
+the reviews were done by other models. Two more limits belong with the
+figures: seven of the eight implementation tasks' reference fixes were
+written by the Claude senior seat's model, so the hidden tests encode a Claude
+model's reading, and the anchors' own sessions were never audited, so the
+standard applied here is stricter than the numbers it is compared with.
 
 Isolation was settled as on 2026-10-27, by reading every tool call: 1,243
 calls over twenty-two sessions, and every text the CLI injected into them,
