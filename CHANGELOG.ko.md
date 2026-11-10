@@ -9,6 +9,13 @@
 
 ## [Unreleased]
 
+## [1.25.2] — 2026-11-10 (Antigravity CLI 1.5.4의 gemini 좌석)
+
+### Changed
+
+- gemini 좌석의 리뷰어·maker 봉쇄를 Antigravity CLI 1.5.4에서 다시 검증했습니다. CLI가 1.4.12에서 스스로 이 버전으로 올라갔습니다. 좌석이 할 수 있는 일은 그대로이고 늘어난 것이 없습니다. 리뷰어는 읽기만 하고 아무것도 쓰지 않으며 명령·웹·서브에이전트 도구가 없습니다. maker는 작업 공간에 쓰고, 프로브가 시도한 그 밖의 쓰기는 모두 실패했습니다. 절대 경로는 커널 울타리가, 상대 경로는 쓰기 도구 자신이 거부했습니다. CLI가 읽기 도구 이름을 `read_file`로 바꿨고(리뷰어 agent 파일의 `view_file` 항목이 여전히 정확히 그 도구만 허용합니다), 쓰기 도구는 `../x` 같은 상대 경로를 다시 스스로 거부합니다. 프로브는 이전처럼 은퇴한 Gemini 3.8 Flash로 돌렸고, 리뷰어의 low effort 프로브에는 Gemini 4 Argon도 답했습니다.
+- Antigravity CLI가 스스로 업데이트한다는 점을 문서화했습니다. maker 울타리 밖에서의 시작(리뷰어 좌석, `agy models`, model-sync의 카탈로그 조회)은 최대 15분에 한 번 새 릴리스를 확인하고 바이너리를 백그라운드에서 교체합니다. `AGY_CLI_DISABLE_AUTO_UPDATE=1`로는 막히지 않습니다. maker 좌석은 CLI를 업데이트할 수 없습니다. 따라서 좌석 뒤의 CLI는 두 실행 사이에 바뀔 수 있습니다. `--host-cli-version`으로 영수증에 버전을 남기고, 바뀐 뒤에는 다시 프로브하십시오.
+
 ## [1.25.1] — 2026-11-10 (architect 모델을 Claude Fable 5.2로)
 
 ### Changed
