@@ -140,9 +140,18 @@ def test_the_maker_seat_row_exists_for_the_new_id():
     `maker_not_reprobed` saying what stands in for it."""
     row = LEDGER[f"{NEW} maker seat"]
     assert row["status"] in ("verified", "maker_not_reprobed")
+    text = _text(f"{NEW} maker seat")
     if row["status"] == "maker_not_reprobed":
-        text = _text(f"{NEW} maker seat")
         assert "No attended probe-maker summary" in text and "acceptEdits" in text
+    else:
+        # the row promote writes from a passing summary: the recipe with this id, the receipt,
+        # and who answered the probe's confirmation when it was not a person
+        argv = row["argv"].split()
+        assert argv[argv.index("--model") + 1] == NEW and "acceptEdits" in argv
+        assert re.fullmatch(r"m\d{8}T\d{6}-[0-9a-f]{8}-1", row["attempt_id"])
+        assert f"-m {NEW}" in text and "ended SUCCEEDED" in text
+        assert re.search(r"Receipt sha256 [0-9a-f]{64}\b", text)
+        assert "answered by an expect script with the user's permission" in text
 
 
 def test_the_quality_disclosure_supersedes_what_promote_would_name():

@@ -4317,18 +4317,26 @@ verification_ledger:
         judge in one and absent from the other.
 
     - item: "claude-fable-5-2 maker seat"
-      status: maker_not_reprobed
+      status: verified
+      probed_on: "2026-11-10"
+      attempt_id: "m20261110T071419-aaa52ad3-1"
+      cli_version: "2.1.322"
+      argv: "claude -p --model claude-fable-5-2 --effort low --permission-mode acceptEdits --strict-mcp-config --output-format json"
       evidence: >
-        No attended probe-maker summary for claude-fable-5-2 (the probe needs
-        a person at a TTY). Containment of the write seat is the transport
-        recipe's and does not depend on the id. Functional evidence instead:
-        the 2026-11-10 implementation replay dispatched the headless Claude
-        maker recipe with this id sixteen times through the released 1.25.0
-        supervisor (`claude -p --model claude-fable-5-2 --effort high
-        --permission-mode acceptEdits --allowedTools
-        Read,Edit,Write,Glob,Grep,LS,Bash(python3:*) --strict-mcp-config
-        --output-format json`, a disposable single-linked workspace each);
-        all sixteen ended SUCCEEDED with edits in their workspaces, and the
+        Attended model_sync probe-maker through codex.to_claude (mechanism):
+        the maker recipe with -m claude-fable-5-2, in a disposable
+        single-linked child cwd, ended SUCCEEDED; the written file's content
+        hash
+        53db7e23ad448621212712f53de143b387e12216c010f286c9361f2c9ecc3b70
+        equals the expected token's. Receipt sha256
+        ed46118eb08369ddb6c43e45fdd6b7cb1e284ecb33565a022a5c2b9bfe7475ee.
+        The probe's confirmation prompt was answered by an expect script
+        with the user's permission, not typed by a person; the session was
+        served by claude-fable-5-2 alone. Beside it, the 2026-11-10
+        implementation replay dispatched the headless Claude maker recipe
+        with this id sixteen times through the released 1.25.0 supervisor
+        (acceptEdits, a disposable single-linked workspace each): all
+        sixteen ended SUCCEEDED with edits in their workspaces, and the
         private trees beside them were unchanged afterwards.
 
     - item: "claude_architect review replay (2026-11-10)"

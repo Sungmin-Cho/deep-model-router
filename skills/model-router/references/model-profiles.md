@@ -434,6 +434,8 @@ overlay had published it that morning after the contained gates passed (the id
 served, a boot overhead level with the predecessor's), and promote moved it
 into the registry. Every effort token the router emits for the family was then
 probed on it and accepted, so the row carries no per-model effort map. The
+attended maker probe passed on it the same day, its confirmation answered by a
+script with the user's permission. The
 published prices fell by a fifth, to $8 / $40 per million input / output
 tokens ($0.20 cached); the router reads no price, so no route moves on that.
 Like its predecessor it keeps refusal classifiers, and the provider's fallback
