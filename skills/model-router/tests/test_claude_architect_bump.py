@@ -164,14 +164,16 @@ REPO = SKILL.parent.parent
 # are "evidence for" it), and what denies one. English puts the denial before the verb, Korean
 # after it; either way it has to sit in the claim's own clause (review i2: a denial anywhere in
 # the sentence, and participles only, let "these scores confirm tier 3" through).
-ABOUT_TIER = re.compile(r"tier[- ]?3(?!\d)", re.I)
+ABOUT_TIER = re.compile(r"tier[- ]?(?:3(?!\d)|three\b)|top[- ]tier", re.I)
 CLAIM_EN = re.compile(r"\b(?:measur\w*|confirm\w*|support\w*|validat\w*|verif\w*|establish\w*"
-                      r"|prov(?:e[sdn]?|ing)|evidence for)\b", re.I)
-DENIAL_EN = re.compile(r"\b(?:not|no|never|neither|nor|cannot|nothing|without)\b|n't\b", re.I)
-CLAUSE_EN = re.compile(r"[;:()]|\s[-–—]\s|\b(?:but|although|though|while|whereas|yet)\b", re.I)
+                      r"|prov(?:e[sdn]?|ing)|show(?:s|ed|n|ing)?|demonstrat\w*|justif\w*"
+                      r"|corroborat\w*|ratif\w*|back(?:s|ed|ing)?(?! to\b)|b(?:ear|ears|orne) out"
+                      r"|evidence (?:for|of))\b", re.I)
+DENIAL_EN = re.compile(r"\b(?:not|no|never|neither|nor|cannot|nothing)\b|n't\b", re.I)
+CLAUSE_EN = re.compile(r"[;:()]|\s[-–—]\s|,\s+and\b|\b(?:but|although|though|while|whereas|yet)\b", re.I)
 CLAIM_KO = re.compile(r"측정|확인|뒷받침|입증|검증|증명")
 DENIAL_KO = re.compile(r"않|아닙|아니|없|못")
-CLAUSE_KO = re.compile(r"[;:()]|지만|으나|는데|(?<=[고며]),")
+CLAUSE_KO = re.compile(r"[;:()]|지만|으나|는데|(?<=[고며])[,\s]")
 
 
 def _blocks(text: str):
@@ -202,9 +204,15 @@ def _sentences(text: str) -> list[str]:
 
 
 def _tier_claims(text: str) -> list[str]:
-    """The clauses of `text` that claim something for tier 3 and do not deny it. Limits: it
-    reads one sentence at a time (a claim whose subject is in the sentence before is not seen),
-    and a denial earlier in the same clause clears a later claim word."""
+    """The clauses that use a claim word, in a sentence naming tier 3, without a denial in the
+    same clause. A tripwire for the common forms, not a proof: reviews i2 and i3 each found
+    forms an earlier version let through, and a pattern cannot close that. What it misses:
+    a claim word outside the list; a claim whose subject is in the sentence before; a claim
+    after a denial in the same clause ("is not merely assigned, it is confirmed" - a clause
+    ends at ; : ( ) a dash, ", and" or a contrast word, not at a bare comma, which would cut
+    "do not measure, confirm or support it"). It also errs the other way: every claim word in
+    such a sentence needs a denial, whatever it is about, because a claim made through "it"
+    would otherwise pass. The reviewers of an edit remain the check."""
     found = []
     for sentence in _sentences(text):
         if not ABOUT_TIER.search(sentence):
@@ -278,6 +286,15 @@ def test_the_tier_is_recorded_as_an_assignment_never_as_measured():
     "**Tier 3 is confirmed.** No other route changes.",
     "Nothing else moves. The two replays are evidence for tier 3.",
     "| Review recall | 56% | not below tier 2 |\n\nBoth rows support tier 3.",
+    "These scores are evidence of tier 3.",
+    "The scores show tier 3 holds.",
+    "Tier 3 is justified by these replays.",
+    "These replays back tier 3.",
+    "Tier three is confirmed.",
+    "The top tier is borne out by both replays.",
+    "These scores do not change anything, and they confirm tier 3.",
+    "Without hesitation, the replays confirm tier 3.",
+    "tier 3이 확인되었고 전임 모델은 측정되지 않았습니다.",
     "## Not a verdict\nThe replays establish tier 3.",
     "이 결과로 tier 3이 확인되었습니다.",
     "tier 3이 확인되었고, 전임 모델은 측정되지 않았습니다.",
@@ -310,20 +327,26 @@ def test_nothing_published_claims_the_tier_is_measured_or_supported():
 
 def test_the_timing_statements_two_reviews_found_false_stay_out():
     """What was fixed when is recorded in the plans, which are a local archive, so no test can
-    check it. Reviews i1 and i2 found three statements of it false (every rule written before
-    any dispatch; only the advisory reading fixed before dispatch; the amendments made before
-    any grading) and one about the anchors (their sessions never audited: true of the review
-    replay's tier-2 rows only). This keeps those forms out and the review row's account in."""
+    check it. Reviews i1 and i2 found blanket statements of it false: every rule written before
+    any dispatch; only the advisory reading fixed before dispatch; the anchors' sessions never
+    audited (true of the review replay's tier-2 rows only). This keeps those blanket forms out
+    (a scoped, true sentence such as "T3's anchors ... were never audited" stays allowed) and
+    pins the account each text gives instead."""
     false_forms = [r"rules (?:were )?(?:written|fixed|set) before any dispatch",
-                   r"only the advisory reading", r"before any \w+ was read\s+or\s+graded",
-                   r"anchors' (?:own )?sessions were never audited", r"하나만", r"감사된 적이 없"]
+                   r"only the advisory reading", r"\bthe anchors' (?:own )?sessions were never audited",
+                   r"보조 질문 하나만", r"앞선 모델들의 세션은[^.]*감사된 적이 없"]
     for where, text in _published().items():
         flat = " ".join(text.split())
         for form in false_forms:
             assert not re.search(form, flat, re.I), (where, form)
-    review = _text(REVIEW_ROW)
+    review, impl = _text(REVIEW_ROW), _text(IMPL_ROW)
     assert "The plan fixed, before the reviews were dispatched" in review
     assert "A3 after the judges had run and before any grade, review or hand-read verdict was read" in review
+    assert "fixed before any attempt was dispatched" in impl and "while attempts ran" in impl
+    for text in (review, impl):
+        assert "two readers from different families, neither the subject model" in text
+    profile = " ".join(_profile_sections().split())
+    assert "before any grade was read" in profile and "before any grade or hand-read verdict was read" in profile
 
 
 def test_the_published_figures_agree_everywhere():

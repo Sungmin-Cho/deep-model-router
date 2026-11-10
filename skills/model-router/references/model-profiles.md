@@ -450,8 +450,9 @@ either replay: 56% review recall against a 28.2% bar (59% as graded), and 69%
 of implementation runs against 57.5% (75% as graded). Each first figure
 already carries a correction that lowers it, for answers the user's shared
 memory handed a session; amendments made after the review replay was
-dispatched, and before any grade or review was read, set that correction and
-tightened the audit the plans already had. The reading
+dispatched, before any grade was read and with one sentence of one draft
+review seen, set that correction and tightened the audit the plans already
+had. The reading
 is weak: it is compatible with tier 2 as much as with tier 3, it is no
 evidence for tier 3, and it says nothing about the predecessor, which was
 never a subject. The figures come with limits: most of the review answer key
@@ -904,11 +905,14 @@ since the anchors ran: one added line states a finding of the third review
 package, and another file states part of one task's fix. Each is scored
 against the model where a session read it, which is the difference between
 the two figures in each cell; that correction lowers the score, and it was
-added by amendment after the reviews were dispatched and before any grade or
-review was read. And the session that ran the measurement was the model being
+added by amendment after the reviews were dispatched and before any grade
+was read (the plan records what the session had seen meanwhile: attempt states
+and verdict tokens, one session's flagged tool calls, and one sentence of one
+draft review). And the session that ran the measurement was the model being
 measured: the plans fixed the advisory reading, the grading and a full hand
 read by two other models before dispatch, amendments on three design-review
-rounds tightened that audit before any grade or session was read, grading was
+rounds tightened that audit and left undecided any reading that rests on the
+correction alone, before any grade or hand-read verdict was read, grading was
 left to the judges and the hidden tests, and the audit and the reviews were
 done by other models. Two more limits belong with the
 figures: seven of the eight implementation tasks' reference fixes were

@@ -4369,14 +4369,20 @@ verification_ledger:
         The orchestrator of the measurement was a claude-fable-5-2 session.
         The plan fixed, before the reviews were dispatched, the advisory
         reading, the void and substitution rules, the judging and a full
-        hand read by two readers of other families. Three amendments
-        followed, on three design-review rounds by other models
-        (gpt-6.1-sol, claude-sonnet-5-5), all after dispatch: A1 and A2
-        before any review was read, judged or hand-read, A3 after the judges
-        had run and before any grade, review or hand-read verdict was read.
-        They tightened that audit and replaced its shared-memory class with
-        the memory correction below; the judges and the audit readers were
-        other models too.
+        hand read by two readers from different families, neither the
+        subject model. Three amendments followed, on three design-review
+        rounds by other models (gpt-6.1-sol, claude-sonnet-5-5), all after
+        dispatch: A1 and A2 before any review was read, judged or hand-read
+        (A1 and its addendum record what the orchestrator had seen: each
+        finished attempt's state, verdict token and length; one session's
+        tool names, flagged tool-call snippets and the name of a memory file
+        it read; then one sentence of one draft, printed by an audit pattern
+        that misfired), A3 after the judges had run and before any grade,
+        review or hand-read verdict was read. They tightened that audit,
+        replaced its shared-memory class with the memory correction below,
+        and added that a "below tier 2" the as-graded value does not
+        reproduce goes to the user undecided (none arose); the judges and
+        the audit readers were other models too.
         Memory correction (it lowers the score): a Claude subject loads the
         user's shared memory index and may read its files, as T3's anchors
         did - sessions that were never audited (all six of their scored
@@ -4458,11 +4464,13 @@ verification_ledger:
         call by call as these were; the orchestrator of the measurement was
         a claude-fable-5-2 session (the plan and its first amendment, with
         the advisory reading, the grading and a full hand read by two
-        readers of other families, fixed before any attempt was dispatched;
-        amendments A2 and A3 tightened the audit while attempts ran, and A4
-        split the hand read once they had finished, each before any grade or
-        session was read; grading deterministic; the audit readers and
-        design reviewers other models).
+        readers from different families, neither the subject model, fixed
+        before any attempt was dispatched; amendments A2 and A3, while
+        attempts ran, tightened the audit and added that a "below tier 2"
+        resting on the memory correction goes to the user undecided (none
+        arose); A4 split the hand read once they had finished; each came
+        before any grade or hand-read verdict was read; grading
+        deterministic; the audit readers and design reviewers other models).
         Plan, amendments A1 to A4, harness, grades, call listing and hand
         read: the local archive docs/evals/2026-11-10-t10/ (summary.json
         sha256
