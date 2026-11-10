@@ -724,8 +724,8 @@ residue belongs to the recipe, as it does for grok.
 
 What contains the gemini reviewer seat, measured on agy 1.3.4 (macOS,
 2026-10-14), re-probed with the seat's current model on agy 1.4.8
-(2026-10-27) and re-probed on agy 1.4.12 (2026-11-03); the ledger rows name the
-attempts. No mode flag does: the CLI's
+(2026-10-27) and re-probed on agy 1.4.12 (2026-11-03) and agy 1.5.4
+(2026-11-10); the ledger rows name the attempts. No mode flag does: the CLI's
 own settings (`~/.gemini/antigravity-cli/settings.json`) choose a
 `toolPermission` preset for every run on the host, and under `always-proceed`
 a `--mode plan` run wrote a file and ran a shell command when asked to. Two
@@ -748,7 +748,8 @@ You review code and documents. Read files when the request needs them, and answe
 ```
 
   Its `tools` list is an allow-list. Under it the model reported two tools,
-  `view_file` and the CLI's own task list, and asked to write, edit, run a
+  `view_file` and the CLI's own task list (agy 1.5.4 names the read tool
+  `read_file`; the `view_file` entry still grants exactly it), and asked to write, edit, run a
   command, fetch a URL, search the web or start a subagent, it had no tool for
   any of them; the workspace was unchanged. Without it the same run had
   thirteen, among them `run_command`, `write_to_file`, `search_web` and
@@ -967,6 +968,15 @@ allow, 4 deny grants from project "dmr-maker-v1"` and the model resolution —
 but here it is **drift detection only**: the log is inside the fence and the
 model has write tools, so it can rewrite the record in place. No containment
 claim rests on it.
+
+**The CLI updates itself.** A start outside the maker's fence — the reviewer
+seat, `agy models`, model-sync's catalogue fetch and probes — checks for a
+release at most every 15 minutes and spawns a background updater that replaces
+the binary on PATH (agy 1.5.3 to 1.5.4, measured 2026-11-10);
+`AGY_CLI_DISABLE_AUTO_UPDATE=1` did not stop it on 1.5.4. Under the maker's
+fence the updater cannot write `~/.local/bin` and skips. So the CLI behind the
+seat can change between two runs without notice: pass `--host-cli-version` to
+keep the version in the receipt, and re-probe the profiles after a change.
 
 What stays writable is the workspace itself, including other tools'
 configuration in it (`.claude/`, `.vscode/`, `.envrc`, a virtualenv's

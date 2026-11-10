@@ -235,10 +235,14 @@ def _tier_claims(text: str) -> list[str]:
     return found
 
 
+# The release that published this measurement. Later releases add entries above it, so the entry
+# is found by this version, not by the package's current one.
+PUBLISHED_IN = "1.25.1"
+
+
 def _changelog_entry(name: str) -> str:
     text = (REPO / name).read_text()
-    version = json.loads((REPO / "package.json").read_text())["version"]
-    start = text.index(f"## [{version}]")
+    start = text.index(f"## [{PUBLISHED_IN}]")
     return text[start:text.index("\n## [", start + 1)]
 
 

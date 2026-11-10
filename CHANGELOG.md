@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.2] — 2026-11-10 (the gemini seat on Antigravity CLI 1.5.4)
+
+### Changed
+
+- Re-verify the gemini seat's reviewer and maker containment on Antigravity CLI 1.5.4, to which the CLI updated itself from 1.4.12. The seat can do what it could before and nothing more: the reviewer reads, writes nothing and has no command, web or subagent tool; the maker writes in its workspace, and no write outside it that the probes tried took effect: the model reported permission errors for the absolute paths and the write tool's own refusal of the relative one. The CLI renamed its read tool `read_file` (the reviewer agent's `view_file` entry still grants exactly it), and its write tool again refuses a relative path such as `../x` itself. The retired Gemini 3.8 Flash ran the probes, as before; Gemini 4 Argon answered the reviewer's low-effort probe.
+- Document that the Antigravity CLI updates itself. A start outside the maker's fence (the reviewer seat, `agy models`, model-sync's catalogue fetch) checks for a release at most every 15 minutes and replaces the binary in the background; `AGY_CLI_DISABLE_AUTO_UPDATE=1` does not stop it. The maker seat cannot update it. The CLI behind the seat can therefore change between two runs: keep the version in the receipt with `--host-cli-version`, and re-probe after a change.
+
 ## [1.25.1] — 2026-11-10 (Claude Fable 5.2 as the architect model)
 
 ### Changed
