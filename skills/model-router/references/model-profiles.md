@@ -449,14 +449,17 @@ suite can answer: is the model below the weakest tier-2 row? It is not, on
 either replay: 56% review recall against a 28.2% bar (59% as graded), and 69%
 of implementation runs against 57.5% (75% as graded). Each first figure
 already carries a correction that lowers it, for answers the user's shared
-memory handed a session; that correction and the audit rules were added by
-amendments after the review replay was dispatched, before any result was read
-or graded. The reading
+memory handed a session; amendments made after the review replay was
+dispatched, and before any grade or review was read, set that correction and
+tightened the audit the plans already had. The reading
 is weak: it is compatible with tier 2 as much as with tier 3, it is no
 evidence for tier 3, and it says nothing about the predecessor, which was
-never a subject. The session that ran the measurement was the model being
-measured. No route moves except by the id. See "The architect seat's replays
-on 2026-11-10".
+never a subject. The figures come with limits: most of the review answer key
+was written by the predecessor, which is also one of the two judges; seven of
+the eight reference fixes were written by the Claude senior seat's model; the
+tier-2 rows' own sessions were audited less strictly; and the session that
+ran the measurement was the model being measured. No route moves except by
+the id. See "The architect seat's replays on 2026-11-10".
 
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
@@ -901,16 +904,19 @@ since the anchors ran: one added line states a finding of the third review
 package, and another file states part of one task's fix. Each is scored
 against the model where a session read it, which is the difference between
 the two figures in each cell; that correction lowers the score, and it was
-added by amendment after the reviews were dispatched and before any was read
-or graded. And the session that ran the measurement was the model being
-measured: the advisory reading was fixed before any dispatch, the audit rules
-were added by amendments on three design-review rounds before any result was
-read, grading was left to the judges and the hidden tests, and the audit and
-the reviews were done by other models. Two more limits belong with the
+added by amendment after the reviews were dispatched and before any grade or
+review was read. And the session that ran the measurement was the model being
+measured: the plans fixed the advisory reading, the grading and a full hand
+read by two other models before dispatch, amendments on three design-review
+rounds tightened that audit before any grade or session was read, grading was
+left to the judges and the hidden tests, and the audit and the reviews were
+done by other models. Two more limits belong with the
 figures: seven of the eight implementation tasks' reference fixes were
 written by the Claude senior seat's model, so the hidden tests encode a Claude
-model's reading, and the anchors' own sessions were never audited, so the
-standard applied here is stricter than the numbers it is compared with.
+model's reading, and the tier-2 rows' own sessions were audited less strictly
+(not at all on the review replay; by a pattern scan with its flags read by
+hand on the implementation replay), so the standard applied here is stricter
+than the one behind the tier-2 numbers it is compared with.
 
 Isolation was settled as on 2026-10-27, by reading every tool call: 1,243
 calls over twenty-two sessions, and every text the CLI injected into them,

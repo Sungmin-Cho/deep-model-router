@@ -4367,12 +4367,16 @@ verification_ledger:
         below" is weak evidence, compatible with tier 2, no evidence for tier
         3, and says nothing about the predecessor, which was never a subject.
         The orchestrator of the measurement was a claude-fable-5-2 session.
-        Only the advisory reading was fixed before the reviews were
-        dispatched; the audit gates and the memory correction below were
-        added by amendments (A1 to A3) after dispatch and before any review
-        was read or graded, on three design-review rounds by other models
-        (gpt-6.1-sol, claude-sonnet-5-5); the judges and the audit readers
-        were other models too.
+        The plan fixed, before the reviews were dispatched, the advisory
+        reading, the void and substitution rules, the judging and a full
+        hand read by two readers of other families. Three amendments
+        followed, on three design-review rounds by other models
+        (gpt-6.1-sol, claude-sonnet-5-5), all after dispatch: A1 and A2
+        before any review was read, judged or hand-read, A3 after the judges
+        had run and before any grade, review or hand-read verdict was read.
+        They tightened that audit and replaced its shared-memory class with
+        the memory correction below; the judges and the audit readers were
+        other models too.
         Memory correction (it lowers the score): a Claude subject loads the
         user's shared memory index and may read its files, as T3's anchors
         did - sessions that were never audited (all six of their scored
@@ -4449,11 +4453,16 @@ verification_ledger:
         tests alone (reported beside; it decides nothing).
         Biases: seven of the eight reference fixes were written by
         claude-opus-5-5, so the hidden tests encode a Claude model's reading
-        of each finding; the anchors' sessions were never audited; the
-        orchestrator of the measurement was a claude-fable-5-2 session (the
-        advisory reading fixed before dispatch, the audit gates added by
-        amendments A1 to A4 before any grade was read, grading deterministic,
-        the audit readers and design reviewers other models).
+        of each finding; the tier-2 anchors' sessions (2026-10-15) were
+        audited by a pattern scan whose flags were read by hand, not read
+        call by call as these were; the orchestrator of the measurement was
+        a claude-fable-5-2 session (the plan and its first amendment, with
+        the advisory reading, the grading and a full hand read by two
+        readers of other families, fixed before any attempt was dispatched;
+        amendments A2 and A3 tightened the audit while attempts ran, and A4
+        split the hand read once they had finished, each before any grade or
+        session was read; grading deterministic; the audit readers and
+        design reviewers other models).
         Plan, amendments A1 to A4, harness, grades, call listing and hand
         read: the local archive docs/evals/2026-11-10-t10/ (summary.json
         sha256
