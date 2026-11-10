@@ -1,6 +1,6 @@
 {
   "chains": {
-    "claude_architect": ["claude-fable-5", "claude-fable-5-1"],
+    "claude_architect": ["claude-fable-5", "claude-fable-5-1", "claude-fable-5-2"],
     "xai_frontier": ["grok-4.6", "grok-4.7"],
     "claude_senior": ["claude-opus-5", "claude-opus-5-5"],
     "openai_reasoning": ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"],
@@ -15,6 +15,7 @@
   },
   "prior_failure_exit": {
     "claude_architect@claude-fable-5": 1,
+    "claude_architect@claude-fable-5-1": 1,
     "xai_frontier@grok-4.6": 0,
     "claude_senior@claude-opus-5": 0,
     "openai_reasoning@gpt-5.6-sol": 0,

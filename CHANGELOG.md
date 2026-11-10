@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.1] — 2026-11-10 (Claude Fable 5.2 as the architect model)
+
+### Changed
+
+- Move the Claude architect model from Claude Fable 5.1 to Claude Fable 5.2. It accepts every effort level the router sends, so its row needs no effort exception, and it keeps the refusal classifier, so the `security_sensitive` substitution note stays. Its documented price falls to $8 / $40 per million input / output tokens ($0.20 cached), from $10 / $50. No other routing decision changes: each of the 557,568 replayed routes differs from 1.25.0 only in this id. Claude Fable 5.1 stays valid history input (`--prior-models`, `--unavailable-models`, `--host-model`).
+- Score the new model on both replays, and say what that does and does not establish. The architect's tier 3 has always been a policy assignment: until now the two tier-3 models judged the review replays, were absent from the implementation replays and were never subjects, and the tier method cannot decide a top-tier row (there is no tier above it to gate on, and the other tier-3 model has no score). So the measurement plan asks one advisory question, fixed before any run: does the model fall below the weakest tier-2 model? It does not. It recalls 56% of the accepted review findings (59% as graded; the tier-2 models recall 33% to 52%), and 69% of its implementation runs count as passes (11 of 16; 12 of 16 pass as graded; the tier-2 models pass 63% to 69%). The lower figure of each pair takes away what the user's shared memory, grown since the earlier models were measured, had handed a session: one review finding and part of one task's fix. Tier 3 stays as assigned: these scores do not measure, confirm or support it, and they say nothing about Claude Fable 5.1. Read them with their limits. Two thirds of the review answer key come from reviews Claude Fable 5.1 wrote, and it is one of the two judges; seven of the eight implementation fixes the hidden tests come from were written by Claude Opus 5.5; the session that ran the measurement was the model being measured, with the judges, the audit readers and the reviewers of the plan being other models; and the tier-2 models' own sessions were audited less strictly than these, on the review replay not at all. The model profile has the numbers. The attended maker probe passed for this id; its confirmation was answered by a script, with the user's permission.
+
 ## [1.25.0] — 2026-11-03 (the gemini seat's quota refusal, recorded)
 
 ### Added
