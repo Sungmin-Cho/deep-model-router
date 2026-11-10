@@ -642,17 +642,47 @@ models:
     verified: true
     price_per_mtok: { input: 5.00, output: 25.00, cached_input: 0.50 }
 
+  # The id moved 5.1 -> 5.2 on 2026-11-10 through `model_sync.py promote`
+  # (the overlay had published it that morning after the P0-P4 gates). Every
+  # effort token the claude family map emits was live-probed on it, so no
+  # per-model map or ceiling. `capability_tier: 3` is a policy assignment, as
+  # it always was for this row: until this generation the row was never a
+  # subject of a replay (it was a judge). Both replays were run on the new
+  # generation; the method cannot decide a tier-3 row (no tier above it for the
+  # gate, and the other tier-3 row has no score), so the tier is recorded as
+  # held with scores, not as measured - ledger rows "claude_architect review
+  # replay (2026-11-10)" and "claude_architect implementation replay
+  # (2026-11-10)". The router reads no price: the lower list price moves no
+  # route.
   claude_architect:
-    id: claude-fable-5-1
+    id: claude-fable-5-2
     lineage: { line: claude/fable, template: "claude-fable-{gen}", catalog_name: Fable }
     family: claude
     capability_tier: 3
     verified: true
-    # Provider-side substitution disclosure (see the Fable 5 / 5.1 ledger
+    # Provider-side substitution disclosure (see the Fable 5 / 5.1 / 5.2 ledger
     # entries): flags listed here that a task carries produce a per-model
-    # note when this model is seated on an executable route. Fable 5.1 keeps
-    # a refusal classifier (stop_reason: refusal + stop_details.category).
+    # note when this model is seated on an executable route. This generation
+    # keeps the refusal classifier (stop_reason: refusal +
+    # stop_details.category).
     served_model_caveats: [security_sensitive]
+    price_per_mtok:
+      verified_on: "2026-11-10"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      input: 8.0
+      output: 40.0
+      cached_input: 0.2
+      cache_write: 10.0
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "claude_architect@claude-fable-5-1":
+    id: claude-fable-5-1
+    history_of: claude_architect
+    family: claude
+    capability_tier: 3
+    dispatchable: false
+    verified: true
     price_per_mtok: { input: 10.00, output: 50.00, cached_input: 0.25 }
 
   # Retired 1.9.0 (design 2026-09-02 DD-2). Valid as HISTORY input
@@ -4174,3 +4204,264 @@ verification_ledger:
         effort map (none on either) and the lineage are unchanged, and the
         router reads no price. Script and output: the local note
         docs/research/2026-10-27-terra61-id-replay/.
+
+    - item: "claude-fable-5-2 model id"
+      status: verified
+      probed_on: "2026-11-09"
+      attempt_id: "p20261109T234119-ce148b8b-1"
+      cli_version: "2.1.321"
+      argv: "claude -p --model claude-fable-5-2 --effort low --permission-mode plan --allowedTools Read,Glob,Grep,LS --strict-mcp-config --output-format json"
+      evidence: >
+        model_sync contained read-only probe of claude_architect
+        (claude-fable-5-1 -> claude-fable-5-2): P1 smoke answered pong with
+        termination confirmed; P2 served_models ['claude-fable-5-2'] are
+        served forms of the id; P3 boot input 50755 vs 51093 for the current
+        id (paired). Quality is not measured by this row. The probe ran at
+        23:41 UTC on 2026-11-09 (08:41 on the 10th, local time; the attempt
+        id and probed_on carry the UTC date), and published the overlay
+        entry that `model_sync.py promote` then moved into this file.
+
+    - item: "claude-fable-5-2 reasoning-effort values"
+      status: verified
+      probed_on: "2026-11-10"
+      evidence: >
+        Live-probed tokens for claude-fable-5-2, one contained read-only
+        call each through the released 1.25.0 probe harness (the model_sync
+        recipe under the receipt guard, a scratch state root, nothing
+        published), every one SUCCEEDED with pong and served by the
+        requested id: low, medium, high, xhigh, max (attempts
+        e20261110T033336-1..5; model_sync's own run had probed low at P1 and
+        max at P4 the same morning). Every token the claude family map emits
+        is accepted, so the row needs no per-model effort_map and no
+        ceiling, as on its predecessor. The provider documents the same
+        five levels with high as the API default; a routed dispatch always
+        passes an explicit effort.
+
+    - item: "claude-fable-5-2 pricing and context window"
+      status: documented
+      probed_on: "2026-11-10"
+      source: "https://platform.claude.com/docs/en/about-claude/pricing"
+      evidence: >
+        Reference API rates per MTok read from the source on 2026-11-10:
+        input 8.0, output 40.0, cached_input 0.2 (cache reads are 0.025x the
+        input rate on this line), cache_write 10.0 (the 5-minute write; a
+        1-hour write is 16.0). The predecessor's rates were 10 / 50 / 0.25 /
+        12.50: the list price fell by a fifth. No long-context tier: the
+        same page bills the full 1M-token window at the standard rate. A
+        reference record, not the marginal cost of a subscription dispatch,
+        and no route reads it. The provider's models overview documents a
+        1M-token context window, 128K output tokens, a June 2026 training
+        cutoff and retirement not sooner than 2027-11-09 (the deprecations
+        page lists the predecessor as active until at least 2027-09-01).
+        The row leaves `context_window` unset, as its predecessor did.
+
+    - item: "Fable 5.2 provider-side model substitution (refusal classifier)"
+      status: documented
+      probed_on: "2026-11-10"
+      source: "https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2"
+      evidence: >
+        Vendor documentation read 2026-11-10 (not an execution probe):
+        "Claude Fable 5.2 runs safety classifiers, and everything in
+        Refusals and fallback applies" - a declined request returns HTTP
+        200 with stop_reason "refusal" and a stop_details object, and a
+        fallback can rerun it on another model (the permitted targets for
+        this generation are Claude Opus 4.8 and Claude Opus 5, neither a
+        live row of this registry). Whether the `claude -p`
+        transport enables that is not probed here - the same position as
+        the Fable 5.1 row. Implication unchanged: under security_sensitive
+        the identity of a claude_architect seat is declared_only, disclosed
+        per route by served_model_caveats. In this release's two replays
+        (22 dispatches of this id, packages that review sandbox and
+        containment code among them) the main-thread turns of every session
+        were written by the requested id; see the two replay rows. The same
+        page lists four changes that can break code written for the
+        predecessor (a prefix check on replayed thinking blocks for every
+        account, thinking blocks readable only by this generation, one
+        computer-use tool version refused, an advisor pairing rule). Each
+        concerns a caller that builds Messages API requests itself; the
+        router dispatches this seat through `claude -p` only.
+
+    - item: "claude-fable-5-2 tier evidence (external)"
+      status: documented
+      probed_on: "2026-11-10"
+      source: "https://www.vals.ai/benchmarks/vals_index"
+      evidence: >
+        A third-party number read on 2026-11-10, not a measurement of this
+        router: Vals Index (updated 2026-11-09, 36 models) 71.31, rank 1 -
+        claude-sonnet-5-5 70.85, claude-opus-5-5 70.14, gemini-4-argon 69.39,
+        gpt-6-astra 65.02, gpt-6.1-sol 63.94, gpt-6.1-terra 60.54,
+        claude-haiku-5-5 58.73, grok-4.7 58.62; cost per test 17.94 USD
+        against 24.77 for claude-opus-5-5 and 16.18 for claude-sonnet-5-5.
+        The predecessor is not on that list. The provider positions the
+        model as its most capable widely released one, for work where an
+        Opus model at higher effort still falls short. The row's tier is a
+        policy assignment and is not set by these.
+
+    - item: "claude_architect quality evidence after the claude-fable-5-2 id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "claude-fable-5-1 model id"
+      evidence: >
+        capability_tier 3 is the policy assignment this key has always
+        carried, and there is no measured quality of the predecessor to
+        inherit: in every replay before 2026-11-10 the two tier-3 models were
+        the judges, never subjects, and the row listed here records the
+        predecessor's id only. Both replays were run on claude-fable-5-2 on
+        2026-11-10 - rows "claude_architect review replay (2026-11-10)" and
+        "claude_architect implementation replay (2026-11-10)" - and scored
+        it; the method cannot decide a row at the top tier, so the tier is
+        held with those scores and is not a measured tier. Neither row says
+        anything about claude-fable-5-1, which was a judge in one and absent
+        from the other.
+
+    - item: "claude-fable-5-2 maker seat"
+      status: maker_not_reprobed
+      evidence: >
+        No attended probe-maker summary for claude-fable-5-2 (the probe needs
+        a person at a TTY). Containment of the write seat is the transport
+        recipe's and does not depend on the id. Functional evidence instead:
+        the 2026-11-10 implementation replay dispatched the headless Claude
+        maker recipe with this id sixteen times through the released 1.25.0
+        supervisor (`claude -p --model claude-fable-5-2 --effort high
+        --permission-mode acceptEdits --allowedTools
+        Read,Edit,Write,Glob,Grep,LS,Bash(python3:*) --strict-mcp-config
+        --output-format json`, a disposable single-linked workspace each);
+        all sixteen ended SUCCEEDED with edits in their workspaces, and the
+        private trees beside them were unchanged afterwards.
+
+    - item: "claude_architect review replay (2026-11-10)"
+      status: verified
+      probed_on: "2026-11-10"
+      evidence: >
+        T9: the 1.22.0 real-review replay (T3's three frozen packages A, B, C,
+        their original prompts, effort high, two reps, deadline 3,600 s) on
+        claude-fable-5-2 through the Claude reviewer recipe T3's Claude rows
+        ran (plan mode; the released 1.25.0 supervisor, Claude Code 2.1.322),
+        graded blind by the T3 judges claude-fable-5-1 and gpt-6-astra, whose
+        calibration was re-run first (12 of 12 exactly as expected; agreement
+        on the subject's items 1.000). Six reviews, all SUCCEEDED in 367 to
+        556 s, every main-thread turn written by the requested id.
+        The method's verdict is withheld by construction: the row is at tier
+        3, the rule's gate reads the tier above (there is none), and the only
+        other live tier-3 row, gpt-6-astra, is a judge with no score.
+        capability_tier 3 stays what it was, a policy assignment; this replay
+        neither confirms nor measures it.
+        Advisory reading, fixed before any dispatch: is the row below the
+        weakest live tier-2 row by more than the margin? Live rows of the
+        1.25.0 registry: tier 2 claude-opus-5-5 0.515993, claude-sonnet-5-5
+        0.455387, gpt-6.1-sol 0.332492 (mean 0.434624); tier 1 gpt-6.1-terra
+        0.250842, gemini-4-argon 0.233165 (gate 0.201459, met); bar 0.282492.
+        Recall: claude-fable-5-2 0.558923 (packages 0.722222, 0.500000,
+        0.454545): not below tier 2. As graded, before the memory correction
+        below, 0.589226 (package C 0.545455): the same reading. The value is
+        above every tier-2 row; no rule of the method reads that, and the
+        suite's order does not follow the tiers (claude-haiku-5-5, tier 0,
+        0.397306).
+        What the number rests on, disclosed in the plan: 19 of the 29
+        ground-truth items come from the original reviews by claude-fable-5-1,
+        the subject's predecessor (gpt-6.1-sol's found 12, two shared), and
+        claude-fable-5-1 is also one of the two judges (the gpt-6-astra-only
+        reading is the same value); the orchestrator of the measurement was a
+        claude-fable-5-2 session, so the rule was fixed before dispatch and
+        the judges, the audit readers and the three design-review rounds
+        (gpt-6.1-sol, claude-sonnet-5-5) were other models. Each of these can
+        only raise the score: "not below" is weak evidence, compatible with
+        tier 2, and says nothing about the predecessor, which was never a
+        subject.
+        Memory correction: a Claude subject loads the user's shared memory
+        index and may read its files, as T3's unaudited anchors did (all six
+        of their scored attempts on package C read the same file). That file
+        had grown from 4,105 to 8,790 characters since; both readers found
+        that one added line states package C's item GT01, so GT01 scores
+        not-found for the two C reps that read it (the primary value above).
+        Isolation: every tool call of the six sessions (227: Bash and Read
+        only; no subagent, no network, no other agent CLI) and every text the
+        CLI injected into them (43) was read in full by two readers that are
+        not the subject (claude-opus-5-5, gpt-6.1-sol; answers taken from
+        supervisor receipts and bound to the package and the sessions): no
+        session read answer-bearing material; the reads outside a package copy
+        were the shared memory file (three sessions), /tmp as a scratch
+        directory and the sessions' own tool-result files.
+        Sensitivity: each tier-2 row alone, each package alone and each judge
+        alone read not below wherever the gate holds; with gpt-6.1-sol alone
+        (gate 0.099327) or package C alone (gate 0.060606) the gate fails.
+        This row alone moves nothing: the seat writes. Plan, amendments A1 to
+        A3, harness, receipts, grades, call listing and hand read: the local
+        archive docs/evals/2026-11-10-t9/ (summary.json sha256
+        a1cb2ff62c0bb202182073fe9acfe8b597c3a2bbaf3f8fa09622b4fc028f4678).
+
+    - item: "claude_architect implementation replay (2026-11-10)"
+      status: verified
+      probed_on: "2026-11-10"
+      evidence: >
+        T10: the 2026-10-15 implementation replay (the same eight tasks,
+        hidden tests, prompt and regression sets, re-validated byte for byte
+        against that replay's manifest) on claude-fable-5-2 through the
+        headless Claude maker recipe its Claude rows ran (acceptEdits, effort
+        high, deadline 2,700 s; the released 1.25.0 supervisor, Claude Code
+        2.1.322), two runs per task in workspaces apart from every reference
+        tree; all sixteen SUCCEEDED in 244 to 1,684 s, every main-thread turn
+        written by the requested id, the private trees intact afterwards.
+        The method's verdict is withheld by construction, as for the review
+        replay: the row is at tier 3, the gate reads the tier above (there is
+        none), and no other live tier-3 row has an implementation score.
+        capability_tier 3 stays a policy assignment.
+        Advisory reading, fixed before any dispatch. Anchors are the published
+        pass rates under the 1.25.0 tiers: tier 2 claude-opus-5-5 0.687500,
+        gpt-6.1-sol 0.625000, claude-sonnet-5-5 0.625000 (mean 0.645833);
+        tier 1 gpt-6.1-terra 0.437500 (gate 0.208333, met); bar 0.575000;
+        tier 0 claude-haiku-5-5 0.562500, gpt-6-luna 0.375000. Pass rate:
+        claude-fable-5-2 0.687500 (eleven of sixteen runs: both on T02, T03,
+        T04, T05 and T08, one on T07, none on T01 or T06, where nearly every
+        anchor also failed both): not below tier 2. As graded, before the
+        memory correction below, 0.750000 (twelve of sixteen): the same
+        reading. The primary value equals the highest tier-2 row, so this
+        replay does not separate the model from tier 2.
+        Memory correction: one T07 run read a shared memory file whose text,
+        both readers found, states part of T07's fix beyond the finding (what
+        a verdict line may carry); no anchor session had read that file, so
+        the run scores 0 in the primary reading although its fix passes.
+        Isolation: every tool call of the sixteen sessions (1,016; no
+        subagent, no network, no other agent CLI) and every text the CLI
+        injected into them was read in full, in four packages, by two readers
+        that are not the subject (claude-opus-5-5, gpt-6.1-sol; answers taken
+        from supervisor receipts and bound to package and session): no session
+        read answer-bearing material or wrote the shared memory store, whose
+        hashes were the same before the first dispatch and after the last;
+        outside a workspace the sessions used their own scratch directories
+        and scratch scripts under /tmp, none shared between sessions.
+        With the review replay: neither reads below tier 2, so nothing is
+        proposed and tier 3 holds - as a policy assignment with scores, never
+        as a measured tier. Sensitivity: each tier-2 row alone, and T01 left
+        out on both sides, read the same; the share of hidden tests passed
+        (0.861111) gives no reading (gate -0.001736: on that metric the
+        tier-1 anchor is level with the tier-2 rows). T01 under the retracted
+        C1 file passes both runs (reported beside; it decides nothing).
+        Biases: seven of the eight reference fixes were written by
+        claude-opus-5-5, so the hidden tests encode a Claude model's reading
+        of each finding; the orchestrator of the measurement was a
+        claude-fable-5-2 session (the rule fixed before dispatch, grading
+        deterministic, the audit readers and design reviewers other models).
+        Plan, amendments A1 to A4, harness, grades, call listing and hand
+        read: the local archive docs/evals/2026-11-10-t10/ (summary.json
+        sha256
+        0a19da307ed77a09181a4c31324d20f3220834a7e3ad1ef014436126843cb87a).
+
+    - item: "claude_architect id bump replay (claude-fable-5-1 -> claude-fable-5-2, 2026-11-10)"
+      status: verified
+      probed_on: "2026-11-10"
+      evidence: >
+        One router, two registries (1.25.0 and the candidate), one grid: eleven
+        classes, every dimension 0-3, three runtimes, three flag sets (none;
+        auth_sensitive; review_disagreement, which binds the judge seat),
+        eleven availability scenarios (all up; xai out; the Claude senior
+        model out; the OpenAI frontier out; the frontier and the OpenAI
+        reasoning model out; OpenAI quota low or exhausted; Claude quota low
+        or exhausted; this seat itself out; Claude only), fresh and one retry
+        after each side's own fresh worker failed: 557,568 routes, 464,881 of
+        which name this seat's model. With claude-fable-5-1 rewritten to
+        claude-fable-5-2 on the 1.25.0 side, every route is equal; only the
+        hashes of the config or of a request naming the id differ. The tier,
+        the effort map (none on either), the substitution caveat and the
+        lineage are unchanged, and the router reads no price. Script and
+        output: the local note docs/research/2026-11-10-fable52-id-replay/.

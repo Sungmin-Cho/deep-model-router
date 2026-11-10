@@ -426,6 +426,31 @@ which uses the predecessor as the tier-1 reference, says hold. Neither half
 points up or down, so no route moves except by the id. A raise would have
 needed both. See "Tiers measured on 2026-10-27".
 
+### The Claude architect seat
+
+**Its tier is a policy assignment, held with scores, not a measured tier.** On
+2026-11-10 the `claude_architect` id moved to the next Fable generation. The
+overlay had published it that morning after the contained gates passed (the id
+served, a boot overhead level with the predecessor's), and promote moved it
+into the registry. Every effort token the router emits for the family was then
+probed on it and accepted, so the row carries no per-model effort map. The
+published prices fell by a fifth, to $8 / $40 per million input / output
+tokens ($0.20 cached); the router reads no price, so no route moves on that.
+Like its predecessor it keeps refusal classifiers, and the provider's fallback
+can rerun a declined request on another Claude model, so the row keeps the
+`security_sensitive` substitution disclosure.
+
+Tier 3 was never measured for this seat: in every replay before this one the
+two tier-3 models were the judges. Both replays were run on the new generation
+under rules written before any dispatch. The method cannot decide a row at the
+top tier (its gate reads the tier above, and the only other tier-3 row has no
+score), so the plan asked the one question the suite can answer: is the model
+below the weakest tier-2 row? It is not, on either replay (56% review recall
+against a 28.2% bar; 69% of implementation runs against 57.5%). That is weak
+evidence: it is compatible with tier 2 as much as with tier 3, and it says
+nothing about the predecessor, which was never a subject. No route moves
+except by the id. See "The architect seat's replays on 2026-11-10".
+
 ## Why `worker_fast` is bound to the OpenAI fast tier
 
 Worth recording, because it is the one binding decision that rests on
@@ -838,3 +863,43 @@ needed because three design-review rounds showed that a pattern-based audit
 cannot rule out a path built at run time. The ledger rows "openai_worker_balanced tier
 measurement (real-review replay, 2026-10-27)" and "openai_worker_balanced
 implementation replay (2026-10-27)" have the numbers.
+
+## The architect seat's replays on 2026-11-10
+
+The Claude architect seat's model moved to the next Fable generation, and that
+row writes, so both replays were run on it. This is the first time a tier-3
+row was a subject: until now the two tier-3 models graded the others.
+
+| Replay | New Fable generation | Tier-2 rows | Tier-1 anchor | Bar | Reading |
+|---|---|---|---|---|---|
+| Review recall | 56% (59% as graded) | 52%, 46%, 33% | 23% | 28.2% | not below tier 2 |
+| Implementation pass rate | 69% (75% as graded) | 69%, 63%, 63% | 44% | 57.5% | not below tier 2 |
+
+Neither row is a verdict on tier 3. The method raises or lowers a row against
+the tier above it and against the other rows of its own tier; the top tier has
+no tier above, and its only other row is a judge with no score. The readings
+are the plan's preregistered advisory: they could have shown the model below
+tier 2, which would have gone to the user, and they did not. The review recall
+is above every tier-2 row and the implementation rate level with the best of
+them, but no rule reads that, and on this suite the order of the rows does not
+follow the tiers anyway.
+
+Three things can only have helped the model, and are why "not below" is as far
+as the reading goes. Two thirds of the review replay's answer key (19 of 29
+accepted findings) come from reviews its predecessor wrote, and that
+predecessor is one of the two judges (the other judge alone gives the same
+recall). The user's shared memory, which every Claude subject loads, had grown
+since the anchors ran: one added line states a finding of the third review
+package, and another file states part of one task's fix. Each is scored
+against the model where a session read it, which is the difference between
+the two figures in each cell. And the session that ran the measurement was the
+model being measured, so the rules were fixed before any dispatch, grading was
+left to the judges and the hidden tests, and the audit and the three
+design-review rounds were done by other models.
+
+Isolation was settled as on 2026-10-27, by reading every tool call: 1,243
+calls over twenty-two sessions, and every text the CLI injected into them,
+read in full by two models of different families that are not the subject. No
+session read answer-bearing material, reached the network or launched another
+agent. The ledger rows "claude_architect review replay (2026-11-10)" and
+"claude_architect implementation replay (2026-11-10)" have the numbers.
