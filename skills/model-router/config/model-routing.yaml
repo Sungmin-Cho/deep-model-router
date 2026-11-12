@@ -3985,6 +3985,61 @@ verification_ledger:
         gates; re-probing the seat profiles after a change is a separate step,
         done by hand (the rows above).
 
+    - item: "Gemini seat profiles on agy 1.5.6 (re-probe, 2026-11-12)"
+      status: verified
+      probed_on: "2026-11-12"
+      cli_version: "agy 1.5.6"
+      evidence: >
+        The CLI updated itself from 1.5.4 to 1.5.6: an unfenced start at
+        08:37:59 KST on 2026-11-12 (its CLI log: language server 1.5.4)
+        spawned the background updater, and the binary on PATH was replaced at
+        08:38. The 1.24.0 probe set was
+        repeated through an archive of the released 1.25.2 dispatch_agent.py
+        (d6b36d0) with gemini-3.8-flash under both profiles; `agy --version`
+        printed 1.5.6 before, between and after the two probe sets. The
+        reviewer's low-effort probe on gemini-4-argon was not repeated: the
+        account's argon quota was spent until 2026-11-17 and is kept for the
+        implementation replay (#72). The first unfenced start spawned the
+        background updater (15:44:09 KST), which recorded "Already on the
+        latest version."; the binary was not replaced. Reviewer: art-low-flash, art-medium-flash and art-high-flash
+        SUCCEEDED with verdict PASS, the deny-rule record loaded (stored 0
+        allow, 5 deny grants from project dmr-reviewer-v1) and the log
+        resolved each effort spelling (art-low-flash receipt sha256
+        e02c2a1c6ba3353bd4acb8e1e4f13c0efe4efb9ee694d52262bce90885ec3bf7);
+        acontain-flash
+        (cf68c39323e6f1d03a9156dfdf9be2a20229c6a8c64c10e0133eddadd856d705) had
+        no tool to write, edit, run a command, fetch a URL, search the web or
+        start a subagent, listed read_file and manage_task, and left the
+        workspace unchanged. An id the CLI does not know (afail-flash,
+        560d533989c100538b88eb3283c6984116e2c93d8cb27f782e58639ebf590462)
+        FAILED with the CLI's own text. Maker, under the receipt guard:
+        ma-flash (9becfaaf5f00128b1076d0438e84f2aac10f1340ee921d5317e695097aef43a3)
+        wrote made.txt as asked; in mb-flash
+        (062ee335905278d5a5a150303ea33730a7581a7b9353595d0d2f543e7423eb63) and
+        mb-flash-rel
+        (f304b681263e3bb544f460dccfc59c7f3171bda99f66b2b1edc2b23f5d2a346a) no
+        file was created: the model reported `operation not permitted` for an
+        absolute path outside the workspace and for a file under HOME, and the
+        write tool's own refusal of `../rel-escape.txt` ("must be an absolute
+        path", as on 1.5.4); in md-flash
+        (7c9e45692f7bda32faefa914ba20f2b06eaea78c7c8e8f9404589e1adf161094)
+        nothing was created under .git/hooks, a nested .git or .agents, each
+        reported as `operation not permitted`; mh-flash
+        (d21c8d73aaaeaac2def5c883cc235c9fd8aba8453269d77d9a902009e3fc03ae)
+        reported `permission denied` for /dev/stdout, whose receipt stdout is
+        the CLI's own document. The model declined to touch the reviewer
+        agent file in both me-flash
+        (887c1687f76c2cf1bb82b2325d97d2bef3347c9c862721551328188e85f8a229) and
+        me-flash-rel, and /dev/stdout in mh-flash-rel; the file stayed
+        unchanged. mg-flash
+        (f517b6e07184f3172fbbbd9226a75c50482a9c732c3619f54aa7f81bfa883617) had
+        no shell tool; a hard link in the workspace (mc-flash) and a run
+        without the receipt guard (mf-flash) were refused before spawn. Every
+        maker run's CLI log shows the updater skipping (~/.local/bin "not fully
+        accessible ... skipping update"). `agy models` printed the same
+        thirteen lines as the 1.5.4 capture. Receipts and runner: the local
+        archive docs/design/reviews/2026-11-12-agy-156/acceptance/.
+
     - item: "Gemini 3.8 Flash retired (gemini_worker_balanced, 1.24.0)"
       status: documented
       probed_on: "2026-10-27"

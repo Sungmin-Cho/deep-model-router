@@ -1,6 +1,6 @@
 {
   "name": "deep-model-router",
-  "version": "1.25.2",
+  "version": "1.25.3",
   "description": "Deterministic model/effort/review router for Claude Code, Codex, and Grok",
   "author": {
     "name": "Sungmin-Cho"
