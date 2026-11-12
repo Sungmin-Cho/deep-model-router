@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.3] — 2026-11-12 (the gemini seat on Antigravity CLI 1.5.6)
+
+### Changed
+
+- Re-verify the gemini seat's reviewer and maker containment on Antigravity CLI 1.5.6, to which the CLI updated itself from 1.5.4. Nothing changed: the reviewer reads, writes nothing, and has no command, web or subagent tool (it lists `read_file` and the CLI's task list); the maker writes in its workspace, and no write outside it that the probes tried took effect. For the absolute paths the model reported permission errors; for the relative `../` path it reported the write tool's own refusal. The model declined to touch the reviewer agent file, which stayed unchanged. The retired Gemini 3.8 Flash ran the probes. The reviewer's low-effort probe on Gemini 4 Argon was not repeated, because the account's Argon quota is spent until 2026-11-17 and is kept for the implementation replay (#72).
+
 ## [1.25.2] — 2026-11-10 (the gemini seat on Antigravity CLI 1.5.4)
 
 ### Changed
