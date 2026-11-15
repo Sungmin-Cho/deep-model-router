@@ -741,16 +741,60 @@ def test_the_gemini_seat_measurement_rederives_its_tier():
 
 def test_the_gemini_seat_cannot_write_without_an_agreeing_implementation_replay():
     """Argon's replay never ran and was stopped with the row (1.26.0); the live seat's
-    own replay is recorded and write authority stays withheld until the user grants it
-    after both replays agree (review i1, fable F7: bound to the live seat)."""
+    own replay is recorded, and write authority stays withheld unless both replays
+    name the same tier and the user then grants it (review i1, fable F7: bound to the
+    live seat). In 1.26.0 they disagree, so the direction cannot write."""
     assert LEDGER["gemini_frontier implementation replay (not run, 2026-10-27)"]["status"] == "documented"
     assert LEDGER["gemini_frontier implementation replay (stopped, 2026-11-15)"]["status"] == "documented"
     assert MODELS["gemini_hydrogen"].get("dispatchable", True) is True
+    review, impl = (_stated_tier(HYDROGEN_ROW), _stated_tier(HYDROGEN_IMPL_ROW))
+    assert (review, impl) == (1, 2)
     for host in ("claude_code", "codex"):
         assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
 
 
 HYDROGEN_ROW = "gemini_hydrogen tier measurement (real-review replay, 2026-11-15)"
+HYDROGEN_IMPL_ROW = "gemini_hydrogen implementation replay (2026-11-15)"
+
+
+def _stated_tier(item: str) -> int:
+    found = re.findall(r"Verdict: tier (\d)\.", " ".join(_text(item).split()))
+    assert len(found) == 1, (item, found)
+    return int(found[0])
+
+
+def test_the_hydrogen_implementation_replay_rederives_its_verdict_and_moves_nothing():
+    """1.26.0, T12: re-derive the implementation verdict from the pass rates the row
+    records, against the live writing rows of the registry before the measurement
+    (rows with no implementation score are not anchors; the tier-3 architect is
+    reported beside). A seat's tier moves only where both replays agree, so with
+    the review replay at tier 1 and this one at tier 2 the row stays at tier 1."""
+    row = LEDGER[HYDROGEN_IMPL_ROW]
+    assert row["status"] == "verified"
+    text = _text(HYDROGEN_IMPL_ROW)
+    scores = _recalls(text)
+    seat = MODELS["gemini_hydrogen"]["id"]
+    live = _live_others("gemini_hydrogen", **BEFORE_1_26)
+    tier = lambda t: [scores[m["id"]] for m in live.values()             # noqa: E731
+                      if m["capability_tier"] == t and m["id"] in scores]
+    t2, t1, t0 = tier(2), tier(1), tier(0)
+    assert len(t2) == 3 and len(t1) == 1 and len(t0) == 2, (t2, t1, t0)
+    assert MODELS["claude_architect"]["id"] not in scores     # beside, not an anchor
+    assert MODELS["gemini_frontier"]["id"] not in scores      # argon never wrote
+    a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
+    stated = {k: float(v) for k, v in re.findall(
+        r"(Tier-2 mean|separation|Bar for tier 2:|Bar for tier 1:) (0\.\d{6})", text)}
+    assert abs(stated["Tier-2 mean"] - mean2) < 2e-6
+    assert abs(stated["separation"] - (mean2 - a1)) < 2e-6 and mean2 - a1 >= SEPARATION
+    assert abs(stated["Bar for tier 2:"] - (a2 - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["Bar for tier 1:"] - (a1 - CONFIRM_MARGIN)) < 2e-6
+    x = scores[seat]
+    derived = 2 if x >= a2 - CONFIRM_MARGIN else 1 if x >= a1 - CONFIRM_MARGIN else 0
+    assert _stated_tier(HYDROGEN_IMPL_ROW) == derived
+    review = _stated_tier(HYDROGEN_ROW)
+    if derived != review:
+        assert "replays disagree" in " ".join(text.split())
+    assert MODELS["gemini_hydrogen"]["capability_tier"] == review
 
 
 def test_the_hydrogen_seat_measurement_rederives_its_tier():

@@ -1362,10 +1362,10 @@ transports:
       # that writes moves only when an implementation replay agrees; that replay
       # could not run (the account's quota for the model was spent) and was
       # stopped when argon was retired (1.26.0, user decision 2026-11-15). 1.26.0:
-      # the current model measured tier 1 in its review replay; its
-      # implementation replay decides whether write authority is proposed to the
-      # user, and the authority is per direction, so it can be proposed only
-      # while this is the family's one dispatchable model. With the Claude-first
+      # the current model measured tier 1 in its review replay and tier 2 in its
+      # implementation replay; the two disagree, so write authority is not
+      # proposed (it would be per direction, and so proposable only while this
+      # is the family's one dispatchable model). With the Claude-first
       # fallback, turning this on would make it the writer where the xai seat
       # and the Claude model are both out (the OpenAI balanced model writes
       # there today); see references/model-profiles.md.
@@ -4383,6 +4383,59 @@ verification_ledger:
         was written by gpt-6.1-sol and claude-fable-5-1; real defects outside
         it are not credited. Plan, harness, receipts, grades and audit: the
         local archive docs/evals/2026-11-15-t11/.
+
+    - item: "gemini_hydrogen implementation replay (2026-11-15)"
+      status: verified
+      probed_on: "2026-11-15"
+      evidence: >
+        T12: the 2026-10-15 implementation replay (the same eight tasks,
+        prompt, hidden tests and regression sets, each task's pre-fix tree
+        re-validated against T6's registered manifest) on gemini-4-hydrogen
+        through the shipped maker recipe (dmr-maker-v1, accept-edits, effort
+        high as every anchor, deadline 2,700 s; the released 1.25.3
+        supervisor, agy 1.5.9 before and after every attempt) under a read
+        fence wider than T6's: no file data under /Users except the CLI's
+        binary directory, its home without its conversation, memory and log
+        stores, the keychains and preferences, none under /private/tmp,
+        /private/var/tmp or the user temp directory except the attempt's own
+        TMPDIR — measured before any attempt by a kernel probe without a model
+        (26 targets: the four controls read, the 22 answer-bearing ones refused
+        with EPERM) and a leak run in which the model tried 18 targets and was
+        refused on the 16 outside its workspace and agent file. Two runs per
+        task; all sixteen SUCCEEDED in 249 to 738 s, every receipt naming that
+        fence. One attempt was refused by the account's quota and dispatched
+        again after the reset ("agy account quota for gemini-4-hydrogen
+        (2026-11-15)"). The rule was written before any dispatch, for a row
+        with no tier yet: anchors are the published pass rates of the live
+        writing rows of the 1.25.3 registry; tier 2 claude-opus-5-5 0.687500,
+        gpt-6.1-sol 0.625000, claude-sonnet-5-5 0.625000; tier 1
+        gpt-6.1-terra 0.437500 (the only tier-1 writing row measured); tier 0
+        (no bar here) claude-haiku-5-5 0.562500, gpt-6-luna 0.375000.
+        Tier-2 mean 0.645833, separation 0.208333 (gate 0.10, met). Bar for
+        tier 2: 0.575000. Bar for tier 1: 0.387500. Pass rate:
+        gemini-4-hydrogen 0.750000 (twelve of sixteen runs: both on T02, T03,
+        T04, T05, T07 and T08, none on T01 or T06 — no anchor passed T01 and
+        one anchor run passed T06). Verdict: tier 2. Sensitivity: tier 2 on
+        the four route_task tasks alone and on the other four alone, and with
+        each tier-2 row alone as the bar; the share of hidden tests passed is
+        0.833333. The claude architect's row (tier 3 by assignment, 0.6875 in
+        T10) is reported beside, never an anchor. The review replay read tier
+        1, so the replays disagree, and by the rule fixed before any dispatch
+        nothing moves: the row keeps the review replay's tier 1, write
+        authority is not proposed, and write_verified stays false. Isolation
+        is by prevention only: under its write fence the CLI keeps no record
+        of the maker's tool calls (its log names no tool path), so what a
+        session tried to read is not known; the fence decides what it could
+        read. Biases: the subject had no shell and could not run the tests
+        the prompt asks for, which every anchor could; seven of the eight
+        reference fixes were written by claude-opus-5-5; the anchors ran
+        2026-10-15 to 2026-11-10 on those days' CLIs and were not re-run; the
+        tier-1 anchor is itself a held tier (T8); the orchestrator was a
+        claude-opus-5-5 session (grading deterministic, the plan reviewed by
+        gpt-6.1-sol and claude-fable-5-2 before any dispatch). Plan, harness,
+        receipts, archives, grades and audit: the local archive
+        docs/evals/2026-11-15-t12/ (summary.json sha256
+        3455126df3f5debc595b7f9f10825a3ccfdd139a3b2f6bbf33958b304ea75a7a).
 
     - item: "agy account quota for gemini-4-hydrogen (2026-11-15)"
       status: verified

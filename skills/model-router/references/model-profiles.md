@@ -272,9 +272,10 @@ unlike argon, this model tries the outside writes it is asked for, and the
 fence refuses each), but a seat that writes moves tier only when an
 implementation replay agrees with the review replay, and write authority on a
 gemini direction is per family, so it can be proposed only while this is the
-family's only dispatchable model — which the adopted placement makes it.
-Until the user grants it, `write_verified` stays false and the seat never
-writes. Both replays are in "Tiers measured on 2026-11-15" below.
+family's only dispatchable model — which the adopted placement makes it. The
+implementation replay read tier 2 and the review replay tier 1: the two
+disagree, so write authority is not proposed, `write_verified` stays false and
+the seat never writes. Both replays are in "Tiers measured on 2026-11-15" below.
 
 **Its quota is the account's, per model.** On a personal sign-in the account's
 quota for this model was refused after six reviews and ten implementation runs
@@ -945,4 +946,38 @@ seat (40%) recalls more than both tier-1 anchors on this suite; the rule reads
 tiers by their bars, as it did for argon. The ledger row "gemini_hydrogen tier
 measurement (real-review replay, 2026-11-15)" has the numbers and limits.
 
-IMPLEMENTATION-REPLAY-PROFILE-PLACEHOLDER
+**The implementation replay.** The same eight accepted findings, prompt and
+hidden tests as the 2026-10-15 replay, two runs each, through the shipped maker
+seat at high effort, under a read fence that leaves every other measurement's
+reference fixes and every copy of the router's scripts unreadable (measured
+before any run, with and without the model). Anchors are the live writing rows
+of 1.25.3; the bars were fixed before any run.
+
+| Seat | Tier | Runs passed |
+|---|---|---|
+| **Gemini maker seat (Gemini 4 Hydrogen)** | **2 by this replay** | **75% (12 of 16)** |
+| Claude senior seat (anchor) | 2 | 69% |
+| Sol seat (anchor) | 2 | 63% |
+| Claude balanced seat (anchor, with Sol the tier-2 bar's rows) | 2 | 63% |
+| Claude fast seat (anchor) | 0 | 56% |
+| OpenAI balanced seat (anchor, the tier-1 bar's row) | 1 | 44% |
+| OpenAI fast seat (anchor) | 0 | 38% |
+| Claude architect seat (tier 3 by assignment, reported beside) | — | 69% |
+
+The tier-2 bar is 57.5% (ten of sixteen) and the tier-1 bar 38.75%. It passed
+both runs of every task a tier-2 anchor passed twice and neither run of the two
+tasks no anchor passed twice; the four `route_task` tasks alone, the other four
+alone and each tier-2 row alone as the bar read the same. It did this without a
+shell: the maker seat reads and writes files only, so unlike every anchor it
+could not run the tests the prompt asks for.
+
+**The two replays disagree** (review tier 1, implementation tier 2), so by the
+rule fixed before either ran nothing moves: the row keeps tier 1, and write
+authority is not proposed. A seat that writes moves only when both replays name
+the same tier; this one's review recall sits among the tier-1 rows while its
+fixes pass like a tier-2 model's. Two limits stand behind the implementation
+number: the CLI keeps no record of the maker's tool calls, so isolation rests
+on the fence alone, not on an audit of what each session read; and seven of the
+eight reference fixes were written by Claude Opus 5.5. The ledger rows
+"gemini_hydrogen implementation replay (2026-11-15)" and "gemini_hydrogen tier
+measurement (real-review replay, 2026-11-15)" have the numbers.
