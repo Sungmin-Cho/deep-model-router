@@ -586,7 +586,11 @@ RULES: dict[str, Rule] = {
     # 1.24.0 (user instruction and decisions 2026-10-27): the gemini seat moves from
     # gemini-3.8-flash (tier 0) to gemini-4-argon, measured at tier 1 in the T5
     # review replay, in the same two fallback places. Off, the seat is tier 0 —
-    # the 1.23 route shape. On, it reaches review and lead seats whose floor asks
+    # the 1.23 route shape (since 1.26.0 the place's seat is gemini-4-hydrogen,
+    # tier 1 too, whose VERY_HIGH ceiling moves only effort fields; that
+    # direction is pinned in test_gemini_seat.py,
+    # `test_the_very_high_ceiling_moves_only_effort_and_never_down`, so off is the
+    # 1.23 shape apart from the seat's model and ceiling). On, it reaches review and lead seats whose floor asks
     # for tier 1, so every comparison that reads a resolved tier can move; held by
     # direction (`_g124_check`). The core grid never reaches the seat (it sits
     # behind the xai seat, the Claude model and, on Claude Code, the meta seat), so

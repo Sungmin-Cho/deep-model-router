@@ -274,7 +274,7 @@ implementation replay agrees with the review replay, and write authority on a
 gemini direction is per family, so it can be proposed only while this is the
 family's only dispatchable model — which the adopted placement makes it.
 Until the user grants it, `write_verified` stays false and the seat never
-writes. The implementation replay is "Tiers measured on 2026-11-15" below.
+writes. Both replays are in "Tiers measured on 2026-11-15" below.
 
 **Its quota is the account's, per model.** On a personal sign-in the account's
 quota for this model was refused after six reviews and ten implementation runs
@@ -285,29 +285,37 @@ ends FAILED and its receipt says it was the quota and when it resets
 until the reset rather than retrying it. A review took 6 to 11 minutes at high
 effort: give the seat a generous deadline.
 
-What 1.26.0 changes for this seat, against 1.25.3 — the 1.24.0 replay grid plus
-six scenarios with argon withheld (its quota spent, as it was most weeks),
-1,156,641 routes, fresh and after a failure:
+What 1.26.0 changes for this seat, against 1.25.3 — the 1.24.0 replay grid
+(thirty-four scenarios) plus six with argon withheld (its quota spent, as it was
+most weeks), 1,156,641 routes, fresh and after a failure:
 
-- **74,906 routes change, nearly all by the id.** With every seat available
-  nothing moves. Against a 1.25.3 registry that only carries the new id, 1,334
-  routes change and every one is the effort of an investigation lead with an
-  unknown root cause: `xhigh` where argon's ceiling held it at `high` when MAX was
-  asked.
-- **Where argon was withheld, the seat resolves again.** It is seated as a
-  reviewer on 13,747 more routes, a cross-family review is gained on 15,950, and
-  the worker moves to it on 4,550; on 124 first attempts of work that writes the
-  execution cell keeps the OpenAI fast writer (tier 0) to keep this seat's
-  cross-family review — the trade 1.24.0 disclosed — and 70 retries follow
-  them; `effort_below_floor` joins 10,582 gates the critical review band has
-  already raised; 18 human gates lift.
+- **In the thirty-four scenarios 1.24.0 replayed (958,103 routes), 45,543
+  change, every one only where the seat sat** — the new id in argon's place.
+  With every seat available nothing moves. 1,334 of them also change effort:
+  an investigation lead with an unknown root cause runs at `xhigh` where
+  argon's ceiling held it at `high` when MAX was asked. Against a 1.25.3
+  registry that only carries the new id, those 1,334 are the only changes.
+- **In the six argon-withheld scenarios (198,538 routes), 29,363 change: the
+  seat resolves again** where 1.25.3 left it empty. The model is seated (as
+  worker, reviewer or judge) on 13,747 routes; reviewer lists change on 13,792
+  and a cross-family review is gained on 15,950; the worker moves to the seat
+  on 1,071. The worker lands a tier lower on 194: on 124 first attempts of work
+  that writes the execution cell keeps the OpenAI fast writer (tier 0) to keep
+  this seat's cross-family review — the trade 1.24.0 disclosed — and 62 write
+  retries follow them to the OpenAI balanced seat instead of Sol; 4 first
+  attempts and 4 retries of reading work also land lower. `effort_below_floor`
+  joins 10,582 gates the critical review band has already raised (the seat's
+  ceiling is VERY_HIGH, under MAX), 18 human gates lift, and the confidence
+  rule raises the review band on routes where the fallback reaches the seat.
 - The summed output price of the seated worker and reviewers falls 0.10%
   (0.26% against the id-only registry): this model's output price is $7.50 per
   million tokens against argon's $10 (which doubles on 2026-12-01).
 
 Keeping both gemini models dispatchable was replayed and not taken (user
-decision 2026-11-15): Hydrogen first moves 75,756 routes (−0.09%), argon first
-30,213 (+0.12%). Either would leave write authority closed to Hydrogen (it is
+decision 2026-11-15): Hydrogen first moves 75,756 routes (−0.09%; besides the
+adopted placement's changes, 138 Codex investigation retries that ended
+INDEPENDENCE_UNAVAILABLE get a worker, with argon as a second gemini reviewer),
+argon first 30,213 (+0.12%). Either would leave write authority closed to Hydrogen (it is
 per family) and still treat both as one family for quota exhaustion and review
 diversity. The ledger row "1.26.0 gemini seat placement counterfactuals" has
 the numbers.
@@ -395,8 +403,8 @@ replays, below) measured the predecessor; the ledger says so in its own row.
 **Its tier is 1, measured on the new generation.** Both replays were re-run
 on it the day of the bump, under rules written before any dispatch. The
 review replay recalls 25% of the accepted findings, up from the
-predecessor's 17%: above the gemini seat's 23% (the other measured tier-1
-row) and short of the 28.2% bar a raise needs, so it holds. The
+predecessor's 17%: above the then gemini seat's 23% (Gemini 4 Argon, the
+other measured tier-1 row then) and short of the 28.2% bar a raise needs, so it holds. The
 implementation replay passes 44% of the runs, up from 31%: above the OpenAI
 fast seat (38%) and short of the 57.5% bar. That replay has no tier-1 anchor
 of its own — no other live tier-1 row has an implementation score — so the
@@ -680,7 +688,7 @@ high effort, two runs each, graded blind by two judges from other families
 | Sol seat | 2 | 33% |
 | Previous Sonnet generation (tier-1 anchor) | 1 | 13% |
 | Meta reviewer seat | 1 | 12% |
-| Gemini reviewer seat | 1 | 10% |
+| Gemini reviewer seat (Gemini 3.8 Flash, retired) | 1 | 10% |
 
 The rule's bar for tier 1 is the anchor minus five points, so both reviewer
 seats confirmed tier 1. What the rule could not say, the table does: the anchor
@@ -813,7 +821,7 @@ the one below.
 | Claude senior seat (anchor) | 2 | 52% |
 | Claude balanced seat (anchor) | 2 | 46% |
 | Sol seat (anchor, the tier-2 bar's row) | 2 | 33% |
-| **Gemini reviewer seat** | **1** | **23%** |
+| **Gemini reviewer seat (Gemini 4 Argon; retired in 1.26.0)** | **1** | **23%** |
 | OpenAI balanced seat (anchor, the tier-1 bar's row) | 1 | 17% |
 | Gemini reviewer seat, first model (retired) | 0 | 10% |
 
@@ -909,3 +917,32 @@ read in full by two models of different families that are not the subject. No
 session read answer-bearing material, reached the network or launched another
 agent. The ledger rows "claude_architect review replay (2026-11-10)" and
 "claude_architect implementation replay (2026-11-10)" have the numbers.
+
+## Tiers measured on 2026-11-15
+
+The gemini seat's model changed in 1.26.0 (Gemini 4 Argon replaced at the
+user's request), so its row had no tier. It was measured by the same review
+replay — the same packages, judges and margins, the judges' calibration re-run
+first (12 of 12 exact), anchors the live rows of 1.25.3 — read for a row with no
+tier yet.
+
+| Seat | Tier | Recall |
+|---|---|---|
+| Claude senior seat (anchor) | 2 | 52% |
+| Claude balanced seat (anchor) | 2 | 46% |
+| Sol seat (anchor, the tier-2 bar's row) | 2 | 33% |
+| OpenAI balanced seat (anchor) | 1 | 25% |
+| **Gemini reviewer seat (Gemini 4 Hydrogen)** | **1** | **24%** |
+| Gemini 4 Argon (anchor, the tier-1 bar's row; retired in 1.26.0) | 1 | 23% |
+| Gemini 3.8 Flash (retired, reported beside) | — | 10% |
+
+The tier-2 bar is 28.2% and the tier-1 bar 18.3%. Tier 3 could not be decided:
+no live tier-3 row has a measured tier. Each tier-1 row alone as the bar, each
+judge alone, and the Opus or Sonnet row alone as the tier-2 bar give tier 1;
+with the Sol row alone, or package C alone, the gate fails (the suite does not
+separate the tiers there) and the reading says nothing. The tier-0 Claude fast
+seat (40%) recalls more than both tier-1 anchors on this suite; the rule reads
+tiers by their bars, as it did for argon. The ledger row "gemini_hydrogen tier
+measurement (real-review replay, 2026-11-15)" has the numbers and limits.
+
+IMPLEMENTATION-REPLAY-PROFILE-PLACEHOLDER

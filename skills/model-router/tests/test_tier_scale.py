@@ -739,9 +739,13 @@ def test_the_gemini_seat_measurement_rederives_its_tier():
     assert MODELS["gemini_worker_balanced"]["id"] in rec
 
 
-def test_the_gemini_seat_cannot_write_while_its_implementation_replay_has_not_run():
-    row = LEDGER["gemini_frontier implementation replay (not run, 2026-10-27)"]
-    assert row["status"] == "documented"
+def test_the_gemini_seat_cannot_write_without_an_agreeing_implementation_replay():
+    """Argon's replay never ran and was stopped with the row (1.26.0); the live seat's
+    own replay is recorded and write authority stays withheld until the user grants it
+    after both replays agree (review i1, fable F7: bound to the live seat)."""
+    assert LEDGER["gemini_frontier implementation replay (not run, 2026-10-27)"]["status"] == "documented"
+    assert LEDGER["gemini_frontier implementation replay (stopped, 2026-11-15)"]["status"] == "documented"
+    assert MODELS["gemini_hydrogen"].get("dispatchable", True) is True
     for host in ("claude_code", "codex"):
         assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
 

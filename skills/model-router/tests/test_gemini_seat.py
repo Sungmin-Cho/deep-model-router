@@ -77,7 +77,7 @@ def test_the_row_is_a_dispatchable_tier_1_seat_bound_to_no_role():
     assert row["capability_tier"] == 1
     assert row.get("dispatchable", True) is True
     assert row["effort_ceiling"] == "VERY_HIGH"
-    assert row["effort_map"] == {"VERY_HIGH": "xhigh"}
+    assert row["effort_map"] == {"VERY_HIGH": "xhigh", "MAX": "xhigh"}
     bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     assert SEAT_KEY not in bound
 
@@ -327,21 +327,87 @@ def test_the_ceiling_adds_its_cause_to_a_critical_review_gate_already_raised():
     assert "effort_below_floor" in after["human_control_causes"]
 
 
-def test_as_a_worker_the_seat_meets_every_effort_floor_on_claude_code():
+def test_a_critical_review_dispatches_this_seat_at_xhigh():
+    """Review i1 (fable F1): a dispatch seat looks up the review's own effort,
+    which a CRITICAL band sets to MAX, without the worker's clamp; the row maps
+    MAX to xhigh too, so the seat is dispatched at the token it accepts, and the
+    route records the cap."""
+    kw = dict(task_class="ARCHITECTURE", complexity=0, uncertainty=3, blast_radius=3,
+              reversibility=0, runtime="claude_code",
+              unavailable_models=[XAI, META, ID("openai_reasoning")],
+              _family_quota={"claude": "exhausted"},
+              _implementer={"model_id": ID("openai_worker_fast")})
+    out = route(Task(**kw), CFG)
+    seat = [s for s in out["dispatch_seats"] if s["model_id"] == GEMINI]
+    assert seat and seat[0]["effort"] == "MAX" and seat[0]["effort_native"] == "xhigh"
+    assert any(e["model"] == GEMINI and e["capped_at"] == "VERY_HIGH"
+               for e in out["effort_ceiling_applied"])
+
+
+def test_every_dispatchable_row_spells_a_level_above_its_ceiling_as_its_ceiling():
+    """Review i1 (fable F1): the worker's effort is clamped before the lookup, a
+    dispatch seat's is not, so for every dispatchable row with a ceiling the
+    levels above it must spell the ceiling's token."""
+    for key, m in CFG["models"].items():
+        if m.get("dispatchable", True) is False or not POLICY.ceiling_of.get(m["id"]):
+            continue
+        ceiling = POLICY.ceiling_of[m["id"]]
+        for level in POLICY.efforts[POLICY.efforts.index(ceiling) + 1:]:
+            assert POLICY.native_effort(m["id"], level) == \
+                POLICY.native_effort(m["id"], ceiling), (key, level)
+
+
+def test_the_very_high_ceiling_moves_only_effort_and_never_down():
+    """Review i1 (fable): the in-tree twin of the id-only replay. Against a copy whose
+    seat keeps argon's HIGH ceiling and the family map, every route where the seat
+    can be reached differs only in effort fields, never lower, and gains no gate."""
+    high = copy.deepcopy(CFG)
+    high["models"][SEAT_KEY]["effort_ceiling"] = "HIGH"
+    del high["models"][SEAT_KEY]["effort_map"]
+    eff = POLICY.efforts.index
+    hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
+    moved = 0
+    for (runtime, ahead), cls, (c, u, b, r) in itertools.product(
+            hosts, CLASSES, itertools.product(range(4), repeat=4)):
+        for extra in ({}, {"flags": ["unknown_root_cause"]}):
+            kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
+                      reversibility=r, runtime=runtime, unavailable_models=ahead,
+                      **copy.deepcopy(extra))
+            now, was = route(Task(**kw), CFG), route(Task(**kw), high)
+            assert (now["selected_model"], now["terminal"], now["review"]["reviewer_models"],
+                    now["review"]["band"]) == (was["selected_model"], was["terminal"],
+                                               was["review"]["reviewer_models"], was["review"]["band"])
+            assert set(now.get("human_control_causes") or []) <= set(
+                was.get("human_control_causes") or []), (runtime, cls, c, u, b, r)
+            if now["selected_effort_effective"] != was["selected_effort_effective"]:
+                assert now["selected_model"] == GEMINI
+                assert eff(now["selected_effort_effective"]) > eff(was["selected_effort_effective"])
+                moved += 1
+    assert moved > 0
+
+
+def test_as_a_worker_the_seat_meets_every_effort_floor():
     """1.24.0 disclosed that argon's HIGH ceiling could raise a human gate where
     the seat became a worker a floor wanted at VERY_HIGH. Hydrogen's VERY_HIGH
     ceiling meets every such floor: over every class and dimension with
     everything ahead of the seat out on a read-only route, seating it never
     adds `effort_below_floor` (the 1.24.0 example now runs at VERY_HIGH)."""
-    for cls in CLASSES:
-        for c, u, b, r in itertools.product(range(4), repeat=4):
-            kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
-                      reversibility=r, runtime="claude_code", unavailable_models=AHEAD_OUT,
-                      worker_seat="read_only")
-            after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
-            added = set(after.get("human_control_causes") or []) - set(
-                before.get("human_control_causes") or [])
-            assert "effort_below_floor" not in added, (cls, c, u, b, r)
+    # everything ahead of the seat: on Claude Code xai, the Claude model and meta;
+    # on Codex xai and the Claude model (review i1, fable: swept on both hosts)
+    hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
+    reached = {runtime: 0 for runtime, _ in hosts}       # not vacuous: the seat works at VERY_HIGH
+    for (runtime, ahead), cls, (c, u, b, r) in itertools.product(
+            hosts, CLASSES, itertools.product(range(4), repeat=4)):
+        kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
+                  reversibility=r, runtime=runtime, unavailable_models=ahead,
+                  worker_seat="read_only")
+        after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+        added = set(after.get("human_control_causes") or []) - set(
+            before.get("human_control_causes") or [])
+        assert "effort_below_floor" not in added, (runtime, cls, c, u, b, r)
+        reached[runtime] += (after["selected_model"] == GEMINI
+                             and after["selected_effort_effective"] == "VERY_HIGH")
+    assert all(n > 0 for n in reached.values()), reached
     kw = dict(task_class="DOCUMENTATION", complexity=3, uncertainty=3, blast_radius=0,
               reversibility=0, runtime="claude_code", unavailable_models=AHEAD_OUT,
               worker_seat="read_only")
@@ -472,21 +538,24 @@ def test_an_allowed_families_list_of_gemini_alone_cannot_staff_a_write_route():
 
 RETIRED_KEY = "gemini_worker_balanced"
 RETIRED = ID(RETIRED_KEY)
+# 1.26.0 (user decision 2026-11-15, U-4): argon is retired the way flash was in 1.24.0.
+RETIRED_ROWS = (RETIRED_KEY, ARGON_KEY)
 
 
-def test_the_retired_flash_row_is_history_input_only():
+@pytest.mark.parametrize("key", RETIRED_ROWS)
+def test_the_retired_rows_are_history_input_only(key):
     """Not a seat: not dispatchable, no lineage (model_sync offers no
     successor), no binding, no fallback list. Not a `<live>@<id>` history row
     either: the seat that replaced it is another line, whose template does not
     parse its id."""
-    row = CFG["models"][RETIRED_KEY]
+    row = CFG["models"][key]
     assert row["family"] == "gemini" and row["dispatchable"] is False
     assert "lineage" not in row and "history_of" not in row
     bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     listed = {k for per_role in CFG["fallbacks"].values() for keys in per_role.values() for k in keys}
-    assert RETIRED_KEY not in bound and RETIRED_KEY not in listed
+    assert key not in bound and key not in listed
     template = CFG["models"][SEAT_KEY]["lineage"]["template"]
-    assert lineage.parse(template, RETIRED) is None
+    assert lineage.parse(template, ID(key)) is None
     assert lineage.parse(template, GEMINI) is not None
 
 
@@ -495,29 +564,32 @@ def test_no_row_that_is_not_dispatchable_is_named_by_a_binding_or_fallback():
     row kept without `history_of` (the gemini seat's first model, the unbound
     gemini row) is held here, so re-listing one cannot pass as a live seat."""
     off = {k for k, m in CFG["models"].items() if m.get("dispatchable", True) is False}
-    assert {RETIRED_KEY, "gemini_flash"} <= off
+    assert {RETIRED_KEY, ARGON_KEY, "gemini_flash"} <= off
     named = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     named |= {k for per_role in CFG["fallbacks"].values() for keys in per_role.values() for k in keys}
     assert not (off & named), sorted(off & named)
 
 
+@pytest.mark.parametrize("key", RETIRED_ROWS)
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
-def test_the_retired_flash_id_stays_valid_history_input(runtime):
-    """A control loop holding a 1.23 attempt on it keeps working across the
-    release boundary: as a failed model and as an unavailable model. (No host
-    runs the gemini family, so it was never valid host input.)"""
-    assert RETIRED in POLICY.model_ids
+def test_the_retired_ids_stay_valid_history_input(runtime, key):
+    """A control loop holding an attempt on a retired seat (1.23 on flash, 1.25 on
+    argon) keeps working across the release boundary: as a failed model and as an
+    unavailable model. (No host runs the gemini family, so neither was valid host
+    input.)"""
+    retired = ID(key)
+    assert retired in POLICY.model_ids
     base = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                 reversibility=0, runtime=runtime, unavailable_models=[XAI])
-    retry = route(Task(**base, prior_failures=1, prior_models=[RETIRED]), CFG)
-    assert retry["terminal"] is None and RETIRED not in _emitted(retry)
-    out = route(Task(**{**base, "unavailable_models": [XAI, RETIRED]}), CFG)
-    assert out["terminal"] is None and RETIRED not in _emitted(out)
+    retry = route(Task(**base, prior_failures=1, prior_models=[retired]), CFG)
+    assert retry["terminal"] is None and retired not in _emitted(retry)
+    out = route(Task(**{**base, "unavailable_models": [XAI, retired]}), CFG)
+    assert out["terminal"] is None and retired not in _emitted(out)
 
 
-def test_the_retired_flash_model_is_never_emitted():
+def test_the_retired_models_are_never_emitted():
     """Wherever the gemini seat could be reached — everything ahead of it out,
-    and the seat itself out too — the retired model never comes back."""
+    and the seat itself out too — neither retired model comes back."""
     scenarios = (
         {"unavailable_models": AHEAD_OUT},
         {"unavailable_models": [*AHEAD_OUT, GEMINI]},
@@ -534,6 +606,7 @@ def test_the_retired_flash_model_is_never_emitted():
                                      blast_radius=dims[2], reversibility=dims[3],
                                      runtime=runtime, **copy.deepcopy(extra)), CFG)
                     assert RETIRED not in _emitted(out), (runtime, cls, dims, extra)
+                    assert ARGON not in _emitted(out), (runtime, cls, dims, extra)
 
 
 def test_a_claude_shortage_keeps_the_fast_writer_for_this_seats_cross_family_review():
@@ -633,24 +706,6 @@ def test_the_hydrogen_row_states_its_documented_facts():
     assert row["lineage"] == {"line": "google/hydrogen", "template": "gemini-{gen}-hydrogen",
                               "served_forms": ["{id}", "{id}-low", "{id}-medium", "{id}-high",
                                                "{id}-xhigh"]}
-
-
-def test_the_retired_argon_row_is_history_input_only():
-    """1.26.0 (user decision 2026-11-15, U-4): Gemini 4 Argon is retired. It stays
-    valid history input, bound to no role, in no fallback list, with no lineage."""
-    row = CFG["models"][ARGON_KEY]
-    assert row["id"] == "gemini-4-argon" and row["dispatchable"] is False
-    assert "lineage" not in row and row["capability_tier"] == 1
-    for runtime, per_role in CFG["fallbacks"].items():
-        for keys in per_role.values():
-            assert ARGON_KEY not in keys, runtime
-    bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
-    assert ARGON_KEY not in bound
-    for runtime in ("claude_code", "codex"):
-        out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=0,
-                         reversibility=0, runtime=runtime, prior_failures=1,
-                         prior_models=[ARGON], unavailable_models=[ARGON]), CFG)
-        assert out["terminal"] is None and out["selected_model"] != ARGON
 
 
 def test_the_unbound_gemini_row_is_still_never_emitted():

@@ -1016,9 +1016,10 @@ models:
     capability_tier: 1
     effort_ceiling: VERY_HIGH   # probed: the CLI takes `xhigh`, rejects `max`
     # The family map stops at `high` (the retired gemini rows had no xhigh);
-    # this model's VERY_HIGH is `xhigh`. MAX never reaches the lookup: the
-    # ceiling clamps it first.
-    effort_map: { VERY_HIGH: xhigh }
+    # this model's VERY_HIGH is `xhigh`. MAX is `xhigh` too: the worker's effort
+    # is clamped to the ceiling before the lookup, but a dispatch seat looks up
+    # the review's own effort, which a CRITICAL band sets to MAX (review i1).
+    effort_map: { VERY_HIGH: xhigh, MAX: xhigh }
     verified: true
     # Implicit caching only and no cache-write rate on the pricing page the row
     # cites (explicit caching is not supported for this model), so
@@ -1357,10 +1358,14 @@ transports:
       # The maker seat is probed and its ledger rows are verified, but write
       # authority is withheld. 1.21.0 (user decision U-5, 2026-10-14): the seat's
       # first model reviewed at about a fifth of the Claude balanced model's
-      # recall. 1.24.0: the current model measured tier 1 in the review replay,
-      # and a seat that writes moves only when an implementation replay agrees;
-      # that replay could not run (the account's quota for the model was spent)
-      # and is left for later (user decision 2026-10-27). With the Claude-first
+      # recall. 1.24.0: argon measured tier 1 in the review replay, and a seat
+      # that writes moves only when an implementation replay agrees; that replay
+      # could not run (the account's quota for the model was spent) and was
+      # stopped when argon was retired (1.26.0, user decision 2026-11-15). 1.26.0:
+      # the current model measured tier 1 in its review replay; its
+      # implementation replay decides whether write authority is proposed to the
+      # user, and the authority is per direction, so it can be proposed only
+      # while this is the family's one dispatchable model. With the Claude-first
       # fallback, turning this on would make it the writer where the xai seat
       # and the Claude model are both out (the OpenAI balanced model writes
       # there today); see references/model-profiles.md.
@@ -4358,8 +4363,10 @@ verification_ledger:
         anchors are the published recall of the live rows of the 1.25.3
         registry; tier 2 claude-opus-5-5 0.515993, gpt-6.1-sol 0.332492,
         claude-sonnet-5-5 0.455387; tier 1 gemini-4-argon 0.233165 and
-        gpt-6.1-terra 0.250842 (grok-4.7 unmeasured, gpt-6-astra a judge, the
-        architect's tier 3 a policy assignment). Tier-2 mean 0.434624,
+        gpt-6.1-terra 0.250842; tier 0 (no bar here) claude-haiku-5-5
+        0.397306, gpt-6-luna 0.131313, muse-spark-1.3 0.117003 (grok-4.7
+        unmeasured, gpt-6-astra a judge, the architect's tier 3 a policy
+        assignment). Tier-2 mean 0.434624,
         separation 0.201459 (gate 0.10, met). Bar for tier 2: 0.282492. Bar for
         tier 1: 0.183165. Recall: gemini-4-hydrogen 0.239899 (packages
         0.055556, 0.277778, 0.386364). Verdict: tier 1. Sensitivity: tier 1
@@ -4376,6 +4383,26 @@ verification_ledger:
         was written by gpt-6.1-sol and claude-fable-5-1; real defects outside
         it are not credited. Plan, harness, receipts, grades and audit: the
         local archive docs/evals/2026-11-15-t11/.
+
+    - item: "agy account quota for gemini-4-hydrogen (2026-11-15)"
+      status: verified
+      probed_on: "2026-11-15"
+      cli_version: "agy 1.5.9"
+      evidence: >
+        On a personal Antigravity sign-in the model answered the probes, the
+        six T11 reviews and ten T12 implementation runs (about 4.2 million
+        tokens, cache reads aside, in the ten) between 12:03 and 14:31 KST;
+        the eleventh implementation run (t12-T03-HYD-r2) was refused after
+        340 s with "Individual quota reached. Please upgrade your subscription
+        to increase your limits. Resets in 2h26m16s." — a reset the refusal
+        names for about 17:03 KST, five hours after the day's first call
+        (argon's refusals named resets a week away). The refusal ended FAILED
+        and carried `quota_refusal: {resets_in_seconds: 8776}` (finished
+        05:37:06Z; receipt sha256
+        8b048766bb8b536199fee19de86ce3164e62774677deaa9ee6caea1c88be0413 in the
+        local archive docs/evals/2026-11-15-t12/void-quota/; the attempt was
+        voided and dispatched again, T12's rule). The window is the account's and read
+        from each refusal, not a published contract.
 
     - item: "Gemini 4 Argon retired (gemini_frontier, 1.26.0)"
       status: documented
@@ -4396,8 +4423,10 @@ verification_ledger:
         T6 (GitHub issue #72) was stopped unfinished by the user's decision of
         2026-11-15 (U-5), the row being retired: a replay that cannot move a
         seat no longer runs. Its state when stopped: no attempt graded; of the
-        sixteen planned, T01 r1, T02 r1x and T05 r1 (INVALID_OUTPUT, output
-        token limit) had ended and T03 r1 had been voided by the quota. Two
+        sixteen planned reps, T01 r1 had ended SUCCEEDED, T02 r1 INVALID_OUTPUT
+        (the stream interrupted) and its re-run T02 r1x SUCCEEDED, T05 r1
+        INVALID_OUTPUT (the output-token limit; its re-run voided by the
+        quota), and T03 r1 had been voided by the quota. Two
         defects of T6 found while building T12 are recorded with it: its read
         fence left `/private/var/tmp` and the user temp directory readable,
         where another measurement's reference fixes for the same tasks and
@@ -4418,24 +4447,30 @@ verification_ledger:
         router against the 1.25.3 registry and each candidate at tier 1.
         Adopted (user decision 2026-11-15): Hydrogen in Argon's two places,
         Argon retired — 74,906 routes change; with every seat available none.
-        Against a 1.25.3 registry whose argon row only carries the new id
-        (958,103 routes, the six argon-withheld scenarios left out because
-        that registry does not know argon), 1,334 change, all of them the
-        effort of an investigation lead with an unknown root cause, now xhigh
-        where argon's ceiling held it at high when MAX was asked: the rest is
-        the id. Where argon was withheld, the seat now resolves: reviewer
-        seated on 13,747 more routes, cross-family review gained on 15,950, the
-        worker moved to the seat on 4,550, and a tier lower on 194 (124 first
-        attempts of work that writes keep the OpenAI fast writer to keep the
-        seat's cross-family review — the trade 1.24.0 disclosed — and 70 of the
-        retries that follow), effort_below_floor added to 10,582
-        routes already gated by the critical review band (the seat's ceiling
-        is VERY_HIGH, under MAX), 18 human gates lifted. Summed output price
-        of seated workers and reviewers −0.10% (−0.26% against the id-only
+        In the thirty-four 1.24.0 scenarios (958,103 routes) 45,543 change,
+        every one only where the seat sat (argon's id gone, the new one in
+        its place); 1,334 of them also change effort — an investigation lead
+        with an unknown root cause at xhigh where argon's ceiling held it at
+        high when MAX was asked — and against a 1.25.3 registry whose argon
+        row only carries the new id those 1,334 are the only changes. In the
+        six argon-withheld scenarios (198,538 routes) 29,363 change, the seat
+        resolving where 1.25.3 left it empty: the model seated as worker,
+        reviewer or judge on 13,747 routes, reviewer lists changed on 13,792,
+        cross-family review gained on 15,950, the worker moved to the seat on
+        1,071, and a tier lower on 194 (124 first attempts of work that writes
+        keep the OpenAI fast writer to keep the seat's cross-family review —
+        the trade 1.24.0 disclosed — 62 write retries follow them to the
+        OpenAI balanced seat instead of gpt-6.1-sol, and 4 first attempts and
+        4 retries of reading work), effort_below_floor added to 10,582 routes
+        already gated by the critical review band (the seat's ceiling is
+        VERY_HIGH, under MAX), 18 human gates lifted. Summed output price of
+        seated workers and reviewers −0.10% (−0.26% against the id-only
         registry). Not adopted: both rows dispatchable, Hydrogen first
-        (75,756 routes, −0.09%; 138 retries after it fails reach argon) or
-        Argon first (30,213, +0.12%). Write authority on a gemini direction is
-        per family, so only the adopted placement leaves it open to Hydrogen
+        (75,756 routes, −0.09%; besides the adopted placement's changes, 138
+        Codex investigation retries that ended INDEPENDENCE_UNAVAILABLE get
+        gpt-6.1-sol as worker with argon as a second gemini reviewer) or Argon
+        first (30,213, +0.12%). Write authority on a gemini direction is per
+        family, so only the adopted placement leaves it open to Hydrogen
         alone. Script and output:
         docs/research/2026-11-15-gemini-hydrogen-counterfactuals/.
 
