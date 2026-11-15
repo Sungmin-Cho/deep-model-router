@@ -338,7 +338,7 @@ weaken the review.
 
 A reviewer's effective effort is its `effort_ceiling_applied` entry's
 `capped_at` when one exists, otherwise `review.effort`. The CLI token is that
-level looked up in `effort_map` under the reviewer model's family.
+level in the model's map (family map plus row overrides).
 
 `CRITICAL` additionally requires every one of these to appear as an explicit
 finding category — including when the answer is "checked, nothing found":

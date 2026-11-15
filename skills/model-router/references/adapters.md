@@ -149,19 +149,29 @@ Set it with `--reasoning-effort <value>`.
 
 ### gemini family
 
-Accepted values: `low | medium | high` for the seated model, each
-round-tripped through the agy CLI, which rejects `xhigh` and `max` ("has no
-… effort") and whose API documentation says `minimal` returns an error. The
-seat's effort ceiling is HIGH, so the clamp runs before this lookup and the
-last two lines are unreachable for it.
+The family map stops at `high`: the retired gemini rows' CLI refused `xhigh`
+and `max` ("has no … effort"), and the API documentation says `minimal` returns
+an error. The seated model since 1.26.0 also takes `xhigh` (round-tripped with
+`low`, `medium` and `high` through the agy CLI, which refuses `max`), so its row
+overrides the top two lines and its effort ceiling is VERY_HIGH. The worker's
+effort is clamped to the ceiling before the lookup; a dispatch seat looks up the
+review's own effort, which a CRITICAL band sets to MAX — hence the row's MAX
+line too.
 
 ```yaml
 MINIMAL:   low
 LOW:       low
 MEDIUM:    medium
 HIGH:      high
-VERY_HIGH: high       # unreachable: the seat's ceiling is HIGH
-MAX:       high       # unreachable, as above
+VERY_HIGH: high       # the family's; the seated row overrides it with xhigh
+MAX:       high       # the family's; the seated row overrides it with xhigh
+```
+
+The seated row's override (`models.gemini_hydrogen.effort_map`):
+
+```yaml
+VERY_HIGH: xhigh
+MAX:       xhigh
 ```
 
 Set it with `--effort <value>` on the base id. The CLI's catalogue also lists
@@ -723,9 +733,10 @@ residue belongs to the recipe, as it does for grok.
 ### Antigravity seat profile
 
 What contains the gemini reviewer seat, measured on agy 1.3.4 (macOS,
-2026-10-14), re-probed with the seat's current model on agy 1.4.8
-(2026-10-27) and re-probed on agy 1.4.12 (2026-11-03), agy 1.5.4
-(2026-11-10) and agy 1.5.6 (2026-11-12); the ledger rows name the attempts. No mode flag does: the CLI's
+2026-10-14), re-probed with Gemini 4 Argon on agy 1.4.8 (2026-10-27) and
+re-probed on agy 1.4.12 (2026-11-03), agy 1.5.4 (2026-11-10) and agy 1.5.6
+(2026-11-12), and probed with the seat's current model, Gemini 4 Hydrogen, on
+agy 1.5.9 (2026-11-15); the ledger rows name the attempts. No mode flag does: the CLI's
 own settings (`~/.gemini/antigravity-cli/settings.json`) choose a
 `toolPermission` preset for every run on the host, and under `always-proceed`
 a `--mode plan` run wrote a file and ran a shell command when asked to. Two
@@ -875,15 +886,28 @@ You review code and documents. Read files when the request needs them, and answe
 - **What agy 1.4.12 changed.** The CLI updated itself from 1.4.8. The log
   lines the gate reads, the agent allow-list, the deny rules, the maker's kernel
   fence and both before-spawn refusals held (re-probed with the retired flash
-  model, which attempts the writes the current model declines). The write tool
+  model, which attempts the writes Gemini 4 Argon declined). The write tool
   accepts a relative path such as `../x` again and resolves it against the
   workspace; the kernel fence refuses the write (`operation not permitted`), as
   it refuses an absolute one. The JSON result gained a `finished_reason` key
   (1.4.11) that the envelope does not read.
+- **What agy 1.5.9 and Gemini 4 Hydrogen changed.** The CLI updated itself to
+  1.5.9 on 2026-11-15 (started by model-sync's catalogue fetch). The log lines
+  the gate reads, the agent allow-list, the deny rules, the maker's kernel fence
+  and the before-spawn refusals (a hard link, a symlink in the workspace, a run
+  without the guard) held on the new model, which — unlike Argon — attempts
+  every outside write it is asked for: the fence refused each (`operation not
+  permitted`; `/dev/stdout` `permission denied`), and the write tool refuses a
+  relative `../x` itself ("must be an absolute path"). The reviewer reports
+  `read_file` and the CLI's task list. This model takes `xhigh`.
 - **The quota is the account's, per model.** A personal sign-in's quota for
-  the seat's current model ran out after about ten long agentic runs in one
-  afternoon, with a reset a week away, while other models on the account kept
-  working. The CLI refuses the run with HTTP 429 and the text "Individual quota
+  the seat's model ran out after about ten long agentic runs in one afternoon
+  (Gemini 4 Argon, 2026-10-27, its refusal naming a reset a week away), while
+  other models on the account kept working. Gemini 4 Hydrogen ran six reviews
+  and ten implementation runs (about 4.2 million tokens) before its refusal on
+  2026-11-15 named a reset under two and a half hours away — about five hours
+  after that day's first call. The window and its size are the account's, not
+  a published contract: read the reset from each refusal. The CLI refuses the run with HTTP 429 and the text "Individual quota
   reached … Resets in 5h30m21s." — before any request, or in the middle of a
   run that has already spent tokens. The attempt ends FAILED, and the receipt's
   envelope says why: `quota_refusal` is `{"resets_in_seconds": N}` (N is null
@@ -973,7 +997,7 @@ claim rests on it.
 seat, `agy models`, model-sync's catalogue fetch and probes — checks for a
 release at most every 15 minutes and spawns a background updater that replaces
 the binary on PATH (agy 1.5.3 to 1.5.4, measured 2026-11-10; 1.5.6 replaced
-1.5.4 on 2026-11-12); `AGY_CLI_DISABLE_AUTO_UPDATE=1` did not stop it on 1.5.4. Under the maker's
+1.5.4 on 2026-11-12, 1.5.9 replaced 1.5.6 on 2026-11-15); `AGY_CLI_DISABLE_AUTO_UPDATE=1` did not stop it on 1.5.4. Under the maker's
 fence the updater cannot write `~/.local/bin` and skips. So the CLI behind the
 seat can change between two runs without notice: pass `--host-cli-version` to
 keep the version in the receipt, and re-probe the profiles after a change.
@@ -1448,7 +1472,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `claude_worker_fast`, then `claude_worker_balanced` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read; tier 0), then `gemini_frontier` (seats that read; tier 1), then `openai_worker_balanced`, then `claude_senior` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `meta_worker_balanced` (seats that read; tier 0), then `gemini_hydrogen` (seats that read; tier 1), then `openai_worker_balanced`, then `claude_senior` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_architect`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior`, then `claude_architect` |
 | `principal_architect` (claude) | `openai_frontier`, then `claude_senior`, then `openai_reasoning` |
@@ -1459,7 +1483,7 @@ never fails it.
 | Unavailable | Fallback |
 |---|---|
 | `worker_fast` (openai) | `openai_worker_balanced`, then `claude_worker_fast` |
-| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_frontier` (seats that read; tier 1), then `openai_worker_balanced`, then `openai_reasoning` |
+| `worker_balanced` (xai) | `claude_worker_balanced`, then `gemini_hydrogen` (seats that read; tier 1), then `openai_worker_balanced`, then `openai_reasoning` |
 | `senior_engineer` (claude) | `openai_reasoning`, then `claude_senior`, then `openai_frontier` |
 | `reasoning_specialist` (openai) | `openai_reasoning`, then `openai_frontier`, then `claude_senior` |
 | `principal_architect` (claude) | `openai_frontier`, then `openai_reasoning`, then `claude_architect` |
@@ -1507,9 +1531,10 @@ the floor or meeting it would leave no independent reviewers; the route notes
 either waiver. The tier-1 gemini seat meets that floor, so behind the meta seat
 it can be the promoted lead.
 
-**The gemini seat reads, after the Claude model.** `gemini_frontier` is bound
-to no role (since 1.24.0; the seat's first model, `gemini_worker_balanced`, is
-retired — valid history input, never seated). On a Claude Code host it is the third fallback of
+**The gemini seat reads, after the Claude model.** `gemini_hydrogen` is bound
+to no role (since 1.26.0; the seat's earlier models, `gemini_worker_balanced`
+and, from 1.24.0, `gemini_frontier`, are retired — valid history input, never
+seated). On a Claude Code host it is the third fallback of
 `worker_balanced`, after the Claude balanced model and the meta seat; on a
 Codex host it is the second, right after the Claude balanced model. A role
 resolves to the first usable model in its list, so this seat is reached only
@@ -1520,10 +1545,11 @@ false` by decision, and the Codex direction has a reviewer recipe only. Where it
 was skipped on a write route, the note reads `worker_balanced: no
 write-capable gemini seat on <runtime>; seated the <family> one`. Grok hosts do
 not offer the family. It is tier 1, measured (the first model was tier 0 from
-1.22.0): unlike the meta seat it meets a MEDIUM review's floor, so where it
-resolves it can lead or staff such a review, and an INVESTIGATION's promotion
-floor does not skip it. Its account quota is small (see "Antigravity seat
-profile"). `model-profiles.md` ("The gemini reviewer seat") lists what seating
+1.22.0, argon tier 1): unlike the meta seat it meets a MEDIUM review's floor, so
+where it resolves it can lead or staff such a review, and an INVESTIGATION's
+promotion floor does not skip it. Its effort ceiling is VERY_HIGH (the CLI takes
+`xhigh` for this model and refuses `max`), so a MAX ask runs at `xhigh`. Its
+account quota is metered per model (see "Antigravity seat profile"). `model-profiles.md` ("The gemini reviewer seat") lists what seating
 it changes.
 
 Which routes write is a class default in `task_write_seat`, overridable per

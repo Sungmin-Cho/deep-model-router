@@ -613,8 +613,8 @@ def _agy_quota_receipt(*, resets=120, finished_at="2026-09-25T12:10:00Z", family
     return rec
 
 
-def _gemini_probe(monkeypatch, tmp_path, quota_receipt, *, candidate_id="gemini-5-argon"):
-    row = BASE["models"]["gemini_frontier"]
+def _gemini_probe(monkeypatch, tmp_path, quota_receipt, *, candidate_id="gemini-5-hydrogen"):
+    row = BASE["models"]["gemini_hydrogen"]
     class FakeProbeRun:
         def __init__(self):
             self.calls = []
@@ -633,7 +633,7 @@ def _gemini_probe(monkeypatch, tmp_path, quota_receipt, *, candidate_id="gemini-
     cat = model_sync.Catalog("gemini", "ok", models={candidate_id: {"efforts": []}},
                              sha256="d" * 64)
     return model_sync.probe_candidate(
-        key="gemini_frontier", candidate={"id": candidate_id, "efforts": []},
+        key="gemini_hydrogen", candidate={"id": candidate_id, "efforts": []},
         base=copy.deepcopy(BASE), state_root=_state(tmp_path), env={}, catalog=cat,
         current_id=row["id"], superseded=[], scratch=tmp_path / "scratch", ctx=CTX)
 
@@ -666,7 +666,7 @@ def test_gemini_p3_current_quota_refusal_defers_as_quota():
 
 
 def test_gemini_p4_quota_refusal_defers_as_quota():
-    row = copy.deepcopy(BASE["models"]["gemini_frontier"])
+    row = copy.deepcopy(BASE["models"]["gemini_hydrogen"])
     run = _ScriptedRun((_agy_quota_receipt(resets=30), None, ""))
     got = model_sync._p4(run, BASE, row, "demo-id", None, CTX, {})
     assert (got["outcome"], got["reason"], got["effort_ceiling"]) == \
@@ -715,10 +715,10 @@ def test_a_gemini_quota_deferral_is_recorded_under_its_family_and_held_until_the
     state = _state(tmp_path)
     reset = model_sync.retry_after_for(
         "quota", CTX._replace(quota_resets_at=int((NOW + _dt.timedelta(hours=5)).timestamp())))
-    model_sync._record(state, "gemini_frontier", {"id": "gemini-5-argon", "family": "gemini"},
+    model_sync._record(state, "gemini_hydrogen", {"id": "gemini-5-hydrogen", "family": "gemini"},
                        outcome="deferred", reason="quota", retry_after=reset,
                        summary_sha="b" * 64, inferences=1, now=NOW)
-    neg = model_sync._peek_work_state(state)["negatives"]["gemini_frontier"]
+    neg = model_sync._peek_work_state(state)["negatives"]["gemini_hydrogen"]
     assert (neg["family"], neg["reason"], neg["retry_after"]) == ("gemini", "quota", reset)
     room = {"status": "ok", "used_percent": 0.0}
     assert not model_sync._negative_expired(neg, {}, {}, NOW + _dt.timedelta(hours=4), room)

@@ -250,7 +250,8 @@ def _profile_sections() -> str:
     text = (SKILL / "references" / "model-profiles.md").read_text()
     a = text.index("### The Claude architect seat")
     b = text.index("## The architect seat's replays on 2026-11-10")
-    return text[a:text.index("\n## ", a)] + text[b:]
+    end = text.find("\n## ", b)          # 1.26.0: a later section follows it
+    return text[a:text.index("\n## ", a)] + text[b:end if end != -1 else len(text)]
 
 
 def _published() -> dict[str, str]:

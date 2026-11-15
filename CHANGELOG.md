@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] — 2026-11-15 (Gemini 4 Hydrogen replaces Gemini 4 Argon)
+
+### Added
+
+- Add Gemini 4 Hydrogen as the gemini reviewer seat, in the places Gemini 4 Argon held: after the Claude balanced model (and, on Claude Code, the Muse Spark seat) in the balanced role's fallback list, on Claude Code and Codex hosts. It reads only; the contained maker seat ships without write authority, as before. Its effort ceiling is one step higher than Argon's: the Antigravity CLI accepts `xhigh` for this model (and refuses `max`), so a MAX ask runs at `xhigh` where Argon stopped at `high`.
+- Measure it before seating it: the same replay of three real reviews from this repository, graded blind against the findings their authors accepted, puts its recall at 24%, between Gemini 4 Argon (23%) and GPT-6.1 Terra (25%), so it is tier 1 — about 2.5 times the recall of Gemini 3.8 Flash, the model Google says it succeeds. Every one of its sessions was audited from the CLI's own conversation store. The model profile lists what moves: 74,906 of 1,156,641 replayed routes. Where the earlier replay's scenarios reach the seat, 45,543 routes change only where the seat sat (the new model in Argon's place), and 1,334 of those also run an investigation lead at `xhigh`; where Argon's spent quota would have left the seat empty, 29,363 routes change because the seat now resolves (a cross-family review gained on 15,950). Keeping both Gemini models was replayed and not taken.
+- Measure its fixes too, and keep the seat read-only because the two measurements disagree. The same replay of eight accepted findings from this repository, two runs each through the shipped maker seat, passes 75% of its runs (12 of 16), above every writing model it was compared with (Claude Opus 5.5 69%, GPT-6.1 Sol and Claude Sonnet 5.5 63%), so this replay reads tier 2, without a shell to run the tests the others could run. A seat that writes moves only when its review and implementation replays name the same tier, and they do not (tier 1 and tier 2): the row stays at tier 1 and write authority is not proposed. The runs ran behind a read fence whose deny rules cover every other measurement's reference fixes and every other copy of the router's scripts a search found, probed on sampled targets with and without the model before any run; the CLI keeps no record of what the maker read, so that fence, not an audit, is the isolation.
+- Document that the Gemini seat's account quota is per model and that its window differs by model: Argon's ran out after about ten long runs and its refusal named a reset a week away; Hydrogen's was refused after six reviews and ten implementation runs on one day and its refusal named a reset about five hours after the day's first call. Read the reset from each refusal.
+
+### Removed
+
+- Remove Gemini 4 Argon from routing. Its id stays valid as history input (`--prior-models`, `--unavailable-models`), so a loop holding an earlier attempt keeps working; it is never seated and its successors are not tracked. Its implementation replay (#72) is stopped unfinished, since its result could no longer move a seat; two defects found in that replay's harness while building this one are recorded with it.
+
+### Fixed
+
+- Spell a review or judge seat's CLI token at the level its model accepts. `dispatch_seats[].effort_native` looked up the review's own effort, which a CRITICAL band sets to MAX, without the model's ceiling, while the worker's token and the route's `effort_ceiling_applied` record were capped. It is now the model's token at the capped level, as `SKILL.md` describes, so a model whose map names a token above its ceiling (for example a successor whose probes lowered the ceiling but kept the row's map) is never dispatched at a level it refuses. No route of the bundled registry changes.
+
 ## [1.25.3] — 2026-11-12 (the gemini seat on Antigravity CLI 1.5.6)
 
 ### Changed

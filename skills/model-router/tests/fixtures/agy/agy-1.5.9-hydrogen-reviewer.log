@@ -1,0 +1,17 @@
+I1115 12:03:16.680364      12 server.go:2602] Language server version: 1.5.9
+I1115 12:03:16.734724       1 printmode.go:208] Print mode: starting (promptLength=168, model="gemini-4-hydrogen", conversationID="")
+I1115 12:03:16.743684     274 manager.go:1677] Reloading system slash commands and skills
+I1115 12:03:16.743772     274 manager.go:1633] Reloading system slash commands
+I1115 12:03:18.975903       1 model_resolver.go:155] model alias "gemini-4-hydrogen" resolved to "gemini-4-hydrogen-low"
+I1115 12:03:18.976110       1 model_resolver.go:107] Resolving model gemini-4-hydrogen-low
+I1115 12:03:19.737358     425 manager.go:1633] Reloading system slash commands
+I1115 12:03:21.426184     549 manager.go:1633] Reloading system slash commands
+I1115 12:03:21.426486       1 model_resolver.go:155] model alias "gemini-4-hydrogen" resolved to "gemini-4-hydrogen-low"
+I1115 12:03:21.426531       1 model_resolver.go:107] Resolving model gemini-4-hydrogen-low
+I1115 12:03:21.427786       1 server.go:1225] Conversation using project ID: dmr-reviewer-v1
+I1115 12:03:21.442904     508 manager.go:1633] Reloading system slash commands
+I1115 12:03:21.453262       1 cli_setting_manager.go:221] ApplyProjectPermissionGrants: stored 0 allow, 5 deny grants from project "dmr-reviewer-v1"
+I1115 12:03:21.453296     771 manager.go:1677] Reloading system slash commands and skills
+I1115 12:03:21.453311     771 manager.go:1633] Reloading system slash commands
+I1115 12:03:21.453752       1 session.go:201] Print mode: conversation=2e53437b-2dbc-44dd-90a7-1aebfb1af980, sending message
+I1115 12:03:21.453761       1 printmode.go:909] Print mode: slash command expansion disabled

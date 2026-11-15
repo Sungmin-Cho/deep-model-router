@@ -1,5 +1,6 @@
 """The gemini reviewer seat (design 2026-10-14, model-router 1.20.0; on
-gemini-4-argon since 1.24.0, design 2026-10-27, with gemini-3.8-flash retired).
+gemini-4-argon from 1.24.0, design 2026-10-27, with gemini-3.8-flash retired; on
+gemini-4-hydrogen since 1.26.0, design 2026-11-15, with gemini-4-argon retired).
 
 A dispatchable row in the gemini family, reachable from Claude Code and Codex
 hosts, through a read-only `agy` print-mode recipe (Claude Code also ships a
@@ -20,6 +21,7 @@ Run:  python3 -m pytest skills/model-router/tests/test_gemini_seat.py -q
 """
 
 import copy
+import itertools
 import json
 import os
 import re
@@ -40,7 +42,9 @@ from route_task import Policy, Task, load_config, route  # noqa: E402
 CFG = load_config()
 ID = lambda key: CFG["models"][key]["id"]                        # noqa: E731
 POLICY = Policy.of(CFG)
-SEAT_KEY = "gemini_frontier"
+SEAT_KEY = "gemini_hydrogen"
+ARGON_KEY = "gemini_frontier"          # the seat 1.24.0-1.25.x, retired in 1.26.0
+ARGON = ID(ARGON_KEY)
 GEMINI = ID(SEAT_KEY)
 META = ID("meta_worker_balanced")
 XAI = ID("xai_frontier")
@@ -64,14 +68,16 @@ FIXTURE_MODEL_134 = ID("gemini_worker_balanced")
 # ---------------------------------------------------------------------------
 
 def test_the_row_is_a_dispatchable_tier_1_seat_bound_to_no_role():
-    """Tier 1 since 1.24.0: the 2026-10-27 real-review replay (T5) put
-    gemini-4-argon at 0.233 recall, below the weakest live tier-2 row's bar
-    (0.282) and above the tier-1 bar (0.118). The seat it replaced was tier 0."""
+    """Tier 1 since 1.26.0: the 2026-11-15 real-review replay (T11) put
+    gemini-4-hydrogen at 0.240 recall, below the weakest live tier-2 row's bar
+    (0.282) and above the tier-1 bar (0.183). The seat it replaced (argon, T5
+    0.233) was tier 1 too. Its ceiling is VERY_HIGH: the CLI takes xhigh."""
     row = CFG["models"][SEAT_KEY]
     assert row["family"] == "gemini"
     assert row["capability_tier"] == 1
     assert row.get("dispatchable", True) is True
-    assert row["effort_ceiling"] == "HIGH"
+    assert row["effort_ceiling"] == "VERY_HIGH"
+    assert row["effort_map"] == {"VERY_HIGH": "xhigh", "MAX": "xhigh"}
     bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     assert SEAT_KEY not in bound
 
@@ -89,12 +95,18 @@ def test_the_unbound_gemini_row_is_untouched_and_outside_the_lineage():
 
 
 def test_the_ceiling_keeps_every_routed_effort_inside_the_probed_tokens():
-    """The CLI accepts low, medium and high only; the ceiling clamps before the
-    family map is read, so VERY_HIGH and MAX never reach it for this seat."""
-    assert POLICY.ceiling_of[GEMINI] == "HIGH"
-    probed = {"low", "medium", "high"}
-    for level in ("MINIMAL", "LOW", "MEDIUM", "HIGH"):
-        assert CFG["effort_map"]["gemini"][level] in probed, level
+    """The CLI accepts low, medium, high and xhigh for this model and refuses
+    max (probed 2026-11-15); the ceiling clamps MAX to VERY_HIGH before any map
+    is read, and the row's map turns VERY_HIGH into xhigh over the family's
+    high."""
+    assert POLICY.ceiling_of[GEMINI] == "VERY_HIGH"
+    probed = {"low", "medium", "high", "xhigh"}
+    merged = {**CFG["effort_map"]["gemini"], **CFG["models"][SEAT_KEY]["effort_map"]}
+    for level in ("MINIMAL", "LOW", "MEDIUM", "HIGH", "VERY_HIGH"):
+        assert merged[level] in probed, level
+    assert merged["VERY_HIGH"] == "xhigh"
+    # the retired argon row keeps its HIGH ceiling and the family's high
+    assert POLICY.ceiling_of[ARGON] == "HIGH"
 
 
 def test_claude_code_and_codex_offer_the_seat_and_only_to_read():
@@ -264,7 +276,8 @@ def test_a_low_xai_quota_reaches_this_seat_on_a_retry_and_caps_an_unknown_root_c
     """Review i4 (fable, low): the retry half of the xai-low swap — after the
     fast lead fails, the retry's same-tier swap lands on this seat — and an
     unknown root cause's MAX ask runs at the seat's HIGH ceiling there, with no
-    floor broken (no human gate)."""
+    floor broken (no human gate). Since 1.26.0 the seat's ceiling is
+    VERY_HIGH: the MAX ask runs at xhigh."""
     kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=0,
               reversibility=0, runtime="claude_code", _family_quota={"xai": "low"})
     fresh = route(Task(**kw), CFG)
@@ -274,7 +287,8 @@ def test_a_low_xai_quota_reaches_this_seat_on_a_retry_and_caps_an_unknown_root_c
     urc = route(Task(**dict(kw, complexity=1, uncertainty=1, blast_radius=1),
                      flags=["unknown_root_cause"]), CFG)
     assert urc["selected_model"] == GEMINI
-    assert (urc["selected_effort"], urc["selected_effort_effective"]) == ("MAX", "HIGH")
+    assert (urc["selected_effort"], urc["selected_effort_effective"]) == ("MAX", "VERY_HIGH")
+    assert urc["selected_effort_native"] == "xhigh"
     assert urc["requires_human_confirmation"] is False
 
 
@@ -297,32 +311,184 @@ def test_the_other_ways_the_xai_seat_drops_out_move_nothing_either(extra):
             assert _project(route(Task(**kw), CFG)) == _project(route(Task(**kw), BASE)), (cls, dims)
 
 
-def test_the_high_ceiling_adds_its_cause_to_a_gate_already_raised():
-    """r2 sol: most of the disclosed cases join an existing CRITICAL gate."""
-    kw = dict(task_class="DOCUMENTATION", complexity=0, uncertainty=1, blast_radius=3,
-              reversibility=3, runtime="claude_code", unavailable_models=AHEAD_OUT,
-              worker_seat="read_only")
+def test_the_ceiling_adds_its_cause_to_a_critical_review_gate_already_raised():
+    """1.26.0: where this seat sits as a reviewer on a CRITICAL band that asks
+    for MAX, its VERY_HIGH ceiling adds `effort_below_floor` to the gate the
+    band has already raised (the 10,582 routes the placement replay counted
+    where argon had been withheld); the registry without the seat seated
+    another model there."""
+    kw = dict(task_class="MECHANICAL", complexity=0, uncertainty=1, blast_radius=3,
+              reversibility=3, runtime="claude_code", unavailable_models=BOTH_OUT,
+              _family_quota={"claude": "exhausted"})
     after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+    assert GEMINI in after["review"]["reviewer_models"] and after["review"]["effort"] == "MAX"
     assert before["requires_human_confirmation"] is True
     assert "effort_below_floor" not in (before.get("human_control_causes") or [])
     assert "effort_below_floor" in after["human_control_causes"]
 
 
-def test_the_high_ceiling_can_raise_a_human_gate_and_says_why():
-    """design review r1 sol F4 / fable F2: where this seat becomes a worker a
-    floor wanted at VERY_HIGH, the effort is capped at HIGH and the route asks
-    for a human with `effort_below_floor`; the registry without the seat seated
-    a model that reached the floor."""
+def test_a_critical_review_dispatches_this_seat_at_xhigh():
+    """Review i1 (fable F1): a dispatch seat carries the review's own effort,
+    which a CRITICAL band sets to MAX; the seat is dispatched at the token its
+    ceiling accepts (`xhigh`), and the route records the cap. Review i2 (fable
+    F1) moved the clamp into `_dispatch_seats`; the row's MAX line no longer
+    decides it."""
+    kw = dict(task_class="ARCHITECTURE", complexity=0, uncertainty=3, blast_radius=3,
+              reversibility=0, runtime="claude_code",
+              unavailable_models=[XAI, META, ID("openai_reasoning")],
+              _family_quota={"claude": "exhausted"},
+              _implementer={"model_id": ID("openai_worker_fast")})
+    out = route(Task(**kw), CFG)
+    seat = [s for s in out["dispatch_seats"] if s["model_id"] == GEMINI]
+    assert seat and seat[0]["effort"] == "MAX" and seat[0]["effort_native"] == "xhigh"
+    assert any(e["model"] == GEMINI and e["capped_at"] == "VERY_HIGH"
+               for e in out["effort_ceiling_applied"])
+
+
+def test_every_dispatchable_row_spells_a_level_above_its_ceiling_as_its_ceiling():
+    """Review i1 (fable F1): every lookup clamps to the ceiling first (the worker's
+    always did; a dispatch seat's since review i2), so the map's levels above a
+    ceiling are never read; they must still spell the ceiling's token, so the map
+    a reader sees is the one the router acts on."""
+    for key, m in CFG["models"].items():
+        if m.get("dispatchable", True) is False or not POLICY.ceiling_of.get(m["id"]):
+            continue
+        ceiling = POLICY.ceiling_of[m["id"]]
+        for level in POLICY.efforts[POLICY.efforts.index(ceiling) + 1:]:
+            assert POLICY.native_effort(m["id"], level) == \
+                POLICY.native_effort(m["id"], ceiling), (key, level)
+
+
+# A route's fields that a different effort ceiling may change: the policy's digests,
+# the prose rationale, and the effort fields themselves (compared separately).
+_CEILING_EXEMPT = ("policy_sha256", "decision_fingerprint", "rationale",
+                   "selected_effort_effective", "selected_effort_native",
+                   "effort_ceiling_applied", "dispatch_seats", "human_control_causes",
+                   "requires_human_confirmation")
+# Reviewer side: the seat is a CRITICAL reviewer where the OpenAI reasoning seat, the
+# xai seat (and on Claude Code meta) are out and Claude is exhausted; a declared
+# implementer makes the route carry its dispatch seats.
+_REVIEWER_REACH = (("claude_code", [XAI, META, ID("openai_reasoning")]),
+                   ("codex", [XAI, ID("openai_reasoning")]))
+_WRITE_CLASSES = [c for c in CLASSES if c not in ("INVESTIGATION", "REVIEW")]
+
+
+def _ceiling_scenarios():
+    hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
+    for (runtime, ahead), cls, dims in itertools.product(
+            hosts, CLASSES, itertools.product(range(4), repeat=4)):
+        for extra in ({}, {"flags": ["unknown_root_cause"]}):
+            yield dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                       blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
+                       unavailable_models=ahead, **copy.deepcopy(extra))
+    for (runtime, out), cls, dims in itertools.product(
+            _REVIEWER_REACH, _WRITE_CLASSES, itertools.product(range(4), repeat=4)):
+        yield dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                   blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
+                   unavailable_models=out, _family_quota={"claude": "exhausted"},
+                   _implementer={"model_id": ID("openai_worker_fast")})
+
+
+def _caps(r):
+    return [(e["role"], e["model"], e["requested"], e["floor_broken"], e["floor_requires"])
+            for e in r["effort_ceiling_applied"]]
+
+
+def test_the_very_high_ceiling_moves_only_effort_and_never_down():
+    """Review i1 (fable): the in-tree twin of the id-only replay. Against a copy whose
+    seat keeps argon's HIGH ceiling and the family map, every route where the seat
+    can be reached, as worker or as CRITICAL reviewer, is the same route apart from
+    effort fields; the seat's worker and reviewer effort never falls and no gate is
+    added. Review i2 (fable F4): the whole route is compared, not four fields, and
+    the reviewer side is checked too."""
+    high = copy.deepcopy(CFG)
+    high["models"][SEAT_KEY]["effort_ceiling"] = "HIGH"
+    del high["models"][SEAT_KEY]["effort_map"]
+    eff = POLICY.efforts.index
+    moved = {"worker": 0, "reviewer": 0}
+    for kw in _ceiling_scenarios():
+        now, was = route(Task(**copy.deepcopy(kw)), CFG), route(Task(**kw), high)
+        assert {k: v for k, v in now.items() if k not in _CEILING_EXEMPT} == \
+            {k: v for k, v in was.items() if k not in _CEILING_EXEMPT}, kw
+        assert set(now.get("human_control_causes") or []) <= set(
+            was.get("human_control_causes") or []), kw
+        if now["selected_effort_effective"] != was["selected_effort_effective"]:
+            assert now["selected_model"] == GEMINI
+            assert eff(now["selected_effort_effective"]) > eff(was["selected_effort_effective"])
+            moved["worker"] += 1
+        assert _caps(now) == _caps(was), kw
+        for a, b in zip(now["effort_ceiling_applied"], was["effort_ceiling_applied"]):
+            if a["capped_at"] != b["capped_at"]:
+                # a terminal route records the seat's cap with no model resolved
+                assert a["model"] == GEMINI or (a["model"] is None and now["terminal"]), kw
+                assert eff(a["capped_at"]) > eff(b["capped_at"]), kw
+        seats_now, seats_was = now.get("dispatch_seats") or [], was.get("dispatch_seats") or []
+        assert [{k: v for k, v in s.items() if k != "effort_native"} for s in seats_now] == \
+            [{k: v for k, v in s.items() if k != "effort_native"} for s in seats_was], kw
+        for a, b in zip(seats_now, seats_was):
+            if a["effort_native"] != b["effort_native"]:
+                assert a["model_id"] == GEMINI and (a["effort_native"], b["effort_native"]) == \
+                    ("xhigh", "high"), kw
+                moved["reviewer"] += 1
+    assert moved["worker"] > 0 and moved["reviewer"] > 0, moved
+
+
+def test_a_dispatch_seat_is_spelled_at_the_level_its_cap_records():
+    """Review i2 (fable F1): SKILL.md says a reviewer's token is its model's map at
+    the `capped_at` level its effort_ceiling_applied entry records. A successor's
+    overlay inherits the row map and may lower the ceiling (model_sync P0/P4), so a
+    map line above the ceiling must not decide the token: on a copy with the seat's
+    ceiling lowered to HIGH and its row map (MAX: xhigh) kept, the seat is dispatched
+    at `high`; on the registry, at `xhigh`. Every dispatch seat of the sweep, on
+    either config, is spelled at its cap."""
+    low = copy.deepcopy(CFG)
+    low["models"][SEAT_KEY]["effort_ceiling"] = "HIGH"
+    assert low["models"][SEAT_KEY]["effort_map"]["MAX"] == "xhigh"
+    seen = {"registry": set(), "lowered": set()}
+    for name, cfg in (("registry", CFG), ("lowered", low)):
+        policy = Policy.of(cfg)
+        for kw in _ceiling_scenarios():
+            if "_implementer" not in kw:
+                continue
+            out = route(Task(**kw), cfg)
+            caps = {(e["role"], e["model"]): e["capped_at"] for e in out["effort_ceiling_applied"]}
+            for s in out.get("dispatch_seats") or []:
+                level = caps.get((s["role"], s["model_id"]), s["effort"])
+                assert s["effort_native"] == policy.native_effort(s["model_id"], level), (name, kw, s)
+                if s["model_id"] == GEMINI and s["effort"] == "MAX":
+                    seen[name].add(s["effort_native"])
+    assert seen == {"registry": {"xhigh"}, "lowered": {"high"}}, seen
+
+
+def test_as_a_worker_the_seat_meets_every_effort_floor():
+    """1.24.0 disclosed that argon's HIGH ceiling could raise a human gate where
+    the seat became a worker a floor wanted at VERY_HIGH. Hydrogen's VERY_HIGH
+    ceiling meets every such floor: over every class and dimension with
+    everything ahead of the seat out on a read-only route, seating it never
+    adds `effort_below_floor` (the 1.24.0 example now runs at VERY_HIGH)."""
+    # everything ahead of the seat: on Claude Code xai, the Claude model and meta;
+    # on Codex xai and the Claude model (review i1, fable: swept on both hosts)
+    hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
+    reached = {runtime: 0 for runtime, _ in hosts}       # not vacuous: the seat works at VERY_HIGH
+    for (runtime, ahead), cls, (c, u, b, r) in itertools.product(
+            hosts, CLASSES, itertools.product(range(4), repeat=4)):
+        kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
+                  reversibility=r, runtime=runtime, unavailable_models=ahead,
+                  worker_seat="read_only")
+        after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+        added = set(after.get("human_control_causes") or []) - set(
+            before.get("human_control_causes") or [])
+        assert "effort_below_floor" not in added, (runtime, cls, c, u, b, r)
+        reached[runtime] += (after["selected_model"] == GEMINI
+                             and after["selected_effort_effective"] == "VERY_HIGH")
+    assert all(n > 0 for n in reached.values()), reached
     kw = dict(task_class="DOCUMENTATION", complexity=3, uncertainty=3, blast_radius=0,
               reversibility=0, runtime="claude_code", unavailable_models=AHEAD_OUT,
               worker_seat="read_only")
-    after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+    after = route(Task(**kw), CFG)
     assert after["selected_model"] == GEMINI
-    assert after["selected_effort_effective"] == "HIGH"
-    assert "effort_below_floor" in after["human_control_causes"]
-    assert after["requires_human_confirmation"] is True
-    assert "effort_below_floor" not in (before.get("human_control_causes") or [])
-    assert before["requires_human_confirmation"] is False
+    assert after["selected_effort_effective"] == "VERY_HIGH"
+    assert after["requires_human_confirmation"] is False
 
 
 @pytest.mark.parametrize("runtime", ["grok"])
@@ -446,21 +612,24 @@ def test_an_allowed_families_list_of_gemini_alone_cannot_staff_a_write_route():
 
 RETIRED_KEY = "gemini_worker_balanced"
 RETIRED = ID(RETIRED_KEY)
+# 1.26.0 (user decision 2026-11-15, U-4): argon is retired the way flash was in 1.24.0.
+RETIRED_ROWS = (RETIRED_KEY, ARGON_KEY)
 
 
-def test_the_retired_flash_row_is_history_input_only():
+@pytest.mark.parametrize("key", RETIRED_ROWS)
+def test_the_retired_rows_are_history_input_only(key):
     """Not a seat: not dispatchable, no lineage (model_sync offers no
     successor), no binding, no fallback list. Not a `<live>@<id>` history row
     either: the seat that replaced it is another line, whose template does not
     parse its id."""
-    row = CFG["models"][RETIRED_KEY]
+    row = CFG["models"][key]
     assert row["family"] == "gemini" and row["dispatchable"] is False
     assert "lineage" not in row and "history_of" not in row
     bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     listed = {k for per_role in CFG["fallbacks"].values() for keys in per_role.values() for k in keys}
-    assert RETIRED_KEY not in bound and RETIRED_KEY not in listed
+    assert key not in bound and key not in listed
     template = CFG["models"][SEAT_KEY]["lineage"]["template"]
-    assert lineage.parse(template, RETIRED) is None
+    assert lineage.parse(template, ID(key)) is None
     assert lineage.parse(template, GEMINI) is not None
 
 
@@ -469,29 +638,32 @@ def test_no_row_that_is_not_dispatchable_is_named_by_a_binding_or_fallback():
     row kept without `history_of` (the gemini seat's first model, the unbound
     gemini row) is held here, so re-listing one cannot pass as a live seat."""
     off = {k for k, m in CFG["models"].items() if m.get("dispatchable", True) is False}
-    assert {RETIRED_KEY, "gemini_flash"} <= off
+    assert {RETIRED_KEY, ARGON_KEY, "gemini_flash"} <= off
     named = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     named |= {k for per_role in CFG["fallbacks"].values() for keys in per_role.values() for k in keys}
     assert not (off & named), sorted(off & named)
 
 
+@pytest.mark.parametrize("key", RETIRED_ROWS)
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
-def test_the_retired_flash_id_stays_valid_history_input(runtime):
-    """A control loop holding a 1.23 attempt on it keeps working across the
-    release boundary: as a failed model and as an unavailable model. (No host
-    runs the gemini family, so it was never valid host input.)"""
-    assert RETIRED in POLICY.model_ids
+def test_the_retired_ids_stay_valid_history_input(runtime, key):
+    """A control loop holding an attempt on a retired seat (1.23 on flash, 1.25 on
+    argon) keeps working across the release boundary: as a failed model and as an
+    unavailable model. (No host runs the gemini family, so neither was valid host
+    input.)"""
+    retired = ID(key)
+    assert retired in POLICY.model_ids
     base = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                 reversibility=0, runtime=runtime, unavailable_models=[XAI])
-    retry = route(Task(**base, prior_failures=1, prior_models=[RETIRED]), CFG)
-    assert retry["terminal"] is None and RETIRED not in _emitted(retry)
-    out = route(Task(**{**base, "unavailable_models": [XAI, RETIRED]}), CFG)
-    assert out["terminal"] is None and RETIRED not in _emitted(out)
+    retry = route(Task(**base, prior_failures=1, prior_models=[retired]), CFG)
+    assert retry["terminal"] is None and retired not in _emitted(retry)
+    out = route(Task(**{**base, "unavailable_models": [XAI, retired]}), CFG)
+    assert out["terminal"] is None and retired not in _emitted(out)
 
 
-def test_the_retired_flash_model_is_never_emitted():
+def test_the_retired_models_are_never_emitted():
     """Wherever the gemini seat could be reached — everything ahead of it out,
-    and the seat itself out too — the retired model never comes back."""
+    and the seat itself out too — neither retired model comes back."""
     scenarios = (
         {"unavailable_models": AHEAD_OUT},
         {"unavailable_models": [*AHEAD_OUT, GEMINI]},
@@ -508,6 +680,7 @@ def test_the_retired_flash_model_is_never_emitted():
                                      blast_radius=dims[2], reversibility=dims[3],
                                      runtime=runtime, **copy.deepcopy(extra)), CFG)
                     assert RETIRED not in _emitted(out), (runtime, cls, dims, extra)
+                    assert ARGON not in _emitted(out), (runtime, cls, dims, extra)
 
 
 def test_a_claude_shortage_keeps_the_fast_writer_for_this_seats_cross_family_review():
@@ -593,20 +766,20 @@ def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat(withheld, befo
     assert after["selected_capability_tier"] > POLICY.tier_of[META]
 
 
-def test_the_argon_row_states_its_documented_facts():
-    """The provider's pricing and model pages (2026-10-27): introductory rates
-    through 2026-11-30 that double on 2026-12-01, so the row goes stale before
-    they move; implicit caching only (no cache-write rate, an unavailable
-    quote); one 1,048,576-token window."""
-    import datetime as dt
+def test_the_hydrogen_row_states_its_documented_facts():
+    """The provider's pricing and model pages (2026-11-15): flat rates with no
+    long-context tier and no introductory promotion; implicit caching only (no
+    cache-write rate, an unavailable quote); one 1,048,576-token window; the
+    xhigh spelling among its served forms."""
     row = CFG["models"][SEAT_KEY]
     price = row["price_per_mtok"]
-    assert (price["input"], price["output"], price["cached_input"]) == (2.0, 10.0, 0.1)
+    assert (price["input"], price["output"], price["cached_input"]) == (1.5, 7.5, 0.075)
     assert "cache_write" not in price and "long_context" not in price
-    stale = dt.date.fromisoformat(str(price["verified_on"])) + dt.timedelta(days=price["max_age_days"])
-    assert stale < dt.date(2026, 12, 1)
+    assert str(price["verified_on"]) == "2026-11-15" and price["max_age_days"] == 30
     assert row["context_window"] == 1048576
-    assert row["lineage"]["served_forms"] == ["{id}", "{id}-low", "{id}-medium", "{id}-high"]
+    assert row["lineage"] == {"line": "google/hydrogen", "template": "gemini-{gen}-hydrogen",
+                              "served_forms": ["{id}", "{id}-low", "{id}-medium", "{id}-high",
+                                               "{id}-xhigh"]}
 
 
 def test_the_unbound_gemini_row_is_still_never_emitted():
@@ -1416,12 +1589,27 @@ def test_the_real_log_excerpts_grade_as_captured(tmp_path):
 
 def test_the_agy_1_4_8_argon_excerpt_grades_as_captured(tmp_path):
     """1.24.0: the lines the gate reads did not move between agy 1.3.4 and
-    1.4.8 (art-low-rel, the current seat's model id round trip)."""
+    1.4.8 (art-low-rel, the argon seat's model id round trip; graded against
+    the id it ran, retired in 1.26.0)."""
     log = tmp_path / "argon.log"
     log.write_text((FIXTURES / "agy-1.4.8-argon-reviewer.log").read_text())
+    view, reasons = dispatch_agent._grade_agy_log(log, {}, ARGON)
+    assert reasons == [] and view["lines"] == [LOADED]
+    assert view["resolved_model"] == f"{ARGON}-low"
+
+
+def test_the_agy_1_5_9_hydrogen_excerpt_grades_as_captured(tmp_path):
+    """1.26.0: the lines the gate reads did not move on agy 1.5.9 (art-low-rel,
+    the current seat's model id round trip, paths scrubbed)."""
+    log = tmp_path / "hydrogen.log"
+    log.write_text((FIXTURES / "agy-1.5.9-hydrogen-reviewer.log").read_text())
     view, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
     assert reasons == [] and view["lines"] == [LOADED]
     assert view["resolved_model"] == f"{GEMINI}-low"
+    # the argon excerpt does not pass as this seat's run (the gate pins the declared model)
+    log.write_text((FIXTURES / "agy-1.4.8-argon-reviewer.log").read_text())
+    _, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
+    assert reasons
 
 
 def test_a_cleared_record_before_the_loaded_one_fails(tmp_path):
