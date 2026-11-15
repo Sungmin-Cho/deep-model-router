@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] — 2026-11-15 (Gemini 4 Hydrogen replaces Gemini 4 Argon)
+
+### Added
+
+- Add Gemini 4 Hydrogen as the gemini reviewer seat, in the places Gemini 4 Argon held: after the Claude balanced model (and, on Claude Code, the Muse Spark seat) in the balanced role's fallback list, on Claude Code and Codex hosts. It reads only; the contained maker seat ships without write authority, as before. Its effort ceiling is one step higher than Argon's: the Antigravity CLI accepts `xhigh` for this model (and refuses `max`), so a MAX ask runs at `xhigh` where Argon stopped at `high`.
+- Measure it before seating it: the same replay of three real reviews from this repository, graded blind against the findings their authors accepted, puts its recall at 24%, between Gemini 4 Argon (23%) and GPT-6.1 Terra (25%), so it is tier 1 — about 2.5 times the recall of Gemini 3.8 Flash, the model Google says it succeeds. Every one of its sessions was audited from the CLI's own conversation store. The model profile lists what moves: 74,906 of 1,156,641 replayed routes, nearly all only by the id (against a registry that only swaps the id, 1,334 routes change, every one the effort of an investigation lead), and, where Argon's spent quota would have left the seat empty, the seat now staffs it (a cross-family review gained on 15,950 routes). Keeping both Gemini models was replayed and not taken.
+- IMPLEMENTATION-REPLAY-PLACEHOLDER
+- Document that the Gemini seat's account quota is per model and that its window differs by model: Argon's ran out after about ten long runs and reset after a week; Hydrogen's was refused after six reviews and ten implementation runs on one day and reset about five hours after the day's first call. Read the reset from each refusal.
+
+### Removed
+
+- Remove Gemini 4 Argon from routing. Its id stays valid as history input (`--prior-models`, `--unavailable-models`), so a loop holding an earlier attempt keeps working; it is never seated and its successors are not tracked. Its implementation replay (#72) is stopped unfinished, since its result could no longer move a seat; two defects found in that replay's harness while building this one are recorded with it.
+
 ## [1.25.3] — 2026-11-12 (the gemini seat on Antigravity CLI 1.5.6)
 
 ### Changed

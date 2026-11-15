@@ -386,7 +386,7 @@ def _g124_check(req, prev, cur):
     if cur["terminal"]:
         return [f"became {cur['terminal']}"]
     out = []
-    gemini = ID("gemini_frontier")
+    gemini = ID("gemini_hydrogen")      # the place's live seat (1.24.0-1.25.x: argon)
     seat = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
     # The one disclosed weakening (review i1 sol F2 / fable F1; i2 fable F2: a
     # write seat only): the execution cell keeps the writer on the fast role
@@ -655,7 +655,9 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
         "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
     "review_lead": lambda cfg: cfg["review"].__setitem__("review_class_lead_counts", False),
     "t65": lambda cfg: cfg["models"]["claude_worker_balanced"].__setitem__("capability_tier", 1),
-    "g124": lambda cfg: cfg["models"]["gemini_frontier"].__setitem__("capability_tier", 0),
+    # 1.26.0: the gemini place's live seat is gemini_hydrogen (argon retired); the rule
+    # reads the seat in that place, whichever model holds it.
+    "g124": lambda cfg: cfg["models"]["gemini_hydrogen"].__setitem__("capability_tier", 0),
 }
 
 def _c4_off(stack: ExitStack) -> None:
@@ -713,10 +715,11 @@ def test_t70_off_matches_immutable_1_23_0_low_quota_retry_outcomes():
     checked against immutable commit b057eef40755db4ef1982477ae063f1dd599401f;
     the test itself reads only the shipped config and the live resolver."""
     son, terra, opus = ID("claude_worker_balanced"), ID("openai_worker_balanced"), ID("claude_senior")
-    # The gemini place's live seat (gemini_frontier since 1.24.0; 1.23.0 held
-    # gemini-3.8-flash there). Either way the case withholds the three seats
-    # behind the Claude model, so the archived tuples are unchanged.
-    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_frontier"),
+    # The gemini place's live seat (gemini_hydrogen since 1.26.0, gemini_frontier
+    # 1.24.0-1.25.x; 1.23.0 held gemini-3.8-flash there). Either way the case
+    # withholds the three seats behind the Claude model, so the archived tuples are
+    # unchanged.
+    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_hydrogen"),
                               ID("openai_reasoning"), ID("xai_frontier"))
 
     cases = [

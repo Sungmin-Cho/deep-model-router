@@ -9,6 +9,19 @@
 
 ## [Unreleased]
 
+## [1.26.0] — 2026-11-15 (Gemini 4 Argon을 Gemini 4 Hydrogen으로 교체)
+
+### Added
+
+- Gemini 4 Hydrogen을 gemini 리뷰어 좌석으로 추가했습니다. Gemini 4 Argon이 있던 자리, 곧 Claude Code·Codex 호스트에서 균형 역할 폴백 목록의 Claude 균형 모델(Claude Code에서는 Muse Spark 좌석) 다음입니다. 읽기만 하고, 봉쇄된 maker 좌석은 이전처럼 쓰기 권한 없이 출하합니다. effort 상한은 Argon보다 한 단계 높습니다. Antigravity CLI가 이 모델에는 `xhigh`를 받고 `max`는 거부하므로, MAX 요청은 Argon이 `high`에서 멈추던 곳에서 `xhigh`로 돕니다.
+- 앉히기 전에 측정했습니다. 이 저장소의 실제 리뷰 세 건을 같은 방식으로 재현하고 작성자가 수용한 지적에 대해 블라인드로 채점한 결과, 재현율은 24%로 Gemini 4 Argon(23%)과 GPT-6.1 Terra(25%) 사이라 tier 1입니다. Google이 이 모델의 전작이라 하는 Gemini 3.8 Flash의 약 2.5배입니다. 모든 세션은 CLI 자신의 대화 저장소로 감사했습니다. 무엇이 바뀌는지는 모델 프로필에 있습니다. 재생한 1,156,641개 라우트 중 74,906개가 바뀌는데 거의 전부 id만 바뀝니다(id만 바꾼 레지스트리와 비교하면 1,334개이고 모두 조사 리드의 effort입니다). Argon의 한도 소진으로 좌석이 비었을 경로에서는 이제 이 좌석이 그 자리를 채웁니다(교차 가족 리뷰 15,950건 회복). 두 Gemini 모델을 함께 두는 배치는 재생해 보고 택하지 않았습니다.
+- IMPLEMENTATION-REPLAY-PLACEHOLDER-KO
+- Gemini 좌석의 계정 한도는 모델별이고, 창의 길이도 모델마다 다르다고 문서화했습니다. Argon은 긴 실행 약 10회 뒤 소진되어 일주일 뒤 초기화됐고, Hydrogen은 하루에 리뷰 6회와 구현 실행 10회 뒤 거부되어 그날 첫 호출로부터 약 5시간 뒤 초기화됐습니다. 초기화 시각은 거부 메시지마다 읽으십시오.
+
+### Removed
+
+- Gemini 4 Argon을 라우팅에서 제거했습니다. id는 이력 입력(`--prior-models`, `--unavailable-models`)으로 계속 유효하므로 이전 시도를 들고 있는 루프는 그대로 동작합니다. 앉히지는 않으며 후속 세대도 추적하지 않습니다. 그 구현 재현(#72)은 결과가 더는 좌석을 움직일 수 없어 끝내지 않고 중단했습니다. 이번 측정의 하네스를 만들며 찾은 그 재현 하네스의 결함 두 가지를 함께 기록했습니다.
+
 ## [1.25.3] — 2026-11-12 (Antigravity CLI 1.5.6의 gemini 좌석)
 
 ### Changed

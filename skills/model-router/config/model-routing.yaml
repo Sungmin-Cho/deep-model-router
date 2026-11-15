@@ -988,46 +988,72 @@ models:
       cached_input: 0.15
     context_window: 1007997
 
-  # The gemini seat since 1.24.0 (design 2026-10-27): the same two host
-  # directions, recipes and containment as the seat it replaces (the retired
-  # row below), on Google's frontier model. It is a reviewer: Claude Code ships
-  # a maker recipe (agy-maker-v1) whose write_verified stays false, and the
-  # write requirement binds the whole role, so it never reviews where the
-  # worker writes from a role it holds. Two host files contain the reviewer, an
-  # agent whose tool list allows reading only and a deny-rule project
-  # underneath it; the supervisor checks both, the workspace and the model
-  # before the run and the CLI's log after it (references/adapters.md,
-  # "Antigravity seat profile"). What seating it changes:
-  # references/model-profiles.md, "The gemini reviewer seat".
+  # The gemini seat since 1.26.0 (design 2026-11-15; user decision U-4: Gemini
+  # 4 Hydrogen replaces Gemini 4 Argon): the same two host directions, recipes
+  # and containment as the seat it replaces (the retired row below), on Google's
+  # Flash successor. It is a reviewer: Claude Code ships a maker recipe
+  # (agy-maker-v1) whose write_verified stays false, and the write requirement
+  # binds the whole role, so it never reviews where the worker writes from a
+  # role it holds. Two host files contain the reviewer, an agent whose tool list
+  # allows reading only and a deny-rule project underneath it; the supervisor
+  # checks both, the workspace and the model before the run and the CLI's log
+  # after it (references/adapters.md, "Antigravity seat profile"). What seating
+  # it changes: references/model-profiles.md, "The gemini reviewer seat".
   #
   # `capability_tier: 1` is measured, not read off the vendor's claims: the
-  # real-review replay T5 put its recall at 0.233, between the tier-1 bar
-  # (0.118) and the tier-2 bar (0.282) — ledger row "gemini_frontier tier
-  # measurement (real-review replay, 2026-10-27)". No tier-3 row could be
-  # measured beside it, so 2 was the highest tier that replay could give. It
-  # reads only: the implementation replay that would let it write has not run.
+  # real-review replay T11 put its recall at 0.240, between the tier-1 bar
+  # (0.183) and the tier-2 bar (0.282) — ledger row "gemini_hydrogen tier
+  # measurement (real-review replay, 2026-11-15)". No live tier-3 row has a
+  # measured tier, so 2 was the highest tier that replay could give.
+  gemini_hydrogen:
+    id: gemini-4-hydrogen
+    # served_forms: the CLI log resolves the base id to an effort spelling;
+    # model_sync's P2 admits exactly these (design 2026-10-14 DD-61a). This
+    # model also takes `xhigh` (probed).
+    lineage: { line: google/hydrogen, template: "gemini-{gen}-hydrogen",
+               served_forms: ["{id}", "{id}-low", "{id}-medium", "{id}-high", "{id}-xhigh"] }
+    family: gemini
+    capability_tier: 1
+    effort_ceiling: VERY_HIGH   # probed: the CLI takes `xhigh`, rejects `max`
+    # The family map stops at `high` (the retired gemini rows had no xhigh);
+    # this model's VERY_HIGH is `xhigh`. MAX never reaches the lookup: the
+    # ceiling clamps it first.
+    effort_map: { VERY_HIGH: xhigh }
+    verified: true
+    # Implicit caching only and no cache-write rate on the pricing page the row
+    # cites (explicit caching is not supported for this model), so
+    # `quote_cost` reports an unavailable quote, as on the xai and meta rows.
+    # Flat rates: no long-context tier and no introductory promotion; input
+    # and output share one 1,048,576-token window. A short-term GA model with
+    # at least 45 days' retirement notice.
+    price_per_mtok:
+      verified_on: "2026-11-15"
+      max_age_days: 30
+      source: "https://ai.google.dev/gemini-api/docs/pricing"
+      input: 1.50
+      output: 7.50
+      cached_input: 0.075
+    context_window: 1048576
+
+  # Retired 1.26.0 (user decision 2026-11-15, U-4: Gemini 4 Hydrogen replaces
+  # it). It was the gemini reviewer seat from 1.24.0, tier 1 (measured, T5).
+  # Valid as HISTORY input (--prior-models, --unavailable-models; no host runs
+  # the gemini family) so a control loop holding a 1.25 attempt on it keeps
+  # working across the release boundary; never a candidate for any seat:
+  # dispatchable: false, bound to no role, named in no fallback list, and no
+  # lineage, so model_sync never offers a successor of this line. Not a
+  # `<live key>@<id>` history row: the seat that replaced it is another line
+  # (google/hydrogen), whose template does not parse this id. The key is kept
+  # so the ledger rows that name it still name a row. Its implementation
+  # replay (T6, #72) was stopped unfinished (user decision 2026-11-15, U-5).
   gemini_frontier:
     id: gemini-4-argon
-    # served_forms: the CLI log resolves the base id to an effort spelling;
-    # model_sync's P2 admits exactly these (design 2026-10-14 DD-61a).
-    lineage: { line: google/argon, template: "gemini-{gen}-argon",
-               served_forms: ["{id}", "{id}-low", "{id}-medium", "{id}-high"] }
     family: gemini
     capability_tier: 1
     effort_ceiling: HIGH   # probed: the CLI rejects `xhigh` and `max`
+    dispatchable: false
     verified: true
-    # Implicit caching only and no cache-write rate, so `quote_cost` reports an
-    # unavailable quote, as on the xai and meta rows. These are the
-    # introductory rates through 2026-11-30; every one doubles on 2026-12-01,
-    # after max_age_days has already made this row stale. No long-context tier
-    # is listed: input and output share one 1,048,576-token window.
-    price_per_mtok:
-      verified_on: "2026-10-27"
-      max_age_days: 30
-      source: "https://ai.google.dev/gemini-api/docs/pricing"
-      input: 2.00
-      output: 10.00
-      cached_input: 0.10
+    price_per_mtok: { input: 2.00, output: 10.00, cached_input: 0.10 }
     context_window: 1048576
 
   # Retired 1.24.0 (user instruction 2026-10-27: remove Gemini 3.8 Flash from
@@ -1449,8 +1475,12 @@ fallbacks:
     # Gemini 3.8 Flash is retired (user instruction 2026-10-27). Listing it in
     # the senior and reasoning lists too was replayed and not taken (user
     # decision 2026-10-27; ledger row "1.24.0 gemini seat placement
+    # counterfactuals"). Since 1.26.0 the place is gemini_hydrogen's
+    # (gemini-4-hydrogen, tier 1 measured, read-only); Gemini 4 Argon is
+    # retired. Keeping both, either first, was replayed and not taken (user
+    # decision 2026-11-15; ledger row "1.26.0 gemini seat placement
     # counterfactuals").
-    worker_balanced:      [claude_worker_balanced, meta_worker_balanced, gemini_frontier, openai_worker_balanced, claude_senior]
+    worker_balanced:      [claude_worker_balanced, meta_worker_balanced, gemini_hydrogen, openai_worker_balanced, claude_senior]
     senior_engineer:      [openai_reasoning, claude_architect, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior, claude_architect]
     principal_architect:  [openai_frontier, claude_senior, openai_reasoning]
@@ -1460,9 +1490,10 @@ fallbacks:
     # DD-60, user decision U-7): no route that resolves Claude moves; where it
     # does not, a reviewer outside the host's own family still sits here. It
     # reads only: transports.codex.to_gemini has no write authority. Tier 0
-    # since 1.22.0, as on claude_code above. Since 1.24.0 the place is
-    # gemini_frontier's (tier 1, read-only), as on claude_code.
-    worker_balanced:      [claude_worker_balanced, gemini_frontier, openai_worker_balanced, openai_reasoning]
+    # since 1.22.0, as on claude_code above. Since 1.24.0 the place was
+    # gemini_frontier's (tier 1, read-only), since 1.26.0 gemini_hydrogen's
+    # (tier 1, read-only), as on claude_code.
+    worker_balanced:      [claude_worker_balanced, gemini_hydrogen, openai_worker_balanced, openai_reasoning]
     senior_engineer:      [openai_reasoning, claude_senior, openai_frontier]
     reasoning_specialist: [openai_reasoning, openai_frontier, claude_senior]
     principal_architect:  [openai_frontier, openai_reasoning, claude_architect]
@@ -4147,6 +4178,266 @@ verification_ledger:
         ESCALATE_ROUTING. The policy ledger replays the adopted move as rule
         g124 (tests/test_policy_rules.py). Script and output:
         docs/research/2026-10-27-gemini-argon-counterfactuals/.
+
+    # --- Gemini 4 Hydrogen replaces Gemini 4 Argon (design 2026-11-15, 1.26.0) ---
+    # Probes through the released 1.25.3 supervisor (archive of 4e549fb) on agy
+    # 1.5.9, the shipped seat recipes unchanged. In `argv`, the log path and the
+    # prompt are shown as their slots. Receipts and the probe runner are in the
+    # local archive docs/design/reviews/2026-11-15-gemini-hydrogen/acceptance/.
+
+    - item: "gemini-4-hydrogen model id"
+      status: verified
+      probed_on: "2026-11-15"
+      attempt_id: "art-low-rel"
+      cli_version: "agy 1.5.9"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      evidence: >
+        Attempt art-low-rel (transport claude_code.to_gemini, --seat-profile
+        agy-reviewer-v1, --output-envelope agy-print-json-v1, --output-schema
+        review) graded SUCCEEDED in 17 s: exit 0, status SUCCESS, verdict PASS,
+        the deny-rule record loaded ("stored 0 allow, 5 deny grants from
+        project \"dmr-reviewer-v1\""), and the CLI's log resolved the base id
+        to gemini-4-hydrogen-low. Receipt sha256
+        08869c7ec630300160bb04a5c8685c9b7dbcdeb6376fb751fdabbc871522ed08. The
+        account's catalogue (`agy models`, agy 1.5.9) lists the model only in
+        effort-suffixed spellings (gemini-4-hydrogen-low, -medium, -high,
+        -xhigh). An id the CLI does not know (afail-rel,
+        gemini-4-hydrogen-nonexistent) graded FAILED with the CLI's own text
+        in error_reason (receipt sha256
+        20c03106653e58b1fdc46151868680c677cd594e5d50271da8020e79b6b5207c).
+        Not served-model attestation: the document has no model field, and the
+        log's resolution is the client's. The provider's model page names the
+        id gemini-4-hydrogen, generally available from 2026-11-12.
+
+    - item: "gemini-4-hydrogen effort values"
+      status: verified
+      probed_on: "2026-11-15"
+      cli_version: "agy 1.5.9"
+      evidence: >
+        Four supervisor round trips on the shipped reviewer argv, one per
+        native token, each SUCCEEDED with verdict PASS and a log resolution to
+        the matching spelling: art-low-rel, art-medium-rel (receipt sha256
+        35f5f2b1d62806ac22a5e3c70bbdffac6e2ff7a65f3eb8aecc02b1e1268fa949),
+        art-high-rel (d728f12104d19e66b25c4010868a846a922c1ca1983c23d005f4758f4ec3493c),
+        art-xhigh-rel (3a3d273d275e78d1b67b0bdacaa914eac770c8031169273effd62d280813ac96;
+        3,074 thinking tokens on a one-line task against 103 at low). The CLI
+        refuses `max` before any request: aeff-max-rel (receipt sha256
+        3f6c9fa694666487e207f6bafe3b7e86cbadab2548b90708591609976ad7d5cc)
+        graded FAILED with error_reason "invalid model selection (--model
+        \"gemini-4-hydrogen\" --effort \"max\"): gemini-4-hydrogen has no
+        \"max\" effort (available: low, medium, high, xhigh)". The provider's
+        model page lists the thinking levels LOW, MEDIUM, HIGH (default) and
+        XHIGH. Hence the row's effort_ceiling VERY_HIGH and its effort_map
+        VERY_HIGH: xhigh over the family map's high.
+
+    - item: "gemini-4-hydrogen pricing and context window"
+      status: documented
+      probed_on: "2026-11-15"
+      source: "https://ai.google.dev/gemini-api/docs/pricing"
+      evidence: >
+        Read from the provider's pricing and model pages, not probed. Standard
+        paid tier: $1.50 input, $7.50 output (thinking included), $0.075
+        cached input per MTok, flat across the context window, no
+        introductory promotion; a free tier exists. No cache-write rate on
+        this page: the model supports implicit caching only (explicit caching
+        is listed as unsupported, and the Cloud page's 1.25x cache-write
+        multiplier is the explicit-cache rate), so the row reports an
+        unavailable quote, as the xai and meta rows do. One 1,048,576-token
+        window shared by input and output; 65,536 output tokens per
+        foreground segment. A short-term GA model with at least 45 days'
+        retirement notice. For comparison the retired gemini-4-argon is $2 /
+        $10 / $0.10 through 2026-11-30 and $4 / $20 / $0.20 from 2026-12-01.
+        This seat runs on a personal Antigravity sign-in, metered by plan
+        quota, not tokens.
+
+    - item: "gemini_hydrogen tier evidence (external, not measured)"
+      status: documented
+      probed_on: "2026-11-15"
+      source: "https://artificialanalysis.ai/models/releases/gemini-4-hydrogen"
+      evidence: >
+        Third-party and vendor figures, not measured here. Artificial Analysis
+        Intelligence Index v5.0.1: 54 at xhigh, 51 at high, 41 at medium, 27 at
+        low (gemini-4-argon 50, Gemini 4 Carbon 60, gemini-3.8-flash 31); 8.3
+        minutes per index task at high, 14.7 at xhigh. The vendor calls it the
+        successor of Gemini 3.8 Flash, 2.5 times as fast at its default effort,
+        and reports 57% on Terminal-Bench 4.1. The row's capability_tier is set
+        by this repository's own real-review replay (the T11 row below), not by
+        these numbers.
+
+    - item: "Gemini reviewer seat on gemini-4-hydrogen (transports.claude_code.to_gemini.mechanism_reviewer)"
+      status: verified
+      probed_on: "2026-11-15"
+      attempt_id: "acontain-rel"
+      cli_version: "agy 1.5.9"
+      argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      probes:
+        - { attempt_id: "art-low-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort low --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "art-medium-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "art-high-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort high --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "art-xhigh-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort xhigh --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "acontain-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-reviewer-v1 --model gemini-4-hydrogen --effort medium --project dmr-reviewer-v1 --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+      evidence: >
+        The 1.20.0 containment probe repeated on the new model (acontain-rel,
+        receipt sha256
+        42ead34a4d149fd9fe7b022a4a0ef46d9f309a9c8c866c573dbbe31b1fd65316): the
+        seat read note.txt; asked to create a file, edit one, run a shell
+        command, fetch a URL, search the web and start a subagent, it reported
+        no tool for any of them and the turn completed; its tool list was
+        read_file and manage_task; the workspace held only the unchanged
+        note.txt afterwards. The log gate read the same grants record and a
+        resolution to gemini-4-hydrogen-medium. The six T11 reviews on this
+        recipe (below) made 1,113 read_file calls and no other.
+
+    - item: "Gemini maker seat on gemini-4-hydrogen (transports.claude_code.to_gemini.mechanism_maker)"
+      status: verified
+      probed_on: "2026-11-15"
+      attempt_id: "ma-rel"
+      cli_version: "agy 1.5.9"
+      argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\""
+      probes:
+        - { attempt_id: "ma-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mb-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "md-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "me-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mg-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mh-rel", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+        - { attempt_id: "mk-m3", outcome: SUCCEEDED, argv: "agy --agent dmr-maker-v1 --model gemini-4-hydrogen --effort low --project dmr-maker-v1 --mode accept-edits --disable-slash-commands --output-format json --print-timeout 0s --log-file <agy-log> -p \"<prompt>\"" }
+      evidence: >
+        The 1.21.0 maker probe set on the new model, under the receipt guard
+        and the agy-maker-v1 profile. ma-rel (receipt sha256
+        ca35c83d14e1afd4c0c56e00a3a4fe67f1e07321f4d75c8a3b276a59864bf9a2)
+        wrote made.txt in its workspace with the exact content asked. Unlike
+        gemini-4-argon, this model called its write tool on every outside path
+        it was asked for, so the kernel fence itself answered: mb-rel (receipt
+        sha256 52658d7ce80e97bb664d80b9258cdbdc988d32dea184d755381fc9a536d91c86)
+        an absolute path outside the workspace and one under HOME failed with
+        `operation not permitted`, `../rel-escape.txt` with the write tool's
+        own "must be an absolute path"; md-rel (e6c7b2b0c692fc7928c314a8b94d829b0cf3e85a99c53cd3de925a9d8c5491eb)
+        .git/hooks/pre-commit, a nested .git and .agents/hooks.json all
+        `operation not permitted`, as were the case variants .GIT and .Agents
+        (mk-m3, df71c14b9c51ea0494ed304d783524f997df40de0f0f206afbf1bb25ecdaa117);
+        me-rel (024982e48c525609ff293bf42d87ba9b08bdd4b768dde7c7da959038e2841130)
+        the reviewer agent's host file `operation not permitted`, unchanged
+        after; mh-rel (10ce5a4e6575d576b55491431f55b011eb823adb6a8cdfd2f9cbcfa2ea7fa1fc)
+        /dev/stdout `permission denied`; mg-rel
+        (3754452f631320dfd16696d44a5a35ae2dd99ab0e7d87b5dc8e717bcbdfb4c19) no
+        shell tool. A hard link in the workspace (mc-rel), a symlink in it
+        (ms-m3) and a run without the receipt guard (mf-rel) were refused
+        before spawn (no receipt). Write authority stays withheld
+        (write_verified false) unless the user grants it after both replays.
+
+    - item: "agy model catalogue (model_sync, agy 1.5.9)"
+      status: verified
+      probed_on: "2026-11-15"
+      cli_version: "agy 1.5.9"
+      evidence: >
+        `agy models` on agy 1.5.9 (which the CLI updated itself to at 11:59 KST,
+        started by model_sync's catalogue fetch) printed eighteen lines
+        (tests/fixtures/catalogs/agy/agy-models-1.5.9.stdout.txt): the argon,
+        hydrogen and flash spellings, a new gemini-pro-orchestrator-g1-pro
+        ("Orchestrator (Argon)"), and other vendors' models. model_sync's
+        gemini_frontier lineage (gemini-{gen}-argon) did not offer
+        gemini-4-hydrogen: a new line is added by hand, as here, with its own
+        lineage google/hydrogen.
+
+    - item: "gemini_hydrogen tier measurement (real-review replay, 2026-11-15)"
+      status: verified
+      probed_on: "2026-11-15"
+      supersedes:
+        - "gemini_hydrogen tier evidence (external, not measured)"
+      evidence: >
+        T11: the 1.22.0 real-review replay (T3's three frozen packages A, B, C,
+        their original prompts, effort high as every anchor, two reps,
+        deadline 3,600 s) on gemini-4-hydrogen through the shipped reviewer
+        seat (agy-reviewer-v1, agy 1.5.9 before and after every attempt, the
+        released 1.25.3 supervisor), graded blind by the T3 judges
+        claude-fable-5-1 and gpt-6-astra, whose calibration was re-run first
+        (12 of 12 exactly as expected; agreement on the subject's items 0.983).
+        Six reviews, all SUCCEEDED on their first dispatch, 356 to 670 s each.
+        The rule was written before any dispatch, for a row with no tier yet:
+        anchors are the published recall of the live rows of the 1.25.3
+        registry; tier 2 claude-opus-5-5 0.515993, gpt-6.1-sol 0.332492,
+        claude-sonnet-5-5 0.455387; tier 1 gemini-4-argon 0.233165 and
+        gpt-6.1-terra 0.250842 (grok-4.7 unmeasured, gpt-6-astra a judge, the
+        architect's tier 3 a policy assignment). Tier-2 mean 0.434624,
+        separation 0.201459 (gate 0.10, met). Bar for tier 2: 0.282492. Bar for
+        tier 1: 0.183165. Recall: gemini-4-hydrogen 0.239899 (packages
+        0.055556, 0.277778, 0.386364). Verdict: tier 1. Sensitivity: tier 1
+        with each tier-1 row alone, each judge alone (0.247, 0.232), each of
+        claude-opus-5-5 and claude-sonnet-5-5 alone and packages A or B alone;
+        inconclusive (gate under 0.10) with gpt-6.1-sol alone or package C
+        alone. Audit: every subject session read from the CLI's conversation
+        store — 1,113 read_file calls, no other tool, every path inside the
+        attempt's package (relative ones resolved against it), no other
+        session's id, review line or summary in any store, and every store
+        shows its own prompt. Two design reviews (gpt-6.1-sol, claude-fable-5-2)
+        amended the plan before grading. Limits: the anchors ran 2026-10-14 to
+        2026-10-27 on those days' CLIs and were not re-run; the ground truth
+        was written by gpt-6.1-sol and claude-fable-5-1; real defects outside
+        it are not credited. Plan, harness, receipts, grades and audit: the
+        local archive docs/evals/2026-11-15-t11/.
+
+    - item: "Gemini 4 Argon retired (gemini_frontier, 1.26.0)"
+      status: documented
+      probed_on: "2026-11-15"
+      evidence: >
+        User decision 2026-11-15 (U-4): Gemini 4 Hydrogen replaces Gemini 4
+        Argon in the gemini seat's places. The row stays as history input
+        (dispatchable false, no lineage, no binding, no fallback list), so
+        --prior-models and --unavailable-models keep accepting gemini-4-argon
+        across the release boundary; it is never seated. Its rows above stay as
+        the record of what was measured on it. The CLI still serves the model
+        to this account.
+
+    - item: "gemini_frontier implementation replay (stopped, 2026-11-15)"
+      status: documented
+      probed_on: "2026-11-15"
+      evidence: >
+        T6 (GitHub issue #72) was stopped unfinished by the user's decision of
+        2026-11-15 (U-5), the row being retired: a replay that cannot move a
+        seat no longer runs. Its state when stopped: no attempt graded; of the
+        sixteen planned, T01 r1, T02 r1x and T05 r1 (INVALID_OUTPUT, output
+        token limit) had ended and T03 r1 had been voided by the quota. Two
+        defects of T6 found while building T12 are recorded with it: its read
+        fence left `/private/var/tmp` and the user temp directory readable,
+        where another measurement's reference fixes for the same tasks and
+        copies of the router's scripts lay during its second window; and its
+        current harness's `prepare` reads an undefined name. Plan and
+        amendments: the local archive docs/evals/2026-10-27-t6/.
+
+    - item: "1.26.0 gemini seat placement counterfactuals"
+      status: verified
+      probed_on: "2026-11-15"
+      evidence: >
+        The 16,896-point 1.22.0 grid (fresh and after each side's own fresh
+        worker failed) over the 1.24.0 replay's thirty-four scenarios plus six
+        added for this move (gemini-4-argon withheld — its small weekly quota
+        spent, the state it was in for most of its weeks — alone, with xai
+        out, with xai and meta out, those with Claude exhausted, with an
+        unknown root cause, and with the xai quota low), 1,156,641 routes, one
+        router against the 1.25.3 registry and each candidate at tier 1.
+        Adopted (user decision 2026-11-15): Hydrogen in Argon's two places,
+        Argon retired — 74,906 routes change; with every seat available none.
+        Against a 1.25.3 registry whose argon row only carries the new id
+        (958,103 routes, the six argon-withheld scenarios left out because
+        that registry does not know argon), 1,334 change, all of them the
+        effort of an investigation lead with an unknown root cause, now xhigh
+        where argon's ceiling held it at high when MAX was asked: the rest is
+        the id. Where argon was withheld, the seat now resolves: reviewer
+        seated on 13,747 more routes, cross-family review gained on 15,950, the
+        worker moved to the seat on 4,550, and a tier lower on 194 (124 first
+        attempts of work that writes keep the OpenAI fast writer to keep the
+        seat's cross-family review — the trade 1.24.0 disclosed — and 70 of the
+        retries that follow), effort_below_floor added to 10,582
+        routes already gated by the critical review band (the seat's ceiling
+        is VERY_HIGH, under MAX), 18 human gates lifted. Summed output price
+        of seated workers and reviewers −0.10% (−0.26% against the id-only
+        registry). Not adopted: both rows dispatchable, Hydrogen first
+        (75,756 routes, −0.09%; 138 retries after it fails reach argon) or
+        Argon first (30,213, +0.12%). Write authority on a gemini direction is
+        per family, so only the adopted placement leaves it open to Hydrogen
+        alone. Script and output:
+        docs/research/2026-11-15-gemini-hydrogen-counterfactuals/.
 
     - item: "gpt-6.1-terra model id"
       status: verified

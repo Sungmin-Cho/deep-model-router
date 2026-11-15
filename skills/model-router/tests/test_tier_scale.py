@@ -77,8 +77,9 @@ TIERS_BEFORE_1_23 = {"claude_worker_balanced": 1}
 
 
 # Rows the registry gained after the 2026-10-14 replays; they were not there
-# to anchor them (1.24.0: the gemini seat moved to gemini-4-argon).
-ADDED_AFTER_2026_10_14 = {"gemini_frontier"}
+# to anchor them (1.24.0: the gemini seat moved to gemini-4-argon; 1.26.0: to
+# gemini-4-hydrogen).
+ADDED_AFTER_2026_10_14 = {"gemini_frontier", "gemini_hydrogen"}
 
 
 def _live_rows(tier: int, as_of: dict | None = None, text: str = "") -> list[str]:
@@ -165,11 +166,11 @@ def test_every_live_tier_1_row_is_measured_or_named_unmeasured():
         assert mid in measured or re.search(re.escape(mid) + r"[^.]*unmeasured", text), mid
 
 
-@pytest.mark.parametrize("key", ["meta_worker_balanced", "gemini_frontier"])
+@pytest.mark.parametrize("key", ["meta_worker_balanced", "gemini_hydrogen"])
 def test_the_profiles_state_the_seat_tier_the_registry_holds(key):
-    """The current seats (1.24.0: the gemini section describes gemini-4-argon)."""
+    """The current seats (1.26.0: the gemini section describes gemini-4-hydrogen)."""
     heading = {"meta_worker_balanced": "### The meta reviewer seat",
-               "gemini_frontier": "### The gemini reviewer seat"}[key]
+               "gemini_hydrogen": "### The gemini reviewer seat"}[key]
     section = PROFILES_MD.split(heading, 1)[1].split("\n### ", 1)[0]
     tier = MODELS[key]["capability_tier"]
     assert f"tier-{tier} " in section and f"tier is {tier} since" in section
@@ -218,16 +219,17 @@ def _tier_of(out):
 def _gemini_seat_at_tier_0() -> dict:
     """The 1.22.0-1.23 shape: a tier-0 gemini seat right behind the Claude model
     on Codex (and behind meta on Claude Code). 1.24.0 seats a tier-1 model
-    there (gemini-4-argon, measured), so the floor mechanisms below are kept
-    under test on this copy, and the shipped registry is checked beside it."""
+    there (gemini-4-argon, measured; since 1.26.0 gemini-4-hydrogen, measured),
+    so the floor mechanisms below are kept under test on this copy, and the
+    shipped registry is checked beside it."""
     import copy
     cfg = copy.deepcopy(CFG)
-    cfg["models"]["gemini_frontier"]["capability_tier"] = 0
+    cfg["models"]["gemini_hydrogen"]["capability_tier"] = 0
     return cfg
 
 
 GEMINI_TIER0 = _gemini_seat_at_tier_0()
-GEMINI = ID("gemini_frontier")
+GEMINI = ID("gemini_hydrogen")
 
 
 def _tier0_seats(cfg: dict) -> list[str]:
@@ -319,10 +321,10 @@ def test_a_low_claude_quota_swaps_a_read_lead_past_the_tier_0_seats(runtime, whi
 
 @pytest.mark.parametrize("key,runtime,withheld,tier0", [
     ("meta_worker_balanced", "claude_code", [], False),
-    ("gemini_frontier", "codex", [], True),
-    ("gemini_frontier", "claude_code", ["meta_worker_balanced"], True),
-    ("gemini_frontier", "codex", [], False),
-    ("gemini_frontier", "claude_code", ["meta_worker_balanced"], False),
+    ("gemini_hydrogen", "codex", [], True),
+    ("gemini_hydrogen", "claude_code", ["meta_worker_balanced"], True),
+    ("gemini_hydrogen", "codex", [], False),
+    ("gemini_hydrogen", "claude_code", ["meta_worker_balanced"], False),
 ], ids=["meta", "gemini-tier0-codex", "gemini-tier0-claude_code", "gemini-codex",
         "gemini-claude_code"])
 def test_a_retry_after_a_seat_fails_climbs_above_its_tier(key, runtime, withheld, tier0):
@@ -371,7 +373,7 @@ def _with_seat_tiers(tier: int) -> dict:
     the retired row is never seated, so setting its tier would change nothing.)"""
     import copy
     cfg = copy.deepcopy(CFG)
-    for key in ("meta_worker_balanced", "gemini_frontier"):
+    for key in ("meta_worker_balanced", "gemini_hydrogen"):
         cfg["models"][key]["capability_tier"] = tier
     return cfg
 
@@ -744,6 +746,39 @@ def test_the_gemini_seat_cannot_write_while_its_implementation_replay_has_not_ru
         assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
 
 
+HYDROGEN_ROW = "gemini_hydrogen tier measurement (real-review replay, 2026-11-15)"
+
+
+def test_the_hydrogen_seat_measurement_rederives_its_tier():
+    """1.26.0, T11: re-derive the verdict from the numbers the row records, with the
+    registry as it stood before the measurement (argon live at tier 1, the subject
+    left out): two tier-1 anchors now, the lowest sets the bar."""
+    row = LEDGER[HYDROGEN_ROW]
+    assert row["status"] == "verified"
+    assert row["supersedes"] == ["gemini_hydrogen tier evidence (external, not measured)"]
+    text = _text(HYDROGEN_ROW)
+    rec = _recalls(text)
+    seat = MODELS["gemini_hydrogen"]["id"]
+    live = _live_others("gemini_hydrogen", **BEFORE_1_26)
+    tier = lambda t: [rec[_id(k, text)] for k, m in live.items()           # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in rec]
+    t2, t1 = tier(2), tier(1)
+    assert len(t2) == 3 and len(t1) == 2, (t2, t1)
+    a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
+    gate = mean2 - a1
+    assert gate >= SEPARATION
+    stated = {k: float(v) for k, v in re.findall(
+        r"(Tier-2 mean|separation|Bar for tier 2:|Bar for tier 1:) (0\.\d{6})", text)}
+    assert abs(stated["Tier-2 mean"] - mean2) < 2e-6 and abs(stated["separation"] - gate) < 2e-6
+    assert abs(stated["Bar for tier 2:"] - (a2 - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["Bar for tier 1:"] - (a1 - CONFIRM_MARGIN)) < 2e-6
+    r = rec[seat]
+    derived = 2 if r >= a2 - CONFIRM_MARGIN else 1 if r >= a1 - CONFIRM_MARGIN else 0
+    assert "Verdict: tier %d." % derived in " ".join(text.split())
+    assert MODELS["gemini_hydrogen"]["capability_tier"] == derived
+    assert MODELS["gemini_frontier"]["id"] in rec      # the retired seat was an anchor then
+
+
 # ---------------------------------------------------------------------------
 # Reading a ledger row under the ids it measured (1.24.1, review d1 fable F4)
 # ---------------------------------------------------------------------------
@@ -776,9 +811,16 @@ TERRA_IMPL_ROW = "openai_worker_balanced implementation replay (2026-10-27)"
 TERRA_KEY = "openai_worker_balanced"
 
 
-def _live_others(key: str) -> dict:
+# The registry as it stood before a measurement (references/evaluation.md): 1.26.0 retired
+# the argon row (live from 2026-10-27, so an anchor for T7 and T11) and added the hydrogen
+# row (live from 1.26.0, after every measurement before T11, and T11's own subject).
+BEFORE_1_26 = dict(plus=("gemini_frontier",), minus=("gemini_hydrogen",))
+
+
+def _live_others(key: str, plus=(), minus=()) -> dict:
     return {k: m for k, m in MODELS.items()
-            if m.get("dispatchable", True) is not False and "history_of" not in m and k != key}
+            if ((m.get("dispatchable", True) is not False and "history_of" not in m) or k in plus)
+            and k != key and k not in minus}
 
 
 def test_the_balanced_openai_review_replay_rederives_its_verdict():
@@ -790,7 +832,7 @@ def test_the_balanced_openai_review_replay_rederives_its_verdict():
     text = _text(TERRA_REVIEW_ROW)
     rec = _recalls(text)
     seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
-    live = _live_others(TERRA_KEY)
+    live = _live_others(TERRA_KEY, **BEFORE_1_26)
     tier = lambda t: [rec[_id(k, text)] for k, m in live.items()           # noqa: E731
                       if m["capability_tier"] == t and _id(k, text) in rec]
     t2, t1 = tier(2), tier(1)
@@ -820,7 +862,7 @@ def test_the_balanced_openai_implementation_replay_rederives_its_advisory_and_th
     assert "withheld by construction" in text
     scores = _recalls(text)
     seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
-    live = _live_others(TERRA_KEY)
+    live = _live_others(TERRA_KEY, **BEFORE_1_26)
     up = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 2 and m["id"] in scores]
     own = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 1 and m["id"] in scores]
     assert len(up) == 3 and own == [], (up, own)

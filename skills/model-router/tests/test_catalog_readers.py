@@ -35,21 +35,26 @@ from test_model_sync import (NOW, calls_of, fake_bin, fake_home, new_root,  # no
                              read_gen, sync_env, work_state)
 
 CFG = load_config()
-# 1.24.0: the gemini seat is the argon line; the flash row is retired (not dispatchable).
-GEMINI_KEY, META_KEY = "gemini_frontier", "meta_worker_balanced"
+# 1.26.0: the gemini seat is the hydrogen line; the flash (1.24.0) and argon (1.26.0) rows are
+# retired (not dispatchable, no lineage).
+GEMINI_KEY, META_KEY = "gemini_hydrogen", "meta_worker_balanced"
 RETIRED_KEY = "gemini_worker_balanced"
 RETIRED = CFG["models"][RETIRED_KEY]["id"]
+ARGON_KEY = "gemini_frontier"
+ARGON = CFG["models"][ARGON_KEY]["id"]
 GEMINI, META = CFG["models"][GEMINI_KEY]["id"], CFG["models"][META_KEY]["id"]
 CATALOGS = SKILL / "tests" / "fixtures" / "catalogs"
-AGY_LIST = (CATALOGS / "agy" / "agy-models-1.4.8.stdout.txt").read_text()
+AGY_LIST = (CATALOGS / "agy" / "agy-models-1.5.9.stdout.txt").read_text()
+AGY_LIST_148 = (CATALOGS / "agy" / "agy-models-1.4.8.stdout.txt").read_text()
 AGY_LIST_135 = (CATALOGS / "agy" / "agy-models-1.3.5.stdout.txt").read_text()
 MUSE_DOC = json.loads((CATALOGS / "muse" / "6d657461__p746268.json").read_text())
-NEWER = "gemini-4.1-argon"
+NEWER = "gemini-4.1-hydrogen"
 
 
 def newer_list(*extra_lines):
-    lines = [f"{NEWER}-high\tGemini 4.1 Argon (High)", f"{NEWER}-medium\tGemini 4.1 Argon (Medium)",
-             f"{NEWER}-low\tGemini 4.1 Argon (Low)", *extra_lines]
+    lines = [f"{NEWER}-high\tGemini 4.1 Hydrogen (High)", f"{NEWER}-medium\tGemini 4.1 Hydrogen (Medium)",
+             f"{NEWER}-low\tGemini 4.1 Hydrogen (Low)", f"{NEWER}-xhigh\tGemini 4.1 Hydrogen (XHigh)",
+             *extra_lines]
     return AGY_LIST + "\n".join(lines) + "\n"
 
 
@@ -60,16 +65,17 @@ def newer_list(*extra_lines):
 def test_the_captured_agy_list_is_read_into_base_ids_and_efforts():
     cat = model_sync.parse_agy_models_text(AGY_LIST)
     assert cat.status == "ok" and cat.family == "gemini"
-    assert cat.models[GEMINI]["efforts"] == ["medium", "high", "low"]
+    assert cat.models[GEMINI]["efforts"] == ["high", "xhigh", "medium", "low"]
+    assert cat.models[ARGON]["efforts"] == ["medium", "high", "low"]
     # other vendors are listed (and only the template keeps them out)
     assert cat.models[CFG["models"]["claude_senior"]["id"]]["efforts"] == ["low", "medium", "high"]
     assert cat.models["gpt-oss-120b"]["efforts"] == ["medium"]
     assert cat.models[RETIRED]["efforts"] == ["high", "medium", "low"]
-    assert len(cat.listed_ids) == 13
+    assert len(cat.listed_ids) == 18
 
 
 def test_the_1_3_5_list_still_parses_and_its_flash_lines_seat_nothing():
-    """The agy 1.3.5 capture (Flash only) reads as before; the argon line finds
+    """The agy 1.3.5 capture (Flash only) reads as before; the hydrogen line finds
     nothing in it, and the retired flash row is not a lineage row at all."""
     cat = model_sync.parse_agy_models_text(AGY_LIST_135)
     assert cat.status == "ok" and cat.models[RETIRED]["efforts"] == ["high", "medium", "low"]
@@ -93,16 +99,39 @@ def test_the_retired_flash_row_gets_no_successor_even_when_one_is_listed():
     assert found[GEMINI_KEY]["status"] == "none"
 
 
-def test_a_newer_argon_generation_is_the_candidate_and_nothing_else_is():
+def test_the_1_4_8_list_still_parses_and_finds_no_hydrogen():
+    cat = model_sync.parse_agy_models_text(AGY_LIST_148)
+    assert cat.status == "ok" and cat.models[ARGON]["efforts"] == ["medium", "high", "low"]
+    assert len(cat.listed_ids) == 13
+    found = model_sync.find_candidates({GEMINI_KEY: CFG["models"][GEMINI_KEY]}, {"gemini": cat})
+    assert found[GEMINI_KEY]["status"] == "none"
+
+
+def test_the_retired_argon_row_gets_no_successor_even_when_one_is_listed():
+    """1.26.0 (user decision 2026-11-15): Gemini 4 Argon is retired. Its row keeps no
+    lineage and is not dispatchable, so a newer argon in the account's catalogue is never
+    offered as its successor, nor as the hydrogen line's."""
+    row = CFG["models"][ARGON_KEY]
+    assert row["dispatchable"] is False and "lineage" not in row
+    text = AGY_LIST + "gemini-4.1-argon-high\tGemini 4.1 Argon (High)\n"
+    cat = model_sync.parse_agy_models_text(text)
+    found = model_sync.find_candidates({k: CFG["models"][k] for k in (GEMINI_KEY, ARGON_KEY)},
+                                       {"gemini": cat})
+    assert ARGON_KEY not in found
+    assert found[GEMINI_KEY]["status"] == "none"
+
+
+def test_a_newer_hydrogen_generation_is_the_candidate_and_nothing_else_is():
     text = newer_list("gemini-4.1-pro-high\tGemini 4.1 Pro (High)",
-                      "gemini-4-argon-lite-high\tGemini 4 Argon Lite (High)",
+                      "gemini-4-hydrogen-lite-high\tGemini 4 Hydrogen Lite (High)",
+                      "gemini-4.1-argon-high\tGemini 4.1 Argon (High)",
                       "gemini-5-flash-high\tGemini 5 Flash (High)",
                       "claude-opus-9-high\tClaude Opus 9")
     cat = model_sync.parse_agy_models_text(text)
     found = model_sync.find_candidates({GEMINI_KEY: CFG["models"][GEMINI_KEY]}, {"gemini": cat})
     assert found[GEMINI_KEY]["status"] == "candidate"
     assert found[GEMINI_KEY]["id"] == NEWER
-    assert sorted(found[GEMINI_KEY]["efforts"]) == ["high", "low", "medium"]
+    assert sorted(found[GEMINI_KEY]["efforts"]) == ["high", "low", "medium", "xhigh"]
 
 
 def test_the_current_list_proposes_nothing():
@@ -373,7 +402,8 @@ def _receipt(resolved, usage=None):
 
 @pytest.mark.parametrize("resolved, outcome", [
     (NEWER, "pass"), (f"{NEWER}-low", "pass"), (f"{NEWER}-high", "pass"),
-    (f"{NEWER}-lite", "failed"), (f"{NEWER}-xhigh", "failed"), (GEMINI, "failed"),
+    (f"{NEWER}-xhigh", "pass"),        # 1.26.0: the hydrogen line declares an xhigh spelling
+    (f"{NEWER}-lite", "failed"), (f"{NEWER}-max", "failed"), (GEMINI, "failed"),
     (None, "deferred")])
 def test_p2_admits_exactly_the_declared_served_forms(resolved, outcome):
     lin = CFG["models"][GEMINI_KEY]["lineage"]
@@ -609,13 +639,14 @@ def test_a_fetch_over_budget_is_skipped_before_agy_models_runs(tmp_path):
 
 def test_the_probe_spends_exactly_the_planned_effort_tokens(tmp_path):
     """P1 at LOW, the current id's P3 half at LOW, P4 at the row's ceiling
-    (HIGH) — and nothing above the ceiling the catalogue supports."""
+    (VERY_HIGH, native xhigh since 1.26.0) — and nothing above the ceiling the
+    catalogue supports."""
     _, fakedir, home, root, env = with_agy(tmp_path, listing=newer_list())
     rep = model_sync.run(env=env, home=home, now=NOW, keys=[GEMINI_KEY])
     assert rep["passed"] == [GEMINI_KEY], rep
     calls = [(a[a.index("--model") + 1], a[a.index("--effort") + 1])
              for a in agy_calls(fakedir) if "-p" in a]
-    assert calls == [(NEWER, "low"), (GEMINI, "low"), (NEWER, "high")], calls
+    assert calls == [(NEWER, "low"), (GEMINI, "low"), (NEWER, "xhigh")], calls
 
 
 def test_status_does_not_judge_a_gemini_deferral_when_the_line_is_unavailable(tmp_path):
