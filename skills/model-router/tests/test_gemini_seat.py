@@ -328,10 +328,11 @@ def test_the_ceiling_adds_its_cause_to_a_critical_review_gate_already_raised():
 
 
 def test_a_critical_review_dispatches_this_seat_at_xhigh():
-    """Review i1 (fable F1): a dispatch seat looks up the review's own effort,
-    which a CRITICAL band sets to MAX, without the worker's clamp; the row maps
-    MAX to xhigh too, so the seat is dispatched at the token it accepts, and the
-    route records the cap."""
+    """Review i1 (fable F1): a dispatch seat carries the review's own effort,
+    which a CRITICAL band sets to MAX; the seat is dispatched at the token its
+    ceiling accepts (`xhigh`), and the route records the cap. Review i2 (fable
+    F1) moved the clamp into `_dispatch_seats`; the row's MAX line no longer
+    decides it."""
     kw = dict(task_class="ARCHITECTURE", complexity=0, uncertainty=3, blast_radius=3,
               reversibility=0, runtime="claude_code",
               unavailable_models=[XAI, META, ID("openai_reasoning")],
@@ -345,9 +346,10 @@ def test_a_critical_review_dispatches_this_seat_at_xhigh():
 
 
 def test_every_dispatchable_row_spells_a_level_above_its_ceiling_as_its_ceiling():
-    """Review i1 (fable F1): the worker's effort is clamped before the lookup, a
-    dispatch seat's is not, so for every dispatchable row with a ceiling the
-    levels above it must spell the ceiling's token."""
+    """Review i1 (fable F1): every lookup clamps to the ceiling first (the worker's
+    always did; a dispatch seat's since review i2), so the map's levels above a
+    ceiling are never read; they must still spell the ceiling's token, so the map
+    a reader sees is the one the router acts on."""
     for key, m in CFG["models"].items():
         if m.get("dispatchable", True) is False or not POLICY.ceiling_of.get(m["id"]):
             continue
@@ -357,33 +359,105 @@ def test_every_dispatchable_row_spells_a_level_above_its_ceiling_as_its_ceiling(
                 POLICY.native_effort(m["id"], ceiling), (key, level)
 
 
+# A route's fields that a different effort ceiling may change: the policy's digests,
+# the prose rationale, and the effort fields themselves (compared separately).
+_CEILING_EXEMPT = ("policy_sha256", "decision_fingerprint", "rationale",
+                   "selected_effort_effective", "selected_effort_native",
+                   "effort_ceiling_applied", "dispatch_seats", "human_control_causes",
+                   "requires_human_confirmation")
+# Reviewer side: the seat is a CRITICAL reviewer where the OpenAI reasoning seat, the
+# xai seat (and on Claude Code meta) are out and Claude is exhausted; a declared
+# implementer makes the route carry its dispatch seats.
+_REVIEWER_REACH = (("claude_code", [XAI, META, ID("openai_reasoning")]),
+                   ("codex", [XAI, ID("openai_reasoning")]))
+_WRITE_CLASSES = [c for c in CLASSES if c not in ("INVESTIGATION", "REVIEW")]
+
+
+def _ceiling_scenarios():
+    hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
+    for (runtime, ahead), cls, dims in itertools.product(
+            hosts, CLASSES, itertools.product(range(4), repeat=4)):
+        for extra in ({}, {"flags": ["unknown_root_cause"]}):
+            yield dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                       blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
+                       unavailable_models=ahead, **copy.deepcopy(extra))
+    for (runtime, out), cls, dims in itertools.product(
+            _REVIEWER_REACH, _WRITE_CLASSES, itertools.product(range(4), repeat=4)):
+        yield dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                   blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
+                   unavailable_models=out, _family_quota={"claude": "exhausted"},
+                   _implementer={"model_id": ID("openai_worker_fast")})
+
+
+def _caps(r):
+    return [(e["role"], e["model"], e["requested"], e["floor_broken"], e["floor_requires"])
+            for e in r["effort_ceiling_applied"]]
+
+
 def test_the_very_high_ceiling_moves_only_effort_and_never_down():
     """Review i1 (fable): the in-tree twin of the id-only replay. Against a copy whose
     seat keeps argon's HIGH ceiling and the family map, every route where the seat
-    can be reached differs only in effort fields, never lower, and gains no gate."""
+    can be reached, as worker or as CRITICAL reviewer, is the same route apart from
+    effort fields; the seat's worker and reviewer effort never falls and no gate is
+    added. Review i2 (fable F4): the whole route is compared, not four fields, and
+    the reviewer side is checked too."""
     high = copy.deepcopy(CFG)
     high["models"][SEAT_KEY]["effort_ceiling"] = "HIGH"
     del high["models"][SEAT_KEY]["effort_map"]
     eff = POLICY.efforts.index
-    hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
-    moved = 0
-    for (runtime, ahead), cls, (c, u, b, r) in itertools.product(
-            hosts, CLASSES, itertools.product(range(4), repeat=4)):
-        for extra in ({}, {"flags": ["unknown_root_cause"]}):
-            kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
-                      reversibility=r, runtime=runtime, unavailable_models=ahead,
-                      **copy.deepcopy(extra))
-            now, was = route(Task(**kw), CFG), route(Task(**kw), high)
-            assert (now["selected_model"], now["terminal"], now["review"]["reviewer_models"],
-                    now["review"]["band"]) == (was["selected_model"], was["terminal"],
-                                               was["review"]["reviewer_models"], was["review"]["band"])
-            assert set(now.get("human_control_causes") or []) <= set(
-                was.get("human_control_causes") or []), (runtime, cls, c, u, b, r)
-            if now["selected_effort_effective"] != was["selected_effort_effective"]:
-                assert now["selected_model"] == GEMINI
-                assert eff(now["selected_effort_effective"]) > eff(was["selected_effort_effective"])
-                moved += 1
-    assert moved > 0
+    moved = {"worker": 0, "reviewer": 0}
+    for kw in _ceiling_scenarios():
+        now, was = route(Task(**copy.deepcopy(kw)), CFG), route(Task(**kw), high)
+        assert {k: v for k, v in now.items() if k not in _CEILING_EXEMPT} == \
+            {k: v for k, v in was.items() if k not in _CEILING_EXEMPT}, kw
+        assert set(now.get("human_control_causes") or []) <= set(
+            was.get("human_control_causes") or []), kw
+        if now["selected_effort_effective"] != was["selected_effort_effective"]:
+            assert now["selected_model"] == GEMINI
+            assert eff(now["selected_effort_effective"]) > eff(was["selected_effort_effective"])
+            moved["worker"] += 1
+        assert _caps(now) == _caps(was), kw
+        for a, b in zip(now["effort_ceiling_applied"], was["effort_ceiling_applied"]):
+            if a["capped_at"] != b["capped_at"]:
+                # a terminal route records the seat's cap with no model resolved
+                assert a["model"] == GEMINI or (a["model"] is None and now["terminal"]), kw
+                assert eff(a["capped_at"]) > eff(b["capped_at"]), kw
+        seats_now, seats_was = now.get("dispatch_seats") or [], was.get("dispatch_seats") or []
+        assert [{k: v for k, v in s.items() if k != "effort_native"} for s in seats_now] == \
+            [{k: v for k, v in s.items() if k != "effort_native"} for s in seats_was], kw
+        for a, b in zip(seats_now, seats_was):
+            if a["effort_native"] != b["effort_native"]:
+                assert a["model_id"] == GEMINI and (a["effort_native"], b["effort_native"]) == \
+                    ("xhigh", "high"), kw
+                moved["reviewer"] += 1
+    assert moved["worker"] > 0 and moved["reviewer"] > 0, moved
+
+
+def test_a_dispatch_seat_is_spelled_at_the_level_its_cap_records():
+    """Review i2 (fable F1): SKILL.md says a reviewer's token is its model's map at
+    the `capped_at` level its effort_ceiling_applied entry records. A successor's
+    overlay inherits the row map and may lower the ceiling (model_sync P0/P4), so a
+    map line above the ceiling must not decide the token: on a copy with the seat's
+    ceiling lowered to HIGH and its row map (MAX: xhigh) kept, the seat is dispatched
+    at `high`; on the registry, at `xhigh`. Every dispatch seat of the sweep, on
+    either config, is spelled at its cap."""
+    low = copy.deepcopy(CFG)
+    low["models"][SEAT_KEY]["effort_ceiling"] = "HIGH"
+    assert low["models"][SEAT_KEY]["effort_map"]["MAX"] == "xhigh"
+    seen = {"registry": set(), "lowered": set()}
+    for name, cfg in (("registry", CFG), ("lowered", low)):
+        policy = Policy.of(cfg)
+        for kw in _ceiling_scenarios():
+            if "_implementer" not in kw:
+                continue
+            out = route(Task(**kw), cfg)
+            caps = {(e["role"], e["model"]): e["capped_at"] for e in out["effort_ceiling_applied"]}
+            for s in out.get("dispatch_seats") or []:
+                level = caps.get((s["role"], s["model_id"]), s["effort"])
+                assert s["effort_native"] == policy.native_effort(s["model_id"], level), (name, kw, s)
+                if s["model_id"] == GEMINI and s["effort"] == "MAX":
+                    seen[name].add(s["effort_native"])
+    assert seen == {"registry": {"xhigh"}, "lowered": {"high"}}, seen
 
 
 def test_as_a_worker_the_seat_meets_every_effort_floor():

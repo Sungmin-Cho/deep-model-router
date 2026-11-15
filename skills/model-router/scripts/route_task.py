@@ -3337,22 +3337,29 @@ def _dispatch_seats(result: dict, policy: Policy, *, lead: bool) -> list[dict]:
 
     `lead` — the worker seat IS reviewer-1 (a REVIEW task's lead), so that
     seat also carries the worker's effort. A terminal route dispatches nothing.
+    `effort` is the level the review asks for; `effort_native` spells it at
+    the model's ceiling (`_clamp`), the level its `effort_ceiling_applied`
+    entry records — never a level the model does not accept (1.26.0).
     """
     seats: list[dict] = []
     if result["terminal"] is not None:
         return seats
     rv = result["review"]
+
+    def native(model: str, effort: str) -> str:
+        return policy.native_effort(model, _clamp(policy, effort, model))
+
     for i, (role, model) in enumerate(zip(rv["reviewers"], rv["reviewer_models"])):
         effort = rv["effort"]
         if lead and role == result["selected_role"]:
             effort = (result["selected_effort_effective"] if effort is None else
                       max((effort, result["selected_effort_effective"]), key=policy.efforts.index))
         seats.append(dict(seat=f"reviewer-{i+1}", role=role, model_id=model, effort=effort,
-                          effort_native=policy.native_effort(model, effort)))
+                          effort_native=native(model, effort)))
     if rv["judge_model"]:
         seats.append(dict(seat="judge", role=rv["judge"], model_id=rv["judge_model"],
                           effort=rv["effort"],
-                          effort_native=policy.native_effort(rv["judge_model"], rv["effort"])))
+                          effort_native=native(rv["judge_model"], rv["effort"])))
     return seats
 
 

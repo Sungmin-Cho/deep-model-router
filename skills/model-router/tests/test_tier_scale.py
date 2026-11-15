@@ -748,7 +748,15 @@ def test_the_gemini_seat_cannot_write_without_an_agreeing_implementation_replay(
     assert LEDGER["gemini_frontier implementation replay (stopped, 2026-11-15)"]["status"] == "documented"
     assert MODELS["gemini_hydrogen"].get("dispatchable", True) is True
     review, impl = (_stated_tier(HYDROGEN_ROW), _stated_tier(HYDROGEN_IMPL_ROW))
-    assert (review, impl) == (1, 2)
+    gemini_rows = [k for k, m in MODELS.items()
+                   if m["family"] == "gemini" and m.get("dispatchable", True) is not False]
+    # the rule: write authority on a gemini direction needs the two replays to agree
+    # and this to be the family's only dispatchable row (review i2, fable)
+    if review != impl or gemini_rows != ["gemini_hydrogen"]:
+        for host in ("claude_code", "codex"):
+            assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
+    # and the state: 1.26.0's replays disagree, and nothing has been granted
+    assert review != impl
     for host in ("claude_code", "codex"):
         assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
 
@@ -775,12 +783,14 @@ def test_the_hydrogen_implementation_replay_rederives_its_verdict_and_moves_noth
     scores = _recalls(text)
     seat = MODELS["gemini_hydrogen"]["id"]
     live = _live_others("gemini_hydrogen", **BEFORE_1_26)
-    tier = lambda t: [scores[m["id"]] for m in live.values()             # noqa: E731
-                      if m["capability_tier"] == t and m["id"] in scores]
+    # each row under the id it held when measured (review i2, fable: an anchor's
+    # later id bump must not break this)
+    tier = lambda t: [scores[_id(k, text)] for k, m in live.items()     # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in scores]
     t2, t1, t0 = tier(2), tier(1), tier(0)
     assert len(t2) == 3 and len(t1) == 1 and len(t0) == 2, (t2, t1, t0)
-    assert MODELS["claude_architect"]["id"] not in scores     # beside, not an anchor
-    assert MODELS["gemini_frontier"]["id"] not in scores      # argon never wrote
+    assert _id("claude_architect", text) not in scores        # beside, not an anchor
+    assert _id("gemini_frontier", text) not in scores         # argon never wrote
     a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
     stated = {k: float(v) for k, v in re.findall(
         r"(Tier-2 mean|separation|Bar for tier 2:|Bar for tier 1:) (0\.\d{6})", text)}
@@ -791,6 +801,18 @@ def test_the_hydrogen_implementation_replay_rederives_its_verdict_and_moves_noth
     x = scores[seat]
     derived = 2 if x >= a2 - CONFIRM_MARGIN else 1 if x >= a1 - CONFIRM_MARGIN else 0
     assert _stated_tier(HYDROGEN_IMPL_ROW) == derived
+    # the figures agree: the runs named, the per-task list, the profile table
+    flat = " ".join(text.split())
+    runs = re.search(rf"Pass rate: {re.escape(seat)} 0\.\d{{6}} \((\w+) of sixteen runs: "
+                     r"both on ([^,]+(?:, [^,]+)*) and (T\d\d), none on (T\d\d) or (T\d\d)", flat)
+    assert runs, flat
+    words = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14}
+    both = runs.group(2).split(", ") + [runs.group(3)]
+    assert words[runs.group(1)] == 2 * len(both) == round(x * 16)
+    assert len(both) + 2 == 8 and not {runs.group(4), runs.group(5)} & set(both)
+    profile = (SKILL / "references" / "model-profiles.md").read_text()
+    section = profile.split("## Tiers measured on 2026-11-15", 1)[1]
+    assert f"**{round(x * 100)}% ({round(x * 16)} of 16)**" in section
     review = _stated_tier(HYDROGEN_ROW)
     if derived != review:
         assert "replays disagree" in " ".join(text.split())

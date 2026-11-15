@@ -4417,9 +4417,10 @@ verification_ledger:
         T04, T05, T07 and T08, none on T01 or T06 — no anchor passed T01 and
         one anchor run passed T06). Verdict: tier 2. Sensitivity: tier 2 on
         the four route_task tasks alone and on the other four alone, and with
-        each tier-2 row alone as the bar; the share of hidden tests passed is
-        0.833333. The claude architect's row (tier 3 by assignment, 0.6875 in
-        T10) is reported beside, never an anchor. The review replay read tier
+        each tier-2 row alone as the bar; the mean per-task share of hidden
+        tests passed is 0.833333. The claude architect's row (tier 3 by
+        assignment, 0.6875 in T10) is reported beside, never an anchor. The
+        review replay read tier
         1, so the replays disagree, and by the rule fixed before any dispatch
         nothing moves: the row keeps the review replay's tier 1, write
         authority is not proposed, and write_verified stays false. Isolation
@@ -4428,12 +4429,12 @@ verification_ledger:
         session tried to read is not known; the fence decides what it could
         read. Biases: the subject had no shell and could not run the tests
         the prompt asks for, which every anchor could; seven of the eight
-        reference fixes were written by claude-opus-5-5; the anchors ran
-        2026-10-15 to 2026-11-10 on those days' CLIs and were not re-run; the
-        tier-1 anchor is itself a held tier (T8); the orchestrator was a
-        claude-opus-5-5 session (grading deterministic, the plan reviewed by
-        gpt-6.1-sol and claude-fable-5-2 before any dispatch). Plan, harness,
-        receipts, archives, grades and audit: the local archive
+        reference fixes were written by claude-opus-5-5; the anchors ran on
+        2026-10-15 (T4) and 2026-10-27 (T8) on those days' CLIs and were not
+        re-run; the tier-1 anchor is itself a held tier (T8); the orchestrator
+        was a claude-opus-5-5 session (grading deterministic, the plan reviewed
+        by gpt-6.1-sol and claude-fable-5-2 before any task attempt). Plan,
+        harness, receipts, archives, grades and audit: the local archive
         docs/evals/2026-11-15-t12/ (summary.json sha256
         3455126df3f5debc595b7f9f10825a3ccfdd139a3b2f6bbf33958b304ea75a7a).
 

@@ -948,9 +948,10 @@ measurement (real-review replay, 2026-11-15)" has the numbers and limits.
 
 **The implementation replay.** The same eight accepted findings, prompt and
 hidden tests as the 2026-10-15 replay, two runs each, through the shipped maker
-seat at high effort, under a read fence that leaves every other measurement's
-reference fixes and every copy of the router's scripts unreadable (measured
-before any run, with and without the model). Anchors are the live writing rows
+seat at high effort, under a read fence whose deny rules cover every other
+measurement's reference fixes and every other copy of the router's scripts a
+search found (probed on sampled targets before any run, with and without the
+model). Anchors are the live writing rows
 of 1.25.3; the bars were fixed before any run.
 
 | Seat | Tier | Runs passed |
