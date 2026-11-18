@@ -156,8 +156,6 @@ def test_a_live_openai_id_missing_from_the_bundled_catalog_discloses_it():
             text = _text(f"{mid} model id")
             assert "bundled catalog" in text and "account catalog" in text, mid
             continue
-        later = SLUGS.parent / f"debug-models-slugs-{row['cli_version']}.json" \
-            if hasattr(SLUGS, "parent") else None
         fixture = (SKILL / "tests" / "fixtures" / "catalogs" / "codex" /
                    f"debug-models-slugs-{row['cli_version']}.json")
         assert fixture.is_file(), (mid, "no captured catalog for the CLI version its row names")
