@@ -345,6 +345,31 @@ request maps upward to native `low`; its per-model `effort_map` overlays the
 family map. A model missing from a stale local catalog must be checked in the
 actual runtime; hosts without access must report it in `unavailable_models`.
 
+**Its tier is still a policy assignment, not a measured tier.** On 2026-11-18
+the `openai_frontier` id moved to the next Astra generation, released the day
+before. The overlay had published it that morning after the contained gates
+passed, and promote moved it into the registry. Every effort token the router
+emits for the family was then probed on it: five accepted and `none` refused,
+as on its predecessor, so the row keeps its per-model effort map. The attended
+maker probe passed the same day, its confirmation answered by a script with
+the user's permission. The published prices fell by a fifth, to $8 / $40 per
+million input / output tokens ($0.40 cached); the router reads no price, so no
+route moves on that.
+
+Until this generation the seat's model was a judge of the review replays and
+never a subject. Both replays were run on the new generation. The method
+cannot decide a row at the top tier (its gate reads the tier above), so the
+plan fixed, before any dispatch, the one question the suite can answer: is the
+model below the weakest tier-2 row? It is not, on either replay: 56% review
+recall against a 28.2% bar (59% as graded), and 63% of implementation runs
+against 57.5%. The review recall is level with the Claude architect seat's and
+above every tier-2 row; the implementation rate is level with the two lowest
+tier-2 rows, one run above the bar, and below the architect seat's. The reading
+is weak: it is compatible with tier 2 as much as with tier 3, it is no evidence
+for tier 3, and it says nothing about the predecessor, which was never a
+subject. No route moves except by the id. See "The OpenAI reasoning and
+frontier seats' replays on 2026-11-18".
+
 ### The Claude senior seat
 
 **Its tier is inherited, not current.** On 2026-09-25 the `claude_senior`
@@ -369,21 +394,37 @@ disclosure. It was missing from the 1.16.0 bump and was added in 1.17.1.
 
 ### The OpenAI reasoning seat
 
-**Its tier is inherited, not current.** On 2026-09-26 the `openai_reasoning`
-id moved to the next Sol generation, and on 2026-09-30 to that generation's
-point release. For the current id a contained probe confirmed that the id is
-accepted, the low and max effort tokens, and a write-seat run through the
-maker recipe. The CLI echoing
-the requested id is id acceptance, not proof of the served model. The
-published prices were re-read from the provider's documentation: $2 / $10 per
-million input / output tokens as before, with cached input halved to $0.10.
-The 2026-09-30 tier check of the balanced seat scored this seat as a tier-2
-reference, but no measurement re-decided its own tier: `capability_tier` 2
-comes from the lineage, and the ledger says so in its own row.
+**Its earlier quality numbers are inherited, not current.** On 2026-09-26 the
+`openai_reasoning` id moved to the next Sol generation, on 2026-09-30 to that
+generation's point release, and on 2026-11-18 to the point release after it,
+released the day before. For the current id the overlay published it after the
+contained gates passed (the id accepted with no metadata warning, a boot
+overhead level with the predecessor's) and promote moved it into the registry;
+the attended maker probe passed the same day, its confirmation answered by a
+script with the user's permission. The CLI echoing the requested id is id
+acceptance, not proof of the served model. The published prices are unchanged:
+$2 / $10 per million input / output tokens, $0.10 cached. The review recall and
+implementation pass rate recorded for this seat before that date (the
+2026-10-14 and 2026-10-15 replays, below) measured the predecessor.
 
-The point release rejects the `none` effort token that the OpenAI family map
-sends for MINIMAL, so this row maps MINIMAL to `low`, as the OpenAI frontier
-seat does.
+Like the two generations before it, the current one rejects the `none` effort
+token that the OpenAI family map sends for MINIMAL (re-probed on it; the other
+five tokens are accepted), so this row maps MINIMAL to `low`, as the OpenAI
+frontier seat does.
+
+**Its tier is 2, scored on the new generation, and neither replay moves it.**
+Both replays were re-run on it the day of the bump, under rules written before
+any dispatch. The review replay recalls 48% of the accepted findings, up from
+the predecessor's 33%: above the Claude balanced seat (46%), below the Claude
+senior seat (52%), and short of the 50.9% bar a raise needs. As graded, before
+a correction for an answer the user's shared memory handed its sessions, it is
+52%, over that bar; a verdict the two figures do not share is left undecided by
+the plan, and it counts for nothing. The implementation replay passes 63% of
+the runs, as the predecessor did (69% as graded). That replay cannot move a
+tier-2 row either way: on it the one scored tier-3 row and the best tier-2 row
+are level, so the suite does not separate the two tiers, and the plan recorded
+that verdict as hold before the first run. No route moves except by the id.
+See "The OpenAI reasoning and frontier seats' replays on 2026-11-18".
 
 ### The OpenAI balanced seat
 
@@ -982,3 +1023,80 @@ on the fence alone, not on an audit of what each session read; and seven of the
 eight reference fixes were written by Claude Opus 5.5. The ledger rows
 "gemini_hydrogen implementation replay (2026-11-15)" and "gemini_hydrogen tier
 measurement (real-review replay, 2026-11-15)" have the numbers.
+
+## The OpenAI reasoning and frontier seats' replays on 2026-11-18
+
+Both OpenAI seats above the balanced one moved to their next generations
+(GPT-6.2 Sol and GPT-6.2 Astra), and both rows write, so both replays were run
+on both models. One measurement decides two rows here: each row is read against
+the live rows of 1.26.0 other than itself, and neither new model is an anchor
+for the other. The frontier seat's previous model had judged every review
+replay and had never been a subject.
+
+| Replay | GPT-6.2 Sol (tier 2) | GPT-6.2 Astra (tier 3) | Tier-3 row | Other tier-2 rows | Tier-1 rows |
+|---|---|---|---|---|---|
+| Review recall | 48% (52% as graded) | 56% (59% as graded) | 56% | 52%, 46% | 25%, 24% |
+| Implementation pass rate | 63% (69% as graded) | 63% | 69% | 69%, 63% | 44%, 75% |
+
+The Sol seat's previous model scored 33% and 63% on the same two replays.
+
+**The reasoning seat (tier 2) holds.** Its rule is the per-row rule: a raise
+needs the suite to separate tier 3 from the other tier-2 rows by ten points and
+the model to sit within five of the lowest tier-3 row; a lowering needs the
+same separation and the model more than five below the lowest other tier-2
+row. On the review replay the separation is met (10.4 points, with a tier-3 bar
+that is one row whose own tier is an assignment), the raise bar is 50.9% and
+the lowering bar 40.5%: the model's 48.5% holds. Its as-graded 51.5% clears the
+raise bar only against the tier-3 row's corrected value; against that row as
+graded it holds too. The plan leaves a verdict the two figures do not share
+undecided, so the review half counts for nothing. On the implementation replay
+the separation is 6.3 points: the suite is not valid between the two tiers, the
+verdict was hold before the first run, and the plan said so then. The model's
+score there is recorded as a measurement, not as a confirmation of tier 2.
+
+**The frontier seat (tier 3) holds as an assignment.** The method raises or
+lowers a row against the tier above it; the top tier has none. The readings are
+the plan's preregistered advisory: they could have shown the model below tier
+2, which would have gone to the user, and they did not. On the review replay it
+is level with the Claude architect seat and above every tier-2 row; on the
+implementation replay it is one run above the bar, level with the two lowest
+tier-2 rows, and it failed both runs of a task (T05) that both Sol generations
+and the architect seat's model solved twice.
+No rule reads either observation, and neither is evidence for tier 3.
+
+What stands behind the figures. Twelve of the review replay's 29 accepted
+findings come from reviews the Sol seat's previous model wrote, and one of the
+two judges is the frontier seat's previous model, of both subjects' family
+(the other judge alone gives the same recall for both, and by a rule added
+after dispatch and before any grade a verdict that judge alone does not
+reproduce would have counted for nothing). The user's shared memory, which
+every codex session loads, had grown since the anchors ran: every review
+session read files of it, one added line states a finding of the third review
+package, and another file states part of one task's fix. Each is scored against
+the model where a session read it — the difference between the two figures in
+a cell — and one of the two task-fix judgements rests on one reader of the two,
+as the plan allows. Seven of the eight implementation tasks' reference fixes
+were written by the Claude senior seat's model, so the hidden tests encode a
+Claude model's reading; the tier-2 rows' own sessions were audited less
+strictly than these; and the gemini seat's 75% is a read-only row scored
+through a fenced write harness.
+
+The plans fixed the readings, the grading and a full hand read before any
+dispatch. The harness's audit and scoring half was finished after dispatch, and
+two design-review rounds by other models then tightened it — what counts as a
+complete session record, what may void an attempt, how a reader's answer is
+checked — all before any review was read or any run graded; the reviewers were
+routed with this machine's overlay off, so that neither new model reviewed its
+own measurement. One defect of that unfinished harness reached the run: it
+mistook a line of tool output for the CLI's banner and re-dispatched two
+finished runs. The originals stand; the two extra runs were read and decide
+nothing.
+
+Isolation was settled by reading every tool call: 1,058 calls over forty-six
+sessions, and every text the CLI injected into them, read in full by two models
+that are neither a subject nor of the subjects' family. No session read
+answer-bearing material, reached the network or launched another agent. The
+ledger rows "openai_reasoning review replay (2026-11-18)", "openai_reasoning
+implementation replay (2026-11-18)", "openai_frontier review replay
+(2026-11-18)" and "openai_frontier implementation replay (2026-11-18)" have the
+numbers.

@@ -206,3 +206,164 @@ def test_the_quality_disclosure_supersedes_what_promote_would_name(key):
               and "(2026-11-18)" not in e["item"]]
     want = model_sync._superseded_items(key, [old], others)
     assert LEDGER[item]["supersedes"] == want
+
+
+# --------------------------------------------------------------------------- the two replays
+
+from test_claude_architect_bump import _tier_claims  # noqa: E402  (the tier-3 claim tripwire)
+
+REPO = SKILL.parent.parent
+PUBLISHED_IN = "1.26.1"
+MARGIN, SEPARATION = 0.05, 0.10
+ROWS = {(key, kind): f"{key} {kind} replay (2026-11-18)"
+        for key in KEYS for kind in ("review", "implementation")}
+
+
+def _scores(text: str) -> dict:
+    """`<registry id> <score>` pairs as a row records them (six places), first mention each."""
+    ids = {m["id"] for m in CFG["models"].values()}
+    out = {}
+    for mid, value in re.findall(r"([a-z0-9][a-z0-9.\-]*) (0\.\d{6})\b", text):
+        if mid in ids:
+            out.setdefault(mid, float(value))
+    return out
+
+
+def _id(key: str) -> str:
+    return CFG["models"][key]["id"]
+
+
+def _stated(text: str, label: str) -> float:
+    return float(re.search(re.escape(label) + r" (0\.\d{6})", text).group(1))
+
+
+def test_every_replay_row_is_verified_and_dated_after_the_rows_it_reads():
+    for item in ROWS.values():
+        assert LEDGER[item]["status"] == "verified" and LEDGER[item]["probed_on"] == "2026-11-18", item
+        assert re.search(r"summary\.json sha256 [0-9a-f]{64}\)", _text(item)), item
+
+
+def test_the_reasoning_review_row_rederives_its_bars_and_its_undecided_verdict():
+    """The per-row rule for a tier-2 row: the other tier-2 rows set the lower bar, the one scored
+    tier-3 row the raise bar, and the suite must separate them by 0.10. The primary value holds;
+    the as-graded one alone clears the raise bar, which the plan leaves undecided."""
+    new, old = _ids("openai_reasoning")
+    text = _text(ROWS[("openai_reasoning", "review")])
+    s = _scores(text)
+    t3 = s[_id("claude_architect")]
+    others = [s[_id("claude_senior")], s[_id("claude_worker_balanced")]]
+    a2 = min(others)
+    assert abs(_stated(text, "separation") - (t3 - a2)) < 2e-6 and t3 - a2 >= SEPARATION
+    assert abs(_stated(text, "Bar for raise:") - (t3 - MARGIN)) < 2e-6
+    assert abs(_stated(text, "Bar for lower:") - (a2 - MARGIN)) < 2e-6
+    r = s[new]
+    assert a2 - MARGIN <= r < t3 - MARGIN                       # primary: hold
+    as_graded = float(re.search(r"As graded, before the memory correction below, (0\.\d{6})", text).group(1))
+    assert as_graded >= t3 - MARGIN > r                          # as graded alone: over the raise bar
+    t3_as_graded = float(re.search(r"against that row as graded \((0\.\d{6}), bar (0\.\d{6})\)", text).group(1))
+    assert as_graded < t3_as_graded - MARGIN                     # like for like it holds too
+    assert re.search(rf"Review verdict {re.escape(new)}: undecided \(straddle\)", text)
+    was = float(re.search(rf"previous id {re.escape(old)} scored (0\.\d{{6}})", text).group(1))
+    assert was < a2 - MARGIN and "set the bar" in text           # the predecessor, beside, never an anchor
+    assert "policy assignment" in text
+
+
+def test_the_reasoning_implementation_row_holds_by_the_gate_it_states():
+    """On the implementation suite the one scored tier-3 row and the best other tier-2 row are
+    level: the separation is under 0.10, so no score could raise or lower the row, and the row
+    says the verdict was hold before any dispatch."""
+    new, old = _ids("openai_reasoning")
+    text = _text(ROWS[("openai_reasoning", "implementation")])
+    s = _scores(text)
+    t3 = s[_id("claude_architect")]
+    a2 = min(s[_id("claude_senior")], s[_id("claude_worker_balanced")])
+    assert abs(_stated(text, "separation") - (t3 - a2)) < 2e-6 and t3 - a2 < SEPARATION
+    assert "not valid" in text and "inconclusive" in text and "before any dispatch" in text
+    assert re.search(rf"Implementation verdict {re.escape(new)}: hold\.", text)
+    was = float(re.search(rf"previous id {re.escape(old)} scored (0\.\d{{6}})", text).group(1))
+    assert s[new] == was == 0.625                                 # ten of sixteen, as the predecessor
+    # the fixed sensitivity: the tier-3 row as graded opens the gate, and both values still hold
+    ag = float(re.search(r"tier-3 row as graded \((0\.\d{6}), separation (0\.\d{6})\)", text).group(1))
+    assert ag - a2 >= SEPARATION
+    as_graded = float(re.search(r"As graded, before the memory correction below, (0\.\d{6})", text).group(1))
+    assert a2 - MARGIN <= s[new] < ag - MARGIN and a2 - MARGIN <= as_graded < ag - MARGIN
+
+
+@pytest.mark.parametrize("kind", ["review", "implementation"])
+def test_the_frontier_rows_rederive_the_advisory_and_claim_no_tier(kind):
+    """A row at the top tier has no tier above for the gate: the verdict is withheld by
+    construction and the advisory asks only whether the model is below the weakest tier-2 row."""
+    new, old = _ids("openai_frontier")
+    text = _text(ROWS[("openai_frontier", kind)])
+    assert "verdict is withheld by construction" in text and "policy assignment" in text
+    assert "Advisory reading" in text and "no evidence for" in text
+    s = _scores(text)
+    tier2 = [s[_id(k)] for k in ("claude_senior", "claude_worker_balanced")] + \
+        [s[CHAINS["openai_reasoning"][-2]]]                      # the Sol id the 1.26.0 registry held
+    tier1 = [s[_id("openai_worker_balanced")], s[_id("gemini_hydrogen")]]
+    gate = sum(tier2) / len(tier2) - min(tier1)
+    assert abs(_stated(text, "mean") - sum(tier2) / len(tier2)) < 2e-6
+    assert abs(float(re.search(r"gate:? (0\.\d{6}), met", text).group(1)) - gate) < 2e-6
+    assert gate >= SEPARATION
+    bar = min(tier2) - MARGIN
+    assert abs(_stated(text, "bar") - bar) < 2e-6
+    assert s[new] >= bar and re.search(rf"{re.escape(new)} {s[new]:.6f} \([^)]*\): not below tier 2", text)
+    assert old not in s                                           # the predecessor was never a subject
+    assert not _tier_claims(text), _tier_claims(text)
+
+
+def test_neither_tier_moved_and_both_quality_rows_say_what_was_scored():
+    assert CFG["models"]["openai_reasoning"]["capability_tier"] == 2
+    assert CFG["models"]["openai_frontier"]["capability_tier"] == 3
+    for key in KEYS:
+        new, _old = _ids(key)
+        text = _text(f"{key} quality evidence after the {new} id bump")
+        for kind in ("review", "implementation"):
+            assert ROWS[(key, kind)] in text, (key, kind)
+    frontier = _text(f"openai_frontier quality evidence after the {_ids('openai_frontier')[0]} id bump")
+    assert "not a measured tier" in frontier and not _tier_claims(frontier)
+
+
+def _changelog_entry(name: str) -> str:
+    text = (REPO / name).read_text()
+    start = text.index(f"## [{PUBLISHED_IN}]")
+    return text[start:text.index("\n## [", start + 1)]
+
+
+def _profile_sections() -> str:
+    text = (SKILL / "references" / "model-profiles.md").read_text()
+    out = []
+    for head in ("### The OpenAI frontier seat", "### The OpenAI reasoning seat"):
+        a = text.index(head)
+        out.append(text[a:text.index("\n### ", a + 1)])
+    b = text.index("## The OpenAI reasoning and frontier seats' replays on 2026-11-18")
+    end = text.find("\n## ", b + 1)
+    out.append(text[b:end if end != -1 else len(text)])
+    return "\n".join(out)
+
+
+def test_nothing_published_claims_the_frontier_tier_is_measured_or_supported():
+    """The frontier seat's scores must not be said to measure, confirm or support tier 3, in
+    any place the figures are published."""
+    for where, text in {"profile": _profile_sections(), "CHANGELOG.md": _changelog_entry("CHANGELOG.md"),
+                        "CHANGELOG.ko.md": _changelog_entry("CHANGELOG.ko.md")}.items():
+        assert not _tier_claims(text), (where, _tier_claims(text))
+
+
+def test_the_published_percentages_are_the_ledgers_scores():
+    """The profile and both changelogs print whole percentages; each is the ledger's six-place
+    score rounded, for both models on both replays, primary and as graded."""
+    sol, astra = _ids("openai_reasoning")[0], _ids("openai_frontier")[0]
+    rs, ra = _text(ROWS[("openai_reasoning", "review")]), _text(ROWS[("openai_frontier", "review")])
+    is_, ia = (_text(ROWS[("openai_reasoning", "implementation")]),
+               _text(ROWS[("openai_frontier", "implementation")]))
+    as_graded = lambda t: float(re.search(r"As graded, before the memory correction below, (0\.\d{6})", t).group(1))  # noqa: E731
+    pct = lambda v: int(100 * v + 0.5)                              # noqa: E731  (half up)
+    want = {pct(v) for v in (_scores(rs)[sol], as_graded(rs), _scores(ra)[astra], as_graded(ra),
+                             _scores(is_)[sol], as_graded(is_), _scores(ia)[astra])}
+    assert want == {48, 52, 56, 59, 63, 69}
+    for where, text in {"profile": _profile_sections(), "CHANGELOG.md": _changelog_entry("CHANGELOG.md"),
+                        "CHANGELOG.ko.md": _changelog_entry("CHANGELOG.ko.md")}.items():
+        printed = {int(x) for x in re.findall(r"(?<![\d.])(\d{2})%", text)}
+        for value in sorted(want):
+            assert value in printed, (where, value)
