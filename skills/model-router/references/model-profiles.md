@@ -1075,8 +1075,8 @@ every codex session loads, had grown since the anchors ran: every review
 session read files of it, one added line states a finding of the third review
 package, and another file states part of one task's fix. Each is scored against
 the model where a session read it — the difference between the two figures in
-a cell — and one of the two task-fix judgements rests on one reader of the two,
-as the plan allows. Seven of the eight implementation tasks' reference fixes
+a cell — and the task-fix judgement (both runs of that task) rests on one
+reader of the two, as the plan allows. Seven of the eight implementation tasks' reference fixes
 were written by the Claude senior seat's model, so the hidden tests encode a
 Claude model's reading; the tier-2 rows' own sessions were audited less
 strictly than these; and the gemini seat's 75% is a read-only row scored
@@ -1089,8 +1089,9 @@ complete session record, what may void an attempt, how a reader's answer is
 checked — all before any review's text was read, judged or hand-read and
 before any run was graded. While it was being finished it was run on the
 sessions that existed, for their structure only: tool names, call counts,
-which model served each, and that every review session had read the shared
-memory, which was therefore known before the memory rule was applied. The
+which model served each, and that each of the eleven review sessions existing
+then (of twelve) had read the shared memory, which was therefore known before
+the memory rule was applied. The
 reviewers were routed with this machine's overlay off, so that neither new
 model reviewed its own measurement. One defect of that unfinished harness reached the run: it
 mistook a line of tool output for the CLI's banner and re-dispatched two

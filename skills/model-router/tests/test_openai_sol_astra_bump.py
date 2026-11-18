@@ -399,3 +399,14 @@ def test_the_published_percentages_are_the_ledgers_scores():
             assert value == want[name], (where, name, value, want[name])
     # both changelogs say "both" for the fix replay: the frontier model's figure is the same one
     assert want["astra fixes"] == want["sol fixes"]
+    # the seat sections' prose prints the same figures (review i2: the table cells alone would
+    # let a wrong figure in the prose through): each seat's own figures appear in its section
+    text = (SKILL / "references" / "model-profiles.md").read_text()
+
+    def section(head):
+        a = text.index(head)
+        return {int(v) for v in re.findall(r"(?<![\d.])(\d{2})%", text[a:text.index("\n### ", a + 1)])}
+    assert {want["sol review"], want["sol review as graded"], want["sol fixes"],
+            want["sol fixes as graded"]} <= section("### The OpenAI reasoning seat")
+    assert {want["astra review"], want["astra review as graded"],
+            want["astra fixes"]} <= section("### The OpenAI frontier seat")
