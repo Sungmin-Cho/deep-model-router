@@ -933,8 +933,12 @@ def test_the_balanced_openai_implementation_replay_rederives_its_advisory_and_th
     scores = _recalls(text)
     seat, was = MODELS[TERRA_KEY]["id"], CHAINS[TERRA_KEY][-2]
     live = _live_others(TERRA_KEY, **BEFORE_1_26)
-    up = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 2 and m["id"] in scores]
-    own = [scores[m["id"]] for k, m in live.items() if m["capability_tier"] == 1 and m["id"] in scores]
+    # each anchor under the id the row names (1.26.1 moved openai_reasoning to the next Sol
+    # generation; the row's tier-2 Sol anchor is the id it measured)
+    up = [scores[_id(k, text)] for k, m in live.items()
+          if m["capability_tier"] == 2 and _id(k, text) in scores]
+    own = [scores[_id(k, text)] for k, m in live.items()
+           if m["capability_tier"] == 1 and _id(k, text) in scores]
     assert len(up) == 3 and own == [], (up, own)
     ref, x = scores[was], scores[seat]
     gate = sum(up) / len(up) - ref
@@ -957,5 +961,5 @@ def test_the_balanced_openai_review_row_names_the_gate_blocked_sensitivities():
     hold, and the row must say which ones those are."""
     text = _text(TERRA_REVIEW_ROW)
     assert "Every sensitivity" not in text
-    sol = MODELS["openai_reasoning"]["id"]
+    sol = _id("openai_reasoning", text)          # the Sol generation the row measured against
     assert "gate fails" in text and f"{sol} alone" in text and "package C alone" in text
