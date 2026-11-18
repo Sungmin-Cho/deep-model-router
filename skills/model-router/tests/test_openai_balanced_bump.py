@@ -139,17 +139,28 @@ def test_p0_defers_this_id_on_the_bundled_catalog_and_passes_on_the_account_one(
 
 def test_a_live_openai_id_missing_from_the_bundled_catalog_discloses_it():
     """The P0 deviation cannot be dropped from the ledger silently: every live
-    OpenAI id the captured bundled catalog lacks names both catalogs in its
-    model id row."""
+    OpenAI id the 0.164.0 bundled catalog lacks either names both catalogs in
+    its model id row, or was probed under a later CLI whose own captured
+    bundled catalog carries it (review d1, 2026-11-18: a later version number
+    alone proves nothing - the capture of that version must list the id)."""
     live = [m["id"] for m in CFG["models"].values()
             if m.get("family") == "openai" and "history_of" not in m
             and m.get("dispatchable", True) is not False]
+    captured = SLUGS["cli"].split()[-1]
     missing = [mid for mid in live if mid not in SLUGS["bundled_slugs"]]
-    assert missing == [NEW], missing
+    under_capture = [mid for mid in missing if LEDGER[f"{mid} model id"]["cli_version"] == captured]
+    assert under_capture == [NEW], (missing, under_capture)
     for mid in missing:
-        text = _text(f"{mid} model id")
-        assert "bundled catalog" in text and "account catalog" in text, mid
-        assert LEDGER[f"{mid} model id"]["cli_version"] == SLUGS["cli"].split()[-1]
+        row = LEDGER[f"{mid} model id"]
+        if mid in under_capture:
+            text = _text(f"{mid} model id")
+            assert "bundled catalog" in text and "account catalog" in text, mid
+            continue
+        fixture = (SKILL / "tests" / "fixtures" / "catalogs" / "codex" /
+                   f"debug-models-slugs-{row['cli_version']}.json")
+        assert fixture.is_file(), (mid, "no captured catalog for the CLI version its row names")
+        cap = json.loads(fixture.read_text())
+        assert cap["cli"].split()[-1] == row["cli_version"] and mid in cap["bundled_slugs"], mid
 
 
 def test_the_maker_seat_row_exists_for_the_new_id():

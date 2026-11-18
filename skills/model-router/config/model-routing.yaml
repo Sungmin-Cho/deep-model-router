@@ -790,15 +790,44 @@ models:
                       cache_write: 5.00,
                       input: 4.00, output: 18.00, cached_input: 0.40 }
 
+  # The id moved 6.1 -> 6.2 on 2026-11-18 through `model_sync.py promote` (the
+  # overlay had published it that morning after the P0-P4 gates, under
+  # codex-cli 0.169.1, whose bundled catalog carries the id). Both replays were
+  # run on the new generation: see the ledger rows "openai_reasoning review
+  # replay (2026-11-18)" and "openai_reasoning implementation replay
+  # (2026-11-18)" for what they decided about `capability_tier`.
   openai_reasoning:
-    id: gpt-6.1-sol
+    id: gpt-6.2-sol
     lineage: { line: openai/sol, template: "gpt-{gen}-sol" }
     family: openai
     capability_tier: 2
     verified: true
-    # This generation rejects `none` (live-probed 2026-09-30), so MINIMAL maps
-    # upward to native `low` for this model only, as on openai_frontier.
+    # Like 6.1, this generation rejects `none` (live-probed 2026-11-18), so
+    # MINIMAL maps upward to native `low` for this model only, as on
+    # openai_frontier.
     effort_map: { MINIMAL: low }
+    price_per_mtok:
+      verified_on: "2026-11-18"
+      max_age_days: 30
+      source: "https://developers.openai.com/api/docs/models/gpt-6.2-sol"
+      input: 2.0
+      output: 10.0
+      cached_input: 0.1
+      cache_write: 2.5
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      cache_write: 5.00,
+                      input: 4.00, output: 15.00, cached_input: 0.20 }
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "openai_reasoning@gpt-6.1-sol":
+    id: gpt-6.1-sol
+    history_of: openai_reasoning
+    family: openai
+    capability_tier: 2
+    effort_map: { MINIMAL: "low" }
+    dispatchable: false
+    verified: true
     price_per_mtok:
       verified_on: "2026-09-30"
       max_age_days: 30
@@ -857,15 +886,50 @@ models:
   # Highest OpenAI tier; peer to the architect tier, not a measured claim
   # of superiority over another provider. Sol remains the senior/fallback
   # seat; routine volume continues through Luna and the balanced workers.
+  #
+  # The id moved 6 -> 6.2 on 2026-11-18 through `model_sync.py promote` (the
+  # overlay had published it that morning after the P0-P4 gates).
+  # `capability_tier: 3` is a policy assignment, as it always was for this
+  # row: its previous generation was a judge of the review replays and never
+  # a subject. Both replays were run on the new generation; the method cannot
+  # decide a tier-3 row (no tier above it for the gate), so the tier stays
+  # the assignment it was and is not a measured tier - ledger rows
+  # "openai_frontier review replay (2026-11-18)" and "openai_frontier
+  # implementation replay (2026-11-18)". The router reads no price: the lower
+  # list price moves no route.
   openai_frontier:
-    id: gpt-6-astra
+    id: gpt-6.2-astra
     lineage: { line: openai/astra, template: "gpt-{gen}-astra" }
     family: openai
     capability_tier: 3
     verified: true
-    # Unlike the older OpenAI seats, this model cannot disable reasoning.
-    # Overlay the family map for this model only (including fallback seats).
+    # Like its predecessor, this model cannot disable reasoning (`none`
+    # rejected, live-probed 2026-11-18). Overlay the family map for this
+    # model only (including fallback seats).
     effort_map: { MINIMAL: low }
+    price_per_mtok:
+      verified_on: "2026-11-18"
+      max_age_days: 30
+      source: "https://developers.openai.com/api/docs/models/gpt-6.2-astra"
+      input: 8.0
+      output: 40.0
+      cached_input: 0.4
+      cache_write: 10.0
+      long_context: { above_input_tokens: 272000, boundary: exclusive,
+                      cache_write: 20.00,
+                      input: 16.00, output: 60.00, cached_input: 0.80 }
+    context_window: 1050000
+
+  # History row added by `model_sync.py promote` (design 2026-09-25 DD-A3,
+  # DD-A7): a superseded id of this key, valid history input, never seated.
+  "openai_frontier@gpt-6-astra":
+    id: gpt-6-astra
+    history_of: openai_frontier
+    family: openai
+    capability_tier: 3
+    effort_map: { MINIMAL: "low" }
+    dispatchable: false
+    verified: true
     price_per_mtok:
       verified_on: "2026-09-06"
       max_age_days: 30
@@ -877,7 +941,6 @@ models:
       long_context: { above_input_tokens: 272000, boundary: exclusive,
                       cache_write: 25.00,
                       input: 20.00, output: 75.00, cached_input: 2.00 }
-    context_window: 1050000
 
   # Balanced-tier price with frontier-tier claims. `capability_tier: 1` is the
   # honest reading: the one head-to-head that has been run (2026-08-18, on the
@@ -5022,3 +5085,552 @@ verification_ledger:
         the effort map (none on either), the substitution caveat and the
         lineage are unchanged, and the router reads no price. Script and
         output: the local note docs/research/2026-11-10-fable52-id-replay/.
+
+    - item: "gpt-6.2-sol model id"
+      status: verified
+      probed_on: "2026-11-18"
+      attempt_id: "p20261118T023252-21576dd9-1"
+      cli_version: "0.169.1"
+      argv: "codex exec -m gpt-6.2-sol -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
+      evidence: >
+        model_sync contained read-only probe of openai_reasoning
+        (gpt-6.1-sol -> gpt-6.2-sol): P0 passed on the
+        installed CLI's own bundled catalog (codex-cli 0.169.1 lists the id
+        there and in the account catalog); P1 smoke answered pong with
+        termination confirmed; P2 the CLI header reported the requested id
+        (id accepted, not served-model attestation); P3 boot input 41061 vs
+        40380 for the current id (paired). Quality is not measured by this
+        row.
+
+    - item: "gpt-6.2-sol reasoning-effort values"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        Live-probed tokens for gpt-6.2-sol: low (P1) and max (P4) by
+        model_sync's own run, then every token the openai family map emits
+        through the same probe harness against a scratch state root, one
+        call each (attempts e20261118T023453-1..6, codex-cli 0.169.1): low,
+        medium, high, xhigh and max SUCCEEDED with pong; none was rejected
+        before any output (HTTP 400 invalid_request_error, code
+        unsupported_value: "Supported values are: 'low', 'medium', 'high',
+        'xhigh', and 'max'"), as on gpt-6.1-sol. The family map's MINIMAL ->
+        none would therefore fail on this id, so the row keeps
+        `effort_map: { MINIMAL: low }`; no ceiling. No `effort_by_work`
+        entry names MINIMAL today. The account catalog also lists `ultra`,
+        which the router never emits.
+
+    - item: "gpt-6.2-sol pricing and context window"
+      status: documented
+      probed_on: "2026-11-18"
+      source: "https://developers.openai.com/api/docs/models/gpt-6.2-sol"
+      evidence: >
+        Reference API rates per MTok read from the source and the pricing
+        page on 2026-11-18: input 2.0, output 10.0, cached_input 0.1,
+        cache_write 2.5 (30-minute retention; 5.00 for 12 hours) - the same
+        as gpt-6.1-sol on every axis. Long context: the source states the
+        rule (more than 272K input tokens: input and cache rates double and
+        output costs 1.5 times the short-context rate, for the full request)
+        and the pricing page prints the figures the row carries (input 4.00,
+        output 15.00, cached_input 0.20, cache_write 5.00). promote writes
+        only the four short-context axes; the long_context block was added
+        by hand. A reference record, not the marginal cost of a subscription
+        dispatch. The same source documents a 1,050,000-token context window
+        (922,000 input, 128,000 output), a 2026-06-01 knowledge cutoff, and
+        that the API rejects reasoning effort `none`; released 2026-11-17
+        (API changelog). The row leaves `context_window` unset, as its
+        predecessor did. No deprecation date for gpt-6.1-sol was published
+        when this was read.
+
+    - item: "gpt-6.2-sol tier evidence (external)"
+      status: documented
+      probed_on: "2026-11-18"
+      source: "https://www.vals.ai/benchmarks/vals_index"
+      evidence: >
+        Third-party and vendor numbers read on 2026-11-18, not measurements
+        of this router. Vals Index (page dated 2026-11-16, model pages
+        2026-11-17; max effort): gpt-6.2-sol 66.06, rank 9 - gpt-6.1-sol
+        63.94, gpt-6.2-astra 67.66, gpt-6-astra 65.02, claude-fable-5-2
+        71.31, claude-sonnet-5-5 70.85, claude-opus-5-5 70.14,
+        gemini-4-hydrogen 68.49, gpt-6.1-terra 60.54; Vals Terminal-Bench
+        4.0 60.61. Artificial Analysis Intelligence Index (v5.0.1, no data
+        date shown): 57 at max, 55 at high - gpt-6.1-sol 55 / 50,
+        gpt-6.2-astra 62 / 60. Vendor (OpenAI's announcement, relative
+        deltas in the text, absolute values only in charts): GDPval v2 +5.3
+        points over gpt-6.1-sol; FrontierCode 2.0 within 0.5 points of
+        gpt-6.2-astra. None of these is an input to `capability_tier`; the
+        replays below are.
+
+    - item: "openai_reasoning quality evidence after the gpt-6.2-sol id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "openai_reasoning quality evidence after the gpt-6-sol id bump"
+        - "gpt-6.1-sol model id"
+        - "gpt-6.1-sol reasoning-effort values"
+        - "gpt-6.1-sol pricing and context window"
+        - "openai_reasoning quality evidence after the gpt-6.1-sol id bump"
+        - "gpt-6.1-sol maker seat"
+        - "gpt-6.1-sol MINIMAL effort token"
+      evidence: >
+        capability_tier 2 was inherited from the openai_reasoning lineage
+        when the id moved; the rows listed here describe gpt-6.1-sol, not
+        this id. Both replays were then run on gpt-6.2-sol on 2026-11-18 -
+        rows "openai_reasoning review replay (2026-11-18)" and
+        "openai_reasoning implementation replay (2026-11-18)" - and scored
+        it: review recall 0.484848 (the previous id 0.332492),
+        implementation pass rate 0.625000 (the previous id 0.625000).
+        Neither moves the tier: the review verdict is an undecided straddle
+        between hold and raise, and the implementation suite does not
+        separate tier 3 from tier 2, so its verdict is hold by the gate. The
+        tier stays 2, scored on the new generation, not confirmed by a valid
+        suite on the implementation side.
+
+    - item: "gpt-6.2-sol maker seat"
+      status: verified
+      probed_on: "2026-11-18"
+      attempt_id: "m20261118T024952-52471aa5-1"
+      cli_version: "0.169.1"
+      argv: "codex exec -m gpt-6.2-sol -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check -"
+      evidence: >
+        Attended model_sync probe-maker through claude_code.to_openai
+        (mechanism): the maker recipe with -m gpt-6.2-sol, in a disposable
+        single-linked child cwd, ended SUCCEEDED with termination confirmed;
+        the written file's content hash
+        bcc70199d0a54fa4697a7ac08077495698a74cdec1053fa3472cd36cc8fc69f1
+        equals the expected token's; the CLI header reported the requested
+        id. Receipt sha256
+        0598fb99a0553af07c00431f683dd27e2dbb1a0c74a221fc5ebd9ca328c24d08.
+        The probe's confirmation prompt was answered by an expect script
+        with the user's permission, not typed by a person.
+
+    - item: "gpt-6.2-astra model id"
+      status: verified
+      probed_on: "2026-11-18"
+      attempt_id: "p20261118T023252-177e1cff-1"
+      cli_version: "0.169.1"
+      argv: "codex exec -m gpt-6.2-astra -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
+      evidence: >
+        model_sync contained read-only probe of openai_frontier (gpt-6-astra
+        -> gpt-6.2-astra): P0 passed on the
+        installed CLI's own bundled catalog (codex-cli 0.169.1 lists the id
+        there and in the account catalog); P1 smoke answered pong with termination
+        confirmed; P2 the CLI header reported the requested id (id accepted,
+        not served-model attestation); P3 boot input 37087 vs 35654 for the
+        current id (paired). Quality is not measured by this row.
+
+    - item: "gpt-6.2-astra reasoning-effort values"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        Live-probed tokens for gpt-6.2-astra: low (P1) and max (P4) by
+        model_sync's own run, then every token the openai family map emits
+        through the same probe harness against a scratch state root, one
+        call each (attempts e20261118T023453-1..6 under that row's own
+        state root, codex-cli 0.169.1): low, medium, high, xhigh and max
+        SUCCEEDED with pong; none was rejected before any output (HTTP 400
+        invalid_request_error, code unsupported_value: "Supported values
+        are: 'low', 'medium', 'high', 'xhigh', and 'max'"), as on
+        gpt-6-astra. The row keeps `effort_map: { MINIMAL: low }`; no
+        ceiling. The account catalog also lists `ultra`, which the router
+        never emits.
+
+    - item: "gpt-6.2-astra pricing and context window"
+      status: documented
+      probed_on: "2026-11-18"
+      source: "https://developers.openai.com/api/docs/models/gpt-6.2-astra"
+      evidence: >
+        Reference API rates per MTok read from the source and the pricing
+        page on 2026-11-18: input 8.0, output 40.0, cached_input 0.4,
+        cache_write 10.0 (30-minute retention; 20.00 for 12 hours) -
+        gpt-6-astra was 10.00 / 50.00 / 1.00 / 12.50. Long context: the
+        source states the rule (more than 272K input tokens: input and cache
+        rates double and output costs 1.5 times the short-context rate, for
+        the full request) and the pricing page prints the figures the row
+        carries (input 16.00, output 60.00, cached_input 0.80, cache_write
+        20.00). promote writes only the four short-context axes; the
+        long_context block was added by hand. A reference record, not the
+        marginal cost of a subscription dispatch; the router reads no price,
+        so the lower rate moves no route. The same source documents a
+        1,050,000-token context window (922,000 input, 128,000 output), which
+        the row's `context_window` already held for the predecessor, a
+        2026-05-18 knowledge cutoff, and that the API rejects reasoning
+        effort `none`; released 2026-11-17 (API changelog). No deprecation
+        date for gpt-6-astra was published when this was read.
+
+    - item: "gpt-6.2-astra tier evidence (external)"
+      status: documented
+      probed_on: "2026-11-18"
+      source: "https://www.vals.ai/benchmarks/vals_index"
+      evidence: >
+        Third-party and vendor numbers read on 2026-11-18, not measurements
+        of this router. Vals Index (page dated 2026-11-16, model pages
+        2026-11-17; max effort): gpt-6.2-astra 67.66, rank 7 - gpt-6-astra
+        65.02, claude-fable-5-2 71.31, claude-sonnet-5-5 70.85,
+        claude-opus-5-5 70.14, gemini-4-hydrogen 68.49, gpt-6.2-sol 66.06;
+        Vals Terminal-Bench 4.0 63.13. Artificial Analysis Intelligence
+        Index (v5.0.1, no data date shown): 62 at max, 60 at high -
+        gpt-6-astra 57 / 55, claude-fable-5-2 65 at max. Vendor (OpenAI's
+        announcement, relative deltas in the text): Agents' Last Exam +5.2
+        points over gpt-6-astra, GDPval v2 +6.2 points, Terminal-Bench-Science
+        +9 points (Vals' own run of that benchmark reads 71.43). None of
+        these is an input to `capability_tier`, which is a policy assignment
+        for this row.
+
+    - item: "openai_frontier quality evidence after the gpt-6.2-astra id bump"
+      status: quality_inherited_not_remeasured
+      supersedes:
+        - "gpt-6-astra model id"
+        - "gpt-6-astra capabilities and API reference prices"
+      evidence: >
+        capability_tier 3 is the policy assignment this key has always
+        carried, and there is no measured quality of the predecessor to
+        inherit: gpt-6-astra was a judge of the review replays and absent
+        from the implementation replays, never a subject, and the rows
+        listed here record that id's probe and reference prices only. Both
+        replays were run on gpt-6.2-astra on 2026-11-18 - rows
+        "openai_frontier review replay (2026-11-18)" and "openai_frontier
+        implementation replay (2026-11-18)" - and scored it; the method
+        cannot decide a row at the top tier, so the tier stays the
+        assignment it was: it is not a measured tier, and the scores are no
+        evidence for it. Neither row says anything about gpt-6-astra.
+
+    - item: "gpt-6.2-astra maker seat"
+      status: verified
+      probed_on: "2026-11-18"
+      attempt_id: "m20261118T025002-12e503af-1"
+      cli_version: "0.169.1"
+      argv: "codex exec -m gpt-6.2-astra -c model_reasoning_effort=low -s workspace-write --skip-git-repo-check -"
+      evidence: >
+        Attended model_sync probe-maker through claude_code.to_openai
+        (mechanism): the maker recipe with -m gpt-6.2-astra, in a disposable
+        single-linked child cwd, ended SUCCEEDED with termination confirmed;
+        the written file's content hash
+        04cce78075eee9f4a82b79f04e8a3f21920ab76f3b8b8deb98f6731ab42a7514
+        equals the expected token's; the CLI header reported the requested
+        id. Receipt sha256
+        3705cab7e8aec135f8a0f6f6753268f9423bd14f5b67f4c1ab4062572de5e20f.
+        The probe's confirmation prompt was answered by an expect script
+        with the user's permission, not typed by a person.
+
+    - item: "openai_reasoning and openai_frontier id bump replay (gpt-6.1-sol -> gpt-6.2-sol, gpt-6-astra -> gpt-6.2-astra, 2026-11-18)"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        One router, two registries (1.26.0 and the candidate), the overlay
+        off, one grid: eleven classes, every dimension 0-3, three runtimes,
+        three flag sets (none; auth_sensitive; review_disagreement, which
+        binds the judge seat), fifteen availability scenarios named by
+        registry key and resolved to each side's own id (all up; xai out;
+        the Claude senior model out; the OpenAI frontier out; the OpenAI
+        reasoning model out; both out; the Claude architect out; the
+        architect and the frontier out; the OpenAI balanced model out;
+        OpenAI quota low or exhausted; Claude quota low or exhausted; Claude
+        only; OpenAI only), fresh and one retry after each side's own fresh
+        worker failed: 760,320 routes, 613,695 of which name one of the two
+        new ids. With gpt-6.1-sol rewritten to gpt-6.2-sol and gpt-6-astra to
+        gpt-6.2-astra on the 1.26.0 side, every route is equal; only the
+        hashes of the config or of a request naming an id differ. The tiers,
+        the per-model effort maps and the lineages are unchanged, and the
+        router reads no price. Script and output: the local note
+        docs/research/2026-11-18-gpt62-id-replay/.
+
+    - item: "openai_reasoning review replay (2026-11-18)"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        T13: the 1.22.0 real-review replay (T3's three frozen packages A, B,
+        C, their original prompts, effort high, two reps, deadline 3,600 s)
+        on gpt-6.2-sol and gpt-6.2-astra through the OpenAI reviewer recipe
+        T3's OpenAI rows ran (read-only sandbox, sessions kept for the
+        audit; the released 1.26.0 supervisor, codex-cli 0.169.1), graded
+        blind by the T3 judges claude-fable-5-1 and gpt-6-astra, whose
+        calibration was re-run first (12 of 12 exactly as expected;
+        agreement on both subjects' items 1.000). Twelve reviews, all
+        SUCCEEDED in 290 to 563 s, no re-run and no void; every banner and
+        turn context names the requested id alone. Per-row rule for a tier-2
+        row, fixed before any dispatch, against the live rows of the 1.26.0
+        registry other than this row: tier 3 claude-fable-5-2 0.558923 (the
+        only measured tier-3 row; its tier is a policy assignment, not a
+        measured tier); tier 2 claude-opus-5-5 0.515993, claude-sonnet-5-5
+        0.455387; separation 0.103535 (met). Bar for raise: 0.508923. Bar
+        for lower: 0.405387. Recall: gpt-6.2-sol 0.484848 (packages
+        0.500000, 0.500000, 0.454545): hold. As graded, before the memory
+        correction below, 0.515152 (package C 0.545455): above the raise
+        bar, but only against the tier-3 row's corrected value - against
+        that row as graded (0.589226, bar 0.539226) it reads hold too. A
+        verdict the as-graded reading does not reproduce is a straddle:
+        Review verdict gpt-6.2-sol: undecided (straddle), which counts for
+        nothing. Beside: the row's previous id gpt-6.1-sol scored 0.332492
+        on this suite, where it was the lowest tier-2 row and set the bar
+        the others were read against; the new generation is above
+        claude-sonnet-5-5 and below claude-opus-5-5. Tier 1 gpt-6.1-terra
+        0.250842, gemini-4-hydrogen 0.239899; tier 0 claude-haiku-5-5
+        0.397306. Memory correction (it lowers the score): a codex session
+        loads the user's shared memory index and may read its files, as T3's
+        rows did. All twelve sessions read files of that store; both readers
+        found that one line added to one file since the anchors read it
+        states package C's item GT01 (the item the 2026-11-10 replay
+        corrected for the same reason), so GT01 scores not-found for the
+        four C reps (the primary values above). Isolation: every tool call
+        of the twelve sessions (286, all shell commands; no sub-thread, no
+        network, no other agent CLI) and every text the CLI injected into
+        them (15) was read in full, in six packages, by two readers that are
+        neither a subject nor of the subjects' family (claude-opus-5-5,
+        claude-sonnet-5-5; answers taken from supervisor receipts, bound to
+        package and session, validated in full): no session read
+        answer-bearing material; the reads outside a package copy were
+        shared memory files, system paths and the per-user temp dir. The
+        store's hashes were the same before the first dispatch and after the
+        last review. Sensitivity (deciding nothing): each tier-2 row alone
+        and each judge alone read hold where the gate holds (with
+        claude-opus-5-5 alone the gate fails, 0.042929); package B alone
+        reads raise, package A alone hold, package C alone fails the gate
+        (0.045455); with gpt-6.2-astra added to tier 3 (the registry after
+        the bump) hold. This row alone moves nothing: the seat writes, and
+        the implementation replay's verdict is hold. What the numbers rest
+        on, disclosed in the plan: 12 of the 29 ground-truth items come from
+        the original reviews by gpt-6.1-sol (claude-fable-5-1's found 19,
+        two shared); gpt-6-astra, one of the two judges, is the family of
+        both subjects and the predecessor of one (the claude-fable-5-1-only
+        reading is the same value for both); the tier-3 bar is one row whose
+        own score carries the same memory correction; the tier-2 rows'
+        sessions (2026-10-14) were never audited, so the standard applied
+        here is stricter than the one behind the numbers it is compared
+        with. The orchestrator was a claude-fable-5-2 session (an anchor's
+        model, not a subject). The plan fixed, before any dispatch, both
+        readings, the void rule, the judging and a full hand read. Three
+        amendments followed, all before any review was read, judged or
+        hand-read: A1 (the harness's audit and scoring half was ported after
+        dispatch; it records what the port saw: session structure, tool
+        names, call counts and that every session read shared memory), A2
+        and A3 on two design-review rounds by other models (gpt-6.1-sol,
+        claude-sonnet-5-5, routed with the overlay off so that no subject
+        reviewed its own measurement). They tightened the audit and the
+        reader-record checks, narrowed what may void an attempt, and added
+        that a verdict the claude-fable-5-1-only reading does not reproduce
+        counts for nothing. Plan, amendments A1 to A3, harness, receipts,
+        grades, call listing and hand read: the local archive
+        docs/evals/2026-11-18-t13/ (summary.json sha256
+        68cb540845cff5a68b95dcde2d2819ed1eacaccfa53c2fa4509aaa90d31fd6d5).
+
+    - item: "openai_frontier review replay (2026-11-18)"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        T13: the 1.22.0 real-review replay (T3's three frozen packages A, B,
+        C, their original prompts, effort high, two reps, deadline 3,600 s)
+        on gpt-6.2-sol and gpt-6.2-astra through the OpenAI reviewer recipe
+        T3's OpenAI rows ran (read-only sandbox, sessions kept for the
+        audit; the released 1.26.0 supervisor, codex-cli 0.169.1), graded
+        blind by the T3 judges claude-fable-5-1 and gpt-6-astra, whose
+        calibration was re-run first (12 of 12 exactly as expected;
+        agreement on both subjects' items 1.000). Twelve reviews, all
+        SUCCEEDED in 290 to 563 s, no re-run and no void; every banner and
+        turn context names the requested id alone. The method's verdict is
+        withheld by construction: the row is at tier 3, the rule's gate
+        reads the tier above, and there is none. capability_tier 3 stays
+        what it was, a policy assignment; this replay neither confirms nor
+        measures it. Advisory reading, fixed before any dispatch: is the row
+        below the weakest live tier-2 row by more than the margin? Live rows
+        of the 1.26.0 registry: tier 2 claude-opus-5-5 0.515993,
+        claude-sonnet-5-5 0.455387, gpt-6.1-sol 0.332492 (mean 0.434624);
+        tier 1 gpt-6.1-terra 0.250842, gemini-4-hydrogen 0.239899 (gate
+        0.194725, met); bar 0.282492. Recall: gpt-6.2-astra 0.562290
+        (packages 0.666667, 0.611111, 0.409091): not below tier 2. As
+        graded, before the memory correction below, 0.592593 (package C
+        0.500000), and by claude-fable-5-1 alone: the same reading. Beside,
+        deciding nothing: the value is within the margin of the other tier-3
+        row (claude-fable-5-2 0.558923) and above every tier-2 row; no rule
+        of the method reads that, and the suite's order does not follow the
+        tiers (claude-haiku-5-5, tier 0, 0.397306). "Not below" is weak
+        evidence: compatible with tier 2, no evidence for tier 3, and it
+        says nothing about gpt-6-astra, which was a judge here and never a
+        subject. Memory correction (it lowers the score): a codex session
+        loads the user's shared memory index and may read its files, as T3's
+        rows did. All twelve sessions read files of that store; both readers
+        found that one line added to one file since the anchors read it
+        states package C's item GT01 (the item the 2026-11-10 replay
+        corrected for the same reason), so GT01 scores not-found for the
+        four C reps (the primary values above). Isolation: every tool call
+        of the twelve sessions (286, all shell commands; no sub-thread, no
+        network, no other agent CLI) and every text the CLI injected into
+        them (15) was read in full, in six packages, by two readers that are
+        neither a subject nor of the subjects' family (claude-opus-5-5,
+        claude-sonnet-5-5; answers taken from supervisor receipts, bound to
+        package and session, validated in full): no session read
+        answer-bearing material; the reads outside a package copy were
+        shared memory files, system paths and the per-user temp dir. The
+        store's hashes were the same before the first dispatch and after the
+        last review. Sensitivity (deciding nothing): each tier-2 row alone,
+        each judge alone and packages A and B alone read not below wherever
+        the gate holds; with gpt-6.1-sol alone (gate 0.092593) or package C
+        alone (gate 0.060606) the gate fails. This row alone moves nothing:
+        the seat writes. What the numbers rest on, disclosed in the plan: 12
+        of the 29 ground-truth items come from the original reviews by
+        gpt-6.1-sol (claude-fable-5-1's found 19, two shared); gpt-6-astra,
+        one of the two judges, is the family of both subjects and the
+        predecessor of one (the claude-fable-5-1-only reading is the same
+        value for both); the tier-3 bar is one row whose own score carries
+        the same memory correction; the tier-2 rows' sessions (2026-10-14)
+        were never audited, so the standard applied here is stricter than
+        the one behind the numbers it is compared with. The orchestrator was
+        a claude-fable-5-2 session (an anchor's model, not a subject). The
+        plan fixed, before any dispatch, both readings, the void rule, the
+        judging and a full hand read. Three amendments followed, all before
+        any review was read, judged or hand-read: A1 (the harness's audit
+        and scoring half was ported after dispatch; it records what the port
+        saw: session structure, tool names, call counts and that every
+        session read shared memory), A2 and A3 on two design-review rounds
+        by other models (gpt-6.1-sol, claude-sonnet-5-5, routed with the
+        overlay off so that no subject reviewed its own measurement). They
+        tightened the audit and the reader-record checks, narrowed what may
+        void an attempt, and added that a verdict the claude-fable-5-1-only
+        reading does not reproduce counts for nothing. Plan, amendments A1
+        to A3, harness, receipts, grades, call listing and hand read: the
+        local archive docs/evals/2026-11-18-t13/ (summary.json sha256
+        68cb540845cff5a68b95dcde2d2819ed1eacaccfa53c2fa4509aaa90d31fd6d5).
+
+    - item: "openai_reasoning implementation replay (2026-11-18)"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        T14: the 2026-10-15 implementation replay (the same eight tasks,
+        hidden tests, prompt and regression sets, re-validated byte for byte
+        against that replay's manifest) on gpt-6.2-sol and gpt-6.2-astra
+        through the OpenAI maker recipe its OpenAI rows ran
+        (workspace-write, effort high, deadline 2,700 s; the released 1.26.0
+        supervisor, codex-cli 0.169.1), two runs per task in workspaces
+        apart from every reference tree; all thirty-two SUCCEEDED (103 to
+        2,222 s), no void, every banner and turn context naming the
+        requested id alone, the private trees intact afterwards. Per-row
+        rule for a tier-2 row, against the published pass rates of the live
+        rows of the 1.26.0 registry other than this row: tier 3
+        claude-fable-5-2 0.687500 (the only scored tier-3 row; a policy
+        assignment); tier 2 claude-opus-5-5 0.687500, claude-sonnet-5-5
+        0.625000; separation 0.062500, below the 0.10 the rule needs. The
+        suite is not valid between tier 3 and tier 2 (inconclusive), so the
+        verdict was hold before any dispatch, whatever the score, and the
+        plan said so then: Implementation verdict gpt-6.2-sol: hold. Pass
+        rate: gpt-6.2-sol 0.625000 (ten of sixteen runs: both on T02, T03,
+        T04, T05 and T08, none on T01, T06 or T07). As graded, before the
+        memory correction below, 0.687500 (eleven of sixteen: one T07 run
+        passes). Beside: the row's previous id gpt-6.1-sol scored 0.625000
+        on this suite; tier 1 gpt-6.1-terra 0.437500, gemini-4-hydrogen
+        0.750000 (a read-only row scored through a fenced write harness);
+        tier 0 claude-haiku-5-5 0.562500, gpt-6-luna 0.375000. Memory
+        correction (it lowers the score; either reader suffices, by the rule
+        fixed before dispatch): both T07 runs read a shared memory file
+        whose text, one of the two readers found, states part of T07's fix
+        beyond the finding (where a verdict line counts); no anchor session
+        had read that file, so both runs score 0 in the primary reading
+        although one of the two fixes passes. The other reader found no such
+        statement. Isolation: every tool call of the thirty-four sessions
+        (772; no sub-thread, no network, no other agent CLI) and every text
+        the CLI injected into them was read in full, in eight packages, by
+        two readers that are neither a subject nor of the subjects' family
+        (claude-opus-5-5, claude-sonnet-5-5; answers taken from supervisor
+        receipts, bound to package and session, validated in full): no
+        session read answer-bearing material or wrote the shared memory
+        store, whose hashes were the same before the first dispatch and
+        after the last. Two of the thirty-four were superfluous re-runs: the
+        run had started on the harness as it stood before a design-review
+        fix, whose served-model check read tool output as the CLI's banner
+        and re-dispatched two SUCCEEDED gpt-6.2-sol attempts on T06; the
+        originals stand, and the re-runs were read like every execution but
+        decide nothing (both were clean of answer-bearing reads).
+        Sensitivity fixed before dispatch, moving nothing: with the tier-3
+        row as graded (0.750000, separation 0.125000) the bars are 0.700000
+        and 0.575000 and both of this model's values read hold. With the
+        review replay: the review verdict is an undecided straddle and this
+        one is hold, so the tier holds at 2 - recorded as scored on the new
+        generation, the implementation half inconclusive, not as a confirmed
+        tier. Other sensitivity: each tier-2 row alone, T01 left out on both
+        sides and the share of hidden tests passed read hold. T01 under the
+        retracted C1 file fails both runs on the hidden tests (reported
+        beside). Biases: seven of the eight reference fixes were written by
+        claude-opus-5-5, so the hidden tests encode a Claude model's reading
+        of each finding; the suite is near its ceiling between tiers 2 and 3
+        (T01 and T06 unsolved by nearly every row); the tier-2 anchors'
+        sessions (2026-10-15) were audited by a pattern scan whose flags
+        were read by hand, not read call by call as these were; the
+        orchestrator was a claude-fable-5-2 session (an anchor's model). The
+        plan fixed the readings, the grading and the hand read before any
+        attempt was dispatched; amendments A1 to A4 came while attempts ran
+        or after they ended and before any grade or hand-read verdict was
+        read (the harness port, two design-review rounds by gpt-6.1-sol and
+        claude-sonnet-5-5, and the superfluous re-runs); grading is
+        deterministic. Plan, amendments, harness, grades, call listing and
+        hand read: the local archive docs/evals/2026-11-18-t14/
+        (summary.json sha256
+        e47eee2057b0afcfa29ecc7a8a1e4b3551643a52143fd98a73279b427835a51f).
+
+    - item: "openai_frontier implementation replay (2026-11-18)"
+      status: verified
+      probed_on: "2026-11-18"
+      evidence: >
+        T14: the 2026-10-15 implementation replay (the same eight tasks,
+        hidden tests, prompt and regression sets, re-validated byte for byte
+        against that replay's manifest) on gpt-6.2-sol and gpt-6.2-astra
+        through the OpenAI maker recipe its OpenAI rows ran
+        (workspace-write, effort high, deadline 2,700 s; the released 1.26.0
+        supervisor, codex-cli 0.169.1), two runs per task in workspaces
+        apart from every reference tree; all thirty-two SUCCEEDED (103 to
+        2,222 s), no void, every banner and turn context naming the
+        requested id alone, the private trees intact afterwards. The
+        method's verdict is withheld by construction, as for the review
+        replay: the row is at tier 3 and the gate reads the tier above
+        (there is none). capability_tier 3 stays a policy assignment.
+        Advisory reading, fixed before any dispatch. Anchors are the
+        published pass rates under the 1.26.0 tiers: tier 2 claude-opus-5-5
+        0.687500, gpt-6.1-sol 0.625000, claude-sonnet-5-5 0.625000 (mean
+        0.645833); tier 1 gpt-6.1-terra 0.437500, gemini-4-hydrogen 0.750000
+        (a read-only row scored through a fenced write harness; the lower of
+        the two sets the gate: 0.208333, met); bar 0.575000; tier 0
+        claude-haiku-5-5 0.562500, gpt-6-luna 0.375000. Pass rate:
+        gpt-6.2-astra 0.625000 (ten of sixteen runs: both on T02, T03, T04,
+        T07 and T08, none on T01, T05 or T06): not below tier 2, by one run.
+        No memory correction applies (no gpt-6.2-astra session read a shared
+        memory file), so the as-graded value is the same. Beside, deciding
+        nothing: the value is level with the two lowest tier-2 rows, below
+        claude-opus-5-5 and more than the margin below the other tier-3 row
+        (claude-fable-5-2 0.687500); this replay does not separate the model
+        from tier 2. T05, which it failed twice, was solved twice by
+        gpt-6.2-sol, gpt-6.1-sol and claude-fable-5-2 and failed twice by
+        claude-sonnet-5-5. With the review replay: neither reads below tier
+        2, so the readings trigger no proposal. Tier 3 holds by assignment;
+        it is not a measured tier, and "not below tier 2" is no evidence for
+        it. Isolation: every tool call of the thirty-four sessions (772; no
+        sub-thread, no network, no other agent CLI) and every text the CLI
+        injected into them was read in full, in eight packages, by two
+        readers that are neither a subject nor of the subjects' family
+        (claude-opus-5-5, claude-sonnet-5-5; answers taken from supervisor
+        receipts, bound to package and session, validated in full): no
+        session read answer-bearing material or wrote the shared memory
+        store, whose hashes were the same before the first dispatch and
+        after the last. Two of the thirty-four were superfluous re-runs: the
+        run had started on the harness as it stood before a design-review
+        fix, whose served-model check read tool output as the CLI's banner
+        and re-dispatched two SUCCEEDED gpt-6.2-sol attempts on T06; the
+        originals stand, and the re-runs were read like every execution but
+        decide nothing (both were clean of answer-bearing reads).
+        Sensitivity (deciding nothing): with claude-sonnet-5-5 or
+        gpt-6.1-sol alone as the tier-2 row, with gpt-6.2-sol in place of
+        gpt-6.1-sol and with T01 left out on both sides the reading is the
+        same; with claude-opus-5-5 alone as the tier-2 row it reads below
+        tier 2 (bar 0.637500); the share of hidden tests passed gives no
+        reading (its gate fails). T01 under the retracted C1 file fails both
+        runs on the hidden tests (reported beside). Biases: seven of the
+        eight reference fixes were written by claude-opus-5-5, so the hidden
+        tests encode a Claude model's reading of each finding; the suite is
+        near its ceiling between tiers 2 and 3 (T01 and T06 unsolved by
+        nearly every row); the tier-2 anchors' sessions (2026-10-15) were
+        audited by a pattern scan whose flags were read by hand, not read
+        call by call as these were; the orchestrator was a claude-fable-5-2
+        session (an anchor's model). The plan fixed the readings, the
+        grading and the hand read before any attempt was dispatched;
+        amendments A1 to A4 came while attempts ran or after they ended and
+        before any grade or hand-read verdict was read (the harness port,
+        two design-review rounds by gpt-6.1-sol and claude-sonnet-5-5, and
+        the superfluous re-runs); grading is deterministic. Plan,
+        amendments, harness, grades, call listing and hand read: the local
+        archive docs/evals/2026-11-18-t14/ (summary.json sha256
+        e47eee2057b0afcfa29ecc7a8a1e4b3551643a52143fd98a73279b427835a51f).

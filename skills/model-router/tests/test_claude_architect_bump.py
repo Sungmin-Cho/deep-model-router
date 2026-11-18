@@ -27,7 +27,8 @@ from route_task import Task, load_config, route  # noqa: E402
 
 CFG = load_config()
 KEY = "claude_architect"
-CHAIN = json.loads((SKILL / "tests" / "fixtures" / "id-succession.json").read_text())["chains"][KEY]
+CHAINS = json.loads((SKILL / "tests" / "fixtures" / "id-succession.json").read_text())["chains"]
+CHAIN = CHAINS[KEY]
 NEW, OLD = CHAIN[-1], CHAIN[-2]
 ROW = CFG["models"][KEY]
 HISTORY = CFG["models"][f"{KEY}@{OLD}"]
@@ -264,7 +265,8 @@ def _published() -> dict[str, str]:
 
 def test_the_tier_is_recorded_as_an_assignment_never_as_measured():
     """The method cannot decide a row at the top tier: there is no tier above
-    it for the gate, and no other top-tier row has a score. Both replay rows
+    it for the gate, and no other top-tier row had a score when these replays
+    ran. Both replay rows
     must say so, carry the advisory reading under that name, and name the
     disclosures the scores depend on (the predecessor as a judge and as the
     author of most of the answer key; the subject as the orchestrator)."""
@@ -273,15 +275,27 @@ def test_the_tier_is_recorded_as_an_assignment_never_as_measured():
     peers = [k for k, m in CFG["models"].items()
              if m["capability_tier"] == top and "history_of" not in m
              and m.get("dispatchable", True) is not False and k != KEY]
-    # "no scored tier-3 anchor": every other live top-tier row is named in the review row and
-    # has no replay or tier-measurement row of its own (review i1 sonnet F6: not a fixed key)
+    # "no scored tier-3 anchor": every other live top-tier row is named in the review row —
+    # under the id it held when the row was written (a peer's id may have moved since) — and had
+    # no replay or tier-measurement row of its own then: any such row is dated after this one
+    # (review i1 sonnet F6: not a fixed key)
     assert peers
     review = _text(REVIEW_ROW)
     for peer in peers:
-        peer_id = CFG["models"][peer]["id"]
-        assert peer_id in review, peer
-        assert not [i for i in LEDGER if i.startswith((f"{peer} ", f"{peer_id} "))
-                    and ("replay" in i or "tier measurement" in i)], peer
+        chain = CHAINS.get(peer, [CFG["models"][peer]["id"]])
+        named = [mid for mid in chain if mid in review]
+        assert named, peer
+        own = [i for i in LEDGER if i.startswith((f"{peer} ", *(f"{mid} " for mid in chain)))
+               and ("replay" in i or "tier measurement" in i) and "id bump replay" not in i]
+        # review i1 (2026-11-18): a later date alone is not enough - a replay row of the peer must
+        # be about a generation NEWER than the one this row names (its scores sit next to that
+        # newer id), so no row can score the id this review row calls an unscored judge
+        newer = chain[chain.index(named[-1]) + 1:]
+        for i in own:
+            assert LEDGER[i]["probed_on"] > LEDGER[REVIEW_ROW]["probed_on"], (peer, i)
+            text = " ".join(LEDGER[i]["evidence"].split())
+            assert any(re.search(re.escape(mid) + r" 0\.\d{6}", text) for mid in newer), (peer, i)
+            assert not re.search(re.escape(named[-1]) + r" 0\.\d{6}", text), (peer, i)
     for item in (REVIEW_ROW, IMPL_ROW):
         text = _text(item)
         assert LEDGER[item]["status"] == "verified"
