@@ -413,8 +413,9 @@ five tokens are accepted), so this row maps MINIMAL to `low`, as the OpenAI
 frontier seat does.
 
 **Its tier is 2, scored on the new generation, and neither replay moves it.**
-Both replays were re-run on it the day of the bump, under rules written before
-any dispatch. The review replay recalls 48% of the accepted findings, up from
+Both replays were re-run on it the day of the bump, with the readings and the
+grading fixed before any dispatch (the audit's rules were tightened after it).
+The review replay recalls 48% of the accepted findings, up from
 the predecessor's 33%: above the Claude balanced seat (46%), below the Claude
 senior seat (52%), and short of the 50.9% bar a raise needs. As graded, before
 a correction for an answer the user's shared memory handed its sessions, it is
@@ -1085,9 +1086,13 @@ The plans fixed the readings, the grading and a full hand read before any
 dispatch. The harness's audit and scoring half was finished after dispatch, and
 two design-review rounds by other models then tightened it — what counts as a
 complete session record, what may void an attempt, how a reader's answer is
-checked — all before any review was read or any run graded; the reviewers were
-routed with this machine's overlay off, so that neither new model reviewed its
-own measurement. One defect of that unfinished harness reached the run: it
+checked — all before any review's text was read, judged or hand-read and
+before any run was graded. While it was being finished it was run on the
+sessions that existed, for their structure only: tool names, call counts,
+which model served each, and that every review session had read the shared
+memory, which was therefore known before the memory rule was applied. The
+reviewers were routed with this machine's overlay off, so that neither new
+model reviewed its own measurement. One defect of that unfinished harness reached the run: it
 mistook a line of tool output for the CLI's banner and re-dispatched two
 finished runs. The originals stand; the two extra runs were read and decide
 nothing.

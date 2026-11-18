@@ -5392,21 +5392,24 @@ verification_ledger:
         two shared); gpt-6-astra, one of the two judges, is the family of
         both subjects and the predecessor of one (the claude-fable-5-1-only
         reading is the same value for both); the tier-3 bar is one row whose
-        own score carries the same memory correction. The orchestrator was a
-        claude-fable-5-2 session (an anchor's model, not a subject). The
-        plan fixed, before any dispatch, both readings, the void rule, the
-        judging and a full hand read. Three amendments followed, all before
-        any review was read, judged or hand-read: A1 (the harness's audit
-        and scoring half was ported after dispatch; it records what the port
-        saw: session structure, tool names, call counts and that every
-        session read shared memory), A2 and A3 on two design-review rounds
-        by other models (gpt-6.1-sol, claude-sonnet-5-5, routed with the
-        overlay off so that no subject reviewed its own measurement). They
-        tightened the audit and the reader-record checks, narrowed what may
-        void an attempt, and added that a verdict the claude-fable-5-1-only
-        reading does not reproduce counts for nothing. Plan, amendments A1
-        to A3, harness, receipts, grades, call listing and hand read: the
-        local archive docs/evals/2026-11-18-t13/ (summary.json sha256
+        own score carries the same memory correction; the tier-2 rows'
+        sessions (2026-10-14) were never audited, so the standard applied
+        here is stricter than the one behind the numbers it is compared
+        with. The orchestrator was a claude-fable-5-2 session (an anchor's
+        model, not a subject). The plan fixed, before any dispatch, both
+        readings, the void rule, the judging and a full hand read. Three
+        amendments followed, all before any review was read, judged or
+        hand-read: A1 (the harness's audit and scoring half was ported after
+        dispatch; it records what the port saw: session structure, tool
+        names, call counts and that every session read shared memory), A2
+        and A3 on two design-review rounds by other models (gpt-6.1-sol,
+        claude-sonnet-5-5, routed with the overlay off so that no subject
+        reviewed its own measurement). They tightened the audit and the
+        reader-record checks, narrowed what may void an attempt, and added
+        that a verdict the claude-fable-5-1-only reading does not reproduce
+        counts for nothing. Plan, amendments A1 to A3, harness, receipts,
+        grades, call listing and hand read: the local archive
+        docs/evals/2026-11-18-t13/ (summary.json sha256
         68cb540845cff5a68b95dcde2d2819ed1eacaccfa53c2fa4509aaa90d31fd6d5).
 
     - item: "openai_frontier review replay (2026-11-18)"
@@ -5467,21 +5470,23 @@ verification_ledger:
         one of the two judges, is the family of both subjects and the
         predecessor of one (the claude-fable-5-1-only reading is the same
         value for both); the tier-3 bar is one row whose own score carries
-        the same memory correction. The orchestrator was a claude-fable-5-2
-        session (an anchor's model, not a subject). The plan fixed, before
-        any dispatch, both readings, the void rule, the judging and a full
-        hand read. Three amendments followed, all before any review was
-        read, judged or hand-read: A1 (the harness's audit and scoring half
-        was ported after dispatch; it records what the port saw: session
-        structure, tool names, call counts and that every session read
-        shared memory), A2 and A3 on two design-review rounds by other
-        models (gpt-6.1-sol, claude-sonnet-5-5, routed with the overlay off
-        so that no subject reviewed its own measurement). They tightened the
-        audit and the reader-record checks, narrowed what may void an
-        attempt, and added that a verdict the claude-fable-5-1-only reading
-        does not reproduce counts for nothing. Plan, amendments A1 to A3,
-        harness, receipts, grades, call listing and hand read: the local
-        archive docs/evals/2026-11-18-t13/ (summary.json sha256
+        the same memory correction; the tier-2 rows' sessions (2026-10-14)
+        were never audited, so the standard applied here is stricter than
+        the one behind the numbers it is compared with. The orchestrator was
+        a claude-fable-5-2 session (an anchor's model, not a subject). The
+        plan fixed, before any dispatch, both readings, the void rule, the
+        judging and a full hand read. Three amendments followed, all before
+        any review was read, judged or hand-read: A1 (the harness's audit
+        and scoring half was ported after dispatch; it records what the port
+        saw: session structure, tool names, call counts and that every
+        session read shared memory), A2 and A3 on two design-review rounds
+        by other models (gpt-6.1-sol, claude-sonnet-5-5, routed with the
+        overlay off so that no subject reviewed its own measurement). They
+        tightened the audit and the reader-record checks, narrowed what may
+        void an attempt, and added that a verdict the claude-fable-5-1-only
+        reading does not reproduce counts for nothing. Plan, amendments A1
+        to A3, harness, receipts, grades, call listing and hand read: the
+        local archive docs/evals/2026-11-18-t13/ (summary.json sha256
         68cb540845cff5a68b95dcde2d2819ed1eacaccfa53c2fa4509aaa90d31fd6d5).
 
     - item: "openai_reasoning implementation replay (2026-11-18)"

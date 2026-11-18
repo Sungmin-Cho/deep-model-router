@@ -282,11 +282,20 @@ def test_the_tier_is_recorded_as_an_assignment_never_as_measured():
     assert peers
     review = _text(REVIEW_ROW)
     for peer in peers:
-        named = [mid for mid in CHAINS.get(peer, [CFG["models"][peer]["id"]]) if mid in review]
+        chain = CHAINS.get(peer, [CFG["models"][peer]["id"]])
+        named = [mid for mid in chain if mid in review]
         assert named, peer
-        own = [i for i in LEDGER if i.startswith((f"{peer} ", *(f"{mid} " for mid in named)))
-               and ("replay" in i or "tier measurement" in i)]
-        assert all(LEDGER[i]["probed_on"] > LEDGER[REVIEW_ROW]["probed_on"] for i in own), (peer, own)
+        own = [i for i in LEDGER if i.startswith((f"{peer} ", *(f"{mid} " for mid in chain)))
+               and ("replay" in i or "tier measurement" in i) and "id bump replay" not in i]
+        # review i1 (2026-11-18): a later date alone is not enough - a replay row of the peer must
+        # be about a generation NEWER than the one this row names (its scores sit next to that
+        # newer id), so no row can score the id this review row calls an unscored judge
+        newer = chain[chain.index(named[-1]) + 1:]
+        for i in own:
+            assert LEDGER[i]["probed_on"] > LEDGER[REVIEW_ROW]["probed_on"], (peer, i)
+            text = " ".join(LEDGER[i]["evidence"].split())
+            assert any(re.search(re.escape(mid) + r" 0\.\d{6}", text) for mid in newer), (peer, i)
+            assert not re.search(re.escape(named[-1]) + r" 0\.\d{6}", text), (peer, i)
     for item in (REVIEW_ROW, IMPL_ROW):
         text = _text(item)
         assert LEDGER[item]["status"] == "verified"

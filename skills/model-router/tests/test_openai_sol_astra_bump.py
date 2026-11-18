@@ -351,19 +351,51 @@ def test_nothing_published_claims_the_frontier_tier_is_measured_or_supported():
 
 
 def test_the_published_percentages_are_the_ledgers_scores():
-    """The profile and both changelogs print whole percentages; each is the ledger's six-place
-    score rounded, for both models on both replays, primary and as graded."""
+    """The profile and both changelogs print whole percentages. Each printed figure is read from
+    the sentence or table cell that says whose it is, on which replay and in which reading, and
+    compared with the ledger's six-place score rounded half up (review i1: a bag of percentages
+    lets two figures swap places)."""
     sol, astra = _ids("openai_reasoning")[0], _ids("openai_frontier")[0]
     rs, ra = _text(ROWS[("openai_reasoning", "review")]), _text(ROWS[("openai_frontier", "review")])
     is_, ia = (_text(ROWS[("openai_reasoning", "implementation")]),
                _text(ROWS[("openai_frontier", "implementation")]))
     as_graded = lambda t: float(re.search(r"As graded, before the memory correction below, (0\.\d{6})", t).group(1))  # noqa: E731
     pct = lambda v: int(100 * v + 0.5)                              # noqa: E731  (half up)
-    want = {pct(v) for v in (_scores(rs)[sol], as_graded(rs), _scores(ra)[astra], as_graded(ra),
-                             _scores(is_)[sol], as_graded(is_), _scores(ia)[astra])}
-    assert want == {48, 52, 56, 59, 63, 69}
-    for where, text in {"profile": _profile_sections(), "CHANGELOG.md": _changelog_entry("CHANGELOG.md"),
-                        "CHANGELOG.ko.md": _changelog_entry("CHANGELOG.ko.md")}.items():
-        printed = {int(x) for x in re.findall(r"(?<![\d.])(\d{2})%", text)}
-        for value in sorted(want):
-            assert value in printed, (where, value)
+    want = {"sol review": pct(_scores(rs)[sol]), "sol review as graded": pct(as_graded(rs)),
+            "astra review": pct(_scores(ra)[astra]), "astra review as graded": pct(as_graded(ra)),
+            "sol fixes": pct(_scores(is_)[sol]), "sol fixes as graded": pct(as_graded(is_)),
+            "astra fixes": pct(_scores(ia)[astra])}
+    assert want == {"sol review": 48, "sol review as graded": 52, "astra review": 56,
+                    "astra review as graded": 59, "sol fixes": 63, "sol fixes as graded": 69,
+                    "astra fixes": 63}
+
+    def read(text, patterns):
+        out = {}
+        for rx, names in patterns:
+            m = re.search(rx, text)
+            assert m, rx
+            out.update(zip(names, (int(g) for g in m.groups())))
+        return out
+
+    en = read(_changelog_entry("CHANGELOG.md"), [
+        (r"GPT-6\.2 Sol recalls (\d+)% \(GPT-6\.1 Sol", ["sol review"]),
+        (r"and GPT-6\.2 Astra (\d+)% \(Claude Fable", ["astra review"]),
+        (r"both pass (\d+)% of their runs", ["sol fixes"]),
+        (r"as graded they are (\d+)% and (\d+)% on reviews and (\d+)% for GPT-6\.2 Sol on fixes",
+         ["sol review as graded", "astra review as graded", "sol fixes as graded"])])
+    ko = read(_changelog_entry("CHANGELOG.ko.md"), [
+        (r"GPT-6\.2 Sol의 recall은 (\d+)%", ["sol review"]),
+        (r"GPT-6\.2 Astra는 (\d+)%\(Claude Fable", ["astra review"]),
+        (r"두 모델 모두 실행의 (\d+)%를 통과", ["sol fixes"]),
+        (r"채점 그대로는 리뷰 (\d+)%·(\d+)%, 수정은 GPT-6\.2 Sol (\d+)%",
+         ["sol review as graded", "astra review as graded", "sol fixes as graded"])])
+    profile = read(_profile_sections(), [
+        (r"\| Review recall \| (\d+)% \((\d+)% as graded\) \| (\d+)% \((\d+)% as graded\) \|",
+         ["sol review", "sol review as graded", "astra review", "astra review as graded"]),
+        (r"\| Implementation pass rate \| (\d+)% \((\d+)% as graded\) \| (\d+)% \|",
+         ["sol fixes", "sol fixes as graded", "astra fixes"])])
+    for where, got in (("CHANGELOG.md", en), ("CHANGELOG.ko.md", ko), ("profile", profile)):
+        for name, value in got.items():
+            assert value == want[name], (where, name, value, want[name])
+    # both changelogs say "both" for the fix replay: the frontier model's figure is the same one
+    assert want["astra fixes"] == want["sol fixes"]
