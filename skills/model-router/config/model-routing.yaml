@@ -5094,7 +5094,9 @@ verification_ledger:
       argv: "codex exec -m gpt-6.2-sol -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
       evidence: >
         model_sync contained read-only probe of openai_reasoning
-        (gpt-6.1-sol -> gpt-6.2-sol): P1 smoke answered pong with
+        (gpt-6.1-sol -> gpt-6.2-sol): P0 passed on the
+        installed CLI's own bundled catalog (codex-cli 0.169.1 lists the id
+        there and in the account catalog); P1 smoke answered pong with
         termination confirmed; P2 the CLI header reported the requested id
         (id accepted, not served-model attestation); P3 boot input 41061 vs
         40380 for the current id (paired). Quality is not measured by this
@@ -5199,7 +5201,9 @@ verification_ledger:
       argv: "codex exec -m gpt-6.2-astra -c model_reasoning_effort=low -s read-only --skip-git-repo-check -"
       evidence: >
         model_sync contained read-only probe of openai_frontier (gpt-6-astra
-        -> gpt-6.2-astra): P1 smoke answered pong with termination
+        -> gpt-6.2-astra): P0 passed on the
+        installed CLI's own bundled catalog (codex-cli 0.169.1 lists the id
+        there and in the account catalog); P1 smoke answered pong with termination
         confirmed; P2 the CLI header reported the requested id (id accepted,
         not served-model attestation); P3 boot input 37087 vs 35654 for the
         current id (paired). Quality is not measured by this row.

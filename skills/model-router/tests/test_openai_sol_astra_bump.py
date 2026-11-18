@@ -171,6 +171,12 @@ def test_the_model_id_row_is_the_automatic_paths_probe(key):
     assert row["status"] == "verified" and row["cli_version"] == CLI and row["probed_on"] == "2026-11-18"
     text = _text(f"{new} model id")
     assert f"{old} -> {new}" in text and "P1" in text and "P3" in text
+    # P0 passed on the bundled catalog of the CLI that probed it: the capture of that version
+    # lists the id, and the row says which catalog P0 read (review d1)
+    cap = json.loads((SKILL / "tests" / "fixtures" / "catalogs" / "codex" /
+                      f"debug-models-slugs-{CLI}.json").read_text())
+    assert cap["cli"].split()[-1] == CLI and new in cap["bundled_slugs"] and new in cap["account_slugs"]
+    assert "P0" in text and "bundled catalog" in text
 
 
 @pytest.mark.parametrize("key", KEYS)
@@ -185,7 +191,8 @@ def test_the_maker_seat_row_exists_for_the_new_id(key):
         assert "No attended probe-maker summary" in text
     else:
         # the confirmation the probe asks for was typed by a script, with the user's permission
-        assert "probe-maker" in text and "script" in text and row["probed_on"] == "2026-11-18"
+        assert "probe-maker" in text and row["probed_on"] == "2026-11-18"
+        assert "answered by an expect script" in text and "not typed by a person" in text
 
 
 @pytest.mark.parametrize("key", KEYS)
