@@ -326,20 +326,32 @@ withholding (959,121 routes) or the six with it (198,538):
 - **It meets floors Hydrogen did not.** A MEDIUM reviewer must reach the band's
   floor and, when the implementer is known, the implementer's tier; a HIGH or
   CRITICAL reviewer tier 2. So 30,214 human gates lift (most were
-  `review_below_band`) and 3,922 routes that ended INDEPENDENCE_UNAVAILABLE get
-  a route. Where the review's seats are allocated jointly from every eligible
-  model (`adapters.md`, "The gemini seat reads, after the Claude model"), the
-  seat can now take a HIGH or CRITICAL seat while the models ahead of it are
-  available.
-- **On 12,026 routes a tier-3 reviewer gives way to this seat**, most often the
-  OpenAI frontier model beside the Sol model on a HIGH review: where Hydrogen
-  could not meet the tier-2 floor, or was withheld, a tier-3 model stood in for
-  want of another tier-2 one; this seat meets the floor. The floor still holds,
-  the review is no longer staffed above it, and on 11,552 of these routes it
-  becomes cross-family. On 272 CRITICAL reviews the seat takes the second seat
-  from the Claude architect model, which then adjudicates: those reviews gain
-  an adjudicator (`no_adjudicator` lifts) and `effort_below_floor` joins their
-  gate. The seat takes no judge seat in the replay.
+  `review_below_band`) and 3,922 routes that ended INDEPENDENCE_UNAVAILABLE now
+  resolve: 3,026 with this seat in them, and 896 retries whose fresh lead
+  changed with the seat's tier, now reviewed by the two OpenAI models (888) or
+  two Claude models (8). Where the review's seats are allocated jointly from
+  every eligible model (`adapters.md`, "The gemini seat reads, after the Claude
+  model"), the seat can now take a HIGH seat, or judge, while the models ahead
+  of it are available. A CRITICAL review asks MAX, above this seat's ceiling,
+  so the seat is in no CRITICAL joint pool; it reaches a CRITICAL seat only as
+  a role's model (below).
+- **On 11,578 routes this seat takes a tier-3 reviewer's place**, most often
+  the OpenAI frontier model's beside the Sol model on a HIGH review: where
+  Hydrogen could not meet the tier-2 floor, or was withheld, a tier-3 model
+  stood in for want of another tier-2 one; this seat meets the floor. The
+  floor still holds; on 11,556 of them the review is no longer staffed above
+  it (on 22 the Claude architect model stays beside it). On 448 more a tier-3
+  model leaves the roster as the seat joins without taking its place: a retry
+  seats the Claude architect model where the OpenAI frontier model was, and
+  the seat takes the Claude balanced model's place. Of all 12,026 the review
+  becomes cross-family on 11,552. On 272 CRITICAL retries the seat takes the
+  second reviewer seat from the Claude architect model through ordinary
+  resolution — a reviewer role that would repeat the implementer's model is
+  substituted by another role's model, strongest first and then another
+  family, and the balanced role resolves to this seat — so the architect model
+  is free to adjudicate: those reviews gain an adjudicator (`no_adjudicator`
+  lifts), the seat runs at `xhigh`, and `effort_below_floor` joins their gate.
+  The seat takes no judge seat in the replay.
 - **The worker is a tier higher on 7,148 routes**: on 4,056 the seat itself
   works at tier 2 where a tier-1 model did (Hydrogen on 3,144; the OpenAI
   balanced model on 912, nearly all where Hydrogen was withheld); on 2,848 a
@@ -370,11 +382,11 @@ withholding (959,121 routes) or the six with it (198,538):
   REVIEW routes that ended INDEPENDENCE_UNAVAILABLE now end ESCALATE_ROUTING:
   the review now resolves, and their routing confidence, 0.59 either way, is
   under the 0.60 dispatching asks.
-- **Cross-family review** is gained on 38,959 routes and lost on 774: 138 in
-  the six Hydrogen-withheld scenarios, and in the thirty-four 560 REVIEW
-  retries that ended INDEPENDENCE_UNAVAILABLE and now resolve with the two
-  OpenAI models reviewing (the Claude family exhausted), and 76 others whose
-  new review comes from one family.
+- **Cross-family review** is gained on 38,959 routes and lost on 774. On 746
+  of the 774 the route had ended INDEPENDENCE_UNAVAILABLE (whose record carried
+  the flag) and now resolves within one family — two OpenAI reviewers on 738,
+  two Claude reviewers on 8; on 28 a retry's review moves to the two OpenAI
+  models.
 - `effort_below_floor` joins 10,854 gates the critical review band has already
   raised. The summed output price of the seated worker and reviewers rises
   1.58%: this model's output price is $15 per million tokens against

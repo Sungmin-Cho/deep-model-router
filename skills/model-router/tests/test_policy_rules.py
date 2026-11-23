@@ -423,7 +423,12 @@ GEMINI_SEAT_KEY = "gemini_neon"
 # The band floors the check reads (config `review.<band>`), asserted against the
 # registry in `test_g127_check_reads_the_registry_floors`.
 _BAND_FLOOR = {"LOW": None, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}
-_LADDER_END_2 = "retry ladder exhausted: no usable model is stronger than capability tier 2"
+# Terminal -> terminal-or-route moves the tier-2 seat may make (review i2, sol F1):
+# a review it can now staff resolves, or a terminal that resolved its review seat
+# ends on what remains (the replay's 3,922, 290 and 24). Anything else is reported.
+_G127_FROM_TERMINAL = {("INDEPENDENCE_UNAVAILABLE", None),
+                       ("INDEPENDENCE_UNAVAILABLE", "ESCALATE_ROUTING"),
+                       ("SUPPLY_EXHAUSTED", "HUMAN_REQUIRED")}
 
 
 def _g127_tiers(side: str) -> dict:
@@ -433,16 +438,24 @@ def _g127_tiers(side: str) -> dict:
     return {**TIER_OF, seat: 1} if side == "prev" else dict(TIER_OF)
 
 
-def _g127_failed(req) -> set:
+def _g127_capability_failed(req) -> set:
+    """Models with a capability failure in the request's history: the legacy
+    `prior_failures` list, or typed rows of that kind (review i2, sol F1: an
+    operational failure does not climb the ladder)."""
     return (set(req.get("prior_failures") or [])
-            | {row["model_id"] for row in req.get("attempt_outcomes") or []})
+            | {row["model_id"] for row in req.get("attempt_outcomes") or []
+               if row.get("kind") == "capability_failure"})
 
 
-def _g127_no_usable_tier_3(req) -> bool:
+def _g127_no_usable_tier_3(req, taken=()) -> bool:
     """Read off the request alone: every tier-3 model is withheld, failed, in an
-    exhausted family or outside the allowed families."""
+    exhausted family, outside the allowed families, or `taken` (already seated).
+    It knows less than the router (role withholding, author exclusion, a downed
+    bridge), so it can only find a tier-3 model usable that the router could not
+    use — which reports, never admits (review i2)."""
     snap = req.get("availability_snapshot") or {}
-    out = set(snap.get("unavailable_models") or []) | _g127_failed(req)
+    out = (set(snap.get("unavailable_models") or []) | set(req.get("prior_failures") or [])
+           | {row["model_id"] for row in req.get("attempt_outcomes") or []} | set(taken))
     exhausted = {f for f, level in (snap.get("family_quota") or {}).items() if level == "exhausted"}
     allowed = (req.get("local_policy") or {}).get("allowed_families")
     for m in CFG["models"].values():
@@ -454,34 +467,69 @@ def _g127_no_usable_tier_3(req) -> bool:
     return True
 
 
+def _g127_review_floor(route_out, tiers) -> int | None:
+    rv = route_out["review"]
+    floor = _BAND_FLOOR[rv["band"]]
+    if floor is not None and rv["band"] == "MEDIUM" and route_out["selected_model"]:
+        floor = max(floor, tiers[route_out["selected_model"]])
+    return floor
+
+
+def _g127_floor_problems(cur, tiers) -> list:
+    """Every reviewer at the floor, or its shortfall recorded for that very seat
+    and gated so that the route cannot dispatch unattended (review i2, sol F2: the
+    cause string alone is not a gate)."""
+    out = []
+    floor = _g127_review_floor(cur, tiers)
+    rv = cur["review"]
+    short = {s["model"] for s in rv["review_depth_reduced"]}
+    blocked = ("review_below_band" in cur["human_control_causes"]
+               and cur["requires_human_confirmation"] and cur["exit"] != 0)
+    for m in rv["reviewer_models"]:
+        if m and floor is not None and tiers[m] < floor and not (blocked and m in short):
+            out.append(f"reviewer {m} below floor {floor} without a recorded, blocking shortfall")
+    return out
+
+
 def _g127_check(req, prev, cur):
     """The gemini seat measured at tier 2 (1.27.0, T15, ledger row "gemini_neon tier
-    measurement (real-review replay, 2026-11-23)") against the same seat at tier 1.
-    Review i1 (sol F1, fable F1): g124's check forbids every new terminal and every
-    new shortfall, which the tier-2 seat produces by design where it fails and no
-    tier-3 model is free; the grid passed only because it never fails the seat. So
-    this rule has its own check, read with each side's tier map:
+    measurement (real-review replay, 2026-11-23)") against the same seat at tier 1,
+    each side read with its own tier map. Review i1 (sol F1, fable F1) gave the rule
+    its own check; review i2 (sol F1-F3, fable F1, F3) narrowed what it admits to
+    exactly the two disclosed retry outcomes and made it hold the review whatever
+    the band does:
 
-    - a new terminal only as HUMAN_REQUIRED on a retry after the seat failed, with
-      no usable tier-3 model (the ladder's end above tier 2);
+    - from a terminal, only the moves in `_G127_FROM_TERMINAL`, and a route it
+      resolves to meets every floor;
+    - a new terminal only as HUMAN_REQUIRED on a retry after the seat's capability
+      failure, where the tier-1 seat's retry had climbed to tier 2 and no tier-3
+      model is usable;
     - the worker no lower, but for the execution cell's cross-family trade on a
       write seat and a REVIEW task's lead (a review seat, held below);
-    - the band, the reviewer count, the required checks, the independence and the
-      cross-family review never weaker;
-    - every reviewer at its floor — the band's, and on MEDIUM never below the
-      worker — or the shortfall gated (`review_below_band`); a new shortfall only
-      on a retry after the seat failed whose worker climbed to tier 3, on MEDIUM,
-      gated;
-    - a judge never below the parties, and the seat never where the work writes.
+    - the band no lower; the reviewer count, the required checks, the review
+      effort, the independence and the cross-family review never weaker, whatever
+      the band does; a judge kept, never below the worker or a reviewer;
+    - every reviewer at its floor (the band's, on MEDIUM never below the worker),
+      or its shortfall recorded and blocking; a new or deeper shortfall only on a
+      MEDIUM retry after the seat's capability failure whose worker climbed from
+      tier 2 to tier 3 with no other tier-3 model usable, each short seat one tier
+      short (a tier-2 reviewer for a tier-3 worker), blocking;
+    - the seat never where the work writes.
     A reviewer may drop from a tier-3 stand-in to this seat: the floor holds."""
-    if "error" in prev or "error" in cur or prev["terminal"]:
+    if "error" in prev or "error" in cur:
         return []
     seat = ID(GEMINI_SEAT_KEY)
     tp, tc = _g127_tiers("prev"), _g127_tiers("cur")
-    seat_failed = seat in _g127_failed(req)
+    failed = _g127_capability_failed(req)
+    if prev["terminal"]:
+        if prev["terminal"] == cur["terminal"]:
+            return []
+        if (prev["terminal"], cur["terminal"]) not in _G127_FROM_TERMINAL:
+            return [f"{prev['terminal']} became {cur['terminal'] or 'a route'}"]
+        return _g127_floor_problems(cur, tc) if cur["terminal"] is None else []
     if cur["terminal"]:
-        if (cur["terminal"] == "HUMAN_REQUIRED" and seat_failed
-                and _g127_no_usable_tier_3(req)):
+        if (cur["terminal"] == "HUMAN_REQUIRED" and seat in failed
+                and tp[prev["selected_model"]] == 2 and _g127_no_usable_tier_3(req)):
             return []
         return [f"became {cur['terminal']}"]
     out = []
@@ -497,37 +545,37 @@ def _g127_check(req, prev, cur):
         out.append("worker tier fell")
     if BANDS.index(cr["band"]) < BANDS.index(pr["band"]):
         out.append(f"review band fell {pr['band']} -> {cr['band']}")
-    if BANDS.index(cr["band"]) == BANDS.index(pr["band"]):
-        if len(cr["reviewer_models"]) < len(pr["reviewer_models"]):
-            out.append("fewer reviewers")
-        if set(pr["required_checks"]) - set(cr["required_checks"]):
-            out.append("required checks lost")
-        if pr["independence_required"] and not cr["independence_required"]:
-            out.append("independence no longer required")
-        if (_INDEPENDENCE_ORDER[cr["review_independence"]]
-                < _INDEPENDENCE_ORDER[pr["review_independence"]]):
-            out.append("review independence weaker")
-        if prev["cross_family_review"] and not cur["cross_family_review"] and not cell_trade:
-            out.append("cross-family review lost")
-    floor = _BAND_FLOOR[cr["band"]]
-    if floor is not None and cr["band"] == "MEDIUM" and cur["selected_model"]:
-        floor = max(floor, tc[cur["selected_model"]])
-    gated = "review_below_band" in cur["human_control_causes"]
-    for m in cr["reviewer_models"]:
-        if m and floor is not None and tc[m] < floor and not gated:
-            out.append(f"reviewer {m} below floor {floor} without the shortfall gate")
-    # A shortfall is worse when a seat is newly short or short by more (the seat's
-    # own record moves from tier 1 to tier 2 against the same requirement: smaller).
+    if len(cr["reviewer_models"]) < len(pr["reviewer_models"]):
+        out.append("fewer reviewers")
+    if set(pr["required_checks"]) - set(cr["required_checks"]):
+        out.append("required checks lost")
+    if pr["effort"] is not None and (cr["effort"] is None
+                                     or EFFORTS.index(cr["effort"]) < EFFORTS.index(pr["effort"])):
+        out.append("review effort fell")
+    if pr["independence_required"] and not cr["independence_required"]:
+        out.append("independence no longer required")
+    if (_INDEPENDENCE_ORDER[cr["review_independence"]]
+            < _INDEPENDENCE_ORDER[pr["review_independence"]]):
+        out.append("review independence weaker")
+    if prev["cross_family_review"] and not cur["cross_family_review"]:
+        out.append("cross-family review lost")
+    out += _g127_floor_problems(cur, tc)
     gap_p = {s["reviewer"]: s["band_requires"] - s["capability_tier"] for s in pr["review_depth_reduced"]}
     new_short = [s for s in cr["review_depth_reduced"]
                  if s["band_requires"] - s["capability_tier"] > gap_p.get(s["reviewer"], 0)]
     if new_short:
-        climbed = (seat_failed and cr["band"] == "MEDIUM" and gated
-                   and tc[cur["selected_model"]] == 3 and tp[prev["selected_model"]] <= 2)
+        climbed = (seat in failed and cr["band"] == pr["band"] == "MEDIUM"
+                   and tc[cur["selected_model"]] == 3 and tp[prev["selected_model"]] == 2
+                   and _g127_no_usable_tier_3(req, taken=[cur["selected_model"]])
+                   and all(s["band_requires"] == 3 and s["capability_tier"] == 2
+                           and tc[s["model"]] == 2 for s in new_short)
+                   and cur["requires_human_confirmation"] and cur["exit"] != 0)
         if not climbed:
             out.append("a review newly staffed below its band")
     judge = cr["judge_model"]
-    parties = [m for m in cr["reviewer_models"] if m]
+    if pr["judge_model"] and not judge:
+        out.append("judge lost")
+    parties = [m for m in [cur["selected_model"], *cr["reviewer_models"]] if m]
     if judge and parties and tc[judge] < max(tc[m] for m in parties):
         out.append("judge below a party")
     if cur["selected_model"] == seat and kind == "write" and not req.get("implementer"):
@@ -751,8 +799,13 @@ RULES: dict[str, Rule] = {
     # discloses and compared shortfalls by count; this one reads each side's tier
     # map, admits only those two outcomes, and also holds the band, the reviewer
     # count, the checks, the independence, the cross-family review and every
-    # reviewer's floor; controls in `test_g127_check_*`). Full grid 2026-11-23
-    # (re-run with this check, review i1): 105,344 inputs, 0 problems, every
+    # reviewer's floor; controls in `test_g127_check_*`; review i2 narrowed the two
+    # admissions to their exact conditions, held the review across band changes,
+    # the review effort, a judge kept and never below the worker, and limited moves
+    # out of a terminal to the three the replay shows; removing any clause fails a
+    # control — docs/research/2026-11-23-gemini-neon-counterfactuals/
+    # g127_mutation_check.py.txt). Full grid 2026-11-23 (re-run with each check,
+    # reviews i1 and i2): 105,344 inputs, 0 problems, every
     # earlier rule's count unchanged; g127 moves 526 (36 on the sample: 24 of
     # g124's Codex variant and 12 where OpenAI's quota is exhausted or low, the
     # seat then being the tier-2 reviewer outside the lead's family). The
@@ -1876,52 +1929,120 @@ def test_g127_check_admits_the_two_disclosed_retry_outcomes():
     assert _g127_check(req, prev, cur) == []
 
 
+def _has(problems, text):
+    return any(text in p for p in problems)
+
+
 def test_g127_check_reports_what_it_must():
-    """Negative controls: each weakening, built from the admitted routes above or
-    from an ordinary route, is reported."""
-    xai, astra = ID("xai_frontier"), ID("openai_frontier")
+    """Negative controls (review i1; review i2: one per clause, each asserting its own
+    message, so removing the clause fails its control): every weakening, built from
+    the admitted routes above or from an ordinary route, is reported."""
+    xai, astra, sol = ID("xai_frontier"), ID("openai_frontier"), ID("openai_reasoning")
     seat = ID(GEMINI_SEAT_KEY)
-    # the HUMAN_REQUIRED retry without the seat having failed, or with a tier-3 model free
+    weak = min((m["id"] for m in CFG["models"].values()
+                if m.get("dispatchable", True) is not False), key=lambda m: TIER_OF[m])
+    assert TIER_OF[weak] == 0
+    operational = [{"attempt_id": "a1", "model_id": seat, "kind": "timeout"}]
+
+    # -- the HUMAN_REQUIRED retry --
     req, prev, cur = _g127_pair([xai, astra])
-    assert _g127_check({**req, "prior_failures": [ID("openai_reasoning")]}, prev, cur)
+    hr = "became HUMAN_REQUIRED"
+    assert _has(_g127_check({**req, "prior_failures": [sol]}, prev, cur), hr)
+    assert _has(_g127_check({**req, "prior_failures": [], "attempt_outcomes": operational},
+                            prev, cur), hr)
     free = {**req, "availability_snapshot": {"unavailable_models": [xai],
                                              "family_quota": {"claude": "exhausted"}}}
-    assert _g127_check(free, prev, cur) == ["became HUMAN_REQUIRED"]
-    assert _g127_check(req, prev, {**cur, "terminal": "ESCALATE_ROUTING"})
-    # the gated climb, but on a first attempt, or ungated, or on a HIGH band
+    assert _has(_g127_check(free, prev, cur), hr)
+    assert _has(_g127_check(req, {**prev, "selected_model": astra}, cur), hr)
+    assert _has(_g127_check(req, prev, {**cur, "terminal": "ESCALATE_ROUTING"}),
+                "became ESCALATE_ROUTING")
+
+    # -- the gated climb --
     req, prev, cur = _g127_pair([xai])
-    assert _g127_check({**req, "prior_failures": []}, prev, cur)
+    assert _g127_check(req, prev, cur) == []
+    below = "newly staffed below"
+    assert _has(_g127_check({**req, "prior_failures": []}, prev, cur), below)
+    assert _has(_g127_check({**req, "prior_failures": [], "attempt_outcomes": operational},
+                            prev, cur), below)
+    claude_free = {**req, "availability_snapshot": {"unavailable_models": [xai]}}
+    assert _has(_g127_check(claude_free, prev, cur), below)
+    high = lambda r: {**r, "review": {**r["review"], "band": "HIGH"}}       # noqa: E731
+    assert _has(_g127_check(req, high(prev), high(cur)), below)
+    assert _has(_g127_check(req, prev, {**cur, "selected_model": sol}), below)
+    assert _has(_g127_check(req, {**prev, "selected_model": astra}, cur), below)
+    unblocked = {**cur, "requires_human_confirmation": False, "exit": 0}
+    assert _has(_g127_check(req, prev, unblocked), below)
+    assert _has(_g127_check(req, prev, unblocked), "without a recorded, blocking shortfall")
     ungated = {**cur, "human_control_causes": [c for c in cur["human_control_causes"]
                                                if c != "review_below_band"]}
-    assert any("below floor" in p for p in _g127_check(req, prev, ungated))
-    # an ordinary route the seat reviews, then weakened field by field
+    assert _has(_g127_check(req, prev, ungated), "without a recorded, blocking shortfall")
+    # a tier-2 worker cannot be the climb, even with no other tier-3 model usable
+    astra_out = {**req, "availability_snapshot": {"unavailable_models": [xai, astra],
+                                                  "family_quota": {"claude": "exhausted"}}}
+    assert _has(_g127_check(astra_out, prev, {**cur, "selected_model": sol}), below)
+    # a reviewer below the floor whose shortfall names another model
+    unrecorded = {**cur, "review": {**cur["review"], "reviewer_models": [weak]}}
+    assert _has(_g127_check(req, prev, unrecorded), "without a recorded, blocking shortfall")
+    weaker = {**cur, "review": {**cur["review"], "reviewer_models": [weak],
+                                "review_depth_reduced": [
+                                    {**cur["review"]["review_depth_reduced"][0],
+                                     "model": weak, "capability_tier": 0}]}}
+    assert _has(_g127_check(req, prev, weaker), below)
+
+    # -- from a terminal --
+    route = {**cur, "terminal": None}
+    assert _has(_g127_check(req, {**prev, "terminal": "TERMINATION_UNCONFIRMED"}, cur),
+                "TERMINATION_UNCONFIRMED became a route")
+    assert _has(_g127_check(req, {**prev, "terminal": "INDEPENDENCE_UNAVAILABLE"},
+                            {**cur, "terminal": "HUMAN_REQUIRED"}),
+                "INDEPENDENCE_UNAVAILABLE became HUMAN_REQUIRED")
+    assert _has(_g127_check(req, {**prev, "terminal": "INDEPENDENCE_UNAVAILABLE"},
+                            {**unblocked, "terminal": None}),
+                "without a recorded, blocking shortfall")
+    assert _g127_check(req, {**prev, "terminal": "INDEPENDENCE_UNAVAILABLE"}, route) == []
+
+    # -- an ordinary route the seat reviews, weakened field by field --
     req = {**_base("codex", "IMPLEMENTATION", (2, 1, 2, 1)),
            "availability_snapshot": {"unavailable_models": [xai],
                                      "family_quota": {"claude": "exhausted"}}}
     prev = cur = route_live(req, frozenset(ORDER))
     assert cur["terminal"] is None and cur["review"]["reviewer_models"]
+    assert cur["review"]["independence_required"]
     assert _g127_check(req, prev, cur) == []
 
     def bent(**review):
         return {**cur, "review": {**cur["review"], **review}}
     lower = BANDS[BANDS.index(cur["review"]["band"]) - 1]
-    assert any("band fell" in p for p in _g127_check(req, prev, bent(band=lower)))
-    assert any("fewer reviewers" in p for p in _g127_check(
-        req, prev, bent(reviewer_models=cur["review"]["reviewer_models"][:-1])))
-    assert any("independence" in p for p in _g127_check(
-        req, prev, bent(review_independence="unavailable")))
-    assert any("required checks" in p for p in _g127_check(
+    higher = BANDS[BANDS.index(cur["review"]["band"]) + 1]
+    assert _has(_g127_check(req, prev, bent(band=lower)), "band fell")
+    fewer = cur["review"]["reviewer_models"][:-1]
+    assert _has(_g127_check(req, prev, bent(reviewer_models=fewer)), "fewer reviewers")
+    assert _has(_g127_check(req, prev, bent(band=higher, reviewer_models=fewer)),
+                "fewer reviewers")
+    assert _has(_g127_check(req, prev, bent(independence_required=False)),
+                "independence no longer required")
+    assert _has(_g127_check(req, prev, bent(review_independence="unavailable")),
+                "review independence weaker")
+    assert _has(_g127_check(req, {**prev, "cross_family_review": True},
+                            {**cur, "cross_family_review": False}), "cross-family review lost")
+    assert _has(_g127_check(
         req, {**prev, "review": {**prev["review"], "required_checks": ["tests", "lint"]}},
-        bent(required_checks=[])))
-    weak = min((m["id"] for m in CFG["models"].values()
-                if m.get("dispatchable", True) is not False), key=lambda m: TIER_OF[m])
-    assert any("below floor" in p for p in _g127_check(
-        req, prev, bent(reviewer_models=[weak, *cur["review"]["reviewer_models"][1:]])))
+        bent(required_checks=[])), "required checks lost")
+    assert _has(_g127_check(req, {**prev, "review": {**prev["review"], "effort": "HIGH"}},
+                            bent(effort="MEDIUM")), "review effort fell")
+    assert _has(_g127_check(req, prev, bent(
+        reviewer_models=[weak, *cur["review"]["reviewer_models"][1:]])),
+        "without a recorded, blocking shortfall")
     worse = [{"reviewer": "worker_balanced", "model": weak, "capability_tier": 0, "band_requires": 2}]
     was = [{"reviewer": "worker_balanced", "model": seat, "capability_tier": 1, "band_requires": 2}]
-    assert any("newly staffed below" in p for p in _g127_check(
-        req, {**prev, "review": {**prev["review"], "review_depth_reduced": was}},
-        bent(review_depth_reduced=worse)))
-    assert any("judge below" in p for p in _g127_check(req, prev, bent(judge_model=weak)))
-    assert any("writes" in p for p in _g127_check(req, prev, {**cur, "selected_model": seat}))
-    assert any("worker tier fell" in p for p in _g127_check(req, prev, {**cur, "selected_model": weak}))
+    assert _has(_g127_check(req, {**prev, "review": {**prev["review"], "review_depth_reduced": was}},
+                            bent(review_depth_reduced=worse)), below)
+    assert _has(_g127_check(req, prev, bent(judge_model=weak)), "judge below")
+    strong = max(TIER_OF, key=TIER_OF.get)
+    assert TIER_OF[strong] == 3 and TIER_OF[sol] == TIER_OF[seat] == 2
+    assert _has(_g127_check(req, prev, {**bent(judge_model=sol, reviewer_models=[seat]),
+                                        "selected_model": strong}), "judge below")
+    assert _has(_g127_check(req, {**prev, "review": {**prev["review"], "judge_model": sol}}, cur),
+                "judge lost")
+    assert _has(_g127_check(req, prev, {**cur, "selected_model": seat}), "writes")
+    assert _has(_g127_check(req, prev, {**cur, "selected_model": weak}), "worker tier fell")

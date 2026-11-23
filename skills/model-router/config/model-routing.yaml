@@ -5981,7 +5981,10 @@ verification_ledger:
         execution cell keeping the fast writer for the seat's cross-family
         review on 320, write retries on 208); human gates lifted on 30,214;
         terminals change on 4,270: 3,922 that ended INDEPENDENCE_UNAVAILABLE
-        become routes, the tier-2 seat meeting a review floor hydrogen did not;
+        become routes (3,026 with the seat in them, the tier-2 seat meeting a
+        review floor hydrogen did not; 896 retries whose fresh lead changed
+        with the seat's tier, reviewed by the two OpenAI models on 888 and two
+        Claude models on 8);
         290 REVIEW retries after claude-fable-5-2 failed (the OpenAI family
         exhausted, claude-opus-5-5 out) end HUMAN_REQUIRED where they ended
         SUPPLY_EXHAUSTED, the review's second seat now resolving to the seat;
@@ -5998,16 +6001,26 @@ verification_ledger:
         review_below_band gate (a MEDIUM review of a tier-3 implementer's work
         needs a tier-3 reviewer; 456 in the thirty-four scenarios, 304
         hydrogen-withheld; 762 new gates in all, the other two among the 34);
-        on 12,026 routes a tier-3 reviewer that stood in for want of a tier-2
-        one (hydrogen below the floor, or withheld) gives way to the seat
-        (9,754 and 2,272; the review becomes cross-family on 11,552 of them),
-        and on 272 CRITICAL reviews of these the displaced claude-fable-5-2
-        adjudicates (no_adjudicator lifts, effort_below_floor joins: the seat
-        runs MAX at xhigh); the seat takes no judge seat; effort_below_floor
+        on 12,026 routes a tier-3 model leaves the reviewer roster as the seat
+        joins it (9,754 and 2,272; the review becomes cross-family on 11,552):
+        on 11,578 the seat takes the place of a tier-3 reviewer that stood in
+        for want of a tier-2 one (hydrogen below the floor, or withheld), the
+        review then at its floor on 11,556 (claude-fable-5-2 staying beside
+        the seat on 22), and on 448 a retry seats claude-fable-5-2 where
+        gpt-6.2-astra was while the seat takes claude-sonnet-5-5's place; on
+        272 CRITICAL retries the seat takes the second reviewer seat by
+        ordinary resolution (a reviewer role that would repeat the
+        implementer's model substituted by the balanced role), so the
+        displaced claude-fable-5-2 adjudicates (no_adjudicator lifts,
+        effort_below_floor joins: the seat runs MAX at xhigh); a CRITICAL
+        review is no joint pool for the seat (its ceiling is below MAX); the
+        seat takes no judge seat; effort_below_floor
         joins 10,854 gates the critical band raised; a cross-family
-        reviewer gained on 38,959 routes and lost on 774 (560 of these are
-        REVIEW retries that ended INDEPENDENCE_UNAVAILABLE and now resolve
-        with the two OpenAI models reviewing). Not adopted: both
+        reviewer gained on 38,959 routes and lost on 774 (746 routes that
+        ended INDEPENDENCE_UNAVAILABLE, whose record carried the flag, now
+        resolving within one family — 738 with the two OpenAI models, 8 with
+        two Claude models — and 28 retries whose review moves to the two
+        OpenAI models). Not adopted: both
         rows dispatchable with neon first (130,020 routes, +1.58%) or hydrogen
         first (79,930, +1.01%); hydrogen kept and neon also last in the senior
         and reasoning lists on claude_code and codex (92,957, +1.92%, with
@@ -6018,6 +6031,6 @@ verification_ledger:
         to neon; replace and replace-plus-lists leave it proposable. Neon has no free
         tier, which the placement question carried. Script and output:
         docs/research/2026-11-23-gemini-neon-counterfactuals/ (the tier-3
-        reviewer, new-gate and tier-up counts from config_replay_rv.py,
-        _rv2.py and _rv3.py, the same replay with those counters added; every
-        earlier counter reproduced exactly).
+        reviewer, new-gate, tier-up, unlocked-terminal, cross-family and
+        roster counts from config_replay_rv.py to _rv4.py, the same replay with
+        those counters added; every earlier counter reproduced exactly).

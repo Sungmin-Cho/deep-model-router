@@ -1568,14 +1568,19 @@ valid history input, never seated). On a Claude Code host it is the third fallba
 Codex host it is the second, right after the Claude balanced model. A role
 resolves to the first usable model in its list, so as a role's model this seat
 is reached only where everything ahead of it does not resolve for the route.
-Review seats are the exception: when a review's seats cannot be staffed at the
-band's floor from the roles' own models (a family exhausted or withheld, an
-author excluded), the router allocates the review and judge seats jointly from
-every eligible model, and at tier 2 this seat is eligible for HIGH and CRITICAL
-reviewer seats and as the judge of tier-2 reviewers — so it can review while
-the models ahead of it are available (in the 1.27.0 replay, with only the
-OpenAI family exhausted, it takes the second HIGH seat from the xAI seat,
-which is below that band's floor). It never fills a
+Review seats are the exception: for a declared source review, and whenever a
+review's seats fall short — a reviewer missing or below the floor, a missing judge,
+or compromised independence (a family exhausted or withheld, an author
+excluded) — the router allocates the review and judge seats jointly from every
+eligible model that meets the floor and runs the review's effort unclamped.
+At tier 2 this seat is eligible there for HIGH reviewer seats and as the judge
+of tier-2 reviewers, so it can review while the models ahead of it are
+available (in the 1.27.0 replay, with only the OpenAI family exhausted, it
+takes the second HIGH seat from the xAI seat, which is below that band's
+floor). A CRITICAL review asks MAX, above this seat's ceiling, so it is in no
+CRITICAL joint pool; it reaches a CRITICAL seat only as a role's model, for
+instance when a reviewer role that would repeat the implementer's model is
+substituted by the balanced role, and then runs at `xhigh`. It never fills a
 seat that writes: the Claude Code direction ships a maker recipe
 (`mechanism_maker`, the `agy-maker-v1` profile below) with `write_verified:
 false` by decision, and the Codex direction has a reviewer recipe only. Where it
