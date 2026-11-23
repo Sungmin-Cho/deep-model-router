@@ -67,7 +67,7 @@ FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 # The closed rule vocabulary, in replay order (design DD-B11 ②). A rule not
 # named here cannot explain anything.
 ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7", "t65",
-         "t70", "g124")
+         "t70", "g124", "g127")
 
 # Keys that are not decisions: provenance, prose, the explicit-cfg overlay, and
 # the typed history echoed back as declared (a rule switched off projects its
@@ -386,7 +386,7 @@ def _g124_check(req, prev, cur):
     if cur["terminal"]:
         return [f"became {cur['terminal']}"]
     out = []
-    gemini = ID("gemini_hydrogen")      # the place's live seat (1.24.0-1.25.x: argon)
+    gemini = ID(GEMINI_SEAT_KEY)        # the place's live seat (1.24.0-1.25.x argon, 1.26.x hydrogen)
     seat = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
     # The one disclosed weakening (review i1 sol F2 / fable F1; i2 fable F2: a
     # write seat only): the execution cell keeps the writer on the fast role
@@ -412,6 +412,22 @@ def _g124_check(req, prev, cur):
     if cur["selected_model"] == gemini and seat == "write" and not req.get("implementer"):
         out.append("the gemini seat took a seat that writes")
     return out
+
+
+# The gemini place's live seat: gemini_neon since 1.27.0 (gemini_frontier 1.24.0-1.25.x,
+# gemini_hydrogen 1.26.x, both retired). g124 and g127 read the seat in that place,
+# whichever model holds it.
+GEMINI_SEAT_KEY = "gemini_neon"
+
+
+def _g127_check(req, prev, cur):
+    """The gemini seat measured at tier 2 (1.27.0, T15, ledger row "gemini_neon tier
+    measurement (real-review replay, 2026-11-23)") may move the route from where the
+    tier-1 seat left it only as g124 lets a stronger model in the same fallback place
+    move it: no new terminal, the worker no lower (but for the execution cell's
+    cross-family trade on a write seat), no review newly staffed below its band, a
+    judge never below the parties, and the seat never where the work writes."""
+    return _g124_check(req, prev, cur)
 
 
 def _t70_admits(req, prev):
@@ -586,11 +602,13 @@ RULES: dict[str, Rule] = {
     # 1.24.0 (user instruction and decisions 2026-10-27): the gemini seat moves from
     # gemini-3.8-flash (tier 0) to gemini-4-argon, measured at tier 1 in the T5
     # review replay, in the same two fallback places. Off, the seat is tier 0 —
-    # the 1.23 route shape (since 1.26.0 the place's seat is gemini-4-hydrogen,
+    # the 1.23 route shape (from 1.26.0 the place's seat is gemini-4-hydrogen,
     # tier 1 too, whose VERY_HIGH ceiling moves only effort fields; that
     # direction is pinned in test_gemini_seat.py,
     # `test_the_very_high_ceiling_moves_only_effort_and_never_down`, so off is the
-    # 1.23 shape apart from the seat's model and ceiling). On, it reaches review and lead seats whose floor asks
+    # 1.23 shape apart from the seat's model and ceiling; since 1.27.0 the seat is
+    # gemini-4-neon, tier 2, whose step from tier 1 is g127's below, so g124 is
+    # the tier 0 -> 1 step with g127 off). On, it reaches review and lead seats whose floor asks
     # for tier 1, so every comparison that reads a resolved tier can move; held by
     # direction (`_g124_check`). The core grid never reaches the seat (it sits
     # behind the xai seat, the Claude model and, on Claude Code, the meta seat), so
@@ -616,6 +634,39 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_g124_check, changed_sample=34, changed_full=358),
+    # 1.27.0 (user decision 2026-11-23, U-4): Gemini 4 Neon replaces Gemini 4
+    # Hydrogen in the same two fallback places, measured at tier 2 in the T15
+    # review replay (ledger rows "gemini_neon tier measurement (real-review replay,
+    # 2026-11-23)" and "1.27.0 gemini seat placement counterfactuals"). Off, the
+    # seat is tier 1 — the 1.26 route shape with the new id (the new row's ceiling
+    # and effort map are hydrogen's, so the id is all that differs there). On, the
+    # seat meets review floors and retry ladders that ask for tier 2, so every
+    # comparison that reads a resolved tier can move; held by g124's direction
+    # (`_g127_check`). Full grid 2026-11-23: 105,344 inputs, 0 problems, every
+    # earlier rule's count unchanged; g127 moves 526 (36 on the sample: 24 of
+    # g124's Codex variant and 12 where OpenAI's quota is exhausted or low, the
+    # seat then being the tier-2 reviewer outside the lead's family). The
+    # ledger's safety reading (full grid): 194 gates lifted (review_below_band:
+    # the seat now meets the floor), 63 reviewer seats that drop from a tier-3
+    # stand-in to the tier-2 seat (the band's own tier, and a cross-family
+    # reviewer; t65 admits the same for the Claude balanced model), and 6 worker
+    # tier-downs, which the check passes only as the execution cell's cross-family
+    # trade or as a REVIEW task's lead (a review seat, as under g124). What the
+    # grid does not reach is pinned in test_gemini_seat.py
+    # (`test_the_tier_2_seats_terminal_changes_are_exactly_these`: REVIEW terminals
+    # that become routes, six that newly ESCALATE_ROUTING) and test_tier_scale.py
+    # (`test_a_retry_is_never_floored_and_never_ends_where_1_21_0_did_not`: the
+    # retries after the tier-2 seat fails that end HUMAN_REQUIRED where no tier-3
+    # model is usable).
+    "g127": Rule(
+        "g127", predicate=lambda req, prev: True,
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_g127_check, changed_sample=36, changed_full=526),
 }
 
 
@@ -659,9 +710,14 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
         "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
     "review_lead": lambda cfg: cfg["review"].__setitem__("review_class_lead_counts", False),
     "t65": lambda cfg: cfg["models"]["claude_worker_balanced"].__setitem__("capability_tier", 1),
-    # 1.26.0: the gemini place's live seat is gemini_hydrogen (argon retired); the rule
-    # reads the seat in that place, whichever model holds it.
-    "g124": lambda cfg: cfg["models"]["gemini_hydrogen"].__setitem__("capability_tier", 0),
+    # 1.26.0: the gemini place's live seat was gemini_hydrogen (argon retired); since
+    # 1.27.0 it is gemini_neon (hydrogen retired). The rule reads the seat in that
+    # place, whichever model holds it.
+    "g124": lambda cfg: cfg["models"][GEMINI_SEAT_KEY].__setitem__("capability_tier", 0),
+    # 1.27.0: off, the seat is at most tier 1 (the tier 1.24.0-1.26.x seated there);
+    # applied after g124, so with both off it stays at g124's tier 0.
+    "g127": lambda cfg: cfg["models"][GEMINI_SEAT_KEY].__setitem__(
+        "capability_tier", min(cfg["models"][GEMINI_SEAT_KEY]["capability_tier"], 1)),
 }
 
 def _c4_off(stack: ExitStack) -> None:
@@ -719,11 +775,12 @@ def test_t70_off_matches_immutable_1_23_0_low_quota_retry_outcomes():
     checked against immutable commit b057eef40755db4ef1982477ae063f1dd599401f;
     the test itself reads only the shipped config and the live resolver."""
     son, terra, opus = ID("claude_worker_balanced"), ID("openai_worker_balanced"), ID("claude_senior")
-    # The gemini place's live seat (gemini_hydrogen since 1.26.0, gemini_frontier
-    # 1.24.0-1.25.x; 1.23.0 held gemini-3.8-flash there). Either way the case
-    # withholds the three seats behind the Claude model, so the archived tuples are
-    # unchanged.
-    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_hydrogen"),
+    # The gemini place's live seat (gemini_neon since 1.27.0, gemini_hydrogen 1.26.x,
+    # gemini_frontier 1.24.0-1.25.x; 1.23.0 held gemini-3.8-flash there). Either way
+    # the case withholds the three seats behind the Claude model, so the archived
+    # tuples are unchanged. ((a) 1.27.0: withholding the retired hydrogen id instead
+    # would leave the live tier-2 seat for the low-quota swap.)
+    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID(GEMINI_SEAT_KEY),
                               ID("openai_reasoning"), ID("xai_frontier"))
 
     cases = [
@@ -1521,15 +1578,15 @@ def _failure_row(free: dict) -> dict:
             "retry_evidence_sha256": SHA_RETRY}
 
 
-def t70_inputs(full: bool) -> list[tuple[str, str, dict]]:
+def t70_inputs(full: bool, off: frozenset = frozenset()) -> list[tuple[str, str, dict]]:
     """(name, variant, request): the retry carries ONE capability failure on the
     model the history-free route (at the 1.22.0 scale) seated at the effort it
-    ran, so the history is the same in all three states."""
+    ran, so the history is the same in all three states. `off`: as in t70_matrix."""
     out = []
     for runtime, cls, dims in itertools.product(RUNTIMES, CLASSES, T70_FULL_DIMS if full else T70_DIMS):
         tag = f"{runtime}/{cls}/{''.join(map(str, dims))}"
         unknown = _base(runtime, cls, dims, ["unknown_root_cause"])
-        free = route_live(unknown, T22_ON)
+        free = route_live(unknown, T22_ON - off)
         if "error" not in free and not free["terminal"] and free["selected_model"]:
             row = _failure_row(free)
             out.append((f"{tag}/retry_unknown", "retry_unknown",
@@ -1557,11 +1614,12 @@ def _intentional_shortage_terminal(req: dict, b: dict, c: dict) -> bool:
             and c["terminal"] == "ESCALATE_ROUTING" and b == c)
 
 
-def t70_matrix(full: bool) -> tuple[Counter, list[str]]:
+def t70_matrix(full: bool, off: frozenset = frozenset()) -> tuple[Counter, list[str]]:
+    """`off`: rules held off in all three states (the matrix at an earlier registry)."""
     seen: Counter = Counter()
     problems: list[str] = []
-    for name, variant, req in t70_inputs(full):
-        a, b, c = (route_live(req, on) for on in (T22_ON, T65_ON, frozenset(ORDER)))
+    for name, variant, req in t70_inputs(full, off):
+        a, b, c = (route_live(req, on - off) for on in (T22_ON, T65_ON, frozenset(ORDER)))
         if any("error" in x for x in (a, b, c)):
             problems.append(f"{name}: refused {[x.get('error') for x in (a, b, c)]}")
             continue
@@ -1631,16 +1689,35 @@ def test_the_t70_matrix_counts_are_pinned():
     assert dict(seen) == (T70_PINS_FULL if FULL else T70_PINS_SAMPLE), dict(seen)
 
 
+def test_the_t70_matrix_moved_since_1_26_only_by_g127():
+    """1.27.0: the pins below moved (sample `b_to_c_changed` 112 -> 108; full
+    `b_new_terminal` 53 -> 51, `released` 139 -> 137, `b_to_c_changed` 484 -> 474).
+    With g127 held off — in the history-free route that picks each retry's failed
+    model and in all three states — the matrix is the 1.26 one exactly, so the
+    tier-2 gemini seat is the whole of the change: where it now staffs a seat the
+    tier-1 seat could not, a few retries fail a different model, and the retry
+    rule's B -> C difference no longer arises on those inputs."""
+    seen, problems = t70_matrix(FULL, off=frozenset({"g127"}))
+    assert not problems, "\n".join(problems[:20])
+    assert dict(seen) == (T70_PINS_FULL_1_26 if FULL else T70_PINS_SAMPLE_1_26), dict(seen)
+
+
 # What the matrix saw, by name. `b_new_terminal` is the 1.23.0 regression this
 # release repairs, witnessed on the very inputs it repairs; `c_new_terminal`
 # equals `intentional_shortage_terminal` (asserted above). `review_band_lowered`
 # counts the routes whose confidence stopped promoting the review: accepted,
 # floor-checked (`band_contract`, `_t70_check`) and disclosed, not hidden.
+# (b) 1.27.0: g127 (the tier-2 gemini seat) moved `b_to_c_changed` and, on the full
+# grid, `b_new_terminal` and `released`; the 1.26 pins are kept below and replayed
+# with g127 off (`test_the_t70_matrix_moved_since_1_26_only_by_g127`).
 T70_PINS_SAMPLE = {
     "inputs": 897, "retry_unknown": 429, "failed_and_withheld": 429, "shortage": 39,
     "b_new_terminal": 16, "c_new_terminal": 3, "intentional_shortage_terminal": 3,
-    "released": 34, "b_to_c_changed": 112, "review_band_lowered": 21}
+    "released": 34, "b_to_c_changed": 108, "review_band_lowered": 21}
 T70_PINS_FULL = {
     "inputs": 4416, "retry_unknown": 2112, "failed_and_withheld": 2112, "shortage": 192,
-    "b_new_terminal": 53, "c_new_terminal": 24, "intentional_shortage_terminal": 24,
-    "released": 139, "b_to_c_changed": 484, "review_band_lowered": 164}
+    "b_new_terminal": 51, "c_new_terminal": 24, "intentional_shortage_terminal": 24,
+    "released": 137, "b_to_c_changed": 474, "review_band_lowered": 164}
+T70_PINS_SAMPLE_1_26 = {**T70_PINS_SAMPLE, "b_to_c_changed": 112}
+T70_PINS_FULL_1_26 = {**T70_PINS_FULL, "b_new_terminal": 53, "released": 139,
+                      "b_to_c_changed": 484}

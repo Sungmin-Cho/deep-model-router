@@ -1622,7 +1622,15 @@ def test_t3_execution_axis_preserves_current_policy_contract_and_notes():
         assert new["selected_effort"] == expected_req, kw
         assert new["selected_effort_effective"] == rt._clamp(policy, expected_req, new["selected_model"]), kw
         family = policy.family_of[new["selected_model"]]
-        assert new["selected_effort_native"] == CFG["effort_map"][family][new["selected_effort_effective"]], kw
+        # A model's own effort_map overlays its family's (config: "a model's own
+        # effort_map overlays its family"). (b) 1.27.0: the tier-2 gemini seat
+        # (T15) now leads one route of this population (a Codex REVIEW retry with
+        # the Claude family out) at VERY_HIGH, which its row spells `xhigh` over
+        # the family's `high`; no row with such an overlay was seated here before.
+        row_map = next(m.get("effort_map", {}) for m in CFG["models"].values()
+                       if m["id"] == new["selected_model"])
+        native_map = {**CFG["effort_map"][family], **row_map}
+        assert new["selected_effort_native"] == native_map[new["selected_effort_effective"]], kw
         if delta:
             assert len(floor_notes) == 1 and floor_notes[0].endswith(f"floored effort at {floor}"), kw
             if new["selected_effort"] != old["selected_effort"]:

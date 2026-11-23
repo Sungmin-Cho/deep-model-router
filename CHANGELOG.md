@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.27.0] — 2026-11-24 (Gemini 4 Neon replaces Gemini 4 Hydrogen)
+
+### Added
+
+- Add Gemini 4 Neon, released 2026-11-18, as the gemini reviewer seat, in the places Gemini 4 Hydrogen held: after the Claude balanced model (and, on Claude Code, the Muse Spark seat) in the balanced role's fallback list, on Claude Code and Codex hosts. It reads only; the contained maker seat ships without write authority, as before. Its effort ceiling is Hydrogen's: the Antigravity CLI accepts `xhigh` for this model and refuses `max`.
+- Measure it before seating it: the same replay of three real reviews from this repository, graded blind against the findings their authors accepted, puts its recall at 52%, level with Claude Opus 5.5 (52%) and above GPT-6.2 Sol (48%) and Claude Sonnet 5.5 (46%), so it is tier 2 — about twice the recall of Gemini 4 Hydrogen (24%). Every one of its sessions was audited from the CLI's own conversation store. Tier 3 cannot be decided on this replay; its score beside the two tier-3 models (56% each) is reported, not read.
+- Record what the move changes: 130,355 of 1,157,659 replayed routes. With every seat available nothing moves. Where the replay's scenarios reach the seat, the new model takes Hydrogen's place, and because it is tier 2 it can be the one reviewer of a tier-2 implementer's work on a MEDIUM review, which lifts 27,456 human gates and gives a route to 3,346 that ended INDEPENDENCE_UNAVAILABLE. On 12,026 routes, a tier-3 reviewer that stood in where Hydrogen fell short of the review's floor gives way to the new model, which meets it. A retry after the new model fails now climbs to a tier-3 model. So 34 retries become HUMAN_REQUIRED where none is usable (the OpenAI frontier model withheld and the Claude family exhausted), and 760 retries that climb to the OpenAI frontier model gain a human gate, because a MEDIUM review of its work needs a tier-3 reviewer and, with the Claude family exhausted, none other is left. Where Hydrogen's spent quota would have left the seat empty, 32,220 routes change because the seat now resolves. The summed output price of seated models rises 1.58%. Keeping both Gemini models, or listing Neon in the senior and reasoning fallbacks too, was replayed and not taken.
+- IMPLEMENTATION-REPLAY-PENDING
+- Document that Gemini 4 Neon needs a paid plan: the API has no free tier for it and Antigravity offers it to Google AI Pro and Ultra subscribers. On a sign-in without access, declare it unavailable (`--unavailable-models gemini-4-neon`). Its quota on this repository's sign-in ran in the same window of about five hours as Hydrogen's.
+- Re-verify the gemini seat on Antigravity CLI 1.5.14, to which the CLI updated itself: the shipped Hydrogen seat and the new model passed the reviewer and maker probes. The CLI's log gained lines before the print-mode start; the lines the supervisor reads are unchanged.
+
+### Removed
+
+- Remove Gemini 4 Hydrogen from routing. Its id stays valid as history input (`--prior-models`, `--unavailable-models`), so a loop holding an earlier attempt keeps working; it is never seated and its successors are not tracked.
+
 ## [1.26.1] — 2026-11-18 (GPT-6.2 Sol and GPT-6.2 Astra)
 
 ### Changed

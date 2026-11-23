@@ -1,6 +1,7 @@
 """The gemini reviewer seat (design 2026-10-14, model-router 1.20.0; on
 gemini-4-argon from 1.24.0, design 2026-10-27, with gemini-3.8-flash retired; on
-gemini-4-hydrogen since 1.26.0, design 2026-11-15, with gemini-4-argon retired).
+gemini-4-hydrogen from 1.26.0, design 2026-11-15, with gemini-4-argon retired; on
+gemini-4-neon since 1.27.0, design 2026-11-23, with gemini-4-hydrogen retired).
 
 A dispatchable row in the gemini family, reachable from Claude Code and Codex
 hosts, through a read-only `agy` print-mode recipe (Claude Code also ships a
@@ -42,9 +43,11 @@ from route_task import Policy, Task, load_config, route  # noqa: E402
 CFG = load_config()
 ID = lambda key: CFG["models"][key]["id"]                        # noqa: E731
 POLICY = Policy.of(CFG)
-SEAT_KEY = "gemini_hydrogen"
+SEAT_KEY = "gemini_neon"
 ARGON_KEY = "gemini_frontier"          # the seat 1.24.0-1.25.x, retired in 1.26.0
 ARGON = ID(ARGON_KEY)
+HYDROGEN_KEY = "gemini_hydrogen"       # the seat 1.26.0-1.26.x, retired in 1.27.0
+HYDROGEN = ID(HYDROGEN_KEY)
 GEMINI = ID(SEAT_KEY)
 META = ID("meta_worker_balanced")
 XAI = ID("xai_frontier")
@@ -59,7 +62,8 @@ LOADED = dispatch_agent.AGY_GRANTS_LOADED
 PROJECT = dispatch_agent.AGY_REVIEWER_PROJECT
 # The agy 1.3.4 captures under fixtures/agy/ are runs of the seat's first model,
 # retired in 1.24.0; they are graded against the id they ran (the log gate pins
-# the declared model). The agy 1.4.8 capture is a run of the current seat.
+# the declared model). The agy 1.4.8 capture is a run of argon and the 1.5.9 one
+# of hydrogen (both retired); the agy 1.5.14 capture is a run of the current seat.
 FIXTURE_MODEL_134 = ID("gemini_worker_balanced")
 
 
@@ -67,14 +71,17 @@ FIXTURE_MODEL_134 = ID("gemini_worker_balanced")
 # The registry row, the family map and the transport
 # ---------------------------------------------------------------------------
 
-def test_the_row_is_a_dispatchable_tier_1_seat_bound_to_no_role():
-    """Tier 1 since 1.26.0: the 2026-11-15 real-review replay (T11) put
-    gemini-4-hydrogen at 0.240 recall, below the weakest live tier-2 row's bar
-    (0.282) and above the tier-1 bar (0.183). The seat it replaced (argon, T5
-    0.233) was tier 1 too. Its ceiling is VERY_HIGH: the CLI takes xhigh."""
+def test_the_row_is_a_dispatchable_tier_2_seat_bound_to_no_role():
+    """(a) the seat's key moved to gemini_neon, and (b) its tier is 2 since
+    1.27.0: the 2026-11-23 real-review replay (T15) put gemini-4-neon at 0.515
+    recall, above the weakest live tier-2 row's bar (0.405) — ledger row
+    "gemini_neon tier measurement (real-review replay, 2026-11-23)". The seat it
+    replaced (hydrogen, T11 0.240) was tier 1, and stays tier 1 as a history row.
+    Its ceiling is VERY_HIGH: the CLI takes xhigh."""
     row = CFG["models"][SEAT_KEY]
     assert row["family"] == "gemini"
-    assert row["capability_tier"] == 1
+    assert row["capability_tier"] == 2
+    assert CFG["models"][HYDROGEN_KEY]["capability_tier"] == 1
     assert row.get("dispatchable", True) is True
     assert row["effort_ceiling"] == "VERY_HIGH"
     assert row["effort_map"] == {"VERY_HIGH": "xhigh", "MAX": "xhigh"}
@@ -96,7 +103,8 @@ def test_the_unbound_gemini_row_is_untouched_and_outside_the_lineage():
 
 def test_the_ceiling_keeps_every_routed_effort_inside_the_probed_tokens():
     """The CLI accepts low, medium, high and xhigh for this model and refuses
-    max (probed 2026-11-15); the ceiling clamps MAX to VERY_HIGH before any map
+    max (probed 2026-11-15 on hydrogen, 2026-11-23 on neon — ledger row
+    "gemini-4-neon effort values"); the ceiling clamps MAX to VERY_HIGH before any map
     is read, and the row's map turns VERY_HIGH into xhigh over the family's
     high."""
     assert POLICY.ceiling_of[GEMINI] == "VERY_HIGH"
@@ -105,8 +113,11 @@ def test_the_ceiling_keeps_every_routed_effort_inside_the_probed_tokens():
     for level in ("MINIMAL", "LOW", "MEDIUM", "HIGH", "VERY_HIGH"):
         assert merged[level] in probed, level
     assert merged["VERY_HIGH"] == "xhigh"
-    # the retired argon row keeps its HIGH ceiling and the family's high
+    # the retired argon row keeps its HIGH ceiling and the family's high; the
+    # retired hydrogen row keeps the VERY_HIGH ceiling and xhigh it was probed at
     assert POLICY.ceiling_of[ARGON] == "HIGH"
+    assert POLICY.ceiling_of[HYDROGEN] == "VERY_HIGH"
+    assert CFG["models"][HYDROGEN_KEY]["effort_map"] == {"VERY_HIGH": "xhigh", "MAX": "xhigh"}
 
 
 def test_claude_code_and_codex_offer_the_seat_and_only_to_read():
@@ -212,6 +223,20 @@ BASE = without_seat(CFG)
 CLASSES = list(CFG["worker_selection"])
 
 
+def _seat_at_tier_1():
+    """The 1.24.0-1.26.x routing shape: the gemini place held by a tier-1 seat
+    (argon, then hydrogen). 1.27.0 seats a tier-2 model there (gemini-4-neon,
+    measured, T15), so the tier-1 mechanisms below are kept under test on this
+    copy, and the shipped registry's tier-2 outcome is checked beside them
+    (ledger row "1.27.0 gemini seat placement counterfactuals")."""
+    cfg = copy.deepcopy(CFG)
+    cfg["models"][SEAT_KEY]["capability_tier"] = 1
+    return cfg
+
+
+SEAT_TIER1 = _seat_at_tier_1()
+
+
 def _project(r):
     rv = r.get("review") or {}
     return (r.get("terminal"), r.get("selected_model"), r.get("selected_effort_effective"),
@@ -239,37 +264,50 @@ def test_while_the_meta_seat_resolves_no_route_moves(runtime, withheld):
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
 def test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat(runtime):
     """1.24.0: `low` moves the worker to the first same-tier model of another
-    family in the list. The tier-1 seat is now that model on both hosts, ahead
-    of the OpenAI balanced model, where the worker reads; nothing else moves
-    (review i3: the Codex half too)."""
+    family in the list. A tier-1 seat in this place is that model on both hosts,
+    ahead of the OpenAI balanced model, where the worker reads; nothing else
+    moves (review i3: the Codex half too).
+
+    (b) 1.27.0: the shipped seat is tier 2, no longer the xai seat's tier (1), so
+    this tier-1 mechanism is held on SEAT_TIER1, and the shipped registry is
+    checked beside it on every case: there the swap passes the seat for the
+    same-tier OpenAI balanced model, and no route moves against the registry
+    without the seat (ledger row "1.27.0 gemini seat placement
+    counterfactuals"; references/model-profiles.md, "The gemini reviewer seat")."""
     extra = {"_family_quota": {"xai": "low"}}
+    tier1 = Policy.of(SEAT_TIER1)
+    assert tier1.tier_of[GEMINI] == 1 == POLICY.tier_of[XAI]
     moved = 0
     for cls in CLASSES:
         for dims in ((1, 1, 1, 0), (2, 1, 2, 1), (3, 2, 3, 2)):
             kw = dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
                       blast_radius=dims[2], reversibility=dims[3], runtime=runtime,
                       **copy.deepcopy(extra))
-            after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
+            after, before = route(Task(**kw), SEAT_TIER1), route(Task(**kw), BASE)
+            # shipped, tier 2: the swap never reaches the seat
+            assert _project(route(Task(**kw), CFG)) == _project(before), (cls, dims)
             if _project(after) == _project(before):
                 continue
             moved += 1
             assert POLICY.worker_seat_kind(cls) == "read_only", (cls, dims)
             assert after["selected_model"] == GEMINI, (cls, dims)
-            assert POLICY.tier_of[before["selected_model"]] == POLICY.tier_of[GEMINI], (cls, dims)
+            assert tier1.tier_of[before["selected_model"]] == tier1.tier_of[GEMINI], (cls, dims)
     assert moved, "the swap never reached the seat"
     # Review i2 (fable): the write half — a writer on the balanced role under the
     # same swap never takes this read-only seat; its route is the one the
     # registry without the seat gives (on Claude Code the same-tier OpenAI
-    # balanced model).
+    # balanced model). Checked at either seat tier.
     kw = dict(task_class="IMPLEMENTATION", complexity=0, uncertainty=0, blast_radius=3,
               reversibility=2, runtime=runtime, **copy.deepcopy(extra))
-    out, without = route(Task(**kw), CFG), route(Task(**kw), BASE)
-    assert out["selected_role"] == "worker_balanced"
-    assert out["selected_model"] != GEMINI
-    assert out["selected_model"] == without["selected_model"]
-    if runtime == "claude_code":
-        assert out["selected_model"] == ID("openai_worker_balanced"), out["selected_model"]
-        assert any(n.startswith("family_quota: xai low") for n in out["notes"])
+    without = route(Task(**kw), BASE)
+    for cfg in (CFG, SEAT_TIER1):
+        out = route(Task(**kw), cfg)
+        assert out["selected_role"] == "worker_balanced"
+        assert out["selected_model"] != GEMINI
+        assert out["selected_model"] == without["selected_model"]
+        if runtime == "claude_code":
+            assert out["selected_model"] == ID("openai_worker_balanced"), out["selected_model"]
+            assert any(n.startswith("family_quota: xai low") for n in out["notes"])
 
 
 def test_a_low_xai_quota_reaches_this_seat_on_a_retry_and_caps_an_unknown_root_cause():
@@ -277,19 +315,33 @@ def test_a_low_xai_quota_reaches_this_seat_on_a_retry_and_caps_an_unknown_root_c
     fast lead fails, the retry's same-tier swap lands on this seat — and an
     unknown root cause's MAX ask runs at the seat's HIGH ceiling there, with no
     floor broken (no human gate). Since 1.26.0 the seat's ceiling is
-    VERY_HIGH: the MAX ask runs at xhigh."""
+    VERY_HIGH: the MAX ask runs at xhigh.
+
+    (b) 1.27.0: a same-tier swap needs a tier-1 seat, so this is held on
+    SEAT_TIER1; on the shipped registry (seat tier 2) the retry and the unknown
+    root cause land on the same-tier OpenAI balanced model, exactly as on the
+    registry without the seat (ledger row "1.27.0 gemini seat placement
+    counterfactuals")."""
     kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=0,
               reversibility=0, runtime="claude_code", _family_quota={"xai": "low"})
-    fresh = route(Task(**kw), CFG)
+    fresh = route(Task(**kw), SEAT_TIER1)
     assert fresh["selected_model"] == ID("openai_worker_fast")
-    retry = route(Task(**kw, prior_failures=1, prior_models=[fresh["selected_model"]]), CFG)
+    retry = route(Task(**kw, prior_failures=1, prior_models=[fresh["selected_model"]]), SEAT_TIER1)
     assert retry["selected_model"] == GEMINI and retry["terminal"] is None
-    urc = route(Task(**dict(kw, complexity=1, uncertainty=1, blast_radius=1),
-                     flags=["unknown_root_cause"]), CFG)
+    urc_kw = dict(kw, complexity=1, uncertainty=1, blast_radius=1)
+    urc = route(Task(**urc_kw, flags=["unknown_root_cause"]), SEAT_TIER1)
     assert urc["selected_model"] == GEMINI
     assert (urc["selected_effort"], urc["selected_effort_effective"]) == ("MAX", "VERY_HIGH")
     assert urc["selected_effort_native"] == "xhigh"
     assert urc["requires_human_confirmation"] is False
+    # the shipped tier-2 seat: the same three routes, as the registry without the seat
+    for cfg in (CFG, BASE):
+        assert route(Task(**kw), cfg)["selected_model"] == ID("openai_worker_fast")
+        retry = route(Task(**kw, prior_failures=1, prior_models=[ID("openai_worker_fast")]), cfg)
+        assert retry["selected_model"] == ID("openai_worker_balanced") and retry["terminal"] is None
+        urc = route(Task(**urc_kw, flags=["unknown_root_cause"]), cfg)
+        assert urc["selected_model"] == ID("openai_worker_balanced")
+        assert urc["requires_human_confirmation"] is False
 
 
 @pytest.mark.parametrize("extra", [
@@ -462,33 +514,62 @@ def test_a_dispatch_seat_is_spelled_at_the_level_its_cap_records():
 
 def test_as_a_worker_the_seat_meets_every_effort_floor():
     """1.24.0 disclosed that argon's HIGH ceiling could raise a human gate where
-    the seat became a worker a floor wanted at VERY_HIGH. Hydrogen's VERY_HIGH
-    ceiling meets every such floor: over every class and dimension with
-    everything ahead of the seat out on a read-only route, seating it never
-    adds `effort_below_floor` (the 1.24.0 example now runs at VERY_HIGH)."""
+    the seat became a worker a floor wanted at VERY_HIGH. A VERY_HIGH ceiling
+    (hydrogen's from 1.26.0, neon's since 1.27.0) meets every such floor: over
+    every class and dimension with everything ahead of the seat out on a
+    read-only route, seating it never adds `effort_below_floor` from the worker
+    (the 1.24.0 example now runs at VERY_HIGH).
+
+    (b) 1.27.0: at tier 2 the seat also meets the CRITICAL review band's
+    reviewer floor on some of these routes, and as that reviewer its VERY_HIGH
+    ceiling under the band's MAX adds `effort_below_floor` to the gate the band
+    has already raised (references/model-profiles.md, "The gemini reviewer
+    seat"; ledger row "1.27.0 gemini seat placement counterfactuals"). So the
+    1.26.0 sweep is held exactly on SEAT_TIER1 (the tier-1 shape: nothing
+    added), and on the shipped registry every added `effort_below_floor` is
+    exactly that reviewer case — never a worker floor."""
     # everything ahead of the seat: on Claude Code xai, the Claude model and meta;
     # on Codex xai and the Claude model (review i1, fable: swept on both hosts)
     hosts = (("claude_code", AHEAD_OUT), ("codex", [XAI, ID("claude_worker_balanced")]))
-    reached = {runtime: 0 for runtime, _ in hosts}       # not vacuous: the seat works at VERY_HIGH
-    for (runtime, ahead), cls, (c, u, b, r) in itertools.product(
-            hosts, CLASSES, itertools.product(range(4), repeat=4)):
-        kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
-                  reversibility=r, runtime=runtime, unavailable_models=ahead,
-                  worker_seat="read_only")
-        after, before = route(Task(**kw), CFG), route(Task(**kw), BASE)
-        added = set(after.get("human_control_causes") or []) - set(
-            before.get("human_control_causes") or [])
-        assert "effort_below_floor" not in added, (runtime, cls, c, u, b, r)
-        reached[runtime] += (after["selected_model"] == GEMINI
-                             and after["selected_effort_effective"] == "VERY_HIGH")
-    assert all(n > 0 for n in reached.values()), reached
+    for name, cfg in (("tier1", SEAT_TIER1), ("shipped", CFG)):
+        reached = {runtime: 0 for runtime, _ in hosts}   # not vacuous: the seat works at VERY_HIGH
+        as_reviewer = {runtime: 0 for runtime, _ in hosts}
+        for (runtime, ahead), cls, (c, u, b, r) in itertools.product(
+                hosts, CLASSES, itertools.product(range(4), repeat=4)):
+            kw = dict(task_class=cls, complexity=c, uncertainty=u, blast_radius=b,
+                      reversibility=r, runtime=runtime, unavailable_models=ahead,
+                      worker_seat="read_only")
+            after, before = route(Task(**kw), cfg), route(Task(**kw), BASE)
+            where = (name, runtime, cls, c, u, b, r)
+            # the seat as worker never breaks a floor
+            assert not [e for e in after["effort_ceiling_applied"] if e["floor_broken"]
+                        and not str(e["floor_broken"]).startswith("review.")], where
+            added = set(after.get("human_control_causes") or []) - set(
+                before.get("human_control_causes") or [])
+            if "effort_below_floor" in added:
+                assert name == "shipped", where
+                broken = [(e["model"], e["requested"], e["capped_at"], e["floor_broken"])
+                          for e in after["effort_ceiling_applied"] if e["floor_broken"]]
+                assert broken == [(GEMINI, "MAX", "VERY_HIGH", "review.CRITICAL.effort")], where
+                assert after["review"]["band"] == "CRITICAL", where
+                assert GEMINI in after["review"]["reviewer_models"], where
+                assert GEMINI not in _emitted(before), where
+                assert before["requires_human_confirmation"] is True, where
+                assert "critical_review_band" in before["human_control_causes"], where
+                as_reviewer[runtime] += 1
+            reached[runtime] += (after["selected_model"] == GEMINI
+                                 and after["selected_effort_effective"] == "VERY_HIGH")
+        assert all(n > 0 for n in reached.values()), (name, reached)
+        if name == "shipped":
+            assert all(n > 0 for n in as_reviewer.values()), as_reviewer
     kw = dict(task_class="DOCUMENTATION", complexity=3, uncertainty=3, blast_radius=0,
               reversibility=0, runtime="claude_code", unavailable_models=AHEAD_OUT,
               worker_seat="read_only")
-    after = route(Task(**kw), CFG)
-    assert after["selected_model"] == GEMINI
-    assert after["selected_effort_effective"] == "VERY_HIGH"
-    assert after["requires_human_confirmation"] is False
+    for cfg in (CFG, SEAT_TIER1):
+        after = route(Task(**kw), cfg)
+        assert after["selected_model"] == GEMINI
+        assert after["selected_effort_effective"] == "VERY_HIGH"
+        assert after["requires_human_confirmation"] is False
 
 
 @pytest.mark.parametrize("runtime", ["grok"])
@@ -518,7 +599,8 @@ def test_a_codex_host_seats_gemini_to_read_only_where_claude_does_not_resolve():
             assert out["selected_model"] != GEMINI, cls
     # A reading lead takes the seat; a MEDIUM REVIEW lead is reviewer-1 and needs
     # the tier-1 floor, which the tier-1 seat meets (1.24.0; the tier-0 seat it
-    # replaced yielded to the OpenAI balanced model from 1.22.0).
+    # replaced yielded to the OpenAI balanced model from 1.22.0; the tier-2 seat
+    # since 1.27.0 meets it too).
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime="codex", unavailable_models=[XAI],
                      _family_quota={"claude": "exhausted"}), CFG)
@@ -534,7 +616,8 @@ def test_a_read_route_with_everything_ahead_out_seats_gemini_as_the_lead():
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime="claude_code", unavailable_models=AHEAD_OUT), CFG)
     assert out["selected_model"] == GEMINI
-    assert out["selected_capability_tier"] == 1
+    # (b) 1.27.0: the seat's measured tier is 2 (T15; 1.24.0-1.26.x seated tier 1)
+    assert out["selected_capability_tier"] == 2
     assert any(f.endswith(f"-> {GEMINI}") for f in out["fallbacks_applied"])
     # The same state for a MEDIUM REVIEW: its lead is a reviewer and MEDIUM's
     # floor is tier 1, which this seat meets (1.24.0), so it leads.
@@ -558,7 +641,8 @@ def test_an_author_excluded_meta_and_claude_seat_gemini_with_xai_out():
                      _review_context={"target_sha256": "0" * 64,
                                       "author_families": ["meta", "claude"]}), CFG)
     # 1.24.0: the seat is tier 1, MEDIUM's floor, and outside the authors'
-    # families, so it leads (from 1.22.0 to 1.23 the tier-0 seat yielded).
+    # families, so it leads (from 1.22.0 to 1.23 the tier-0 seat yielded; the
+    # tier-2 seat since 1.27.0 is above the floor and leads too).
     assert out["selected_model"] == GEMINI
     assert out["cross_family_review"] is True
 
@@ -612,8 +696,9 @@ def test_an_allowed_families_list_of_gemini_alone_cannot_staff_a_write_route():
 
 RETIRED_KEY = "gemini_worker_balanced"
 RETIRED = ID(RETIRED_KEY)
-# 1.26.0 (user decision 2026-11-15, U-4): argon is retired the way flash was in 1.24.0.
-RETIRED_ROWS = (RETIRED_KEY, ARGON_KEY)
+# 1.26.0 (user decision 2026-11-15, U-4): argon is retired the way flash was in 1.24.0;
+# 1.27.0 (user decision 2026-11-23, U-4): hydrogen is retired the same way.
+RETIRED_ROWS = (RETIRED_KEY, ARGON_KEY, HYDROGEN_KEY)
 
 
 @pytest.mark.parametrize("key", RETIRED_ROWS)
@@ -638,7 +723,7 @@ def test_no_row_that_is_not_dispatchable_is_named_by_a_binding_or_fallback():
     row kept without `history_of` (the gemini seat's first model, the unbound
     gemini row) is held here, so re-listing one cannot pass as a live seat."""
     off = {k for k, m in CFG["models"].items() if m.get("dispatchable", True) is False}
-    assert {RETIRED_KEY, ARGON_KEY, "gemini_flash"} <= off
+    assert {RETIRED_KEY, ARGON_KEY, HYDROGEN_KEY, "gemini_flash"} <= off
     named = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
     named |= {k for per_role in CFG["fallbacks"].values() for keys in per_role.values() for k in keys}
     assert not (off & named), sorted(off & named)
@@ -648,9 +733,9 @@ def test_no_row_that_is_not_dispatchable_is_named_by_a_binding_or_fallback():
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
 def test_the_retired_ids_stay_valid_history_input(runtime, key):
     """A control loop holding an attempt on a retired seat (1.23 on flash, 1.25 on
-    argon) keeps working across the release boundary: as a failed model and as an
-    unavailable model. (No host runs the gemini family, so neither was valid host
-    input.)"""
+    argon, 1.26 on hydrogen) keeps working across the release boundary: as a
+    failed model and as an unavailable model. (No host runs the gemini family, so
+    none was valid host input.)"""
     retired = ID(key)
     assert retired in POLICY.model_ids
     base = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
@@ -661,9 +746,27 @@ def test_the_retired_ids_stay_valid_history_input(runtime, key):
     assert out["terminal"] is None and retired not in _emitted(out)
 
 
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_the_hydrogen_id_is_accepted_by_the_cli_history_flags(tmp_path, runtime):
+    """1.27.0 (ledger row "Gemini 4 Hydrogen retired (gemini_hydrogen, 1.27.0)"): a
+    control loop holding a 1.26 attempt passes the id through `--prior-models` and
+    `--unavailable-models`; the router accepts it and never seats it."""
+    env = {**os.environ, "HOME": str(tmp_path)}
+    proc = subprocess.run(
+        [sys.executable, str(SKILL / "scripts" / "route_task.py"), "--class", "INVESTIGATION",
+         "--complexity", "1", "--uncertainty", "1", "--blast-radius", "1",
+         "--reversibility", "0", "--runtime", runtime,
+         "--unavailable-models", f"{XAI},{HYDROGEN}", "--prior-failures", "1",
+         "--prior-models", HYDROGEN, "--format", "json"],
+        capture_output=True, text=True, env=env)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["terminal"] is None and HYDROGEN not in _emitted(out)
+
+
 def test_the_retired_models_are_never_emitted():
     """Wherever the gemini seat could be reached — everything ahead of it out,
-    and the seat itself out too — neither retired model comes back."""
+    and the seat itself out too — no retired model comes back."""
     scenarios = (
         {"unavailable_models": AHEAD_OUT},
         {"unavailable_models": [*AHEAD_OUT, GEMINI]},
@@ -681,10 +784,12 @@ def test_the_retired_models_are_never_emitted():
                                      runtime=runtime, **copy.deepcopy(extra)), CFG)
                     assert RETIRED not in _emitted(out), (runtime, cls, dims, extra)
                     assert ARGON not in _emitted(out), (runtime, cls, dims, extra)
+                    assert HYDROGEN not in _emitted(out), (runtime, cls, dims, extra)
 
 
 def test_a_claude_shortage_keeps_the_fast_writer_for_this_seats_cross_family_review():
-    """Disclosed in 1.24.0 (model-profiles.md): at tier 1 the seat staffs the
+    """Disclosed in 1.24.0 (model-profiles.md): at tier 1 (since 1.27.0 tier 2,
+    unchanged here) the seat staffs the
     MEDIUM review a write route needs once xai, meta and Claude are out, so the
     execution cell yields the OpenAI balanced writer to keep that cross-family
     review — the trade 1.19.0 disclosed for the meta seat, which the tier-0
@@ -725,8 +830,11 @@ def test_the_disclosed_terminal_changes_are_exactly_these(scenario, expected):
     unknown root cause a fallback charge the tier-0 seat's yielding avoided, so
     on Codex these first attempts newly ask to be re-routed (0.59 < 0.60) —
     ten that were dispatchable and six that were INDEPENDENCE_UNAVAILABLE. No
-    other first attempt in these scenarios changes terminal."""
-    import itertools
+    other first attempt in these scenarios changes terminal.
+
+    (b) 1.27.0: this is the tier-0 -> tier-1 step (1.24.0), so it is held on
+    SEAT_TIER1; the shipped tier-2 seat's further step is pinned in the next
+    test."""
     old, got = _seat_at_tier_0(), set()
     for cls in CLASSES:
         for dims in itertools.product(range(4), repeat=4):
@@ -735,11 +843,57 @@ def test_the_disclosed_terminal_changes_are_exactly_these(scenario, expected):
                           blast_radius=dims[2], reversibility=dims[3], runtime="codex",
                           flags=["unknown_root_cause", *(["large_context"] if lc else [])],
                           **copy.deepcopy(scenario))
-                before, after = route(Task(**kw), old), route(Task(**kw), CFG)
+                before, after = route(Task(**kw), old), route(Task(**kw), SEAT_TIER1)
                 if before.get("terminal") != after.get("terminal"):
                     got.add((cls, dims, lc, before.get("terminal"), after.get("terminal")))
                     assert after["routing_confidence"] < 0.60, (cls, dims, lc)
     assert got == expected
+
+
+_ESCALATED_REVIEWS = {("REVIEW", d, lc, "INDEPENDENCE_UNAVAILABLE", "ESCALATE_ROUTING")
+                      for d in ((0, 3, 0, 0), (0, 3, 0, 1), (1, 3, 0, 0)) for lc in (False, True)}
+
+
+@pytest.mark.parametrize("scenario,resolved,escalated", [
+    ({"unavailable_models": [XAI], "_family_quota": {"claude": "exhausted"}}, 0, set()),
+    ({"unavailable_models": [XAI, ID("openai_worker_fast"), ID("openai_frontier")],
+      "_family_quota": {"claude": "exhausted"}}, 138, _ESCALATED_REVIEWS),
+], ids=["xai-out-claude-exhausted", "fast-xai-frontier-out-claude-exhausted"])
+def test_the_tier_2_seats_terminal_changes_are_exactly_these(scenario, resolved, escalated):
+    """(b) 1.27.0, the shipped tier-2 seat against the tier-1 shape, on the same
+    sweep: with the Claude family exhausted and the frontier OpenAI seat withheld,
+    a REVIEW whose band asks for two tier-2 reviewers found only the Sol seat at
+    that tier and ended INDEPENDENCE_UNAVAILABLE (review_below_band); the tier-2
+    gemini seat is the second, so 138 of them get a route led by the seat, and the six
+    carrying the same unknown-root-cause fallback charge as above newly ask to
+    be re-routed (0.59 < 0.60). Nothing else changes terminal (ledger row "1.27.0
+    gemini seat placement counterfactuals": terminals that become routes, the
+    tier-2 seat meeting a review floor hydrogen did not; references/
+    model-profiles.md, "The gemini reviewer seat")."""
+    got_resolved, got_escalated = 0, set()
+    for cls in CLASSES:
+        for dims in itertools.product(range(4), repeat=4):
+            for lc in (False, True):
+                kw = dict(task_class=cls, complexity=dims[0], uncertainty=dims[1],
+                          blast_radius=dims[2], reversibility=dims[3], runtime="codex",
+                          flags=["unknown_root_cause", *(["large_context"] if lc else [])],
+                          **copy.deepcopy(scenario))
+                before, after = route(Task(**kw), SEAT_TIER1), route(Task(**kw), CFG)
+                if before.get("terminal") == after.get("terminal"):
+                    continue
+                where = (cls, dims, lc)
+                assert cls == "REVIEW", where
+                assert before["terminal"] == "INDEPENDENCE_UNAVAILABLE", where
+                assert before["human_control_causes"] == ["review_below_band"], where
+                if after["terminal"] is None:
+                    assert after["selected_model"] == GEMINI, where
+                    assert after["review"]["reviewer_models"][0] == GEMINI, where
+                    assert after["routing_confidence"] >= 0.60, where
+                    got_resolved += 1
+                else:
+                    assert after["routing_confidence"] < 0.60, where
+                    got_escalated.add((cls, dims, lc, before["terminal"], after["terminal"]))
+    assert (got_resolved, got_escalated) == (resolved, escalated)
 
 
 @pytest.mark.parametrize("withheld,before_key", [
@@ -750,9 +904,12 @@ def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat(withheld, befo
     """Review i2 (fable F2) / i3 (fable F1), disclosed: a retry climbs strictly
     above the tier that failed. After the tier-0 meta seat fails on Claude Code
     with xai out and Claude exhausted, the first model above tier 0 is now this
-    tier-1 seat, where the tier-0 shape went on to the Sol seat (tier 2), or the
-    frontier OpenAI seat (tier 3) with Sol out too — a retry lower than before,
-    still above what failed."""
+    seat, where the tier-0 shape went on to the Sol seat (tier 2), or the
+    frontier OpenAI seat (tier 3) with Sol out too — still above what failed.
+
+    (b) 1.27.0: the seat is tier 2 (was tier 1), so the retry lands on it at
+    tier 2 — the Sol seat's tier with Sol available, below the frontier seat's
+    with Sol out (ledger row "1.27.0 gemini seat placement counterfactuals")."""
     kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=2,
               reversibility=0, runtime="claude_code",
               unavailable_models=[XAI, *(ID(k) for k in withheld)],
@@ -761,7 +918,7 @@ def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat(withheld, befo
     assert route(Task(**kw), CFG)["selected_model"] == META == route(Task(**kw), old)["selected_model"]
     after = route(Task(**kw, prior_failures=1, prior_models=[META]), CFG)
     before = route(Task(**kw, prior_failures=1, prior_models=[META]), old)
-    assert after["selected_model"] == GEMINI and after["selected_capability_tier"] == 1
+    assert after["selected_model"] == GEMINI and after["selected_capability_tier"] == 2
     assert before["selected_model"] == ID(before_key)
     assert after["selected_capability_tier"] > POLICY.tier_of[META]
 
@@ -769,17 +926,62 @@ def test_a_retry_after_the_meta_seat_fails_now_lands_on_this_seat(withheld, befo
 def test_the_hydrogen_row_states_its_documented_facts():
     """The provider's pricing and model pages (2026-11-15): flat rates with no
     long-context tier and no introductory promotion; implicit caching only (no
-    cache-write rate, an unavailable quote); one 1,048,576-token window; the
-    xhigh spelling among its served forms."""
-    row = CFG["models"][SEAT_KEY]
+    cache-write rate, an unavailable quote); one 1,048,576-token window.
+
+    (a) 1.27.0: hydrogen is a history row now (retired, U-4), so this reads the
+    retired row, which keeps the rates, tier, ceiling and window it was measured
+    and priced at; its freshness stamp and its lineage (the xhigh served form)
+    went with the seat to gemini_neon (next test)."""
+    row = CFG["models"][HYDROGEN_KEY]
+    items = {e["item"]: e for e in CFG["verification_ledger"]["entries"]}
+    assert items[f"{HYDROGEN} model id"]["status"] == "verified"     # the id it was probed under
+    assert row["dispatchable"] is False
     price = row["price_per_mtok"]
     assert (price["input"], price["output"], price["cached_input"]) == (1.5, 7.5, 0.075)
     assert "cache_write" not in price and "long_context" not in price
-    assert str(price["verified_on"]) == "2026-11-15" and price["max_age_days"] == 30
+    assert "verified_on" not in price and "lineage" not in row
     assert row["context_window"] == 1048576
-    assert row["lineage"] == {"line": "google/hydrogen", "template": "gemini-{gen}-hydrogen",
+    assert (row["capability_tier"], row["effort_ceiling"]) == (1, "VERY_HIGH")
+
+
+def test_the_neon_row_states_its_documented_facts():
+    """1.27.0 (ledger rows "gemini-4-neon model id", "gemini-4-neon effort
+    values", "gemini-4-neon pricing and context window"): the provider's stable
+    id; the line google/neon, whose served forms include the xhigh spelling the
+    CLI resolves to; tier 2 (T15), ceiling VERY_HIGH with xhigh for VERY_HIGH
+    and MAX; flat paid-tier rates twice hydrogen's, no cache-write rate (an
+    unavailable quote) and no long-context tier; one 1,048,576-token window;
+    dispatchable and bound to no role."""
+    row = CFG["models"][SEAT_KEY]
+    items = {e["item"]: e for e in CFG["verification_ledger"]["entries"]}
+    # the id the ledger's probe rows name (the guard in test_docs.py keeps literal ids
+    # out of test code)
+    assert items[f"{GEMINI} model id"]["status"] == "verified"
+    assert f"--model {GEMINI} " in items[f"{GEMINI} model id"]["argv"]
+    assert row["family"] == "gemini"
+    assert row["lineage"] == {"line": "google/neon", "template": "gemini-{gen}-neon",
                               "served_forms": ["{id}", "{id}-low", "{id}-medium", "{id}-high",
                                                "{id}-xhigh"]}
+    assert row["capability_tier"] == 2 and row["effort_ceiling"] == "VERY_HIGH"
+    assert row["effort_map"] == {"VERY_HIGH": "xhigh", "MAX": "xhigh"}
+    assert row.get("dispatchable", True) is True and row["verified"] is True
+    price = row["price_per_mtok"]
+    assert (price["input"], price["output"], price["cached_input"]) == (3.0, 15.0, 0.15)
+    assert "cache_write" not in price and "long_context" not in price
+    assert str(price["verified_on"]) == "2026-11-23" and price["max_age_days"] == 30
+    assert price["source"] == "https://ai.google.dev/gemini-api/docs/pricing"
+    assert items[f"{GEMINI} pricing and context window"]["source"] == price["source"]
+    assert row["context_window"] == 1048576
+    bound = {k for binding in CFG["role_bindings"].values() for k in binding.values()}
+    assert SEAT_KEY not in bound
+    # the template parses the seat's id and the next generations, never the
+    # effort spellings, the orchestrator ids or another line's ids
+    template = row["lineage"]["template"]
+    for good in (GEMINI, "gemini-4.1-neon", "gemini-5-neon"):
+        assert lineage.parse(template, good) is not None, good
+    for bad in (f"{GEMINI}-xhigh", "gemini-pro-orchestrator-neon", HYDROGEN, ARGON,
+                "gemini-4.1-hydrogen"):
+        assert lineage.parse(template, bad) is None, bad
 
 
 def test_the_unbound_gemini_row_is_still_never_emitted():
@@ -1600,16 +1802,42 @@ def test_the_agy_1_4_8_argon_excerpt_grades_as_captured(tmp_path):
 
 def test_the_agy_1_5_9_hydrogen_excerpt_grades_as_captured(tmp_path):
     """1.26.0: the lines the gate reads did not move on agy 1.5.9 (art-low-rel,
-    the current seat's model id round trip, paths scrubbed)."""
+    the hydrogen seat's model id round trip, paths scrubbed). (a) 1.27.0: graded
+    against the id it ran, hydrogen, retired in 1.27.0 — not the current seat's."""
     log = tmp_path / "hydrogen.log"
     log.write_text((FIXTURES / "agy-1.5.9-hydrogen-reviewer.log").read_text())
+    view, reasons = dispatch_agent._grade_agy_log(log, {}, HYDROGEN)
+    assert reasons == [] and view["lines"] == [LOADED]
+    assert view["resolved_model"] == f"{HYDROGEN}-low"
+    # the argon excerpt does not pass as that seat's run (the gate pins the declared model)
+    log.write_text((FIXTURES / "agy-1.4.8-argon-reviewer.log").read_text())
+    _, reasons = dispatch_agent._grade_agy_log(log, {}, HYDROGEN)
+    assert reasons
+
+
+def test_the_agy_1_5_14_neon_excerpt_grades_as_captured(tmp_path):
+    """1.27.0 (ledger row "Gemini seat profiles on agy 1.5.14 (re-probe,
+    2026-11-23)"): the CLI's log opens with more lines before the print-mode
+    start — among them "Model ID <id> not in local config, defaulting to CCPA",
+    which names the model outside a resolver record — but the lines the gate
+    reads, the model resolution and the grants record, are unchanged
+    (art-low-reviewer-rel, the current seat's model id round trip, paths
+    scrubbed)."""
+    text = (FIXTURES / "agy-1.5.14-neon-reviewer.log").read_text()
+    assert "Language server version: 1.5.14" in text
+    assert f"Model ID {GEMINI} not in local config, defaulting to CCPA" in text
+    log = tmp_path / "neon.log"
+    log.write_text(text)
     view, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
     assert reasons == [] and view["lines"] == [LOADED]
     assert view["resolved_model"] == f"{GEMINI}-low"
-    # the argon excerpt does not pass as this seat's run (the gate pins the declared model)
-    log.write_text((FIXTURES / "agy-1.4.8-argon-reviewer.log").read_text())
-    _, reasons = dispatch_agent._grade_agy_log(log, {}, GEMINI)
-    assert reasons
+    # neither earlier seat's excerpt passes as this seat's run, nor this one as theirs
+    for name, other in (("agy-1.5.9-hydrogen-reviewer.log", GEMINI),
+                        ("agy-1.4.8-argon-reviewer.log", GEMINI),
+                        ("agy-1.5.14-neon-reviewer.log", HYDROGEN)):
+        log.write_text((FIXTURES / name).read_text())
+        _, reasons = dispatch_agent._grade_agy_log(log, {}, other)
+        assert any(r.startswith("agy_resolved_model:") for r in reasons), (name, reasons)
 
 
 def test_a_cleared_record_before_the_loaded_one_fails(tmp_path):

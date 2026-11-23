@@ -41,9 +41,18 @@ def test_source_review_can_reserve_frontier_for_judge():
 def test_insufficient_author_eligible_supply_keeps_a_gate():
     # Since 1.23.0 the Claude balanced model is tier 2 and fills a HIGH seat
     # beside the senior one, so it is excluded too to keep the supply short.
+    # (b) Since 1.27.0 the gemini seat (gemini-4-neon) is tier 2 as well (T15;
+    # ledger row "1.27.0 gemini seat placement counterfactuals") and fills that
+    # HIGH seat on a Codex host, so it is excluded for the same reason.
+    out = run(review_context=dict(target_sha256='a'*64, author_families=['openai'], author_model_ids=[
+        CFG['models'][k]['id'] for k in ('claude_architect', 'claude_worker_balanced',
+                                         'gemini_neon')]))
+    assert out['terminal'] or out['requires_human_confirmation']
+    # the shipped outcome with the seat not excluded: it is the second HIGH reviewer
     out = run(review_context=dict(target_sha256='a'*64, author_families=['openai'], author_model_ids=[
         CFG['models'][k]['id'] for k in ('claude_architect', 'claude_worker_balanced')]))
-    assert out['terminal'] or out['requires_human_confirmation']
+    assert out['terminal'] is None and out['review']['band'] == 'HIGH'
+    assert CFG['models']['gemini_neon']['id'] in out['review']['reviewer_models']
 
 
 def test_ordinary_disagreement_uses_hidden_frontier_without_losing_diversity():
@@ -85,15 +94,24 @@ def test_promoted_review_band_can_promote_the_source_lead():
 
 def test_missing_judge_does_not_misreport_missing_source_reviewers():
     # The Claude balanced model is tier 2 since 1.23.0 and would judge two
-    # tier-2 parties, so it is excluded too to keep the judge missing.
+    # tier-2 parties, so it is excluded too to keep the judge missing. (b) The
+    # gemini seat is tier 2 since 1.27.0 (T15) and would judge them too, so it
+    # is excluded for the same reason.
     out = run(flags=['review_disagreement'], review_context=dict(target_sha256='a'*64,
         author_model_ids=[CFG['models'][k]['id'] for k in ['claude_architect','openai_frontier',
-                                                           'claude_worker_balanced']]))
+                                                           'claude_worker_balanced',
+                                                           'gemini_neon']]))
     assert out['terminal'] is None
     assert out['review']['judge_unavailable']
     assert not out['review']['independence_compromised']
     assert len(set(out['review']['reviewer_models'])) == 2
     assert out['requires_human_confirmation']
+    # the shipped outcome with the seat not excluded: it is the judge
+    out = run(flags=['review_disagreement'], review_context=dict(target_sha256='a'*64,
+        author_model_ids=[CFG['models'][k]['id'] for k in ['claude_architect','openai_frontier',
+                                                           'claude_worker_balanced']]))
+    assert out['terminal'] is None and not out['review']['judge_unavailable']
+    assert out['review']['judge_model'] == CFG['models']['gemini_neon']['id']
 
 
 def test_equal_tier_frontier_replacement_does_not_invent_downgrade_compensation():

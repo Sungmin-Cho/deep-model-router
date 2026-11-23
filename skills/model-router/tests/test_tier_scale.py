@@ -78,8 +78,8 @@ TIERS_BEFORE_1_23 = {"claude_worker_balanced": 1}
 
 # Rows the registry gained after the 2026-10-14 replays; they were not there
 # to anchor them (1.24.0: the gemini seat moved to gemini-4-argon; 1.26.0: to
-# gemini-4-hydrogen).
-ADDED_AFTER_2026_10_14 = {"gemini_frontier", "gemini_hydrogen"}
+# gemini-4-hydrogen; 1.27.0: to gemini-4-neon).
+ADDED_AFTER_2026_10_14 = {"gemini_frontier", "gemini_hydrogen", "gemini_neon"}
 
 
 def _live_rows(tier: int, as_of: dict | None = None, text: str = "") -> list[str]:
@@ -166,11 +166,12 @@ def test_every_live_tier_1_row_is_measured_or_named_unmeasured():
         assert mid in measured or re.search(re.escape(mid) + r"[^.]*unmeasured", text), mid
 
 
-@pytest.mark.parametrize("key", ["meta_worker_balanced", "gemini_hydrogen"])
+@pytest.mark.parametrize("key", ["meta_worker_balanced", "gemini_neon"])
 def test_the_profiles_state_the_seat_tier_the_registry_holds(key):
-    """The current seats (1.26.0: the gemini section describes gemini-4-hydrogen)."""
+    """The current seats (1.27.0: the gemini section describes gemini-4-neon, (a)
+    the key moved; its tier, 2, is the registry's)."""
     heading = {"meta_worker_balanced": "### The meta reviewer seat",
-               "gemini_hydrogen": "### The gemini reviewer seat"}[key]
+               "gemini_neon": "### The gemini reviewer seat"}[key]
     section = PROFILES_MD.split(heading, 1)[1].split("\n### ", 1)[0]
     tier = MODELS[key]["capability_tier"]
     assert f"tier-{tier} " in section and f"tier is {tier} since" in section
@@ -216,20 +217,36 @@ def _tier_of(out):
     return POLICY.tier_of[out["selected_model"]]
 
 
+GEMINI_KEY = "gemini_neon"      # the gemini seat's live key since 1.27.0 (1.26.x: gemini_hydrogen)
+
+
 def _gemini_seat_at_tier_0() -> dict:
     """The 1.22.0-1.23 shape: a tier-0 gemini seat right behind the Claude model
     on Codex (and behind meta on Claude Code). 1.24.0 seats a tier-1 model
-    there (gemini-4-argon, measured; since 1.26.0 gemini-4-hydrogen, measured),
-    so the floor mechanisms below are kept under test on this copy, and the
-    shipped registry is checked beside it."""
+    there (gemini-4-argon, measured; from 1.26.0 gemini-4-hydrogen, measured)
+    and 1.27.0 a tier-2 one (gemini-4-neon, measured, T15), so the floor
+    mechanisms below are kept under test on this copy, and the shipped registry
+    is checked beside it."""
     import copy
     cfg = copy.deepcopy(CFG)
-    cfg["models"]["gemini_hydrogen"]["capability_tier"] = 0
+    cfg["models"][GEMINI_KEY]["capability_tier"] = 0
+    return cfg
+
+
+def _gemini_seat_at_tier_1() -> dict:
+    """The 1.24.0-1.26.x shape: a tier-1 gemini seat in the same place (argon,
+    then hydrogen). Where a test below pinned what the tier-1 seat did, that is
+    kept under test on this copy, and the shipped tier-2 seat is checked beside
+    it (ledger row "1.27.0 gemini seat placement counterfactuals")."""
+    import copy
+    cfg = copy.deepcopy(CFG)
+    cfg["models"][GEMINI_KEY]["capability_tier"] = 1
     return cfg
 
 
 GEMINI_TIER0 = _gemini_seat_at_tier_0()
-GEMINI = ID("gemini_hydrogen")
+GEMINI_TIER1 = _gemini_seat_at_tier_1()
+GEMINI = ID(GEMINI_KEY)
 
 
 def _tier0_seats(cfg: dict) -> list[str]:
@@ -295,9 +312,13 @@ def test_the_floored_role_takes_the_next_model_that_meets_it():
     # Without the flag nothing is floored: the reading lead may be the seat.
     plain = route(Task(**dict(kw, complexity=2, uncertainty=1)), GEMINI_TIER0)
     assert plain["selected_model"] in (GEMINI, ID("openai_worker_balanced"))
-    # 1.24.0: the seat is tier 1, the floor; it is the promoted lead.
+    # 1.24.0: the seat is tier 1, the floor; it is the promoted lead. (b) 1.27.0:
+    # the shipped seat is tier 2 (T15), above the floor, and still the promoted
+    # lead; the tier-1 case is kept on GEMINI_TIER1.
+    t1 = route(Task(**kw, flags=["unknown_root_cause"]), GEMINI_TIER1)
+    assert t1["selected_model"] == GEMINI and t1["selected_capability_tier"] == 1
     shipped = route(Task(**kw, flags=["unknown_root_cause"]), CFG)
-    assert shipped["selected_model"] == GEMINI and _tier_of(shipped) == 1
+    assert shipped["selected_model"] == GEMINI and _tier_of(shipped) == 2
     assert f"worker_balanced: {XAI} unavailable -> {GEMINI}" in shipped["fallbacks_applied"]
 
 
@@ -307,33 +328,50 @@ def test_a_low_claude_quota_swaps_a_read_lead_past_the_tier_0_seats(runtime, whi
     """Review r2 (fable F1): the `low` swap goes to the first SAME-TIER model of
     another family; the seats are no longer that tier. Since 1.23.0 the Claude
     balanced model it swaps away from is tier 2, so the swap lands on the
-    OpenAI tier-2 model (issue #65)."""
+    OpenAI tier-2 model (issue #65).
+
+    (b) 1.27.0: the shipped gemini seat is tier 2 too (T15) and sits ahead of
+    the OpenAI tier-2 model in the list, so on the shipped registry the swap
+    lands on it — a read worker, and the seat reads (ledger row "1.27.0 gemini
+    seat placement counterfactuals"). With the seat at tier 1 (the 1.24.0-1.26.x
+    shape) or tier 0 it is still the OpenAI tier-2 model."""
     cfg = REGISTRIES[which]
-    out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
-                     reversibility=1, runtime=runtime, unavailable_models=[XAI],
-                     _family_quota={"claude": "low"}), cfg)
-    assert out["selected_model"] == ID("openai_reasoning")
-    assert POLICY.tier_of[out["selected_model"]] == POLICY.tier_of[ID("claude_worker_balanced")]
+    kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
+              reversibility=1, runtime=runtime, unavailable_models=[XAI],
+              _family_quota={"claude": "low"})
+    out = route(Task(**kw), cfg)
+    expected = {"shipped": GEMINI, "gemini_tier0": ID("openai_reasoning")}[which]
+    assert out["selected_model"] == expected
+    policy = Policy.of(cfg)
+    assert policy.tier_of[out["selected_model"]] == policy.tier_of[ID("claude_worker_balanced")]
     assert any(n.startswith("family_quota: claude low") for n in out["notes"])
     for key in _tier0_seats(cfg):
         assert ID(key) not in [out["selected_model"], *out["review"]["reviewer_models"]]
+    assert route(Task(**kw), GEMINI_TIER1)["selected_model"] == ID("openai_reasoning")
 
 
-@pytest.mark.parametrize("key,runtime,withheld,tier0", [
-    ("meta_worker_balanced", "claude_code", [], False),
-    ("gemini_hydrogen", "codex", [], True),
-    ("gemini_hydrogen", "claude_code", ["meta_worker_balanced"], True),
-    ("gemini_hydrogen", "codex", [], False),
-    ("gemini_hydrogen", "claude_code", ["meta_worker_balanced"], False),
+@pytest.mark.parametrize("key,runtime,withheld,shape", [
+    ("meta_worker_balanced", "claude_code", [], "shipped"),
+    ("gemini_neon", "codex", [], "tier0"),
+    ("gemini_neon", "claude_code", ["meta_worker_balanced"], "tier0"),
+    ("gemini_neon", "codex", [], "shipped"),
+    ("gemini_neon", "claude_code", ["meta_worker_balanced"], "shipped"),
+    ("gemini_neon", "codex", [], "tier1"),
+    ("gemini_neon", "claude_code", ["meta_worker_balanced"], "tier1"),
 ], ids=["meta", "gemini-tier0-codex", "gemini-tier0-claude_code", "gemini-codex",
-        "gemini-claude_code"])
-def test_a_retry_after_a_seat_fails_climbs_above_its_tier(key, runtime, withheld, tier0):
+        "gemini-claude_code", "gemini-tier1-codex", "gemini-tier1-claude_code"])
+def test_a_retry_after_a_seat_fails_climbs_above_its_tier(key, runtime, withheld, shape):
     """Review r2 (fable F3): a failed reading lead on a tier-0 seat is retried
     on a model above tier 0, and the route says so (r5: the gemini seat on
     Claude Code, with the meta seat withheld, too). 1.24.0: the shipped gemini
     seat is tier 1, so its retry climbs above tier 1; the tier-0 shape is kept
-    under test on a copy."""
-    cfg = GEMINI_TIER0 if tier0 else CFG
+    under test on a copy.
+
+    (b) 1.27.0: the shipped seat is tier 2 (T15), so its retry climbs to a
+    tier-3 model (references/model-profiles.md, "The gemini reviewer seat": "a
+    retry after this seat fails now climbs to a tier-3 model"); the tier-1 shape
+    (1.24.0-1.26.x) is kept under test on GEMINI_TIER1 beside the tier-0 one."""
+    cfg = {"tier0": GEMINI_TIER0, "tier1": GEMINI_TIER1, "shipped": CFG}[shape]
     kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
               reversibility=1, runtime=runtime,
               unavailable_models=[XAI, *(ID(k) for k in withheld)],
@@ -343,6 +381,8 @@ def test_a_retry_after_a_seat_fails_climbs_above_its_tier(key, runtime, withheld
     failed_tier = cfg["models"][key]["capability_tier"]
     assert POLICY.tier_of[out["selected_model"]] > failed_tier and out["selected_model"] != ID(key)
     assert any(f"capability tier {failed_tier}" in n for n in out["notes"])
+    if key == GEMINI_KEY and shape == "shipped":
+        assert failed_tier == 2 and POLICY.tier_of[out["selected_model"]] == 3
 
 
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
@@ -361,6 +401,7 @@ def test_a_retry_of_a_floored_investigation_keeps_the_seats_for_review(runtime):
     assert retry.get("terminal") is None
     assert _tier_of(retry) >= 2
     # 1.24.0: the tier-1 seat meets the floor and leads; its retry stays dispatchable.
+    # (1.27.0: the tier-2 seat too; its retry climbs to the tier-3 OpenAI frontier seat.)
     fresh = route(Task(**kw), CFG)
     assert fresh["selected_model"] == GEMINI
     retry = route(Task(**kw, prior_failures=1, prior_models=[GEMINI]), CFG)
@@ -369,11 +410,12 @@ def test_a_retry_of_a_floored_investigation_keeps_the_seats_for_review(runtime):
 
 def _with_seat_tiers(tier: int) -> dict:
     """The registry with the two live reader seats (meta and gemini) at `tier` —
-    1 is what 1.21.0 shipped. (Review i1: the gemini seat's live key since 1.24.0;
-    the retired row is never seated, so setting its tier would change nothing.)"""
+    1 is what 1.21.0 shipped. (Review i1: the gemini seat's live key — since
+    1.27.0 gemini_neon; the retired rows are never seated, so setting their tier
+    would change nothing.)"""
     import copy
     cfg = copy.deepcopy(CFG)
-    for key in ("meta_worker_balanced", "gemini_hydrogen"):
+    for key in ("meta_worker_balanced", GEMINI_KEY):
         cfg["models"][key]["capability_tier"] = tier
     return cfg
 
@@ -405,7 +447,8 @@ def test_the_promotion_floor_makes_no_route_terminal(runtime, which):
 
 def test_a_floor_that_would_end_the_route_yields_and_says_so():
     """On the tier-0 shape (1.24.0 seats a tier-1 model there, which meets the
-    floor, so the shipped registry never reaches this branch on the grid)."""
+    floor, so the shipped registry never reaches this branch on the grid; the
+    tier-2 seat since 1.27.0 meets it too)."""
     kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=1,
               reversibility=2, runtime="codex", flags=["unknown_root_cause"],
               unavailable_models=[XAI, ID("openai_worker_fast"), ID("openai_frontier")],
@@ -449,20 +492,39 @@ def test_a_floor_no_usable_model_meets_is_waived_and_noted():
             "usable model in the role meets it") in out["notes"]
 
 
-@pytest.mark.parametrize("which", sorted(REGISTRIES))
+# (b) 1.27.0: retries of a first attempt the tier-2 gemini seat led, which end
+# HUMAN_REQUIRED on the shipped registry where the seats at their 1.21.0 tier
+# dispatched them: a retry climbs strictly above the tier that failed, and with
+# the frontier OpenAI seat withheld and the Claude family exhausted no usable
+# model is above tier 2. Counted on this grid, per host.
+_TIER2_RETRY_ENDS = {"claude_code": 46, "codex": 60}
+
+
+@pytest.mark.parametrize("which", sorted(REGISTRIES) + ["gemini_tier1"])
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])
 def test_a_retry_is_never_floored_and_never_ends_where_1_21_0_did_not(runtime, which):
     """Reviews r3/r4: a retry is left to its ladder. No retry of a first
     attempt carries a floor note, and no retry becomes terminal where the
-    seats at their 1.21.0 tier would have dispatched it."""
+    seats at their 1.21.0 tier would have dispatched it.
+
+    (b) 1.27.0: the second half holds exactly on the tier-0 and tier-1 shapes
+    (GEMINI_TIER1 is the 1.24.0-1.26.x registry's), and on the shipped registry
+    everywhere but the disclosed retries after the tier-2 gemini seat fails:
+    "a retry after this seat fails now climbs to a tier-3 model", and where
+    none is usable the retry ends HUMAN_REQUIRED (references/model-profiles.md,
+    "The gemini reviewer seat"; ledger row "1.27.0 gemini seat placement
+    counterfactuals", which counts 34 such retries on its own grid)."""
     import itertools
     old = _with_seat_tiers(1)
+    cfg_under_test = GEMINI_TIER1 if which == "gemini_tier1" else REGISTRIES[which]
+    ended = 0
     for extra, c, u, b, r in itertools.product(DEEP_SCARCITY, range(3), range(2), range(3), range(3)):
         kw = dict(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
                   reversibility=r, runtime=runtime, flags=["unknown_root_cause"], **extra)
-        pairs = []
-        for cfg in (old, REGISTRIES[which]):
+        pairs, leads = [], []
+        for cfg in (old, cfg_under_test):
             fresh = route(Task(**kw), cfg)
+            leads.append(fresh.get("selected_model"))
             if fresh.get("terminal") or not fresh.get("selected_model"):
                 pairs.append(None)
                 continue
@@ -473,7 +535,17 @@ def test_a_retry_is_never_floored_and_never_ends_where_1_21_0_did_not(runtime, w
             assert not any("not floored" in n or "floor 1 for worker_balanced waived" in n
                            for n in after["notes"]), kw
         if before is not None and before.get("terminal") is None and after is not None:
+            if after.get("terminal") is not None and which == "shipped":
+                assert after["terminal"] == "HUMAN_REQUIRED", kw
+                assert leads[1] == GEMINI and POLICY.tier_of[GEMINI] == 2, kw
+                assert ID("openai_frontier") in extra["unavailable_models"], kw
+                assert extra["_family_quota"] == {"claude": "exhausted"}, kw
+                assert "retry ladder exhausted: no usable model is stronger than capability tier 2" \
+                    in after["notes"], kw
+                ended += 1
+                continue
             assert after.get("terminal") is None, (kw, after.get("terminal"))
+    assert ended == (_TIER2_RETRY_ENDS[runtime] if which == "shipped" else 0), ended
 
 
 # ---------------------------------------------------------------------------
@@ -488,17 +560,32 @@ def test_the_promotion_keeps_a_strictly_stronger_table_worker():
     exhausted. The fast role's ladder reaches gpt-6.1-sol; the balanced role's
     floored list holds a tier-1 model. An unknown root cause is evidence of
     difficulty, which must never weaken a route, so the flag leaves the worker
-    where the table put it."""
+    where the table put it.
+
+    (b) 1.27.0: that tier-1 model was the gemini seat; the shipped seat is tier 2
+    (T15), level with the fast role's Sol seat, so on the shipped registry the
+    promotion moves the role as it does at any equal tier (the next test) and
+    seats the gemini seat at tier 2 — no weaker. The strictly-stronger case is
+    kept on GEMINI_TIER1, the 1.24.0-1.26.x registry (ledger row "1.27.0 gemini
+    seat placement counterfactuals")."""
     kw = dict(task_class="INVESTIGATION", complexity=3, uncertainty=0, blast_radius=0,
               reversibility=0, runtime="claude_code", unavailable_models=[XAI, LUNA],
               _family_quota={"claude": "exhausted"})
-    plain = route(Task(**kw), CFG)
-    flagged = route(Task(**kw, flags=["unknown_root_cause"]), CFG)
+    plain = route(Task(**kw), GEMINI_TIER1)
+    flagged = route(Task(**kw, flags=["unknown_root_cause"]), GEMINI_TIER1)
     assert plain["selected_model"] == flagged["selected_model"] == ID("openai_reasoning")
     assert flagged["selected_role"] == "worker_fast"
     assert ("investigation promotion: worker_fast kept at capability tier 2 — worker_balanced "
             "resolves to capability tier 1") in flagged["notes"]
     assert "investigation promotion: unknown root cause" not in flagged["notes"]
+    # the shipped tier-2 seat
+    plain = route(Task(**kw), CFG)
+    flagged = route(Task(**kw, flags=["unknown_root_cause"]), CFG)
+    assert plain["selected_model"] == ID("openai_reasoning") and plain["selected_role"] == "worker_fast"
+    assert (flagged["selected_model"], flagged["selected_role"]) == (GEMINI, "worker_balanced")
+    assert _tier_of(flagged) == _tier_of(plain) == 2
+    assert "investigation promotion: unknown root cause" in flagged["notes"]
+    assert not any(n.startswith("investigation promotion: worker_fast kept") for n in flagged["notes"])
 
 
 def test_at_an_equal_tier_the_promotion_still_moves_the_role():
@@ -516,35 +603,57 @@ def test_at_an_equal_tier_the_promotion_still_moves_the_role():
     assert out["review"]["band"] == "LOW"
 
 
+# (b) 1.27.0: on the shipped registry the balanced role's floored list reaches the
+# tier-2 gemini seat wherever the fast role's ladder reaches the Sol seat on this
+# grid, so the promotion never has a strictly stronger fast worker to keep there;
+# the 32 Claude Code cells the tier-1 seat kept move at an equal tier instead.
+_PROMOTION_COUNTS = {("claude_code", "gemini_tier1"): (128, 32),
+                     ("claude_code", "shipped"): (160, 0)}
+
+
+@pytest.mark.parametrize("which", ["shipped", "gemini_tier1"])
 @pytest.mark.parametrize("runtime", ["claude_code", "codex", "grok"])
-def test_the_promotion_never_resolves_weaker_than_the_table_worker(runtime):
+def test_the_promotion_never_resolves_weaker_than_the_table_worker(runtime, which):
     """Grid, first attempts: the risk chain's worker after the promotion is
     never weaker than the table cell's own worker, and is strictly stronger
     only where the promotion moved it. (A whole route can still seat a weaker
     worker with the flag than without it: the flag's confidence penalty can
     make the execution cell yield to keep the review unchanged — the
-    execution guard, not the promotion.)"""
+    execution guard, not the promotion.)
+
+    (b) 1.27.0: the kept-a-stronger-worker branch is reached on Claude Code only
+    with a tier-1 seat in the gemini place, so the grid also runs on
+    GEMINI_TIER1 (the 1.24.0-1.26.x registry), where it must be reached; on the
+    shipped registry the property holds and that branch is not reached
+    (counts pinned in _PROMOTION_COUNTS; ledger row "1.27.0 gemini seat
+    placement counterfactuals")."""
     import itertools
     import route_task as rt
+    cfg = GEMINI_TIER1 if which == "gemini_tier1" else CFG
+    policy = Policy.of(cfg)
     moved = kept = 0
     for extra, c, u, b, r in itertools.product(DEEP_SCARCITY + [{}], range(4), range(4),
                                                range(4), range(4)):
         task = Task(task_class="INVESTIGATION", complexity=c, uncertainty=u, blast_radius=b,
                     reversibility=r, runtime=runtime, flags=["unknown_root_cause"], **extra)
-        resolver = rt.Resolver(task, POLICY)
-        band = rt.apply_overrides(task, rt.band_from_score(rt.score(task, CFG), POLICY), POLICY)[0]
-        table = rt._resolve_cell(CFG["worker_selection"]["INVESTIGATION"][band], task, [])
-        role, notes = rt._legacy_pre(task, band, POLICY, resolver)
+        resolver = rt.Resolver(task, policy)
+        band = rt.apply_overrides(task, rt.band_from_score(rt.score(task, cfg), policy), policy)[0]
+        table = rt._resolve_cell(cfg["worker_selection"]["INVESTIGATION"][band], task, [])
+        role, notes = rt._legacy_pre(task, band, policy, resolver)
         before, after = resolver.peek(table, write=True), resolver.peek(role, write=True)
         if before is None:
             continue
-        assert after is not None and POLICY.tier_of[after] >= POLICY.tier_of[before], \
+        assert after is not None and policy.tier_of[after] >= policy.tier_of[before], \
             (extra, (c, u, b, r), table, before, role, after)
         if role != table:
             moved += 1
         elif any(n.startswith("investigation promotion: worker_fast kept") for n in notes):
             kept += 1
-    assert moved and (kept or runtime != "claude_code")
+    assert moved
+    if which == "gemini_tier1":
+        assert kept or runtime != "claude_code"
+    if (runtime, which) in _PROMOTION_COUNTS:
+        assert (moved, kept) == _PROMOTION_COUNTS[(runtime, which)], (moved, kept)
 
 
 def test_the_promotion_keeps_the_table_worker_when_the_balanced_role_has_nothing():
@@ -743,26 +852,83 @@ def test_the_gemini_seat_cannot_write_without_an_agreeing_implementation_replay(
     """Argon's replay never ran and was stopped with the row (1.26.0); the live seat's
     own replay is recorded, and write authority stays withheld unless both replays
     name the same tier and the user then grants it (review i1, fable F7: bound to the
-    live seat). In 1.26.0 they disagree, so the direction cannot write."""
+    live seat). In 1.26.0 they disagreed (hydrogen), so the direction could not write.
+
+    (a) 1.27.0: the live seat is gemini_neon; hydrogen is retired with its two
+    disagreeing replays kept as the record. Neon's review replay (T15) reads tier
+    2; its implementation replay row, "gemini_neon implementation replay
+    (2026-11-23)", is not in the ledger until that replay is scored. While no
+    verified implementation-replay row for the live seat exists, or while one
+    names a different tier than its review replay, or while the seat is not the
+    family's only dispatchable row, neither direction may write."""
     assert LEDGER["gemini_frontier implementation replay (not run, 2026-10-27)"]["status"] == "documented"
     assert LEDGER["gemini_frontier implementation replay (stopped, 2026-11-15)"]["status"] == "documented"
-    assert MODELS["gemini_hydrogen"].get("dispatchable", True) is True
-    review, impl = (_stated_tier(HYDROGEN_ROW), _stated_tier(HYDROGEN_IMPL_ROW))
-    gemini_rows = [k for k, m in MODELS.items()
-                   if m["family"] == "gemini" and m.get("dispatchable", True) is not False]
+    # hydrogen (1.26.x): its replays disagreed, it never wrote, and it is retired
+    assert _stated_tier(HYDROGEN_ROW) != _stated_tier(HYDROGEN_IMPL_ROW)
+    assert MODELS["gemini_hydrogen"]["dispatchable"] is False
+    # the live seat
+    assert MODELS[GEMINI_KEY].get("dispatchable", True) is True
     # the rule: write authority on a gemini direction needs the two replays to agree
     # and this to be the family's only dispatchable row (review i2, fable)
-    if review != impl or gemini_rows != ["gemini_hydrogen"]:
+    if not _gemini_write_proposable(LEDGER, MODELS):
         for host in ("claude_code", "codex"):
             assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
-    # and the state: 1.26.0's replays disagree, and nothing has been granted
-    assert review != impl
+    # and the state: nothing has been granted (a grant changes this together with
+    # the ledger row that records it)
     for host in ("claude_code", "codex"):
         assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
 
 
+def _row_tier(entry: dict) -> int:
+    found = re.findall(r"Verdict: tier (\d)\.", " ".join(entry["evidence"].split()))
+    assert len(found) == 1, (entry["item"], found)
+    return int(found[0])
+
+
+def _gemini_write_proposable(ledger: dict, models: dict) -> bool:
+    """Write authority may be proposed for the live gemini seat only when every
+    verified implementation-replay row for it names the tier its review replay
+    names (and at least one exists), and it is the family's only dispatchable row."""
+    review = _row_tier(ledger[NEON_ROW])
+    impl = {_row_tier(e) for k, e in ledger.items()
+            if k.startswith(f"{GEMINI_KEY} implementation replay") and e.get("status") == "verified"}
+    rows = [k for k, m in models.items()
+            if m["family"] == "gemini" and m.get("dispatchable", True) is not False]
+    return impl == {review} and rows == [GEMINI_KEY]
+
+
+def test_the_write_guard_reads_a_missing_or_disagreeing_implementation_replay_as_no():
+    """The guard above on fabricated ledgers, so its branches are exercised before the
+    live seat's implementation replay lands: no row, a row naming another tier, an
+    unverified row, two rows that disagree, a second dispatchable gemini row — each
+    withholds write authority; only an agreeing verified row on the family's only
+    dispatchable row leaves it proposable (still not granted)."""
+    import copy
+    review = _row_tier(LEDGER[NEON_ROW])
+    other = 1 if review != 1 else 2
+    name = f"{GEMINI_KEY} implementation replay (2026-11-23)"
+
+    def ledger(*rows):
+        out = {k: v for k, v in LEDGER.items()
+               if not k.startswith(f"{GEMINI_KEY} implementation replay")}
+        for i, (tier, status) in enumerate(rows):
+            item = name if i == 0 else f"{GEMINI_KEY} implementation replay (re-run {i})"
+            out[item] = {"item": item, "status": status,
+                         "evidence": f"Pass rate: x. Verdict: tier {tier}. Limits: y."}
+        return out
+    two_live = copy.deepcopy(MODELS)
+    two_live["gemini_hydrogen"]["dispatchable"] = True
+    assert not _gemini_write_proposable(ledger(), MODELS)
+    assert not _gemini_write_proposable(ledger((other, "verified")), MODELS)
+    assert not _gemini_write_proposable(ledger((review, "documented")), MODELS)
+    assert not _gemini_write_proposable(ledger((review, "verified"), (other, "verified")), MODELS)
+    assert not _gemini_write_proposable(ledger((review, "verified")), two_live)
+    assert _gemini_write_proposable(ledger((review, "verified")), MODELS)
+
+
 HYDROGEN_ROW = "gemini_hydrogen tier measurement (real-review replay, 2026-11-15)"
 HYDROGEN_IMPL_ROW = "gemini_hydrogen implementation replay (2026-11-15)"
+NEON_ROW = "gemini_neon tier measurement (real-review replay, 2026-11-23)"
 
 
 def _stated_tier(item: str) -> int:
@@ -849,6 +1015,59 @@ def test_the_hydrogen_seat_measurement_rederives_its_tier():
     assert MODELS["gemini_frontier"]["id"] in rec      # the retired seat was an anchor then
 
 
+def test_the_neon_seat_measurement_rederives_its_tier():
+    """1.27.0, T15: re-derive the verdict from the numbers the row records, with the
+    registry as it stood before the measurement (1.26.1: hydrogen live at tier 1, the
+    subject left out): three tier-2 anchors set the tier-2 mean and bar, two tier-1
+    anchors the tier-1 bar; tier-0 rows and the tier-3 policy rows are reported
+    beside and decide nothing. The registry must hold the derived tier."""
+    row = LEDGER[NEON_ROW]
+    assert row["status"] == "verified"
+    assert row["supersedes"] == ["gemini_neon tier evidence (external, not measured)"]
+    assert LEDGER["gemini_neon tier evidence (external, not measured)"]["status"] == "documented"
+    text = _text(NEON_ROW)
+    rec = _recalls(text)
+    seat = MODELS[GEMINI_KEY]["id"]
+    live = _live_others(GEMINI_KEY, **BEFORE_1_27)
+    assert "gemini_hydrogen" in live and GEMINI_KEY not in live
+    # each row under the id it held when measured
+    tier = lambda t: [rec[_id(k, text)] for k, m in live.items()           # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in rec]
+    t2, t1, t3 = tier(2), tier(1), tier(3)
+    assert len(t2) == 3 and len(t1) == 2 and len(t3) == 2, (t2, t1, t3)
+    assert MODELS["gemini_hydrogen"]["id"] in rec       # the retired seat was an anchor then
+    assert MODELS["xai_frontier"]["id"] not in rec      # named unmeasured
+    assert re.search(re.escape(MODELS["xai_frontier"]["id"]) + r"[^.;)]*unmeasured", text)
+    a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
+    gate = mean2 - a1
+    assert gate >= SEPARATION
+    stated = {k: float(v) for k, v in re.findall(
+        r"(Tier-2 mean|separation|Bar for tier 2:|Bar for tier 1:) (0\.\d{6})", text)}
+    assert abs(stated["Tier-2 mean"] - mean2) < 2e-6 and abs(stated["separation"] - gate) < 2e-6
+    assert abs(stated["Bar for tier 2:"] - (a2 - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["Bar for tier 1:"] - (a1 - CONFIRM_MARGIN)) < 2e-6
+    r = rec[seat]
+    # the recall is the mean of the package recalls the row lists
+    packages = [float(v) for v in re.search(
+        re.escape(seat) + r" 0\.\d{6} \(packages (0\.\d{6}), (0\.\d{6}), (0\.\d{6})\)",
+        text).groups()]
+    assert abs(sum(packages) / 3 - r) < 2e-6
+    derived = 2 if r >= a2 - CONFIRM_MARGIN else 1 if r >= a1 - CONFIRM_MARGIN else 0
+    assert _stated_tier(NEON_ROW) == derived == 2
+    assert MODELS[GEMINI_KEY]["capability_tier"] == derived
+    # tier 3 is reported beside, not decided: no live tier-3 row has a measured tier,
+    # and the figure the row compares against is the lower policy row's bar
+    beside = float(re.search(r"the recall is above (0\.\d{6}), within 0\.05 of the lower "
+                             r"tier-3 policy row's", text).group(1))
+    assert abs(beside - (min(t3) - CONFIRM_MARGIN)) < 2e-6 and r >= beside
+    assert "tier 3 is not decidable on this suite" in text
+    # the profile's table states the same figures
+    section = PROFILES_MD.split("## Tiers measured on 2026-11-23", 1)[1]
+    assert f"**{derived}** | **{round(r * 100)}%**" in section
+    assert (f"The tier-2 bar is {(a2 - CONFIRM_MARGIN) * 100:.1f}% and the tier-1 bar "
+            f"{(a1 - CONFIRM_MARGIN) * 100:.1f}%") in " ".join(section.split())
+
+
 # ---------------------------------------------------------------------------
 # Reading a ledger row under the ids it measured (1.24.1, review d1 fable F4)
 # ---------------------------------------------------------------------------
@@ -884,7 +1103,11 @@ TERRA_KEY = "openai_worker_balanced"
 # The registry as it stood before a measurement (references/evaluation.md): 1.26.0 retired
 # the argon row (live from 2026-10-27, so an anchor for T7 and T11) and added the hydrogen
 # row (live from 1.26.0, after every measurement before T11, and T11's own subject).
-BEFORE_1_26 = dict(plus=("gemini_frontier",), minus=("gemini_hydrogen",))
+# (a) 1.27.0 retired the hydrogen row (live in 1.26.x, so an anchor for T15) and added the
+# neon row (live from 1.27.0, after every measurement before T15, and T15's own subject),
+# so the registry before 1.26 leaves neon out too.
+BEFORE_1_26 = dict(plus=("gemini_frontier",), minus=("gemini_hydrogen", "gemini_neon"))
+BEFORE_1_27 = dict(plus=("gemini_hydrogen",), minus=("gemini_neon",))
 
 
 def _live_others(key: str, plus=(), minus=()) -> dict:
