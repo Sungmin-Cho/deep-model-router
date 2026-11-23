@@ -5880,10 +5880,11 @@ verification_ledger:
         scored session resolved to gemini-4-neon-high, the released 1.26.1
         supervisor), graded blind by the T3 judges claude-fable-5-1 and
         gpt-6-astra, whose calibration was re-run (12 of 12 exactly as
-        expected; agreement on the subject's items 0.966). Eight executions:
-        six SUCCEEDED on their first dispatch, two ended without a parseable
-        review section and were re-run once as the plan requires (both re-runs
-        SUCCEEDED); 502 to 759 s per scored review. The rule was written before
+        expected; agreement on the subject's items 0.966). Eight executions
+        for six reps: four SUCCEEDED on their first dispatch, two ended
+        INVALID_OUTPUT without a parseable review section and were re-run once
+        as the plan requires (both re-runs SUCCEEDED); 502 to 759 s per scored
+        review. The rule was written before
         any dispatch, for a row with no tier yet: anchors are the published
         recall of the live rows of the 1.26.1 registry; tier 2
         claude-opus-5-5 0.515993, gpt-6.2-sol 0.484848, claude-sonnet-5-5
@@ -5905,7 +5906,9 @@ verification_ledger:
         in the six scored), no other tool, every path inside the attempt's
         package, no other session's id, review line or summary text in any
         store, each first request within 96 tokens of the seat's boot plus its
-        prompt; three flags (`call_` markers in package B's own fixture files,
+        prompt (a baseline estimated at four characters a token, reported and
+        deciding nothing; a store cannot prove it recorded all the context the
+        CLI injected); three flags (`call_` markers in package B's own fixture files,
         returned by read_file) cleared by hand. The Orca agent hook in the
         user's agy configuration ran in every execution and printed `{}`
         (hashes recorded with the result). Two design reviews (gpt-6.2-sol,
@@ -5917,6 +5920,28 @@ verification_ledger:
         quota-suspect hold. Plan, amendments, harness, receipts, grades and
         audit: the local archive docs/evals/2026-11-23-t15/ (summary.json
         sha256 e478b57ccd4dd6f80e68d8a014ab15ebed1bb3aea1afd5441aa107bd36d3071b).
+
+    - item: "agy account quota for gemini-4-neon (2026-11-23)"
+      status: verified
+      probed_on: "2026-11-23"
+      cli_version: "agy 1.5.14"
+      evidence: >
+        On the same personal Antigravity sign-in the model answered the
+        probes (first call 13:45:54 KST), the eight T15 review executions
+        (4,675,463 tokens by the CLI's own usage totals: 4,221,529 input and
+        453,934 output, 51,421,404 cache reads aside) and the T16 pilot and
+        validation run; the first T16 implementation run (t16-T01-NEON-r1)
+        was refused after 543 s with "Individual quota reached. Please
+        upgrade your subscription to increase your limits. Resets in
+        2h33m13s." — a reset the refusal names for about 18:46 KST, five
+        hours after the day's first call, as for gemini-4-hydrogen. The
+        refusal ended FAILED and carried `quota_refusal: {resets_in_seconds:
+        9193}` (finished 07:12:47Z; receipt sha256
+        d7ec4a079f819d6eea433061dceb72e6a9ca7ba831fddf23d10a6478ce1f8ce8 in the
+        local archive docs/evals/2026-11-23-t16/void-quota/; the attempt was
+        voided and dispatched again after the reset, T16's rule). The window
+        is the account's and read from each refusal, not a published
+        contract.
 
     - item: "Gemini 4 Hydrogen retired (gemini_hydrogen, 1.27.0)"
       status: documented
@@ -5941,35 +5966,58 @@ verification_ledger:
         hours), alone and where the seats ahead of the gemini place are out
         too — routed by the released 1.26.1 router against the 1.26.1 config
         and each candidate, with the new row at tier 1 and at tier 2. Adopted
-        (replace; tier 2 as measured): 130,355 of 1,157,659 routes change; the
+        (replace; tier 2 as measured): 130,355 of 1,157,659 routes change
+        (98,135 of 959,121 in the thirty-four scenarios without the
+        hydrogen withholding; 32,220 of 198,538 in the six with it); the
         output price of seated workers and reviewers +1.58% (the model's rates
-        are twice hydrogen's); a higher-tier worker on 7,148 worker changes
-        and a lower one on 528; 3,922 terminals (mostly INDEPENDENCE_UNAVAILABLE
-        where the Claude family is out) become routes, the tier-2 seat meeting
-        a review floor hydrogen did not; a retry after the tier-2 seat fails
-        climbs to tier 3, so 34 retries become HUMAN_REQUIRED where no tier-3
-        model is usable (in this replay all in the scenario with grok-4.7,
-        gpt-6-luna and gpt-6.2-astra withheld, the Claude family exhausted and
-        the root cause unknown; the condition, gpt-6.2-astra withheld and the
-        Claude family exhausted, ends such a retry on either host with or
-        without the flag), and 760 retries that climb to gpt-6.2-astra with
-        the Claude family exhausted gain a review_below_band gate (a MEDIUM
-        review of a tier-3 implementer's work needs a tier-3 reviewer; 456 in
-        the thirty-four scenarios, 304 hydrogen-withheld; 762 new gates in
-        all, the other two among the 34); on 12,026 routes a tier-3 reviewer
-        that stood in where hydrogen missed the tier-2 floor gives way to the
-        seat (9,754 and 2,272; the review cross-family on 11,552 of them; no
-        judge changes this way); a cross-family
-        reviewer gained on 38,959 routes and lost on 774. Not adopted: both
+        are twice hydrogen's); the seat is seated on 94,534 routes, 45,543 lose
+        hydrogen (335 of them, under an xai low quota, to gpt-6.1-terra: the
+        swap goes to the xai seat's tier, 1; under a Claude low quota the swap
+        goes to the seat instead of gpt-6.2-sol on 322); a higher-tier worker
+        on 7,148 routes (the seat itself at tier 2 on 4,056, where hydrogen
+        worked on 3,144 and gpt-6.1-terra on 912; a retry after the seat
+        failed climbing from gpt-6.2-sol to gpt-6.2-astra on 2,848; gpt-6.1-terra
+        to gpt-6.2-sol on 244) and a lower one on 528 (write seats: the
+        execution cell keeping the fast writer for the seat's cross-family
+        review on 320, write retries on 208); human gates lifted on 30,214;
+        terminals change on 4,270: 3,922 that ended INDEPENDENCE_UNAVAILABLE
+        become routes, the tier-2 seat meeting a review floor hydrogen did not;
+        290 REVIEW retries after claude-fable-5-2 failed (the OpenAI family
+        exhausted, claude-opus-5-5 out) end HUMAN_REQUIRED where they ended
+        SUPPLY_EXHAUSTED, the review's second seat now resolving to the seat;
+        24 INDEPENDENCE_UNAVAILABLE become ESCALATE_ROUTING (confidence 0.59
+        either way, the review now resolving); and a retry after the tier-2
+        seat fails climbs to tier 3, so 34 retries become HUMAN_REQUIRED where
+        no tier-3 model is usable (in this replay all in the scenario with
+        grok-4.7, gpt-6-luna and gpt-6.2-astra withheld, the Claude family
+        exhausted and the root cause unknown; the condition, gpt-6.2-astra
+        withheld and the Claude family exhausted, ends such a retry on either
+        host with or without the flag; the replay's retries are untyped, so
+        they take the tier ladder), and 760 retries that climb to
+        gpt-6.2-astra with the Claude family exhausted gain a
+        review_below_band gate (a MEDIUM review of a tier-3 implementer's work
+        needs a tier-3 reviewer; 456 in the thirty-four scenarios, 304
+        hydrogen-withheld; 762 new gates in all, the other two among the 34);
+        on 12,026 routes a tier-3 reviewer that stood in for want of a tier-2
+        one (hydrogen below the floor, or withheld) gives way to the seat
+        (9,754 and 2,272; the review becomes cross-family on 11,552 of them),
+        and on 272 CRITICAL reviews of these the displaced claude-fable-5-2
+        adjudicates (no_adjudicator lifts, effort_below_floor joins: the seat
+        runs MAX at xhigh); the seat takes no judge seat; effort_below_floor
+        joins 10,854 gates the critical band raised; a cross-family
+        reviewer gained on 38,959 routes and lost on 774 (560 of these are
+        REVIEW retries that ended INDEPENDENCE_UNAVAILABLE and now resolve
+        with the two OpenAI models reviewing). Not adopted: both
         rows dispatchable with neon first (130,020 routes, +1.58%) or hydrogen
         first (79,930, +1.01%); hydrogen kept and neon also last in the senior
         and reasoning lists on claude_code and codex (92,957, +1.92%, with
         thousands of INDEPENDENCE_UNAVAILABLE terminals turning
         HUMAN_REQUIRED where gpt-6.2-sol is out); replace plus those lists
-        (168,130, +2.69%). The write gate is per direction, so only the
-        adopted placement leaves write authority proposable. Neon has no free
+        (168,130, +2.69%). Write authority is per host-to-family direction, so
+        the placements that keep both rows dispatchable would leave it closed
+        to neon; replace and replace-plus-lists leave it proposable. Neon has no free
         tier, which the placement question carried. Script and output:
         docs/research/2026-11-23-gemini-neon-counterfactuals/ (the tier-3
-        reviewer and new-gate counts from config_replay_rv.py and
-        config_replay_rv2.py, the same replay with those counters added; every
+        reviewer, new-gate and tier-up counts from config_replay_rv.py,
+        _rv2.py and _rv3.py, the same replay with those counters added; every
         earlier counter reproduced exactly).

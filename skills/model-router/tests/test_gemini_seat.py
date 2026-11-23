@@ -2104,3 +2104,46 @@ def test_the_tier_measurement_supersedes_the_external_reading(key):
     later = "Reviewer seat tiers against live anchors (real-review replay, 2026-10-14)"
     assert new in items[later]["supersedes"]
     assert CFG["models"][key]["capability_tier"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Review i1 (1.27.0): what the tier-2 seat does beyond the MEDIUM review
+# ---------------------------------------------------------------------------
+
+def test_as_a_critical_reviewer_the_seat_runs_capped_and_frees_a_judge():
+    """Review i1 (fable F2): at tier 2 the seat also staffs HIGH and CRITICAL reviews.
+    On a CRITICAL review, which asks MAX, it runs at its VERY_HIGH ceiling and adds
+    `effort_below_floor` to the gate the band raised; where it takes the second seat
+    from the Claude architect model, that model is free to adjudicate, so a CRITICAL
+    review that had no adjudicator gains one (272 routes in the replay; ledger row
+    "1.27.0 gemini seat placement counterfactuals"). The seat itself is not the judge."""
+    kw = dict(task_class="MECHANICAL", complexity=0, uncertainty=2, blast_radius=2,
+              reversibility=2, runtime="codex", unavailable_models=[XAI, ID("openai_reasoning")])
+
+    def retry(cfg):
+        fresh = route(Task(**kw), cfg)
+        return route(Task(**kw, prior_failures=1, prior_models=[fresh["selected_model"]]), cfg)
+    before, after = retry(SEAT_TIER1), retry(CFG)
+    fable, opus = ID("claude_architect"), ID("claude_senior")
+    assert before["review"]["band"] == after["review"]["band"] == "CRITICAL"
+    assert before["review"]["reviewer_models"] == [opus, fable]
+    assert before["review"]["judge_model"] is None
+    assert "no_adjudicator" in before["human_control_causes"]
+    assert after["review"]["reviewer_models"] == [opus, GEMINI]
+    assert after["review"]["judge_model"] == fable
+    assert after["human_control_causes"] == ["critical_review_band", "effort_below_floor"]
+    [cap] = [e for e in after["effort_ceiling_applied"] if e["model"] == GEMINI]
+    assert (cap["requested"], cap["capped_at"], cap["floor_broken"]) == \
+        ("MAX", "VERY_HIGH", "review.CRITICAL.effort")
+
+
+@pytest.mark.parametrize("runtime", ["claude_code", "codex"])
+def test_a_low_xai_quota_passes_the_tier_2_seat_on_both_hosts(runtime):
+    """Review i1 (fable F3, missing test): `low` moves the worker to the first model
+    of the xai seat's tier (1) in another family; the shipped seat is tier 2, so on
+    both hosts the swap lands on the OpenAI balanced model, where the tier-1 seat
+    took it (1.24.0-1.26.x)."""
+    kw = dict(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
+              reversibility=0, runtime=runtime, _family_quota={"xai": "low"})
+    assert route(Task(**kw), CFG)["selected_model"] == ID("openai_worker_balanced")
+    assert route(Task(**kw), SEAT_TIER1)["selected_model"] == GEMINI

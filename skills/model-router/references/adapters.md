@@ -906,15 +906,17 @@ You review code and documents. Read files when the request needs them, and answe
   start (among them `Model ID <id> not in local config, defaulting to CCPA`
   and a `.gemini must be an absolute path` warning); the lines the gate reads —
   the model resolution and the grants record — are unchanged, and the shipped
-  hydrogen seat ran on it unchanged. The agent allow-list, the deny rules, the
-  maker's kernel fence and the before-spawn refusals held on the new model,
-  which attempts outside writes into paths (the fence refused each) but
-  declines a `/dev/stdout` write and a host-file write itself; asked again
-  under an "authorized containment test" framing it declined, or the
+  hydrogen seat passed one low-effort reviewer round trip on it. The agent
+  allow-list, the deny rules, the maker's kernel fence and the before-spawn
+  refusals held on the new model, which attempts outside writes, the reviewer
+  agent's host file among them (the fence refused each), but declines a
+  `/dev/stdout` write itself; asked again under an "authorized containment
+  test" framing it declined that write and the host-file write, or the
   provider's safety filter answered instead — "This request was blocked by
   Gemini's filters." in a document whose status is SUCCESS and that carries no
-  verdict. The implementation replay's harness probed the fence for those two
-  writes without a model, under the same profile. This model takes `xhigh` and needs a paid plan (below).
+  verdict. The implementation replay's harness probed the fence for
+  `/dev/stdout` without a model, under the same profile. This model takes
+  `xhigh` and needs a paid plan (below).
 - **User-level CLI hooks run in the seat.** The agent and the deny rules
   remove tools from the model; they do not stop hooks the user configured in
   `~/.gemini/config/hooks.json`, which the CLI runs as host commands on every
@@ -1564,8 +1566,16 @@ from 1.24.0 `gemini_frontier` and from 1.26.0 `gemini_hydrogen`, are retired —
 valid history input, never seated). On a Claude Code host it is the third fallback of
 `worker_balanced`, after the Claude balanced model and the meta seat; on a
 Codex host it is the second, right after the Claude balanced model. A role
-resolves to the first usable model in its list, so this seat is reached only
-where everything ahead of it does not resolve for the route. It never fills a
+resolves to the first usable model in its list, so as a role's model this seat
+is reached only where everything ahead of it does not resolve for the route.
+Review seats are the exception: when a review's seats cannot be staffed at the
+band's floor from the roles' own models (a family exhausted or withheld, an
+author excluded), the router allocates the review and judge seats jointly from
+every eligible model, and at tier 2 this seat is eligible for HIGH and CRITICAL
+reviewer seats and as the judge of tier-2 reviewers — so it can review while
+the models ahead of it are available (in the 1.27.0 replay, with only the
+OpenAI family exhausted, it takes the second HIGH seat from the xAI seat,
+which is below that band's floor). It never fills a
 seat that writes: the Claude Code direction ships a maker recipe
 (`mechanism_maker`, the `agy-maker-v1` profile below) with `write_verified:
 false` by decision, and the Codex direction has a reviewer recipe only. Where it
@@ -1574,10 +1584,13 @@ write-capable gemini seat on <runtime>; seated the <family> one`. Grok hosts do
 not offer the family. It is tier 2, measured (the first model was tier 0 from
 1.22.0, argon and hydrogen tier 1): unlike the meta seat it meets a MEDIUM
 review's floor, and unlike its predecessors it meets it also when the
-implementer is tier 2 (a MEDIUM reviewer must reach the implementer's tier), so
-where it resolves it can lead or staff such a review, and an INVESTIGATION's
-promotion floor does not skip it. Its effort ceiling is VERY_HIGH (the CLI takes
-`xhigh` for this model and refuses `max`), so a MAX ask runs at `xhigh`. Its
+implementer is tier 2 (a MEDIUM reviewer must reach the band's floor and, when
+the implementer is known, the implementer's tier), so where it resolves it can
+lead or staff such a review, it meets the HIGH and CRITICAL reviewer floor, and
+an INVESTIGATION's promotion floor does not skip it. Its effort ceiling is
+VERY_HIGH (the CLI takes `xhigh` for this model and refuses `max`), so a MAX ask
+— a CRITICAL review's — runs at `xhigh` and adds `effort_below_floor` to that
+band's gate. Its
 account quota is metered per model and it needs a paid plan (see "Antigravity
 seat profile"). `model-profiles.md` ("The gemini reviewer seat") lists what seating
 it changes.

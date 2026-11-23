@@ -263,9 +263,10 @@ have placed it above tier 2, and its score beside the tier-3 policy rows'
 conversation store: every tool call was a read inside its package, every scored
 session resolved to the model's high-effort spelling on one CLI version, and no other session's
 id, review line or summary was in any store. It was measured at high effort, as
-every anchor; the vendor's own index falls steeply at low effort (44 against 60
-at high), so the tier is a claim about this seat at the efforts the router asks
-of a tier-2 reviewer.
+every anchor, and the recall is a claim about high effort only: Artificial
+Analysis's index for the model falls steeply at low effort (44 against 60 at
+high), and a CRITICAL review asks MAX, which this seat runs at `xhigh`, an
+effort no replay measured.
 
 **Its effort ceiling is VERY_HIGH.** The CLI takes `xhigh` for this model and
 refuses `max` before any request, so a MAX ask runs at `xhigh`, as on Hydrogen.
@@ -274,9 +275,10 @@ to the gate that band has already raised.
 
 **The maker seat is shipped without write authority.** It was probed on the
 new model (the profile, the kernel fence and the before-spawn refusals hold;
-this model tried the outside writes into paths and was refused by the fence,
-but declined the `/dev/stdout` write and the host-file write itself, so those
-two are covered by the harness's model-free write probe instead), but a seat
+this model tried the outside writes, the reviewer agent's host file among them,
+and the fence refused each; it declined only the `/dev/stdout` write — and, asked
+again, the host-file write — so `/dev/stdout` is covered by the implementation
+replay harness's model-free write control under the same profile), but a seat
 that writes moves tier only when an implementation replay agrees with the
 review replay, and write authority on a gemini direction is per family, so it
 can be proposed only while this is the family's only dispatchable model — which
@@ -292,47 +294,87 @@ reads aside) and a pilot, the refusal naming a reset about five hours after that
 day's first call, as for Hydrogen. A refused attempt ends FAILED and its receipt
 says it was the quota and when it resets (`quota_refusal`, `adapters.md`).
 Withhold the model until the reset rather than retrying it. A review took 8 to
-13 minutes at high effort: give the seat a generous deadline.
+13 minutes at high effort: give the seat a generous deadline. Two of its six
+measured reviews first ended INVALID_OUTPUT (no parseable review section) and
+passed when run again.
+
+**What the router keys by family, not by model.** Write authority is per
+host-to-family direction (`transports.<host>.to_gemini`), so a grant would
+cover every dispatchable gemini row. `family_quota.gemini: exhausted` withholds
+the whole family, `low` reorders only the worker choice, and
+`--unavailable-models` withholds one model: a standing `exhausted` set for
+Hydrogen's quota also withholds Neon. Review diversity counts families, so two
+gemini models are one family; an author exclusion by family
+(`author_families: [gemini]`, say from a target Hydrogen wrote) excludes Neon
+too, and `allowed_families` admits or refuses both together.
 
 What 1.27.0 changes for this seat, against 1.26.1 — the 1.26.0 replay grid with
 its six argon-withheld scenarios replaced by six that withhold Hydrogen (forty
-scenarios), 1,157,659 routes, fresh and after a failure:
+scenarios), 1,157,659 routes, fresh and after the route's own fresh worker
+failed (an untyped failure, so retries take the tier ladder). Every count is over
+the whole replay unless it names the thirty-four scenarios without the Hydrogen
+withholding (959,121 routes) or the six with it (198,538):
 
-- **With every seat available nothing moves.** In the thirty-four scenarios
-  without the Hydrogen withholding (959,121 routes), 98,135 change, all where
-  the seat sits or where its tier now reaches: the new id takes Hydrogen's 45,543
-  seats, and because the seat is now tier 2 it meets review floors and retry
-  ladders Hydrogen did not. 27,456 human gates lift (most were
-  `review_below_band`: a MEDIUM review of a tier-2 implementer's work, whose one
-  reviewer must reach the implementer's tier, which the tier-1 seat did not), 2,328 retries and 1,018 first attempts that ended INDEPENDENCE_UNAVAILABLE
-  get a route, and the worker lands a tier higher on 5,316: a retry after this
-  seat fails now climbs to a tier-3 model.
-- **That climb costs where no other tier-3 model is free.** With the OpenAI
+- **With every seat available nothing moves.** 130,355 routes change (98,135 in
+  the thirty-four, 32,220 in the six, where the seat now resolves where 1.26.1
+  left it empty). The new model is seated on 94,534 routes; 45,543 routes lose
+  Hydrogen, 335 of them to the OpenAI balanced model rather than this seat:
+  under an xai `low` quota the swap goes to the first model of the xai seat's
+  tier, 1, which this seat no longer is. Under a Claude `low` quota the swap
+  goes to the first model of the Claude balanced model's tier, 2, which this
+  seat now is, ahead of the Sol model (322 routes).
+- **It meets floors Hydrogen did not.** A MEDIUM reviewer must reach the band's
+  floor and, when the implementer is known, the implementer's tier; a HIGH or
+  CRITICAL reviewer tier 2. So 30,214 human gates lift (most were
+  `review_below_band`) and 3,922 routes that ended INDEPENDENCE_UNAVAILABLE get
+  a route. Where the review's seats are allocated jointly from every eligible
+  model (`adapters.md`, "The gemini seat reads, after the Claude model"), the
+  seat can now take a HIGH or CRITICAL seat while the models ahead of it are
+  available.
+- **On 12,026 routes a tier-3 reviewer gives way to this seat**, most often the
+  OpenAI frontier model beside the Sol model on a HIGH review: where Hydrogen
+  could not meet the tier-2 floor, or was withheld, a tier-3 model stood in for
+  want of another tier-2 one; this seat meets the floor. The floor still holds,
+  the review is no longer staffed above it, and on 11,552 of these routes it
+  becomes cross-family. On 272 CRITICAL reviews the seat takes the second seat
+  from the Claude architect model, which then adjudicates: those reviews gain
+  an adjudicator (`no_adjudicator` lifts) and `effort_below_floor` joins their
+  gate. The seat takes no judge seat in the replay.
+- **The worker is a tier higher on 7,148 routes**: on 4,056 the seat itself
+  works at tier 2 where a tier-1 model did (Hydrogen on 3,144; the OpenAI
+  balanced model on 912, nearly all where Hydrogen was withheld); on 2,848 a
+  retry after this seat failed climbs from the Sol model to the OpenAI frontier
+  model; on 244 the OpenAI balanced model gives way to the Sol model. It is a tier lower on
+  528, all write seats: the execution cell keeps the OpenAI fast writer to keep
+  this seat's cross-family review — the trade 1.24.0 disclosed — on 320, and
+  write retries follow on 208.
+- **A retry after this seat fails now needs a tier-3 model**, where it needed
+  tier 2. That costs where no other tier-3 model is free. With the OpenAI
   frontier model withheld and the Claude family exhausted, no usable model is
-  above tier 2, so a retry after this seat fails ends HUMAN_REQUIRED
-  (`retry ladder exhausted`). It does so on either host and with or without the
-  unknown-root-cause flag: the condition decides, not a scenario. The replay has
-  34 such retries, all in the one scenario that combines the two (the xai seat
-  and the OpenAI fast model withheld too, the root cause unknown). With the
-  Claude family exhausted but the frontier model available, the retry climbs to
-  the frontier model. A MEDIUM review of its work then needs a tier-3 reviewer,
-  and none other is left, so 456 retries gain a `review_below_band` human gate.
-  Under Hydrogen the retry went to the tier-2 Sol model, which the frontier
-  model could review.
-- **On 9,754 reviewer places a tier-3 model gives way to this seat**, most
-  often the OpenAI frontier model beside the Sol model on a HIGH review.
-  Hydrogen could not meet the tier-2 floor there, so a tier-3 model stood in;
-  this seat meets it. The floor still holds, the review is no longer staffed
-  above it, and on 9,280 of these routes the review becomes cross-family. No
-  judge seat changes this way.
-- **In the six Hydrogen-withheld scenarios (198,538 routes), 32,220 change: the
-  seat resolves again** where 1.26.1 left it empty. The model is seated on
-  17,438 routes, a cross-family review is gained on 18,784 and lost on 138, and
-  the worker lands a tier lower on 340 (the execution cell keeps the OpenAI fast
-  writer to keep this seat's cross-family review — the trade 1.24.0 disclosed —
-  and write retries follow). The two effects above recur here: 2,272 reviewer
-  places where a tier-3 model gives way to the seat, and 304 retries that gain
-  a `review_below_band` gate.
+  above tier 2, so the retry ends HUMAN_REQUIRED (`retry ladder exhausted`), on
+  either host and with or without the unknown-root-cause flag: the condition
+  decides, not a scenario. The replay has 34, all in the one scenario that
+  combines the two (the xai seat and the OpenAI fast model withheld too, the
+  root cause unknown). With the Claude family exhausted but the frontier model
+  available, the retry climbs to the frontier model; a MEDIUM review of its work
+  then needs a tier-3 reviewer, none other is left, and 760 retries gain a
+  `review_below_band` human gate (762 new gates in all, the other 2 among the
+  34). Under Hydrogen the retry went to the Sol model, which the frontier model
+  could review. A typed capability failure that the same-model retry admits
+  (`control-loop.md`, "The same-model retry") first retries this seat one
+  effort higher, within its `xhigh` ceiling, instead of climbing.
+- **Other terminals.** 290 REVIEW retries after the Claude architect model
+  failed, with the OpenAI family exhausted and the Claude senior model out, end
+  HUMAN_REQUIRED (no usable model above tier 3) where they ended
+  SUPPLY_EXHAUSTED: the review's second seat now resolves to this seat. 24
+  REVIEW routes that ended INDEPENDENCE_UNAVAILABLE now end ESCALATE_ROUTING:
+  the review now resolves, and their routing confidence, 0.59 either way, is
+  under the 0.60 dispatching asks.
+- **Cross-family review** is gained on 38,959 routes and lost on 774: 138 in
+  the six Hydrogen-withheld scenarios, and in the thirty-four 560 REVIEW
+  retries that ended INDEPENDENCE_UNAVAILABLE and now resolve with the two
+  OpenAI models reviewing (the Claude family exhausted), and 76 others whose
+  new review comes from one family.
 - `effort_below_floor` joins 10,854 gates the critical review band has already
   raised. The summed output price of the seated worker and reviewers rises
   1.58%: this model's output price is $15 per million tokens against

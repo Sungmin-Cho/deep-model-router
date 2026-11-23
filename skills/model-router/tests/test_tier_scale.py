@@ -898,11 +898,17 @@ def _gemini_write_proposable(ledger: dict, models: dict) -> bool:
 
 
 def test_the_write_guard_reads_a_missing_or_disagreeing_implementation_replay_as_no():
-    """The guard above on fabricated ledgers, so its branches are exercised before the
-    live seat's implementation replay lands: no row, a row naming another tier, an
-    unverified row, two rows that disagree, a second dispatchable gemini row — each
-    withholds write authority; only an agreeing verified row on the family's only
-    dispatchable row leaves it proposable (still not granted)."""
+    """The predicate of the guard above, on fabricated ledgers, so its branches are
+    exercised before the live seat's implementation replay lands: no row, a row naming
+    another tier, an unverified row, two rows that disagree, a second dispatchable
+    gemini row — each withholds write authority; only an agreeing verified row on the
+    family's only dispatchable row leaves it proposable (still not granted).
+
+    Review i1 (sol F8): this is a release prerequisite, not a runtime check. The
+    router never reads these ledger rows to decide a write grant (`Policy` validates
+    the maker recipe and its verification entries, not the replays); what keeps a
+    grant from shipping without agreeing replays is the test above, which fails on
+    the shipped config whenever `write_verified` is true and this predicate is not."""
     import copy
     review = _row_tier(LEDGER[NEON_ROW])
     other = 1 if review != 1 else 2
@@ -1186,3 +1192,29 @@ def test_the_balanced_openai_review_row_names_the_gate_blocked_sensitivities():
     assert "Every sensitivity" not in text
     sol = _id("openai_reasoning", text)          # the Sol generation the row measured against
     assert "gate fails" in text and f"{sol} alone" in text and "package C alone" in text
+
+
+@pytest.mark.parametrize("runtime,ahead", [("codex", ["xai_frontier"]),
+                                           ("claude_code", ["xai_frontier", "meta_worker_balanced"])])
+def test_a_retry_after_the_seat_fails_climbs_to_the_frontier_and_is_gated(runtime, ahead):
+    """Review i1 (sol, fable: missing test). After the tier-2 seat fails with the
+    Claude family exhausted, the retry climbs above tier 2, to the frontier OpenAI
+    model; a MEDIUM review of a tier-3 implementer's work must be tier 3, and with
+    the Claude family out the only reviewer left is the Sol seat, so the route is
+    gated `review_below_band` (760 such retries in the replay; ledger row "1.27.0
+    gemini seat placement counterfactuals"). With the seat at tier 1 the retry went
+    to the Sol seat, which the frontier model reviewed, ungated."""
+    kw = dict(task_class="INVESTIGATION", complexity=0, uncertainty=0, blast_radius=1,
+              reversibility=2, runtime=runtime, unavailable_models=[ID(k) for k in ahead],
+              _family_quota={"claude": "exhausted"})
+    assert route(Task(**kw), CFG)["selected_model"] == GEMINI
+    sol, astra = ID("openai_reasoning"), ID("openai_frontier")
+    before = route(Task(**kw, prior_failures=1, prior_models=[GEMINI]), GEMINI_TIER1)
+    after = route(Task(**kw, prior_failures=1, prior_models=[GEMINI]), CFG)
+    assert (before["selected_model"], before["review"]["reviewer_models"]) == (sol, [astra])
+    assert before["human_control_causes"] == [] and before["requires_human_confirmation"] is False
+    assert (after["selected_model"], after["review"]["reviewer_models"]) == (astra, [sol])
+    assert after["terminal"] is None and after["review"]["band"] == "MEDIUM"
+    assert POLICY.tier_of[astra] == 3 and POLICY.tier_of[sol] == 2
+    assert after["human_control_causes"] == ["review_below_band"]
+    assert after["requires_human_confirmation"] is True
