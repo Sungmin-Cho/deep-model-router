@@ -1,0 +1,16 @@
+I1123 13:45:54.582686       1 resolver.go:85] Model ID gemini-4-neon not in local config, defaulting to CCPA
+I1123 13:45:54.582771       1 resolver.go:111] Model resolved via default
+I1123 13:45:54.586444      41 server.go:2711] Language server version: 1.5.14
+I1123 13:45:54.653046       1 server.go:2366] Backend project ID updated dynamically to: dmr-reviewer-v1
+I1123 13:45:54.653058       1 analytics.go:249] CLI startup completed (took 73.567042ms, phases [main_entered=0ms ls_start=3ms ls_ready=70ms launch_cli=71ms backend_created=73ms project_resolved=73ms])
+I1123 13:45:54.653246       1 printmode.go:209] Print mode: starting (promptLength=168, model="gemini-4-neon", conversationID="")
+I1123 13:45:56.810234       1 model_resolver.go:155] model alias "gemini-4-neon" resolved to "gemini-4-neon-low"
+I1123 13:45:56.810879       1 model_resolver.go:107] Resolving model gemini-4-neon-low
+I1123 13:45:59.362374       1 model_resolver.go:155] model alias "gemini-4-neon" resolved to "gemini-4-neon-low"
+I1123 13:45:59.362511       1 model_resolver.go:107] Resolving model gemini-4-neon-low
+I1123 13:45:59.365772       1 server.go:1252] Conversation using project ID: dmr-reviewer-v1
+I1123 13:45:59.382927       1 conversation_manager.go:900] project: switching to conversation belonging to project ID: dmr-reviewer-v1
+I1123 13:45:59.383011       1 server.go:2366] Backend project ID updated dynamically to: dmr-reviewer-v1
+I1123 13:45:59.383029       1 cli_setting_manager.go:221] ApplyProjectPermissionGrants: stored 0 allow, 5 deny grants from project "dmr-reviewer-v1"
+I1123 13:45:59.383660       1 session.go:201] Print mode: conversation=676231ae-d857-4fa8-b621-8acf603070a5, sending message
+I1123 13:45:59.383677       1 printmode.go:939] Print mode: slash command expansion disabled

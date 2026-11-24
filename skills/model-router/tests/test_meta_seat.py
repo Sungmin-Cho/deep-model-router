@@ -142,12 +142,13 @@ def test_the_adapters_fence_mirrors_the_recipe():
 
 def without_meta(cfg):
     """The registry before 1.19.0: no meta seat, and no gemini seat either —
-    1.20.0 added that one behind this one (1.24.0 gemini_frontier, since 1.26.0
-    gemini_hydrogen, with the earlier ones retired), and leaving it in would let
-    it stand in for the meta seat in exactly the comparisons below."""
+    1.20.0 added that one behind this one (1.24.0 gemini_frontier, 1.26.0
+    gemini_hydrogen, since 1.27.0 gemini_neon, with the earlier ones retired),
+    and leaving it in would let it stand in for the meta seat in exactly the
+    comparisons below."""
     out = copy.deepcopy(cfg)
     keys = [k for k, m in out["models"].items() if m["family"] == "meta"]
-    keys += ["gemini_hydrogen", "gemini_frontier", "gemini_worker_balanced"]
+    keys += ["gemini_neon", "gemini_hydrogen", "gemini_frontier", "gemini_worker_balanced"]
     for k in keys:
         del out["models"][k]
     del out["effort_map"]["meta"]
@@ -213,13 +214,16 @@ def test_a_read_route_seats_meta_as_the_lead_only_with_the_claude_model_out_too(
 
 def test_a_medium_review_lead_skips_the_tier_0_seat_for_one_that_meets_the_floor():
     """A REVIEW lead is reviewer-1 and MEDIUM's floor is tier 1: since 1.22.0
-    the next tier-1 model in the list leads instead of this seat — since 1.24.0
-    the gemini seat right behind it (tier 1, measured 2026-10-27)."""
+    the next model in the list that meets it leads instead of this seat — since
+    1.24.0 the gemini seat right behind it (tier 1, measured 2026-10-27; (a) the
+    seat is gemini_neon since 1.27.0, and (b) it is tier 2 — T15, ledger row
+    "gemini_neon tier measurement (real-review replay, 2026-11-23)" — still
+    above MEDIUM's floor, so it still leads)."""
     out = route(Task(task_class="REVIEW", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=1, runtime="claude_code",
                      unavailable_models=[XAI, ID("claude_worker_balanced")]), CFG)
-    assert out["selected_model"] == ID("gemini_hydrogen")
-    assert CFG["models"]["gemini_hydrogen"]["capability_tier"] == 1
+    assert out["selected_model"] == ID("gemini_neon")
+    assert CFG["models"]["gemini_neon"]["capability_tier"] == 2
     assert META not in _emitted(out)
     assert out["review"]["review_depth_reduced"] == []
 
@@ -235,21 +239,30 @@ def test_an_author_excluded_claude_family_seats_meta_as_the_lead_with_xai_out_to
     out = route(Task(**kw, _review_context={"target_sha256": "0" * 64,
                                             "author_families": ["xai", "claude"]}), CFG)
     # 1.22.0: the tier-0 seat is below MEDIUM's floor, so the review goes to the
-    # next tier-1 model, still from outside the authors' families (the gemini
-    # seat behind it since 1.24.0).
-    assert out["selected_model"] == ID("gemini_hydrogen")
+    # next model that meets it, still from outside the authors' families (the
+    # gemini seat behind it since 1.24.0; (a) gemini_neon since 1.27.0).
+    assert out["selected_model"] == ID("gemini_neon")
     assert out["cross_family_review"] is True
 
 
 def test_a_low_xai_quota_moves_a_read_worker_to_a_same_tier_model_not_meta():
     """`low` moves the worker to the first same-tier model of another family in
-    the list — the Claude model from 1.21.0, the OpenAI balanced model since
-    1.23.0, when the Claude model became tier 2 (issue #65), and the gemini
-    seat since 1.24.0, at tier 1 and ahead of it (a read worker: the seat
-    reads). Never the meta seat, which is not that tier."""
+    the list — the Claude model from 1.21.0, the OpenAI balanced model from
+    1.23.0, when the Claude model became tier 2 (issue #65), the gemini seat
+    from 1.24.0 to 1.26.x, at tier 1 and ahead of it (a read worker: the seat
+    reads), and the OpenAI balanced model again since 1.27.0. Never the meta
+    seat, which is not that tier.
+
+    (b) 1.27.0: the gemini seat is tier 2 (T15), no longer the xai seat's tier
+    (1), so the swap passes it for the tier-1 OpenAI balanced model (ledger row
+    "1.27.0 gemini seat placement counterfactuals"); the tier-1 seat's case is
+    held in test_gemini_seat.py on a tier-1 copy
+    (`test_a_low_xai_quota_moves_only_read_workers_to_this_same_tier_seat`)."""
     out = route(Task(task_class="INVESTIGATION", complexity=1, uncertainty=1, blast_radius=1,
                      reversibility=0, runtime="claude_code", _family_quota={"xai": "low"}), CFG)
-    assert out["selected_model"] == ID("gemini_hydrogen")
+    assert out["selected_model"] == ID("openai_worker_balanced")
+    assert CFG["models"]["openai_worker_balanced"]["capability_tier"] == \
+        CFG["models"]["xai_frontier"]["capability_tier"] == 1
     assert out["selected_model"] != ID("meta_worker_balanced")
 
 

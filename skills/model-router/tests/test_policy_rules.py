@@ -67,7 +67,7 @@ FULL = os.environ.get("DMR_FULL_BASELINE") == "1"
 # The closed rule vocabulary, in replay order (design DD-B11 ②). A rule not
 # named here cannot explain anything.
 ORDER = ("implementer_declared", "c1iii", "c4", "c2", "c3", "c5", "review_lead", "c7", "t65",
-         "t70", "g124")
+         "t70", "g124", "g127")
 
 # Keys that are not decisions: provenance, prose, the explicit-cfg overlay, and
 # the typed history echoed back as declared (a rule switched off projects its
@@ -386,7 +386,7 @@ def _g124_check(req, prev, cur):
     if cur["terminal"]:
         return [f"became {cur['terminal']}"]
     out = []
-    gemini = ID("gemini_hydrogen")      # the place's live seat (1.24.0-1.25.x: argon)
+    gemini = ID(GEMINI_SEAT_KEY)        # the place's live seat (1.24.0-1.25.x argon, 1.26.x hydrogen)
     seat = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
     # The one disclosed weakening (review i1 sol F2 / fable F1; i2 fable F2: a
     # write seat only): the execution cell keeps the writer on the fast role
@@ -410,6 +410,177 @@ def _g124_check(req, prev, cur):
     if judge and parties and TIER_OF[judge] < max(TIER_OF[m] for m in parties):
         out.append("judge below a party")
     if cur["selected_model"] == gemini and seat == "write" and not req.get("implementer"):
+        out.append("the gemini seat took a seat that writes")
+    return out
+
+
+# The gemini place's live seat: gemini_neon since 1.27.0 (gemini_frontier 1.24.0-1.25.x,
+# gemini_hydrogen 1.26.x, both retired). g124 and g127 read the seat in that place,
+# whichever model holds it.
+GEMINI_SEAT_KEY = "gemini_neon"
+
+
+# The band floors the check reads (config `review.<band>`), asserted against the
+# registry in `test_g127_check_reads_the_registry_floors`.
+_BAND_FLOOR = {"LOW": None, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 2}
+# Terminal -> terminal-or-route moves the tier-2 seat may make (review i2, sol F1):
+# a review it can now staff resolves, or a terminal that resolved its review seat
+# ends on what remains (the replay's 3,922, 290 and 24). Anything else is reported.
+_G127_FROM_TERMINAL = {("INDEPENDENCE_UNAVAILABLE", None),
+                       ("INDEPENDENCE_UNAVAILABLE", "ESCALATE_ROUTING"),
+                       ("SUPPLY_EXHAUSTED", "HUMAN_REQUIRED")}
+
+
+def _g127_tiers(side: str) -> dict:
+    """Each side's own tier map (review i1, sol F1): before the rule the seat is
+    tier 1, after it tier 2; every other row is the registry's."""
+    seat = ID(GEMINI_SEAT_KEY)
+    return {**TIER_OF, seat: 1} if side == "prev" else dict(TIER_OF)
+
+
+def _g127_capability_failed(req) -> set:
+    """Models with a capability failure in the request's history: the legacy
+    `prior_failures` list, or typed rows of that kind (review i2, sol F1: an
+    operational failure does not climb the ladder)."""
+    return (set(req.get("prior_failures") or [])
+            | {row["model_id"] for row in req.get("attempt_outcomes") or []
+               if row.get("kind") == "capability_failure"})
+
+
+def _g127_no_usable_tier_3(req, taken=()) -> bool:
+    """Read off the request alone: every tier-3 model is withheld, failed, in an
+    exhausted family, outside the allowed families, or `taken` (already seated).
+    It knows less than the router (role withholding, author exclusion, a downed
+    bridge), so it can only find a tier-3 model usable that the router could not
+    use — which reports, never admits (review i2). A failure counts only as the
+    router counts it: a capability failure; a model with only an operational
+    outcome stays usable (review i3, fable F1 / sol F1)."""
+    snap = req.get("availability_snapshot") or {}
+    out = (set(snap.get("unavailable_models") or []) | _g127_capability_failed(req)
+           | set(taken))
+    exhausted = {f for f, level in (snap.get("family_quota") or {}).items() if level == "exhausted"}
+    allowed = (req.get("local_policy") or {}).get("allowed_families")
+    for m in CFG["models"].values():
+        if m["capability_tier"] != 3 or m.get("dispatchable", True) is False:
+            continue
+        if not (m["id"] in out or m["family"] in exhausted
+                or (allowed is not None and m["family"] not in allowed)):
+            return False
+    return True
+
+
+def _g127_review_floor(route_out, tiers) -> int | None:
+    rv = route_out["review"]
+    floor = _BAND_FLOOR[rv["band"]]
+    if floor is not None and rv["band"] == "MEDIUM" and route_out["selected_model"]:
+        floor = max(floor, tiers[route_out["selected_model"]])
+    return floor
+
+
+def _g127_floor_problems(cur, tiers) -> list:
+    """Every reviewer at the floor, or its shortfall recorded for that very seat
+    and gated so that the route cannot dispatch unattended (review i2, sol F2: the
+    cause string alone is not a gate)."""
+    out = []
+    floor = _g127_review_floor(cur, tiers)
+    rv = cur["review"]
+    short = {s["model"] for s in rv["review_depth_reduced"]}
+    blocked = ("review_below_band" in cur["human_control_causes"]
+               and cur["requires_human_confirmation"] and cur["exit"] != 0)
+    for m in rv["reviewer_models"]:
+        if m and floor is not None and tiers[m] < floor and not (blocked and m in short):
+            out.append(f"reviewer {m} below floor {floor} without a recorded, blocking shortfall")
+    return out
+
+
+def _g127_check(req, prev, cur):
+    """The gemini seat measured at tier 2 (1.27.0, T15, ledger row "gemini_neon tier
+    measurement (real-review replay, 2026-11-23)") against the same seat at tier 1,
+    each side read with its own tier map. Review i1 (sol F1, fable F1) gave the rule
+    its own check; review i2 (sol F1-F3, fable F1, F3) narrowed what it admits to
+    exactly the two disclosed retry outcomes and made it hold the review whatever
+    the band does:
+
+    - from a terminal, only the moves in `_G127_FROM_TERMINAL`, and a route it
+      resolves to meets every floor;
+    - a new terminal only as HUMAN_REQUIRED on a retry after the seat's capability
+      failure, where the tier-1 seat's retry had climbed to tier 2 and no tier-3
+      model is usable;
+    - the worker no lower, but for the execution cell's cross-family trade on a
+      write seat and a REVIEW task's lead (a review seat, held below);
+    - the band no lower; the reviewer count, the required checks, the review
+      effort, the independence and the cross-family review never weaker, whatever
+      the band does; a judge kept, never below the worker or a reviewer;
+    - every reviewer at its floor (the band's, on MEDIUM never below the worker),
+      or its shortfall recorded and blocking; a new or deeper shortfall only on a
+      MEDIUM retry after the seat's capability failure whose worker climbed from
+      tier 2 to tier 3 with no other tier-3 model usable, each short seat one tier
+      short (a tier-2 reviewer for a tier-3 worker), blocking;
+    - the seat never where the work writes.
+    A reviewer may drop from a tier-3 stand-in to this seat: the floor holds."""
+    if "error" in prev or "error" in cur:
+        return []
+    seat = ID(GEMINI_SEAT_KEY)
+    tp, tc = _g127_tiers("prev"), _g127_tiers("cur")
+    failed = _g127_capability_failed(req)
+    if prev["terminal"]:
+        if prev["terminal"] == cur["terminal"]:
+            return []
+        if (prev["terminal"], cur["terminal"]) not in _G127_FROM_TERMINAL:
+            return [f"{prev['terminal']} became {cur['terminal'] or 'a route'}"]
+        return _g127_floor_problems(cur, tc) if cur["terminal"] is None else []
+    if cur["terminal"]:
+        if (cur["terminal"] == "HUMAN_REQUIRED" and seat in failed
+                and tp[prev["selected_model"]] == 2 and _g127_no_usable_tier_3(req)):
+            return []
+        return [f"became {cur['terminal']}"]
+    out = []
+    kind = req.get("worker_seat") or POLICY.worker_seat_kind(req["task_class"])
+    pr, cr = prev["review"], cur["review"]
+    cell_trade = (kind == "write"
+                  and prev.get("selected_role") == "worker_balanced"
+                  and cur.get("selected_role") == "worker_fast"
+                  and seat in cr["reviewer_models"] and seat not in pr["reviewer_models"]
+                  and cur["cross_family_review"] and not prev["cross_family_review"])
+    if (req["task_class"] != "REVIEW" and not cell_trade
+            and tc[cur["selected_model"]] < tp[prev["selected_model"]]):
+        out.append("worker tier fell")
+    if BANDS.index(cr["band"]) < BANDS.index(pr["band"]):
+        out.append(f"review band fell {pr['band']} -> {cr['band']}")
+    if len(cr["reviewer_models"]) < len(pr["reviewer_models"]):
+        out.append("fewer reviewers")
+    if set(pr["required_checks"]) - set(cr["required_checks"]):
+        out.append("required checks lost")
+    if pr["effort"] is not None and (cr["effort"] is None
+                                     or EFFORTS.index(cr["effort"]) < EFFORTS.index(pr["effort"])):
+        out.append("review effort fell")
+    if pr["independence_required"] and not cr["independence_required"]:
+        out.append("independence no longer required")
+    if (_INDEPENDENCE_ORDER[cr["review_independence"]]
+            < _INDEPENDENCE_ORDER[pr["review_independence"]]):
+        out.append("review independence weaker")
+    if prev["cross_family_review"] and not cur["cross_family_review"]:
+        out.append("cross-family review lost")
+    out += _g127_floor_problems(cur, tc)
+    gap_p = {s["reviewer"]: s["band_requires"] - s["capability_tier"] for s in pr["review_depth_reduced"]}
+    new_short = [s for s in cr["review_depth_reduced"]
+                 if s["band_requires"] - s["capability_tier"] > gap_p.get(s["reviewer"], 0)]
+    if new_short:
+        climbed = (seat in failed and cr["band"] == pr["band"] == "MEDIUM"
+                   and tc[cur["selected_model"]] == 3 and tp[prev["selected_model"]] == 2
+                   and _g127_no_usable_tier_3(req, taken=[cur["selected_model"]])
+                   and all(s["band_requires"] == 3 and s["capability_tier"] == 2
+                           and tc[s["model"]] == 2 for s in new_short)
+                   and cur["requires_human_confirmation"] and cur["exit"] != 0)
+        if not climbed:
+            out.append("a review newly staffed below its band")
+    judge = cr["judge_model"]
+    if pr["judge_model"] and not judge:
+        out.append("judge lost")
+    parties = [m for m in [cur["selected_model"], *cr["reviewer_models"]] if m]
+    if judge and parties and tc[judge] < max(tc[m] for m in parties):
+        out.append("judge below a party")
+    if cur["selected_model"] == seat and kind == "write" and not req.get("implementer"):
         out.append("the gemini seat took a seat that writes")
     return out
 
@@ -586,11 +757,13 @@ RULES: dict[str, Rule] = {
     # 1.24.0 (user instruction and decisions 2026-10-27): the gemini seat moves from
     # gemini-3.8-flash (tier 0) to gemini-4-argon, measured at tier 1 in the T5
     # review replay, in the same two fallback places. Off, the seat is tier 0 —
-    # the 1.23 route shape (since 1.26.0 the place's seat is gemini-4-hydrogen,
+    # the 1.23 route shape (from 1.26.0 the place's seat is gemini-4-hydrogen,
     # tier 1 too, whose VERY_HIGH ceiling moves only effort fields; that
     # direction is pinned in test_gemini_seat.py,
     # `test_the_very_high_ceiling_moves_only_effort_and_never_down`, so off is the
-    # 1.23 shape apart from the seat's model and ceiling). On, it reaches review and lead seats whose floor asks
+    # 1.23 shape apart from the seat's model and ceiling; since 1.27.0 the seat is
+    # gemini-4-neon, tier 2, whose step from tier 1 is g127's below, so g124 is
+    # the tier 0 -> 1 step with g127 off). On, it reaches review and lead seats whose floor asks
     # for tier 1, so every comparison that reads a resolved tier can move; held by
     # direction (`_g124_check`). The core grid never reaches the seat (it sits
     # behind the xai seat, the Claude model and, on Claude Code, the meta seat), so
@@ -616,6 +789,51 @@ RULES: dict[str, Rule] = {
                            "band_overrides_applied", "terminal"})
                 | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
         check=_g124_check, changed_sample=34, changed_full=358),
+    # 1.27.0 (user decision 2026-11-23, U-4): Gemini 4 Neon replaces Gemini 4
+    # Hydrogen in the same two fallback places, measured at tier 2 in the T15
+    # review replay (ledger rows "gemini_neon tier measurement (real-review replay,
+    # 2026-11-23)" and "1.27.0 gemini seat placement counterfactuals"). Off, the
+    # seat is tier 1 — the 1.26 route shape with the new id (the new row's ceiling
+    # and effort map are hydrogen's, so the id is all that differs there). On, the
+    # seat meets review floors and retry ladders that ask for tier 2, so every
+    # comparison that reads a resolved tier can move; held by its own check
+    # (`_g127_check`, review i1: g124's forbade the two retry outcomes this step
+    # discloses and compared shortfalls by count; this one reads each side's tier
+    # map, admits only those two outcomes, and also holds the band, the reviewer
+    # count, the checks, the independence, the cross-family review and every
+    # reviewer's floor; controls in `test_g127_check_*`; review i2 narrowed the two
+    # admissions to their exact conditions, held the review across band changes,
+    # the review effort, a judge kept and never below the worker, and limited moves
+    # out of a terminal to the three the replay shows; a control fails for each
+    # clause edit listed in docs/research/2026-11-23-gemini-neon-counterfactuals/
+    # g127_mutation_check.py.txt, not for every conjunct alone; review i3 counted
+    # failures as the router does and carried the rest forward). Full grid 2026-11-23
+    # (re-run with each check, reviews i1-i3): 105,344 inputs, 0 problems, every
+    # earlier rule's count unchanged; g127 moves 526 (36 on the sample: 24 of
+    # g124's Codex variant and 12 where OpenAI's quota is exhausted or low, the
+    # seat then being the tier-2 reviewer outside the lead's family). The
+    # ledger's safety reading (full grid): 194 gates lifted (review_below_band:
+    # the seat now meets the floor), 63 reviewer seats that drop from a tier-3
+    # stand-in to the tier-2 seat (the band's own tier, and a cross-family
+    # reviewer; t65 admits the same for the Claude balanced model), and 6 worker
+    # tier-downs, which the check passes only as the execution cell's cross-family
+    # trade or as a REVIEW task's lead (a review seat, as under g124). What the
+    # grid does not reach is pinned in test_gemini_seat.py
+    # (`test_the_tier_2_seats_terminal_changes_are_exactly_these`: REVIEW terminals
+    # that become routes, six that newly ESCALATE_ROUTING) and test_tier_scale.py
+    # (`test_a_retry_is_never_floored_and_never_ends_where_1_21_0_did_not`: the
+    # retries after the tier-2 seat fails that end HUMAN_REQUIRED where no tier-3
+    # model is usable; `test_a_retry_after_the_seat_fails_climbs_to_the_frontier_and_is_gated`:
+    # the retries that climb to the frontier OpenAI model and gain review_below_band).
+    "g127": Rule(
+        "g127", predicate=lambda req, prev: True,
+        fields=(frozenset({"selected_role", "selected_model", "selected_capability_tier",
+                           "excluded_prior_failures", "dispatch_seats", "review.band",
+                           "review.effort", "review.required_checks", "review.mode",
+                           "review.independence_required", "review.review_independence",
+                           "band_overrides_applied", "terminal"})
+                | EFFORT | REVIEW_SEATS | GATES | SEAT_RECORDS),
+        check=_g127_check, changed_sample=36, changed_full=526),
 }
 
 
@@ -659,9 +877,14 @@ CONFIG_SWITCHES: dict[str, Callable[[dict], None]] = {
         "LOW", copy.deepcopy(baseline_1161_cfg()["review"]["LOW"])),
     "review_lead": lambda cfg: cfg["review"].__setitem__("review_class_lead_counts", False),
     "t65": lambda cfg: cfg["models"]["claude_worker_balanced"].__setitem__("capability_tier", 1),
-    # 1.26.0: the gemini place's live seat is gemini_hydrogen (argon retired); the rule
-    # reads the seat in that place, whichever model holds it.
-    "g124": lambda cfg: cfg["models"]["gemini_hydrogen"].__setitem__("capability_tier", 0),
+    # 1.26.0: the gemini place's live seat was gemini_hydrogen (argon retired); since
+    # 1.27.0 it is gemini_neon (hydrogen retired). The rule reads the seat in that
+    # place, whichever model holds it.
+    "g124": lambda cfg: cfg["models"][GEMINI_SEAT_KEY].__setitem__("capability_tier", 0),
+    # 1.27.0: off, the seat is at most tier 1 (the tier 1.24.0-1.26.x seated there);
+    # applied after g124, so with both off it stays at g124's tier 0.
+    "g127": lambda cfg: cfg["models"][GEMINI_SEAT_KEY].__setitem__(
+        "capability_tier", min(cfg["models"][GEMINI_SEAT_KEY]["capability_tier"], 1)),
 }
 
 def _c4_off(stack: ExitStack) -> None:
@@ -719,11 +942,12 @@ def test_t70_off_matches_immutable_1_23_0_low_quota_retry_outcomes():
     checked against immutable commit b057eef40755db4ef1982477ae063f1dd599401f;
     the test itself reads only the shipped config and the live resolver."""
     son, terra, opus = ID("claude_worker_balanced"), ID("openai_worker_balanced"), ID("claude_senior")
-    # The gemini place's live seat (gemini_hydrogen since 1.26.0, gemini_frontier
-    # 1.24.0-1.25.x; 1.23.0 held gemini-3.8-flash there). Either way the case
-    # withholds the three seats behind the Claude model, so the archived tuples are
-    # unchanged.
-    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID("gemini_hydrogen"),
+    # The gemini place's live seat (gemini_neon since 1.27.0, gemini_hydrogen 1.26.x,
+    # gemini_frontier 1.24.0-1.25.x; 1.23.0 held gemini-3.8-flash there). Either way
+    # the case withholds the three seats behind the Claude model, so the archived
+    # tuples are unchanged. ((a) 1.27.0: withholding the retired hydrogen id instead
+    # would leave the live tier-2 seat for the low-quota swap.)
+    muse, gemini, sol, xai = (ID("meta_worker_balanced"), ID(GEMINI_SEAT_KEY),
                               ID("openai_reasoning"), ID("xai_frontier"))
 
     cases = [
@@ -1521,15 +1745,15 @@ def _failure_row(free: dict) -> dict:
             "retry_evidence_sha256": SHA_RETRY}
 
 
-def t70_inputs(full: bool) -> list[tuple[str, str, dict]]:
+def t70_inputs(full: bool, off: frozenset = frozenset()) -> list[tuple[str, str, dict]]:
     """(name, variant, request): the retry carries ONE capability failure on the
     model the history-free route (at the 1.22.0 scale) seated at the effort it
-    ran, so the history is the same in all three states."""
+    ran, so the history is the same in all three states. `off`: as in t70_matrix."""
     out = []
     for runtime, cls, dims in itertools.product(RUNTIMES, CLASSES, T70_FULL_DIMS if full else T70_DIMS):
         tag = f"{runtime}/{cls}/{''.join(map(str, dims))}"
         unknown = _base(runtime, cls, dims, ["unknown_root_cause"])
-        free = route_live(unknown, T22_ON)
+        free = route_live(unknown, T22_ON - off)
         if "error" not in free and not free["terminal"] and free["selected_model"]:
             row = _failure_row(free)
             out.append((f"{tag}/retry_unknown", "retry_unknown",
@@ -1557,11 +1781,12 @@ def _intentional_shortage_terminal(req: dict, b: dict, c: dict) -> bool:
             and c["terminal"] == "ESCALATE_ROUTING" and b == c)
 
 
-def t70_matrix(full: bool) -> tuple[Counter, list[str]]:
+def t70_matrix(full: bool, off: frozenset = frozenset()) -> tuple[Counter, list[str]]:
+    """`off`: rules held off in all three states (the matrix at an earlier registry)."""
     seen: Counter = Counter()
     problems: list[str] = []
-    for name, variant, req in t70_inputs(full):
-        a, b, c = (route_live(req, on) for on in (T22_ON, T65_ON, frozenset(ORDER)))
+    for name, variant, req in t70_inputs(full, off):
+        a, b, c = (route_live(req, on - off) for on in (T22_ON, T65_ON, frozenset(ORDER)))
         if any("error" in x for x in (a, b, c)):
             problems.append(f"{name}: refused {[x.get('error') for x in (a, b, c)]}")
             continue
@@ -1631,16 +1856,208 @@ def test_the_t70_matrix_counts_are_pinned():
     assert dict(seen) == (T70_PINS_FULL if FULL else T70_PINS_SAMPLE), dict(seen)
 
 
+def test_the_t70_matrix_moved_since_1_26_only_by_g127():
+    """1.27.0: the pins below moved (sample `b_to_c_changed` 112 -> 108; full
+    `b_new_terminal` 53 -> 51, `released` 139 -> 137, `b_to_c_changed` 484 -> 474).
+    With g127 held off — in the history-free route that picks each retry's failed
+    model and in all three states — the matrix is the 1.26 one exactly, so the
+    tier-2 gemini seat is the whole of the change: where it now staffs a seat the
+    tier-1 seat could not, a few retries fail a different model, and the retry
+    rule's B -> C difference no longer arises on those inputs."""
+    seen, problems = t70_matrix(FULL, off=frozenset({"g127"}))
+    assert not problems, "\n".join(problems[:20])
+    assert dict(seen) == (T70_PINS_FULL_1_26 if FULL else T70_PINS_SAMPLE_1_26), dict(seen)
+
+
 # What the matrix saw, by name. `b_new_terminal` is the 1.23.0 regression this
 # release repairs, witnessed on the very inputs it repairs; `c_new_terminal`
 # equals `intentional_shortage_terminal` (asserted above). `review_band_lowered`
 # counts the routes whose confidence stopped promoting the review: accepted,
 # floor-checked (`band_contract`, `_t70_check`) and disclosed, not hidden.
+# (b) 1.27.0: g127 (the tier-2 gemini seat) moved `b_to_c_changed` and, on the full
+# grid, `b_new_terminal` and `released`; the 1.26 pins are kept below and replayed
+# with g127 off (`test_the_t70_matrix_moved_since_1_26_only_by_g127`).
 T70_PINS_SAMPLE = {
     "inputs": 897, "retry_unknown": 429, "failed_and_withheld": 429, "shortage": 39,
     "b_new_terminal": 16, "c_new_terminal": 3, "intentional_shortage_terminal": 3,
-    "released": 34, "b_to_c_changed": 112, "review_band_lowered": 21}
+    "released": 34, "b_to_c_changed": 108, "review_band_lowered": 21}
 T70_PINS_FULL = {
     "inputs": 4416, "retry_unknown": 2112, "failed_and_withheld": 2112, "shortage": 192,
-    "b_new_terminal": 53, "c_new_terminal": 24, "intentional_shortage_terminal": 24,
-    "released": 139, "b_to_c_changed": 484, "review_band_lowered": 164}
+    "b_new_terminal": 51, "c_new_terminal": 24, "intentional_shortage_terminal": 24,
+    "released": 137, "b_to_c_changed": 474, "review_band_lowered": 164}
+T70_PINS_SAMPLE_1_26 = {**T70_PINS_SAMPLE, "b_to_c_changed": 112}
+T70_PINS_FULL_1_26 = {**T70_PINS_FULL, "b_new_terminal": 53, "released": 139,
+                      "b_to_c_changed": 484}
+
+
+# --------------------------------------------------------------------------
+# g127's own check (1.27.0, review i1 sol F1 / fable F1)
+# --------------------------------------------------------------------------
+
+def test_g127_check_reads_the_registry_floors():
+    assert _BAND_FLOOR == dict(POLICY.band_reviewer_floor)
+
+
+def _g127_pair(unavailable):
+    """A Codex investigation the shipped seat leads with the xai seat withheld and
+    the Claude family exhausted, retried after the seat failed: (request, the
+    route with the seat at tier 1, the shipped route)."""
+    seat = ID(GEMINI_SEAT_KEY)
+    req = {**_base("codex", "INVESTIGATION", (0, 0, 1, 2)),
+           "availability_snapshot": {"unavailable_models": list(unavailable),
+                                     "family_quota": {"claude": "exhausted"}}}
+    fresh = route_live(req, frozenset(ORDER))
+    assert fresh["terminal"] is None and fresh["selected_model"] == seat
+    req = {**req, "prior_failures": [seat]}
+    return req, route_live(req, frozenset(ORDER) - {"g127"}), route_live(req, frozenset(ORDER))
+
+
+def test_g127_check_admits_the_two_disclosed_retry_outcomes():
+    """The grid never fails the seat (the 1.16.1 snapshot it starts from cannot be
+    sent its id), so the two outcomes the replay and the docs disclose are held
+    here on live routes: after the seat fails, no usable tier-3 model ends the
+    retry HUMAN_REQUIRED; with the frontier OpenAI model available the retry climbs
+    to it, and its MEDIUM review, which must then be tier 3, is gated."""
+    xai, astra, sol = ID("xai_frontier"), ID("openai_frontier"), ID("openai_reasoning")
+    req, prev, cur = _g127_pair([xai, astra])
+    assert prev["terminal"] is None and prev["selected_model"] == sol
+    assert cur["terminal"] == "HUMAN_REQUIRED"
+    assert _g127_check(req, prev, cur) == []
+    req, prev, cur = _g127_pair([xai])
+    assert (prev["selected_model"], prev["review"]["reviewer_models"]) == (sol, [astra])
+    assert (cur["selected_model"], cur["review"]["reviewer_models"]) == (astra, [sol])
+    assert cur["review"]["band"] == "MEDIUM"
+    assert "review_below_band" in cur["human_control_causes"]
+    assert "review_below_band" not in prev["human_control_causes"]
+    assert _g127_check(req, prev, cur) == []
+
+
+def _has(problems, text):
+    return any(text in p for p in problems)
+
+
+def test_g127_check_reports_what_it_must():
+    """Negative controls (review i1; review i2: one per clause, each asserting its own
+    message, so removing the clause fails its control): every weakening, built from
+    the admitted routes above or from an ordinary route, is reported."""
+    xai, astra, sol = ID("xai_frontier"), ID("openai_frontier"), ID("openai_reasoning")
+    seat = ID(GEMINI_SEAT_KEY)
+    weak = min((m["id"] for m in CFG["models"].values()
+                if m.get("dispatchable", True) is not False), key=lambda m: TIER_OF[m])
+    assert TIER_OF[weak] == 0
+    operational = [{"attempt_id": "a1", "model_id": seat, "kind": "timeout"}]
+
+    # -- the HUMAN_REQUIRED retry --
+    req, prev, cur = _g127_pair([xai, astra])
+    hr = "became HUMAN_REQUIRED"
+    assert _has(_g127_check({**req, "prior_failures": [sol]}, prev, cur), hr)
+    assert _has(_g127_check({**req, "prior_failures": [], "attempt_outcomes": operational},
+                            prev, cur), hr)
+    free = {**req, "availability_snapshot": {"unavailable_models": [xai],
+                                             "family_quota": {"claude": "exhausted"}}}
+    assert _has(_g127_check(free, prev, cur), hr)
+    assert _has(_g127_check(req, {**prev, "selected_model": astra}, cur), hr)
+    assert _has(_g127_check(req, prev, {**cur, "terminal": "ESCALATE_ROUTING"}),
+                "became ESCALATE_ROUTING")
+    # review i3: the frontier model free but for a recovered operational outcome
+    mixed = {**free, "prior_failures": [],
+             "attempt_outcomes": [{"attempt_id": "a1", "model_id": seat, "kind": "capability_failure"},
+                                  {"attempt_id": "a0", "model_id": astra, "kind": "timeout"}]}
+    assert _has(_g127_check(mixed, prev, cur), hr)
+
+    # -- the gated climb --
+    req, prev, cur = _g127_pair([xai])
+    assert _g127_check(req, prev, cur) == []
+    below = "newly staffed below"
+    assert _has(_g127_check({**req, "prior_failures": []}, prev, cur), below)
+    assert _has(_g127_check({**req, "prior_failures": [], "attempt_outcomes": operational},
+                            prev, cur), below)
+    claude_free = {**req, "availability_snapshot": {"unavailable_models": [xai]}}
+    assert _has(_g127_check(claude_free, prev, cur), below)
+    # review i3: the Claude architect model free but for a recovered operational outcome
+    fable_timeout = {**claude_free, "prior_failures": [],
+                     "attempt_outcomes": [{"attempt_id": "a1", "model_id": seat,
+                                           "kind": "capability_failure"},
+                                          {"attempt_id": "a0", "model_id": ID("claude_architect"),
+                                           "kind": "timeout"}]}
+    assert _has(_g127_check(fable_timeout, prev, cur), below)
+    high = lambda r: {**r, "review": {**r["review"], "band": "HIGH"}}       # noqa: E731
+    assert _has(_g127_check(req, high(prev), high(cur)), below)
+    assert _has(_g127_check(req, prev, {**cur, "selected_model": sol}), below)
+    assert _has(_g127_check(req, {**prev, "selected_model": astra}, cur), below)
+    unblocked = {**cur, "requires_human_confirmation": False, "exit": 0}
+    assert _has(_g127_check(req, prev, unblocked), below)
+    assert _has(_g127_check(req, prev, unblocked), "without a recorded, blocking shortfall")
+    ungated = {**cur, "human_control_causes": [c for c in cur["human_control_causes"]
+                                               if c != "review_below_band"]}
+    assert _has(_g127_check(req, prev, ungated), "without a recorded, blocking shortfall")
+    # a tier-2 worker cannot be the climb, even with no other tier-3 model usable
+    astra_out = {**req, "availability_snapshot": {"unavailable_models": [xai, astra],
+                                                  "family_quota": {"claude": "exhausted"}}}
+    assert _has(_g127_check(astra_out, prev, {**cur, "selected_model": sol}), below)
+    # a reviewer below the floor whose shortfall names another model
+    unrecorded = {**cur, "review": {**cur["review"], "reviewer_models": [weak]}}
+    assert _has(_g127_check(req, prev, unrecorded), "without a recorded, blocking shortfall")
+    weaker = {**cur, "review": {**cur["review"], "reviewer_models": [weak],
+                                "review_depth_reduced": [
+                                    {**cur["review"]["review_depth_reduced"][0],
+                                     "model": weak, "capability_tier": 0}]}}
+    assert _has(_g127_check(req, prev, weaker), below)
+
+    # -- from a terminal --
+    route = {**cur, "terminal": None}
+    assert _has(_g127_check(req, {**prev, "terminal": "TERMINATION_UNCONFIRMED"}, cur),
+                "TERMINATION_UNCONFIRMED became a route")
+    assert _has(_g127_check(req, {**prev, "terminal": "INDEPENDENCE_UNAVAILABLE"},
+                            {**cur, "terminal": "HUMAN_REQUIRED"}),
+                "INDEPENDENCE_UNAVAILABLE became HUMAN_REQUIRED")
+    assert _has(_g127_check(req, {**prev, "terminal": "INDEPENDENCE_UNAVAILABLE"},
+                            {**unblocked, "terminal": None}),
+                "without a recorded, blocking shortfall")
+    assert _g127_check(req, {**prev, "terminal": "INDEPENDENCE_UNAVAILABLE"}, route) == []
+
+    # -- an ordinary route the seat reviews, weakened field by field --
+    req = {**_base("codex", "IMPLEMENTATION", (2, 1, 2, 1)),
+           "availability_snapshot": {"unavailable_models": [xai],
+                                     "family_quota": {"claude": "exhausted"}}}
+    prev = cur = route_live(req, frozenset(ORDER))
+    assert cur["terminal"] is None and cur["review"]["reviewer_models"]
+    assert cur["review"]["independence_required"]
+    assert _g127_check(req, prev, cur) == []
+
+    def bent(**review):
+        return {**cur, "review": {**cur["review"], **review}}
+    lower = BANDS[BANDS.index(cur["review"]["band"]) - 1]
+    higher = BANDS[BANDS.index(cur["review"]["band"]) + 1]
+    assert _has(_g127_check(req, prev, bent(band=lower)), "band fell")
+    fewer = cur["review"]["reviewer_models"][:-1]
+    assert _has(_g127_check(req, prev, bent(reviewer_models=fewer)), "fewer reviewers")
+    assert _has(_g127_check(req, prev, bent(band=higher, reviewer_models=fewer)),
+                "fewer reviewers")
+    assert _has(_g127_check(req, prev, bent(independence_required=False)),
+                "independence no longer required")
+    assert _has(_g127_check(req, prev, bent(review_independence="unavailable")),
+                "review independence weaker")
+    assert _has(_g127_check(req, {**prev, "cross_family_review": True},
+                            {**cur, "cross_family_review": False}), "cross-family review lost")
+    assert _has(_g127_check(
+        req, {**prev, "review": {**prev["review"], "required_checks": ["tests", "lint"]}},
+        bent(required_checks=[])), "required checks lost")
+    assert _has(_g127_check(req, {**prev, "review": {**prev["review"], "effort": "HIGH"}},
+                            bent(effort="MEDIUM")), "review effort fell")
+    assert _has(_g127_check(req, prev, bent(
+        reviewer_models=[weak, *cur["review"]["reviewer_models"][1:]])),
+        "without a recorded, blocking shortfall")
+    worse = [{"reviewer": "worker_balanced", "model": weak, "capability_tier": 0, "band_requires": 2}]
+    was = [{"reviewer": "worker_balanced", "model": seat, "capability_tier": 1, "band_requires": 2}]
+    assert _has(_g127_check(req, {**prev, "review": {**prev["review"], "review_depth_reduced": was}},
+                            bent(review_depth_reduced=worse)), below)
+    assert _has(_g127_check(req, prev, bent(judge_model=weak)), "judge below")
+    strong = max(TIER_OF, key=TIER_OF.get)
+    assert TIER_OF[strong] == 3 and TIER_OF[sol] == TIER_OF[seat] == 2
+    assert _has(_g127_check(req, prev, {**bent(judge_model=sol, reviewer_models=[seat]),
+                                        "selected_model": strong}), "judge below")
+    assert _has(_g127_check(req, {**prev, "review": {**prev["review"], "judge_model": sol}}, cur),
+                "judge lost")
+    assert _has(_g127_check(req, prev, {**cur, "selected_model": seat}), "writes")
+    assert _has(_g127_check(req, prev, {**cur, "selected_model": weak}), "worker tier fell")

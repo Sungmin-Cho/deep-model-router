@@ -41,7 +41,7 @@ XAI, SON, OPUS = ID("xai_frontier"), ID("claude_worker_balanced"), ID("claude_se
 FABLE, SOL, ASTRA = ID("claude_architect"), ID("openai_reasoning"), ID("openai_frontier")
 MUSE, TERRA = ID("meta_worker_balanced"), ID("openai_worker_balanced")
 LUNA, TERRA_FAST = ID("openai_worker_fast"), ID("openai_worker_balanced")
-GEMINI = ID("gemini_hydrogen")   # the gemini seat since 1.26.0 (tier 1; 1.24.0-1.25: argon)
+GEMINI = ID("gemini_neon")   # the gemini seat since 1.27.0 (tier 2; 1.26.x hydrogen, 1.24.0-1.25 argon, tier 1)
 ARCH_COMP = "raise_effort_to_MAX_and_add_second_review"
 SCARCITY = "worker_balanced: {} unavailable -> {}".format
 DEGRADED = "binding degraded to claude_only (cross-provider bridge down)"
@@ -200,7 +200,8 @@ def test_the_promotion_floor_ladder_decides_the_baseline():
     (`_candidates`); a hand-built raw ladder would name the tier-0 seat in
     between and record a fallback that is not one. (1.24.0: the first seat
     that meets the floor behind the tier-0 meta seat is the tier-1 gemini
-    seat, where it was the OpenAI balanced model behind two tier-0 seats.)"""
+    seat, where it was the OpenAI balanced model behind two tier-0 seats;
+    (a) since 1.27.0 the gemini seat is gemini_neon, tier 2, still the first.)"""
     kw = dict(task_class="INVESTIGATION", write_role="worker_balanced",
               flags=["unknown_root_cause"])
     assert resolve(["worker_balanced"], **kw, prior_failures=0, prior_models=[XAI, SON]) == (
@@ -215,15 +216,39 @@ def test_the_promotion_floor_ladder_decides_the_baseline():
 LOW_CLAUDE = dict(write_role="worker_balanced", _family_quota={"claude": "low"})
 
 
+def _gemini_seat_at_tier_1():
+    """The 1.24.0-1.26.x shape: the gemini place held by a tier-1 seat. 1.27.0
+    seats a tier-2 model there (gemini-4-neon, measured, T15), which is now the
+    first tier-2 seat of another family behind Sonnet on this (non-writing)
+    ladder; the earlier expectation is kept on this copy."""
+    cfg = copy.deepcopy(CFG)
+    cfg["models"]["gemini_neon"]["capability_tier"] = 1
+    return cfg
+
+
 def test_a_low_quota_swap_after_a_failed_seat_is_no_fake_fallback():
     """Failed xai, Sonnet's family low on quota: the seat moves to the first
-    same-tier seat of another family. The reordered ladder starts there."""
+    same-tier seat of another family. The reordered ladder starts there.
+
+    (b) 1.27.0: that seat is the gemini seat, now tier 2 like Sonnet (T15;
+    ledger row "1.27.0 gemini seat placement counterfactuals"); with the seat
+    at tier 1, as through 1.26.x, it is still the Sol seat. Either way the swap
+    records no fallback."""
+    assert POLICY.tier_of[GEMINI] == POLICY.tier_of[SON] == 2
     assert resolve(["worker_balanced"], **LOW_CLAUDE, **failed(XAI)) == (
-        {"worker_balanced": SOL}, [], [])
+        {"worker_balanced": GEMINI}, [], [])
+    assert resolve(["worker_balanced"], **LOW_CLAUDE, **failed(XAI),
+                   cfg=_gemini_seat_at_tier_1()) == ({"worker_balanced": SOL}, [], [])
 
 
 def test_a_withheld_primary_with_a_low_quota_swap_still_records_the_outage():
+    """(b) 1.27.0: the swap lands on the tier-2 gemini seat (see above); on the
+    tier-1 copy, on the Sol seat, as through 1.26.x. The outage is recorded
+    against whichever seat the swap reaches."""
     out = resolve(["worker_balanced"], **LOW_CLAUDE, unavailable_models=[XAI])
+    assert out[1] == [SCARCITY(XAI, GEMINI)]
+    out = resolve(["worker_balanced"], **LOW_CLAUDE, unavailable_models=[XAI],
+                  cfg=_gemini_seat_at_tier_1())
     assert out[1] == [SCARCITY(XAI, SOL)]
 
 

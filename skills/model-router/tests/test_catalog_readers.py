@@ -7,7 +7,8 @@ fetched at all, and `run` fetches the list once and asks again. muse keeps an
 account catalogue on disk, but its stream carries no token usage, so a newer
 muse id is reported and never published. The fixtures under
 fixtures/catalogs/agy and fixtures/catalogs/muse are real captures (agy 1.3.5,
-Muse Code 1.4.7). Nothing here runs a real CLI or a model.
+Muse Code 1.4.7; later agy lists 1.4.8, 1.5.9 and 1.5.14). Nothing here runs a
+real CLI or a model.
 
 Run:  python3 -m pytest skills/model-router/tests/test_catalog_readers.py -q
 """
@@ -35,25 +36,29 @@ from test_model_sync import (NOW, calls_of, fake_bin, fake_home, new_root,  # no
                              read_gen, sync_env, work_state)
 
 CFG = load_config()
-# 1.26.0: the gemini seat is the hydrogen line; the flash (1.24.0) and argon (1.26.0) rows are
-# retired (not dispatchable, no lineage).
-GEMINI_KEY, META_KEY = "gemini_hydrogen", "meta_worker_balanced"
+# 1.27.0: the gemini seat is the neon line; the flash (1.24.0), argon (1.26.0) and hydrogen
+# (1.27.0) rows are retired (not dispatchable, no lineage).
+GEMINI_KEY, META_KEY = "gemini_neon", "meta_worker_balanced"
 RETIRED_KEY = "gemini_worker_balanced"
 RETIRED = CFG["models"][RETIRED_KEY]["id"]
 ARGON_KEY = "gemini_frontier"
 ARGON = CFG["models"][ARGON_KEY]["id"]
+HYDROGEN_KEY = "gemini_hydrogen"
+HYDROGEN = CFG["models"][HYDROGEN_KEY]["id"]
 GEMINI, META = CFG["models"][GEMINI_KEY]["id"], CFG["models"][META_KEY]["id"]
 CATALOGS = SKILL / "tests" / "fixtures" / "catalogs"
-AGY_LIST = (CATALOGS / "agy" / "agy-models-1.5.9.stdout.txt").read_text()
+AGY_LIST = (CATALOGS / "agy" / "agy-models-1.5.14.stdout.txt").read_text()
+AGY_LIST_159 = (CATALOGS / "agy" / "agy-models-1.5.9.stdout.txt").read_text()
 AGY_LIST_148 = (CATALOGS / "agy" / "agy-models-1.4.8.stdout.txt").read_text()
 AGY_LIST_135 = (CATALOGS / "agy" / "agy-models-1.3.5.stdout.txt").read_text()
 MUSE_DOC = json.loads((CATALOGS / "muse" / "6d657461__p746268.json").read_text())
-NEWER = "gemini-4.1-hydrogen"
+NEWER = "gemini-4.1-neon"
+ORCHESTRATORS = ("gemini-pro-orchestrator-neon", "gemini-pro-orchestrator-g1-pro")
 
 
 def newer_list(*extra_lines):
-    lines = [f"{NEWER}-high\tGemini 4.1 Hydrogen (High)", f"{NEWER}-medium\tGemini 4.1 Hydrogen (Medium)",
-             f"{NEWER}-low\tGemini 4.1 Hydrogen (Low)", f"{NEWER}-xhigh\tGemini 4.1 Hydrogen (XHigh)",
+    lines = [f"{NEWER}-high\tGemini 4.1 Neon (High)", f"{NEWER}-medium\tGemini 4.1 Neon (Medium)",
+             f"{NEWER}-low\tGemini 4.1 Neon (Low)", f"{NEWER}-xhigh\tGemini 4.1 Neon (XHigh)",
              *extra_lines]
     return AGY_LIST + "\n".join(lines) + "\n"
 
@@ -63,20 +68,41 @@ def newer_list(*extra_lines):
 # ---------------------------------------------------------------------------
 
 def test_the_captured_agy_list_is_read_into_base_ids_and_efforts():
+    """(a) 1.27.0: the current capture is agy 1.5.14's (ledger row "agy model
+    catalogue (model_sync, agy 1.5.14)"): twenty-three lines, the neon line in
+    four effort spellings, a new neon orchestrator beside the argon one."""
     cat = model_sync.parse_agy_models_text(AGY_LIST)
     assert cat.status == "ok" and cat.family == "gemini"
     assert cat.models[GEMINI]["efforts"] == ["high", "xhigh", "medium", "low"]
+    assert cat.models[HYDROGEN]["efforts"] == ["high", "xhigh", "medium", "low"]
     assert cat.models[ARGON]["efforts"] == ["medium", "high", "low"]
     # other vendors are listed (and only the template keeps them out)
     assert cat.models[CFG["models"]["claude_senior"]["id"]]["efforts"] == ["low", "medium", "high"]
     assert cat.models["gpt-oss-120b"]["efforts"] == ["medium"]
     assert cat.models[RETIRED]["efforts"] == ["high", "medium", "low"]
+    # the orchestrators are listed without an effort spelling
+    for oid in ORCHESTRATORS:
+        assert cat.models[oid]["efforts"] == [], oid
+    assert len(cat.listed_ids) == 23
+
+
+def test_the_1_5_9_list_still_parses_and_finds_no_neon():
+    """(a) 1.27.0: the 1.26.0 capture (agy 1.5.9) reads as it did for the
+    hydrogen seat; the neon line finds nothing in it."""
+    cat = model_sync.parse_agy_models_text(AGY_LIST_159)
+    assert cat.status == "ok"
+    assert cat.models[HYDROGEN]["efforts"] == ["high", "xhigh", "medium", "low"]
+    assert cat.models[ARGON]["efforts"] == ["medium", "high", "low"]
+    assert GEMINI not in cat.models and "gemini-pro-orchestrator-neon" not in cat.models
     assert len(cat.listed_ids) == 18
+    found = model_sync.find_candidates({GEMINI_KEY: CFG["models"][GEMINI_KEY]}, {"gemini": cat})
+    assert found[GEMINI_KEY]["status"] == "none"
 
 
 def test_the_1_3_5_list_still_parses_and_its_flash_lines_seat_nothing():
-    """The agy 1.3.5 capture (Flash only) reads as before; the hydrogen line finds
-    nothing in it, and the retired flash row is not a lineage row at all."""
+    """The agy 1.3.5 capture (Flash only) reads as before; the live gemini line
+    (neon since 1.27.0) finds nothing in it, and the retired flash row is not a
+    lineage row at all."""
     cat = model_sync.parse_agy_models_text(AGY_LIST_135)
     assert cat.status == "ok" and cat.models[RETIRED]["efforts"] == ["high", "medium", "low"]
     assert cat.models["claude-sonnet-4-6"]["efforts"] == []
@@ -99,9 +125,11 @@ def test_the_retired_flash_row_gets_no_successor_even_when_one_is_listed():
     assert found[GEMINI_KEY]["status"] == "none"
 
 
-def test_the_1_4_8_list_still_parses_and_finds_no_hydrogen():
+def test_the_1_4_8_list_still_parses_and_finds_no_neon():
+    """(a) 1.27.0: the live line is neon (1.26.0 asked the same of hydrogen)."""
     cat = model_sync.parse_agy_models_text(AGY_LIST_148)
     assert cat.status == "ok" and cat.models[ARGON]["efforts"] == ["medium", "high", "low"]
+    assert GEMINI not in cat.models
     assert len(cat.listed_ids) == 13
     found = model_sync.find_candidates({GEMINI_KEY: CFG["models"][GEMINI_KEY]}, {"gemini": cat})
     assert found[GEMINI_KEY]["status"] == "none"
@@ -110,7 +138,7 @@ def test_the_1_4_8_list_still_parses_and_finds_no_hydrogen():
 def test_the_retired_argon_row_gets_no_successor_even_when_one_is_listed():
     """1.26.0 (user decision 2026-11-15): Gemini 4 Argon is retired. Its row keeps no
     lineage and is not dispatchable, so a newer argon in the account's catalogue is never
-    offered as its successor, nor as the hydrogen line's."""
+    offered as its successor, nor as the live line's (neon since 1.27.0)."""
     row = CFG["models"][ARGON_KEY]
     assert row["dispatchable"] is False and "lineage" not in row
     text = AGY_LIST + "gemini-4.1-argon-high\tGemini 4.1 Argon (High)\n"
@@ -121,10 +149,30 @@ def test_the_retired_argon_row_gets_no_successor_even_when_one_is_listed():
     assert found[GEMINI_KEY]["status"] == "none"
 
 
-def test_a_newer_hydrogen_generation_is_the_candidate_and_nothing_else_is():
+def test_the_retired_hydrogen_row_gets_no_successor_even_when_one_is_listed():
+    """1.27.0 (user decision 2026-11-23, U-4): Gemini 4 Hydrogen is retired. Its row keeps
+    no lineage and is not dispatchable, so a newer hydrogen in the account's catalogue is
+    never offered as its successor, nor as the neon line's."""
+    row = CFG["models"][HYDROGEN_KEY]
+    assert row["dispatchable"] is False and "lineage" not in row
+    text = AGY_LIST + "gemini-4.1-hydrogen-high\tGemini 4.1 Hydrogen (High)\n" \
+        + "gemini-4.1-hydrogen-xhigh\tGemini 4.1 Hydrogen (XHigh)\n"
+    cat = model_sync.parse_agy_models_text(text)
+    found = model_sync.find_candidates({k: CFG["models"][k] for k in (GEMINI_KEY, HYDROGEN_KEY)},
+                                       {"gemini": cat})
+    assert HYDROGEN_KEY not in found
+    assert found[GEMINI_KEY]["status"] == "none"
+
+
+def test_a_newer_neon_generation_is_the_candidate_and_nothing_else_is():
+    """(a) 1.27.0: the live line is neon (1.26.0 asked the same of hydrogen); the
+    retired lines' next generations, a neon variant and the orchestrators are not
+    candidates."""
     text = newer_list("gemini-4.1-pro-high\tGemini 4.1 Pro (High)",
-                      "gemini-4-hydrogen-lite-high\tGemini 4 Hydrogen Lite (High)",
+                      "gemini-4-neon-lite-high\tGemini 4 Neon Lite (High)",
+                      "gemini-4.1-hydrogen-high\tGemini 4.1 Hydrogen (High)",
                       "gemini-4.1-argon-high\tGemini 4.1 Argon (High)",
+                      "gemini-pro-orchestrator-neon-2\tOrchestrator (Neon 2)",
                       "gemini-5-flash-high\tGemini 5 Flash (High)",
                       "claude-opus-9-high\tClaude Opus 9")
     cat = model_sync.parse_agy_models_text(text)
@@ -135,7 +183,11 @@ def test_a_newer_hydrogen_generation_is_the_candidate_and_nothing_else_is():
 
 
 def test_the_current_list_proposes_nothing():
+    """(a) 1.27.0: the current list is agy 1.5.14's; it lists the seat's own id,
+    which is not newer, and the neon orchestrator, which the template does not
+    parse."""
     cat = model_sync.parse_agy_models_text(AGY_LIST)
+    assert GEMINI in cat.models
     found = model_sync.find_candidates({GEMINI_KEY: CFG["models"][GEMINI_KEY]}, {"gemini": cat})
     assert found[GEMINI_KEY]["status"] == "none"
 
@@ -402,7 +454,7 @@ def _receipt(resolved, usage=None):
 
 @pytest.mark.parametrize("resolved, outcome", [
     (NEWER, "pass"), (f"{NEWER}-low", "pass"), (f"{NEWER}-high", "pass"),
-    (f"{NEWER}-xhigh", "pass"),        # 1.26.0: the hydrogen line declares an xhigh spelling
+    (f"{NEWER}-xhigh", "pass"),        # 1.26.0 hydrogen, 1.27.0 neon: the line declares xhigh
     (f"{NEWER}-lite", "failed"), (f"{NEWER}-max", "failed"), (GEMINI, "failed"),
     (None, "deferred")])
 def test_p2_admits_exactly_the_declared_served_forms(resolved, outcome):
