@@ -452,10 +452,12 @@ def _g127_no_usable_tier_3(req, taken=()) -> bool:
     exhausted family, outside the allowed families, or `taken` (already seated).
     It knows less than the router (role withholding, author exclusion, a downed
     bridge), so it can only find a tier-3 model usable that the router could not
-    use — which reports, never admits (review i2)."""
+    use — which reports, never admits (review i2). A failure counts only as the
+    router counts it: a capability failure; a model with only an operational
+    outcome stays usable (review i3, fable F1 / sol F1)."""
     snap = req.get("availability_snapshot") or {}
-    out = (set(snap.get("unavailable_models") or []) | set(req.get("prior_failures") or [])
-           | {row["model_id"] for row in req.get("attempt_outcomes") or []} | set(taken))
+    out = (set(snap.get("unavailable_models") or []) | _g127_capability_failed(req)
+           | set(taken))
     exhausted = {f for f, level in (snap.get("family_quota") or {}).items() if level == "exhausted"}
     allowed = (req.get("local_policy") or {}).get("allowed_families")
     for m in CFG["models"].values():
@@ -802,10 +804,11 @@ RULES: dict[str, Rule] = {
     # reviewer's floor; controls in `test_g127_check_*`; review i2 narrowed the two
     # admissions to their exact conditions, held the review across band changes,
     # the review effort, a judge kept and never below the worker, and limited moves
-    # out of a terminal to the three the replay shows; removing any clause fails a
-    # control — docs/research/2026-11-23-gemini-neon-counterfactuals/
-    # g127_mutation_check.py.txt). Full grid 2026-11-23 (re-run with each check,
-    # reviews i1 and i2): 105,344 inputs, 0 problems, every
+    # out of a terminal to the three the replay shows; a control fails for each
+    # clause edit listed in docs/research/2026-11-23-gemini-neon-counterfactuals/
+    # g127_mutation_check.py.txt, not for every conjunct alone; review i3 counted
+    # failures as the router does and carried the rest forward). Full grid 2026-11-23
+    # (re-run with each check, reviews i1-i3): 105,344 inputs, 0 problems, every
     # earlier rule's count unchanged; g127 moves 526 (36 on the sample: 24 of
     # g124's Codex variant and 12 where OpenAI's quota is exhausted or low, the
     # seat then being the tier-2 reviewer outside the lead's family). The
@@ -1956,6 +1959,11 @@ def test_g127_check_reports_what_it_must():
     assert _has(_g127_check(req, {**prev, "selected_model": astra}, cur), hr)
     assert _has(_g127_check(req, prev, {**cur, "terminal": "ESCALATE_ROUTING"}),
                 "became ESCALATE_ROUTING")
+    # review i3: the frontier model free but for a recovered operational outcome
+    mixed = {**free, "prior_failures": [],
+             "attempt_outcomes": [{"attempt_id": "a1", "model_id": seat, "kind": "capability_failure"},
+                                  {"attempt_id": "a0", "model_id": astra, "kind": "timeout"}]}
+    assert _has(_g127_check(mixed, prev, cur), hr)
 
     # -- the gated climb --
     req, prev, cur = _g127_pair([xai])
@@ -1966,6 +1974,13 @@ def test_g127_check_reports_what_it_must():
                             prev, cur), below)
     claude_free = {**req, "availability_snapshot": {"unavailable_models": [xai]}}
     assert _has(_g127_check(claude_free, prev, cur), below)
+    # review i3: the Claude architect model free but for a recovered operational outcome
+    fable_timeout = {**claude_free, "prior_failures": [],
+                     "attempt_outcomes": [{"attempt_id": "a1", "model_id": seat,
+                                           "kind": "capability_failure"},
+                                          {"attempt_id": "a0", "model_id": ID("claude_architect"),
+                                           "kind": "timeout"}]}
+    assert _has(_g127_check(fable_timeout, prev, cur), below)
     high = lambda r: {**r, "review": {**r["review"], "band": "HIGH"}}       # noqa: E731
     assert _has(_g127_check(req, high(prev), high(cur)), below)
     assert _has(_g127_check(req, prev, {**cur, "selected_model": sol}), below)

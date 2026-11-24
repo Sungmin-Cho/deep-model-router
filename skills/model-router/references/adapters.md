@@ -1578,9 +1578,10 @@ of tier-2 reviewers, so it can review while the models ahead of it are
 available (in the 1.27.0 replay, with only the OpenAI family exhausted, it
 takes the second HIGH seat from the xAI seat, which is below that band's
 floor). A CRITICAL review asks MAX, above this seat's ceiling, so it is in no
-CRITICAL joint pool; it reaches a CRITICAL seat only as a role's model, for
-instance when a reviewer role that would repeat the implementer's model is
-substituted by the balanced role, and then runs at `xhigh`. It never fills a
+CRITICAL joint pool; it reaches a CRITICAL seat only as a role's model — for
+instance when seating a judge re-seats the strongest reviewer seat with the
+weakest model that meets the band's floor, the balanced role's — and then
+runs at `xhigh`. It never fills a
 seat that writes: the Claude Code direction ships a maker recipe
 (`mechanism_maker`, the `agy-maker-v1` profile below) with `write_verified:
 false` by decision, and the Codex direction has a reviewer recipe only. Where it

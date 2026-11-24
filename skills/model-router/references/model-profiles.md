@@ -335,23 +335,25 @@ withholding (959,121 routes) or the six with it (198,538):
   of it are available. A CRITICAL review asks MAX, above this seat's ceiling,
   so the seat is in no CRITICAL joint pool; it reaches a CRITICAL seat only as
   a role's model (below).
-- **On 11,578 routes this seat takes a tier-3 reviewer's place**, most often
-  the OpenAI frontier model's beside the Sol model on a HIGH review: where
-  Hydrogen could not meet the tier-2 floor, or was withheld, a tier-3 model
-  stood in for want of another tier-2 one; this seat meets the floor. The
-  floor still holds; on 11,556 of them the review is no longer staffed above
-  it (on 22 the Claude architect model stays beside it). On 448 more a tier-3
-  model leaves the roster as the seat joins without taking its place: a retry
-  seats the Claude architect model where the OpenAI frontier model was, and
-  the seat takes the Claude balanced model's place. Of all 12,026 the review
-  becomes cross-family on 11,552. On 272 CRITICAL retries the seat takes the
-  second reviewer seat from the Claude architect model through ordinary
-  resolution — a reviewer role that would repeat the implementer's model is
-  substituted by another role's model, strongest first and then another
-  family, and the balanced role resolves to this seat — so the architect model
-  is free to adjudicate: those reviews gain an adjudicator (`no_adjudicator`
-  lifts), the seat runs at `xhigh`, and `effort_below_floor` joins their gate.
-  The seat takes no judge seat in the replay.
+- **On 12,026 routes a tier-3 model leaves the reviewer roster as this seat
+  joins it**, and the review becomes cross-family on 11,552 of them. On 11,416
+  the seat takes the tier-3 reviewer's place and the other reviewer stays —
+  most often the OpenAI frontier model's place beside the Sol model on a HIGH
+  review: where Hydrogen could not meet the tier-2 floor, or was withheld, a
+  tier-3 model stood in for want of another tier-2 one, and this seat meets the
+  floor. On 11,386 of those no reviewer is then above the floor; 22 keep the
+  Claude architect model beside the seat, and 8 keep a tier-0 OpenAI model. On
+  162 the tier-3 model and a lower one both leave and two tier-2 models join.
+  On 448 a retry seats the Claude architect model where the OpenAI frontier
+  model was, and the seat takes the Claude balanced model's place. On 272
+  CRITICAL retries the seat frees a judge: the review's reviewers come to the
+  Claude senior and architect models (the second where a reviewer role would
+  repeat the implementer's model), and the judge-seating step
+  re-seats the strongest reviewer seat, the architect's, with the weakest model
+  that meets the CRITICAL floor — the balanced role's, now this seat — so the
+  architect model adjudicates. Those reviews gain an adjudicator
+  (`no_adjudicator` lifts), the seat runs at `xhigh`, and `effort_below_floor`
+  joins their gate. The seat takes no judge seat in the replay.
 - **The worker is a tier higher on 7,148 routes**: on 4,056 the seat itself
   works at tier 2 where a tier-1 model did (Hydrogen on 3,144; the OpenAI
   balanced model on 912, nearly all where Hydrogen was withheld); on 2,848 a

@@ -2135,6 +2135,13 @@ def test_as_a_critical_reviewer_the_seat_runs_capped_and_frees_a_judge():
     [cap] = [e for e in after["effort_ceiling_applied"] if e["model"] == GEMINI]
     assert (cap["requested"], cap["capped_at"], cap["floor_broken"]) == \
         ("MAX", "VERY_HIGH", "review.CRITICAL.effort")
+    # Review i3 (fable F2): the path. Not joint allocation (the seat's ceiling is below
+    # CRITICAL's MAX, so it is in no joint pool): the judge-seating step re-seats the
+    # strongest reviewer seat with the balanced role, and the substitution record says so.
+    joint = "jointly allocated eligible models across the review and judge seats"
+    assert joint in before["notes"] and joint not in after["notes"]
+    assert after["review"]["reviewers"] == ["senior_engineer", "worker_balanced"]
+    assert [r["with"] for r in after["review"]["self_review_avoided"]] == ["worker_balanced"]
 
 
 @pytest.mark.parametrize("runtime", ["claude_code", "codex"])

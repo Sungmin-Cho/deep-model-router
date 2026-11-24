@@ -6003,15 +6003,17 @@ verification_ledger:
         hydrogen-withheld; 762 new gates in all, the other two among the 34);
         on 12,026 routes a tier-3 model leaves the reviewer roster as the seat
         joins it (9,754 and 2,272; the review becomes cross-family on 11,552):
-        on 11,578 the seat takes the place of a tier-3 reviewer that stood in
-        for want of a tier-2 one (hydrogen below the floor, or withheld), the
-        review then at its floor on 11,556 (claude-fable-5-2 staying beside
-        the seat on 22), and on 448 a retry seats claude-fable-5-2 where
-        gpt-6.2-astra was while the seat takes claude-sonnet-5-5's place; on
-        272 CRITICAL retries the seat takes the second reviewer seat by
-        ordinary resolution (a reviewer role that would repeat the
-        implementer's model substituted by the balanced role), so the
-        displaced claude-fable-5-2 adjudicates (no_adjudicator lifts,
+        on 11,416 the seat takes the place of a tier-3 reviewer that stood in
+        for want of a tier-2 one (hydrogen below the floor, or withheld) and
+        the other reviewer stays — no reviewer then above the floor on 11,386,
+        claude-fable-5-2 staying beside the seat on 22, gpt-6-luna on 8; on 162
+        the tier-3 model and a lower one leave and two tier-2 models join; on
+        448 a retry seats claude-fable-5-2 where gpt-6.2-astra was while the
+        seat takes claude-sonnet-5-5's place; on 272 CRITICAL retries the
+        judge-seating step re-seats the strongest reviewer seat
+        (claude-fable-5-2's) with the weakest model that meets the floor, the
+        balanced role's, now the seat (the substitution record names
+        worker_balanced), so claude-fable-5-2 adjudicates (no_adjudicator lifts,
         effort_below_floor joins: the seat runs MAX at xhigh); a CRITICAL
         review is no joint pool for the seat (its ceiling is below MAX); the
         seat takes no judge seat; effort_below_floor
