@@ -856,11 +856,10 @@ def test_the_gemini_seat_cannot_write_without_an_agreeing_implementation_replay(
 
     (a) 1.27.0: the live seat is gemini_neon; hydrogen is retired with its two
     disagreeing replays kept as the record. Neon's review replay (T15) reads tier
-    2; its implementation replay row, "gemini_neon implementation replay
-    (2026-11-23)", is not in the ledger until that replay is scored. While no
-    verified implementation-replay row for the live seat exists, or while one
-    names a different tier than its review replay, or while the seat is not the
-    family's only dispatchable row, neither direction may write."""
+    2 and its implementation replay (T16, row "gemini_neon implementation replay
+    (2026-11-23)") tier 1: they disagree, so neither direction may write (as
+    while no verified implementation-replay row exists, or while the seat is not
+    the family's only dispatchable row)."""
     assert LEDGER["gemini_frontier implementation replay (not run, 2026-10-27)"]["status"] == "documented"
     assert LEDGER["gemini_frontier implementation replay (stopped, 2026-11-15)"]["status"] == "documented"
     # hydrogen (1.26.x): its replays disagreed, it never wrote, and it is retired
@@ -1019,6 +1018,61 @@ def test_the_hydrogen_seat_measurement_rederives_its_tier():
     assert "Verdict: tier %d." % derived in " ".join(text.split())
     assert MODELS["gemini_hydrogen"]["capability_tier"] == derived
     assert MODELS["gemini_frontier"]["id"] in rec      # the retired seat was an anchor then
+
+
+NEON_IMPL_ROW = "gemini_neon implementation replay (2026-11-23)"
+
+
+def test_the_neon_implementation_replay_rederives_its_verdict_and_moves_nothing():
+    """1.27.0, T16: re-derive the implementation verdict from the pass rates the row
+    records, against the live writing rows of the 1.26.1 registry plus the gemini row
+    the subject replaces (hydrogen, read-only, scored by T12; its 0.75 cannot lower
+    the tier-1 bar). The review replay read tier 2 and this one tier 1, so nothing
+    moves: the row keeps tier 2 and write authority is not proposable."""
+    row = LEDGER[NEON_IMPL_ROW]
+    assert row["status"] == "verified"
+    text = _text(NEON_IMPL_ROW)
+    scores = _recalls(text)
+    seat = MODELS[GEMINI_KEY]["id"]
+    live = _live_others(GEMINI_KEY, **BEFORE_1_27)
+    tier = lambda t: [scores[_id(k, text)] for k, m in live.items()     # noqa: E731
+                      if m["capability_tier"] == t and _id(k, text) in scores]
+    t2, t1, t0 = tier(2), tier(1), tier(0)
+    assert len(t2) == 3 and len(t1) == 2 and len(t0) == 2, (t2, t1, t0)
+    assert MODELS["gemini_hydrogen"]["id"] in scores           # the replaced seat, an anchor
+    assert _id("claude_architect", text) not in scores          # beside, not an anchor
+    assert MODELS["openai_frontier"]["id"] not in scores        # beside, not an anchor
+    a2, a1, mean2 = min(t2), min(t1), sum(t2) / len(t2)
+    assert a1 == scores[MODELS["openai_worker_balanced"]["id"]]
+    stated = {k: float(v) for k, v in re.findall(
+        r"(Tier-2 mean|separation|Bar for tier 2:|Bar for tier 1:) (0\.\d{6})", text)}
+    assert abs(stated["Tier-2 mean"] - mean2) < 2e-6
+    assert abs(stated["separation"] - (mean2 - a1)) < 2e-6 and mean2 - a1 >= SEPARATION
+    assert abs(stated["Bar for tier 2:"] - (a2 - CONFIRM_MARGIN)) < 2e-6
+    assert abs(stated["Bar for tier 1:"] - (a1 - CONFIRM_MARGIN)) < 2e-6
+    x = scores[seat]
+    derived = 2 if x >= a2 - CONFIRM_MARGIN else 1 if x >= a1 - CONFIRM_MARGIN else 0
+    assert _stated_tier(NEON_IMPL_ROW) == derived == 1
+    # the figures agree: the runs named, the per-task list, the profile table
+    flat = " ".join(text.split())
+    runs = re.search(rf"Pass rate: {re.escape(seat)} 0\.\d{{6}} \((\w+) of sixteen runs: "
+                     r"both on ([^,]+(?:, [^,]+)*) and (T\d\d), one on (T\d\d), none on "
+                     r"(T\d\d), (T\d\d) or (T\d\d)", flat)
+    assert runs, flat
+    words = {"seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11}
+    both = runs.group(2).split(", ") + [runs.group(3)]
+    none = {runs.group(5), runs.group(6), runs.group(7)}
+    assert words[runs.group(1)] == 2 * len(both) + 1 == round(x * 16)
+    assert len(both) + 1 + len(none) == 8 and not (none | {runs.group(4)}) & set(both)
+    section = PROFILES_MD.split("## Tiers measured on 2026-11-23", 1)[1]
+    assert f"**{round(x * 100)}% ({round(x * 16)} of 16)**" in section
+    # the rule: the replays disagree, nothing moves
+    review = _stated_tier(NEON_ROW)
+    assert derived != review and "replays disagree" in flat
+    assert MODELS[GEMINI_KEY]["capability_tier"] == review == 2
+    assert not _gemini_write_proposable(LEDGER, MODELS)
+    for host in ("claude_code", "codex"):
+        assert CFG["transports"][host]["to_gemini"]["write_verified"] is False, host
 
 
 def test_the_neon_seat_measurement_rederives_its_tier():

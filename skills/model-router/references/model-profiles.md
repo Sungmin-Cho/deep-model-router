@@ -282,7 +282,12 @@ replay harness's model-free write control under the same profile), but a seat
 that writes moves tier only when an implementation replay agrees with the
 review replay, and write authority on a gemini direction is per family, so it
 can be proposed only while this is the family's only dispatchable model — which
-the adopted placement makes it. IMPLEMENTATION-REPLAY-PENDING
+the adopted placement makes it. Its implementation replay read tier 1 — nine of
+sixteen runs passed, one short of the tier-2 bar — against the review replay's
+tier 2 ("Tiers measured on 2026-11-23"), so the replays disagree and, by the
+rule fixed before either ran, nothing moves: the seat keeps the review replay's
+tier 2 for the reading it does, write authority is not proposed, and
+`write_verified` stays false.
 
 **Its quota is the account's, per model, and it needs a paid plan.** The API
 has no free tier for this model and Antigravity offers it to paid Google AI Pro
@@ -1218,4 +1223,36 @@ once, as the plan required; both re-runs reviewed normally. The ledger row
 "gemini_neon tier measurement (real-review replay, 2026-11-23)" has the numbers
 and limits.
 
-IMPLEMENTATION-REPLAY-PENDING
+**The implementation replay.** The same eight accepted findings, prompt, hidden
+tests and regression sets as the 2026-10-15 replay, two runs each, through the
+shipped maker seat at high effort, under Hydrogen's read fence widened to the
+newer answer-bearing roots (probed with and without the model on each CLI
+version before any run). Anchors are the live writing rows of 1.26.1 and the
+Hydrogen row it may replace; the bars were fixed before any run.
+
+| Seat | Tier | Runs passed |
+|---|---|---|
+| Gemini 4 Hydrogen (anchor, retired in 1.27.0; read-only, scored on 2026-11-15) | 1 | 75% |
+| Claude senior seat (anchor) | 2 | 69% |
+| Sol seat (anchor) | 2 | 63% |
+| Claude balanced seat (anchor, with Sol the tier-2 bar's rows) | 2 | 63% |
+| **Gemini maker seat (Gemini 4 Neon)** | **1 by this replay** | **56% (9 of 16)** |
+| Claude fast seat (anchor) | 0 | 56% |
+| OpenAI balanced seat (anchor, the tier-1 bar's row) | 1 | 44% |
+| OpenAI fast seat (anchor) | 0 | 38% |
+| Claude architect seat, OpenAI frontier seat (tier 3 by assignment, reported beside) | — | 69%, 63% |
+
+The tier-2 bar is 57.5% (ten of sixteen) and the tier-1 bar 38.75%. It passed
+both runs of four tasks, one of a fifth — whose other run passed the hidden tests
+and broke three regression tests — and neither run of the other three. Each
+tier-2 row alone as the bar and the four `route_task` tasks alone read tier 1;
+the other four tasks alone read tier 2. Like Hydrogen it worked without a
+shell, so unlike every anchor it could not run the tests the prompt asks for.
+The CLI updated itself between the runs, so the last five ran on a later
+version, validated the same way first (six of eleven passed on the first
+version, three of five on the second; reported beside, deciding nothing).
+
+**The two replays disagree** (review tier 2, implementation tier 1), so by the
+rule fixed before either ran nothing moves: the row keeps tier 2 for the reading
+the seat does, and write authority is not proposed. The ledger row "gemini_neon
+implementation replay (2026-11-23)" has the numbers and limits.

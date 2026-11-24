@@ -1456,7 +1456,10 @@ transports:
       # implementation replay; the two disagreed, so write authority was not
       # proposed (it would be per direction, and so proposable only while one
       # model is the family's one dispatchable row). 1.27.0: the current model
-      # measured tier 2 in its review replay; IMPLEMENTATION-REPLAY-PENDING. With the Claude-first
+      # measured tier 2 in its review replay and tier 1 in its implementation
+      # replay (nine of sixteen runs, one short of the tier-2 bar); they
+      # disagree, so write authority is not proposed, though the model is now
+      # the family's only dispatchable row. With the Claude-first
       # fallback, turning this on would make it the writer where the xai seat
       # and the Claude model are both out (the OpenAI balanced model writes
       # there today); see references/model-profiles.md.
@@ -5921,6 +5924,70 @@ verification_ledger:
         audit: the local archive docs/evals/2026-11-23-t15/ (summary.json
         sha256 e478b57ccd4dd6f80e68d8a014ab15ebed1bb3aea1afd5441aa107bd36d3071b).
 
+    - item: "gemini_neon implementation replay (2026-11-23)"
+      status: verified
+      probed_on: "2026-11-24"
+      evidence: >
+        T16: the 2026-10-15 implementation replay (the same eight tasks,
+        prompt, hidden tests and regression sets, each task's pre-fix tree
+        re-validated against T6's registered manifest) on gemini-4-neon
+        through the shipped maker recipe (dmr-maker-v1, accept-edits, effort
+        high as every anchor, deadline 2,700 s; the released 1.26.1
+        supervisor) under T12's read fence widened to the newer
+        answer-bearing roots, the hidden tests graded under a read fence too
+        — measured before any attempt on each agy version by a kernel probe
+        without a model (28 read targets: the four controls read, 24
+        refused; ten write controls: the workspace and TMPDIR written, eight
+        refused) and a leak run in which the model tried 20 targets and was
+        refused on the 18 outside its workspace and agent file. Two runs per
+        task; all sixteen SUCCEEDED in 478 to 904 s, every receipt naming that
+        fence and every session resolving to gemini-4-neon-high. Eleven ran on
+        agy 1.5.14 (2026-11-23); the CLI updated itself to 1.5.16 overnight,
+        so by amendment A3 (user decision 2026-11-24, before any run on it)
+        1.5.16 was validated the same way and the last five (the second runs
+        of T04 to T08) ran on it. Two runs were refused by the account's quota
+        and dispatched again after the reset ("agy account quota for
+        gemini-4-neon (2026-11-23)"). The rule was written before any
+        dispatch, for a row with no tier yet: anchors are the published pass
+        rates of the live writing rows of the 1.26.1 registry plus the live
+        gemini row it may replace; tier 2 claude-opus-5-5 0.687500,
+        gpt-6.2-sol 0.625000, claude-sonnet-5-5 0.625000; tier 1
+        gpt-6.1-terra 0.437500 and gemini-4-hydrogen 0.750000 (read-only,
+        scored by T12); tier 0 (no bar here) claude-haiku-5-5 0.562500,
+        gpt-6-luna 0.375000. Tier-2 mean 0.645833, separation 0.208333 (gate
+        0.10, met). Bar for tier 2: 0.575000. Bar for tier 1: 0.387500. Pass
+        rate: gemini-4-neon 0.562500 (nine of sixteen runs: both on T03, T04,
+        T07 and T08, one on T02, none on T01, T05 or T06; on T02's second run
+        the hidden tests passed and three regression tests failed, on the
+        set's first run and its re-run). Verdict: tier 1. Sensitivity: tier 1
+        with each tier-2 row alone as the bar, with gpt-6.1-terra alone as the
+        tier-1 row (gemini-4-hydrogen alone fails the gate: inconclusive) and
+        on the four route_task tasks alone; tier 2 on the other four alone.
+        The mean per-task share of hidden tests passed is 0.729167. Reported
+        beside, deciding nothing: six of the eleven runs on agy 1.5.14 passed
+        and three of the five on 1.5.16; the tier-3 rows by assignment,
+        claude-fable-5-2 (0.6875 in T10) and gpt-6.2-astra (0.625 in T14).
+        The review replay read tier 2, so the replays disagree, and by the
+        rule fixed before any dispatch nothing moves: the row keeps the review
+        replay's tier 2 for the reading it does, write authority is not
+        proposed, and write_verified stays false. Isolation is by prevention
+        only: under its write fence the CLI keeps no record of the maker's
+        tool calls, so what a session tried to read is not known; the fence
+        decides what it could read. Biases: the subject had no shell and could
+        not run the tests the prompt asks for, which every anchor could; seven
+        of the eight reference fixes were written by claude-opus-5-5; the
+        anchors ran 2026-10-15 to 2026-11-18 on those days' CLIs and were not
+        re-run; the tier-1 anchor is itself a held tier (T8); five tasks' two
+        runs ran on different CLI versions; the user's Orca agent hook ran in
+        every attempt (its hashes recorded); the regression half of grading
+        runs unfenced (a static scan for private paths found none); the
+        orchestrator was a claude-opus-5-5 session (grading deterministic, the
+        plan reviewed by gpt-6.2-sol and claude-fable-5-2 before any task
+        attempt, amendment A3 written before any run on 1.5.16 and before any
+        grade). Plan, amendments, harness, receipts, archives, grades and
+        audit: the local archive docs/evals/2026-11-23-t16/ (summary.json
+        sha256 fe902f438e82eb7e7b476a500226e152237c1d78326c613fb0f8a04bce2dbc95).
+
     - item: "agy account quota for gemini-4-neon (2026-11-23)"
       status: verified
       probed_on: "2026-11-23"
@@ -5940,8 +6007,13 @@ verification_ledger:
         d7ec4a079f819d6eea433061dceb72e6a9ca7ba831fddf23d10a6478ce1f8ce8 in the
         local archive docs/evals/2026-11-23-t16/void-quota/; the attempt was
         voided and dispatched again after the reset, T16's rule). The window
-        is the account's and read from each refusal, not a published
-        contract.
+        opened again with that evening's first call: eleven runs from 18:49
+        KST, then t16-T04-NEON-r2 was refused at 21:02 KST ("Resets in
+        2h43m29s.", `quota_refusal: {resets_in_seconds: 9809}`: about 23:46,
+        again about five hours after the window's first call; receipt sha256
+        b943b5de21d438619514241150ebd9be2d53b8a29149fb2311ad8894b07d3b79 in the
+        same archive), voided and dispatched again on 2026-11-24. The window is the
+        account's and read from each refusal, not a published contract.
 
     - item: "Gemini 4 Hydrogen retired (gemini_hydrogen, 1.27.0)"
       status: documented
