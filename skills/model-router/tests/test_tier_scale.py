@@ -1059,13 +1059,32 @@ def test_the_neon_implementation_replay_rederives_its_verdict_and_moves_nothing(
                      r"both on ([^,]+(?:, [^,]+)*) and (T\d\d), one on (T\d\d), none on "
                      r"(T\d\d), (T\d\d) or (T\d\d)", flat)
     assert runs, flat
-    words = {"seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11}
+    words = {"three": 3, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+             "eleven": 11, "sixteen": 16}
     both = runs.group(2).split(", ") + [runs.group(3)]
-    none = {runs.group(5), runs.group(6), runs.group(7)}
-    assert words[runs.group(1)] == 2 * len(both) + 1 == round(x * 16)
-    assert len(both) + 1 + len(none) == 8 and not (none | {runs.group(4)}) & set(both)
+    one, none = [runs.group(4)], [runs.group(5), runs.group(6), runs.group(7)]
+    passed = words[runs.group(1)]
+    # review t1 (sol F3): the exact rate, and the three groups partition T01-T08 exactly once
+    assert x == passed / 16 and passed == 2 * len(both) + len(one)
+    assert sorted(both + one + none) == [f"T0{i}" for i in range(1, 9)]
+    # review t1 (fable): the version split adds up, and the profile repeats it
+    split = re.search(r"(\w+) of the (\w+) runs on agy 1\.5\.14 passed and (\w+) of the (\w+) "
+                      r"on 1\.5\.16", flat)
+    assert split, flat
+    p14, n14, p16, n16 = (words[g] for g in split.groups())
+    assert p14 + p16 == passed and n14 + n16 == 16
     section = PROFILES_MD.split("## Tiers measured on 2026-11-23", 1)[1]
+    profile = " ".join(section.split())
     assert f"**{round(x * 100)}% ({round(x * 16)} of 16)**" in section
+    assert f"({split.group(1)} of {split.group(2)} passed on the first version, " \
+           f"{split.group(3)} of {split.group(4)} on the second" in profile
+    # the profile's bars are the row's
+    bar2 = stated["Bar for tier 2:"]
+    assert f"The tier-2 bar is {bar2 * 100:.1f}% (ten of sixteen)" in profile and bar2 * 16 <= 10
+    assert f"tier-1 bar {stated['Bar for tier 1:'] * 100:.2f}%" in profile
+    # the CHANGELOGs state the same run count
+    assert f"nine of sixteen runs pass ({round(x * 100)}%)" in (SKILL.parent.parent / "CHANGELOG.md").read_text()
+    assert f"16회 중 9회({round(x * 100)}%)" in (SKILL.parent.parent / "CHANGELOG.ko.md").read_text()
     # the rule: the replays disagree, nothing moves
     review = _stated_tier(NEON_ROW)
     assert derived != review and "replays disagree" in flat

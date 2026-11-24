@@ -5870,6 +5870,31 @@ verification_ledger:
         end of the maker and hydrogen sets (maker-run.log, maker2-run.log), in
         the acceptance archive.
 
+    - item: "Gemini reviewer seat on agy 1.5.16 (re-probe, 2026-11-24)"
+      status: verified
+      probed_on: "2026-11-24"
+      cli_version: "agy 1.5.16"
+      evidence: >
+        The CLI updated itself to 1.5.16 on 2026-11-24 (when an agy --version
+        ran; see "gemini_neon implementation replay (2026-11-23)"). The
+        reviewer probe set re-run on gemini-4-neon through the same archive of
+        the released 1.26.1 dispatch_agent.py (agy --version 1.5.16 before and
+        after): low, medium, high and xhigh SUCCEEDED with verdict PASS in 19
+        to 30 s, each log resolving to the matching spelling
+        (gemini-4-neon-low ... -xhigh) and recording the deny rules ("stored 0
+        allow, 5 deny grants"); the containment probe SUCCEEDED with the model
+        reporting no edit or shell tool and the workspace unchanged; an
+        unknown id and --effort max were refused by the CLI before any request
+        (receipt sha256: art-low-rel1516
+        a88989162dd4298d458df3623e931d0cc1a2a1ceac3f57cb1476b654071345cb,
+        acontain-rel1516
+        0554961f6aa164362cb037f48eceebd759b4b5ff910472c4948e487057e66aa8,
+        aeff-max-rel1516
+        6e968665abfbddf9b775bb96cb28265e1a2815ea9b760e1d8f0311494a1baabb;
+        probes-rel1516.json in the acceptance archive). The maker seat's
+        profile on 1.5.16 is covered by the implementation replay's
+        validation of that version (kernel fence probe, pilot and leak run).
+
     - item: "gemini_neon tier measurement (real-review replay, 2026-11-23)"
       status: verified
       probed_on: "2026-11-23"
@@ -5942,10 +5967,12 @@ verification_ledger:
         refused on the 18 outside its workspace and agent file. Two runs per
         task; all sixteen SUCCEEDED in 478 to 904 s, every receipt naming that
         fence and every session resolving to gemini-4-neon-high. Eleven ran on
-        agy 1.5.14 (2026-11-23); the CLI updated itself to 1.5.16 overnight,
-        so by amendment A3 (user decision 2026-11-24, before any run on it)
-        1.5.16 was validated the same way and the last five (the second runs
-        of T04 to T08) ran on it. Two runs were refused by the account's quota
+        agy 1.5.14 (2026-11-23); after the quota wait (stalled overnight by
+        the machine's sleep) the CLI updated itself to 1.5.16 on 2026-11-24,
+        when the orchestrator's wrapper ran agy --version before resuming, so
+        by amendment A3 (user decision 2026-11-24, before any scored run on
+        it) 1.5.16 was validated the same way and the last five (the second
+        runs of T04 to T08) ran on it. Two runs were refused by the account's quota
         and dispatched again after the reset ("agy account quota for
         gemini-4-neon (2026-11-23)"). The rule was written before any
         dispatch, for a row with no tier yet: anchors are the published pass
@@ -5974,17 +6001,22 @@ verification_ledger:
         only: under its write fence the CLI keeps no record of the maker's
         tool calls, so what a session tried to read is not known; the fence
         decides what it could read. Biases: the subject had no shell and could
-        not run the tests the prompt asks for, which every anchor could; seven
+        not run the tests the prompt asks for, which every Claude and OpenAI
+        anchor could (gemini-4-hydrogen, an anchor here, had none either); seven
         of the eight reference fixes were written by claude-opus-5-5; the
         anchors ran 2026-10-15 to 2026-11-18 on those days' CLIs and were not
         re-run; the tier-1 anchor is itself a held tier (T8); five tasks' two
-        runs ran on different CLI versions; the user's Orca agent hook ran in
-        every attempt (its hashes recorded); the regression half of grading
+        runs ran on different CLI versions, the update triggered by the
+        orchestrator's wrapper and the wait moving those five into a later
+        quota window; the user's Orca agent hook ran its inline command in
+        every attempt and, its script unreadable under the fence, took the
+        fallback branch that prints {} (hashes recorded); the regression half of grading
         runs unfenced (a static scan for private paths found none); the
         orchestrator was a claude-opus-5-5 session (grading deterministic, the
         plan reviewed by gpt-6.2-sol and claude-fable-5-2 before any task
-        attempt, amendment A3 written before any run on 1.5.16 and before any
-        grade). Plan, amendments, harness, receipts, archives, grades and
+        attempt, amendment A3 written before any scored run on 1.5.16 and
+        before any scored grade; the 1.5.14 validation pilot had been graded
+        as validation requires). Plan, amendments, harness, receipts, archives, grades and
         audit: the local archive docs/evals/2026-11-23-t16/ (summary.json
         sha256 fe902f438e82eb7e7b476a500226e152237c1d78326c613fb0f8a04bce2dbc95).
 

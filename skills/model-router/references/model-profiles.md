@@ -1247,7 +1247,8 @@ both runs of four tasks, one of a fifth — whose other run passed the hidden te
 and broke three regression tests — and neither run of the other three. Each
 tier-2 row alone as the bar and the four `route_task` tasks alone read tier 1;
 the other four tasks alone read tier 2. Like Hydrogen it worked without a
-shell, so unlike every anchor it could not run the tests the prompt asks for.
+shell, so unlike the Claude and OpenAI anchors it could not run the tests the
+prompt asks for.
 The CLI updated itself between the runs, so the last five ran on a later
 version, validated the same way first (six of eleven passed on the first
 version, three of five on the second; reported beside, deciding nothing).

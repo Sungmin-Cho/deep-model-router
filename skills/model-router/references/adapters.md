@@ -736,8 +736,9 @@ What contains the gemini reviewer seat, measured on agy 1.3.4 (macOS,
 2026-10-14), re-probed with Gemini 4 Argon on agy 1.4.8 (2026-10-27) and
 re-probed on agy 1.4.12 (2026-11-03), agy 1.5.4 (2026-11-10) and agy 1.5.6
 (2026-11-12), probed with Gemini 4 Hydrogen on agy 1.5.9 (2026-11-15), and
-probed with the seat's current model, Gemini 4 Neon, on agy 1.5.14 (2026-11-23);
-the ledger rows name the attempts. No mode flag does: the CLI's
+probed with the seat's current model, Gemini 4 Neon, on agy 1.5.14 (2026-11-23),
+and its reviewer re-probed on agy 1.5.16 (2026-11-24, the maker profile validated
+there by the implementation replay); the ledger rows name the attempts. No mode flag does: the CLI's
 own settings (`~/.gemini/antigravity-cli/settings.json`) choose a
 `toolPermission` preset for every run on the host, and under `always-proceed`
 a `--mode plan` run wrote a file and ran a shell command when asked to. Two
@@ -1026,7 +1027,7 @@ claim rests on it.
 seat, `agy models`, model-sync's catalogue fetch and probes — checks for a
 release at most every 15 minutes and spawns a background updater that replaces
 the binary on PATH (agy 1.5.3 to 1.5.4, measured 2026-11-10; 1.5.6 replaced
-1.5.4 on 2026-11-12, 1.5.9 replaced 1.5.6 on 2026-11-15, 1.5.14 was on PATH by 2026-11-23); `AGY_CLI_DISABLE_AUTO_UPDATE=1` did not stop it on 1.5.4. Under the maker's
+1.5.4 on 2026-11-12, 1.5.9 replaced 1.5.6 on 2026-11-15, 1.5.14 was on PATH by 2026-11-23, and 1.5.16 was on PATH by 13:16 KST on 2026-11-24); `AGY_CLI_DISABLE_AUTO_UPDATE=1` did not stop it on 1.5.4. Under the maker's
 fence the updater cannot write `~/.local/bin` and skips. So the CLI behind the
 seat can change between two runs without notice: pass `--host-cli-version` to
 keep the version in the receipt, and re-probe the profiles after a change.
